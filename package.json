@@ -1,0 +1,22 @@
+{
+  "name": "cad-sketch-converter-offline",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Dockerized offline CAD reconstruction: Qwen2.5-VL, OpenCV, OCR, SVG and DXF with geometry validation",
+  "type": "module",
+  "engines": {
+    "node": ">=20.17.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check public/app.js && python3 -m py_compile processor.py cad_renderer.py"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "multer": "^2.0.2"
+  }
+}

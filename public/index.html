@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5f2">
+  <meta name="description" content="Локальная приблизительная реконструкция рукописных инженерных схем в CAD-стиле с Qwen, OpenCV и SVG/DXF.">
+  <title>Чертёж — офлайн-конвертер схем</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Чертёж — главная">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="brand-name">ЧЕРТЁЖ<span class="brand-dot">.</span></span>
+    </a>
+    <div class="topbar-right">
+      <span class="status-pill"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка локальных сервисов…</span></span>
+      <span class="beta-tag">BETA</span>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="intro">
+      <div class="eyebrow"><span class="eyebrow-line"></span> ИНСТРУМЕНТ ДЛЯ СЛУЖБЫ И МОНТАЖА</div>
+      <h1>Из эскиза —<br><span>в чистый чертёж.</span></h1>
+      <p class="intro-copy">Реконструкция схемы в аккуратный технический лист на локальном сервере. Qwen помогает восстановить линии, узлы и подписи; результат остаётся приблизительным и требует проверки.</p>
+      <div class="feature-row">
+        <div class="feature"><span class="feature-icon">⌁</span><span>Чёрные линии<br>на белом фоне</span></div>
+        <div class="feature"><span class="feature-icon">↗</span><span>SVG и DXF<br>векторный экспорт</span></div>
+        <div class="feature"><span class="feature-icon">№</span><span>Размеры и подписи<br>нужно проверить</span></div>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="Обработка схемы">
+      <div class="workspace-heading">
+        <div>
+          <p class="section-kicker">РАБОЧАЯ ОБЛАСТЬ</p>
+          <h2>Преобразование схемы</h2>
+        </div>
+        <div class="step-label"><span>01</span> ЗАГРУЗИТЬ <i></i><span>02</span> ОБРАБОТАТЬ <i></i><span>03</span> СКАЧАТЬ</div>
+      </div>
+
+      <div class="work-grid">
+        <section class="panel source-panel">
+          <div class="panel-head">
+            <div class="panel-title-group"><span class="panel-number">01</span><h3>Исходный эскиз</h3></div>
+            <span class="panel-note">JPG · PNG · WEBP</span>
+          </div>
+
+          <label class="dropzone" id="dropzone" for="fileInput" tabindex="0">
+            <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
+            <div class="upload-glyph" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none"><path d="M24 31V8m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 29v9a2 2 0 0 0 2 2h26a2 2 0 0 0 2-2v-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </div>
+            <strong id="uploadTitle">Перетащите фото сюда</strong>
+            <span class="drop-copy" id="uploadSubtitle">или <span class="text-link">выберите файл</span> на устройстве</span>
+            <span class="file-limit">Максимальный размер файла — 15 МБ</span>
+          </label>
+
+          <div class="preview-wrap hidden" id="sourcePreviewWrap">
+            <div class="preview-toolbar"><span class="preview-file" id="sourceName">scheme.jpg</span><button type="button" class="text-button" id="removeFile">Убрать ×</button></div>
+            <div class="image-stage source-stage"><img id="sourcePreview" alt="Предпросмотр загруженного эскиза"></div>
+          </div>
+
+          <div class="control-block">
+            <label class="field-label" for="notes">Пожелания к анализу <span>НЕОБЯЗАТЕЛЬНО</span></label>
+            <textarea id="notes" rows="3" maxlength="1500" placeholder="Например: обратить внимание на диаметры труб и соединения в правой части схемы…"></textarea>
+          </div>
+          <div class="control-block mode-control">
+            <label class="field-label" for="mode">Режим результата</label>
+            <select id="mode" class="mode-select">
+              <option value="cad" selected>Перерисовать в CAD-стиле (Qwen)</option>
+              <option value="clean">Только очистить исходное фото</option>
+            </select>
+            <small class="mode-help">CAD-режим заново строит упрощённую схему с ровными линиями и компьютерными подписями. Числа и соединения модель может перепутать — обязательно сверяйте с оригиналом.</small>
+          </div>
+          <label class="check-row" for="strictMode">
+            <input id="strictMode" type="checkbox" checked>
+            <span class="custom-check" aria-hidden="true"></span>
+            <span class="check-copy"><strong>Строгий анализ</strong><small>Просить Qwen не угадывать нечитаемые размеры и подписи.</small></span>
+          </label>
+
+          <button type="button" class="primary-button" id="convertButton" disabled>
+            <span class="button-icon">✳</span><span id="convertButtonText">Обработать локально</span><span class="button-arrow">↗</span>
+          </button>
+          <p class="privacy-note"><span class="lock-icon">▣</span> Файл обрабатывается локально на вашем сервере и удаляется после запроса.</p>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="panel-head">
+            <div class="panel-title-group"><span class="panel-number">02</span><h3>Результат</h3></div>
+            <span class="result-tag" id="resultTag">ОЖИДАНИЕ</span>
+          </div>
+
+          <div class="result-stage" id="resultStage">
+            <div class="stage-grid" aria-hidden="true"></div>
+            <div class="empty-state" id="emptyState">
+              <div class="empty-drawing" aria-hidden="true">
+                <svg viewBox="0 0 220 138" fill="none"><path d="M18 104 39 104 54 70 79 70 91 43 124 43 139 63 172 63 190 28" stroke="currentColor" stroke-width="1.35"/><path d="M18 104h35m26-34 9-9m36-18 15-13m33 33 18-22" stroke="currentColor" stroke-width="1.1"/><path d="M44 98h11m21-34 4 5m45-29 5 5m38 18 6-5" stroke="currentColor" stroke-width="1.2"/><circle cx="91" cy="43" r="4" stroke="currentColor"/><circle cx="139" cy="63" r="4" stroke="currentColor"/><path d="M39 110v-12m-4 6h8M168 76v-12m-4 6h8" stroke="currentColor" stroke-width="1.2"/><path d="M24 120h165" stroke="currentColor" stroke-width=".7" stroke-dasharray="3 4"/></svg>
+                <span class="drawing-cross cross-one">+</span><span class="drawing-cross cross-two">+</span>
+              </div>
+              <strong>Здесь появится чертёж</strong>
+              <p>Загрузите исходную схему<br>и запустите преобразование.</p>
+            </div>
+            <div class="loading-state hidden" id="loadingState" aria-live="polite">
+              <div class="loader-art"><span></span><span></span><span></span><span></span><span></span></div>
+              <strong>Перестраиваем линии</strong>
+              <p id="loadingHint">OpenCV очищает фото, Tesseract распознаёт текст, Qwen анализирует схему.</p>
+              <div class="loading-track"><span></span></div>
+            </div>
+            <div class="result-image-wrap hidden" id="resultImageWrap"><img id="resultImage" alt="Реконструированная техническая схема в CAD-стиле"></div>
+          </div>
+
+          <div class="result-footer">
+            <div class="result-meta"><span class="meta-dot"></span><span id="resultMeta">Формат результата: PNG</span></div>
+            <div class="download-actions"><button type="button" class="download-button" id="downloadButton" disabled><span>↓</span> PNG</button><button type="button" class="download-button" id="downloadSvgButton" disabled>SVG</button><button type="button" class="download-button" id="downloadDxfButton" disabled>DXF</button></div>
+          </div>
+          <div class="warning-box"><span class="warning-symbol">!</span><p><strong>Важно для инженерных схем.</strong> В CAD-режиме схема приблизительно реконструируется Qwen и строится как векторный лист. В режиме очистки SVG/DXF являются трассировкой пикселей. В обоих режимах числа, размеры и соединения обязательно сверьте с оригиналом.</p></div>
+          <section class="analysis-card" id="analysisCard">
+            <div class="analysis-head"><span class="analysis-chip">QWEN2.5-VL-3B</span><span class="analysis-caption">ЛОКАЛЬНЫЙ АНАЛИЗ</span></div>
+            <h4>Анализ схемы</h4>
+            <pre id="analysisText">После обработки здесь появится анализ Qwen, если локальная модель установлена.</pre>
+            <details class="ocr-details"><summary>Распознанный текст (OCR)</summary><p id="ocrText">После обработки появятся найденные подписи и цифры.</p></details>
+            <p class="analysis-footnote" id="analysisNote">Обработка выполняется локально. Для первого запуска необходимо заранее скачать зависимости и модель.</p>
+          </section>
+        </section>
+      </div>
+    </section>
+
+    <section class="how-section">
+      <div class="how-title"><span class="section-kicker">ПРОСТОЙ ПРОЦЕСС</span><h2>Три шага до чистого листа</h2></div>
+      <div class="how-grid">
+        <article class="how-card"><span class="how-index">01 / ВХОД</span><div class="how-icon icon-paper">▤</div><h3>Фото от слесаря</h3><p>Сфотографируйте бумагу ровно, в хорошем свете, чтобы подписи и размеры были различимы.</p></article>
+        <article class="how-card"><span class="how-index">02 / ОБРАБОТКА</span><div class="how-icon icon-process">⌘</div><h3>Локальная обработка</h3><p>OpenCV очищает изображение, OCR ищет подписи, Qwen описывает схему, а контуры экспортируются в SVG/DXF.</p></article>
+        <article class="how-card"><span class="how-index">03 / РЕЗУЛЬТАТ</span><div class="how-icon icon-export">↓</div><h3>Скачайте файлы</h3><p>PNG для просмотра, SVG для векторного листа и DXF для дальнейшего редактирования. CAD-реконструкция приблизительная.</p></article>
+      </div>
+    </section>
+
+    <footer class="footer"><span>ЧЕРТЁЖ<span class="brand-dot">.</span> <span class="footer-muted">AI SCHEME REDRAW</span></span><span>Полностью локальная обработка · не заменяет проверку инженера</span></footer>
+  </main>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
