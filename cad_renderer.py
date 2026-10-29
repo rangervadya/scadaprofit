@@ -5,7 +5,7 @@ Coordinates in the specification are normalized to a 1000x1000 image-relative dr
 This is an approximate reconstruction aid, not an engineering-authoritative CAD model.
 """
 from __future__ import annotations
-import json, math, sys, traceback
+import base64, json, math, sys, traceback
 from pathlib import Path
 import cairosvg
 import ezdxf
@@ -54,9 +54,11 @@ def add_dxf_text(msp, text, x, y, height_px, angle=0, layer='ANNOTATIONS', align
     ent = msp.add_text(text, dxfattribs={'height': h_mm, 'rotation': -n(angle), 'layer': layer, 'style': 'Standard'})
     ent.set_placement((x_mm, y_mm), align={'LEFT': ezdxf.enums.TextEntityAlignment.LEFT, 'CENTER': ezdxf.enums.TextEntityAlignment.CENTER, 'RIGHT': ezdxf.enums.TextEntityAlignment.RIGHT}.get(align, ezdxf.enums.TextEntityAlignment.LEFT))
 
-def main(spec_path: Path, out_dir: Path):
+def main(spec_path: Path, out_dir: Path, source_image: str | None = None):
     global DRAW_X, DRAW_Y, DRAW_W, DRAW_H, SCALE_X, SCALE_Y
     spec = json.loads(spec_path.read_text(encoding='utf-8'))
+    if source_image is None:
+        source_image = spec.get('sourceImage')
     out_dir.mkdir(parents=True, exist_ok=True)
     source_aspect = n(spec.get('sourceAspect'), 1.42, 0.4, 2.5)
     # Clamp extreme aspect ratios so the drawing is never squeezed into a sliver or blown up.
@@ -71,29 +73,33 @@ def main(spec_path: Path, out_dir: Path):
     DRAW_Y = 145.0 + (MAX_DRAW_H - DRAW_H) / 2.0
     SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 1000.0
     title = safe_text(spec.get('title') or 'СХЕМА ТРУБОПРОВОДА', 100)
-    subtitle = safe_text(spec.get('subtitle') or 'Перерисовка по исходному эскизу', 180)
-    routes = spec.get('routes') if isinstance(spec.get('routes'), list) else []
+    subtitle = safe_text(spec.get('subtitle') or 'Распознавание символов и подписей', 180)
     labels = spec.get('labels') if isinstance(spec.get('labels'), list) else []
     symbols = spec.get('symbols') if isinstance(spec.get('symbols'), list) else []
     dimensions = spec.get('dimensions') if isinstance(spec.get('dimensions'), list) else []
     legend = spec.get('legend') if isinstance(spec.get('legend'), list) else []
-    if not routes or not any(isinstance(r, dict) and isinstance(r.get('points'), list) and len(r['points']) >= 2 for r in routes):
-        raise ValueError('Qwen не описал ни одной линии схемы. Попробуйте режим очистки или повторите с более чётким фото.')
-    routes, labels, symbols, dimensions, legend = routes[:32], labels[:160], symbols[:120], dimensions[:120], legend[:8]
+    labels, symbols, dimensions, legend = labels[:160], symbols[:120], dimensions[:120], legend[:8]
+
+    # The original drawing is embedded as a semi-transparent background so the engineer
+    # can compare recognised symbols against the actual sketch. Topology is NOT drawn.
+    bg_svg = ''
+    if source_image:
+        bg_svg = f'<image href="{esc(source_image)}" x="{DRAW_X:.2f}" y="{DRAW_Y:.2f}" width="{DRAW_W:.2f}" height="{DRAW_H:.2f}" preserveAspectRatio="xMidYMid meet" opacity="0.55"/>'
 
     svg = [f'''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {SVG_W:.0f} {SVG_H:.0f}">
 <rect width="100%" height="100%" fill="#ffffff"/>
 <rect x="14" y="14" width="1372" height="972" fill="none" stroke="#000" stroke-width="1.5"/>
+{bg_svg}
 <g font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
 <text x="42" y="44" font-size="15" font-weight="bold">{esc(title)}</text>
 <text x="42" y="69" font-size="11">{esc(subtitle)}</text>
 <line x1="30" y1="91" x2="1370" y2="91" stroke-width="1.1"/>
 <rect x="1040" y="25" width="330" height="54" fill="none" stroke-width="1"/>
 <text x="1052" y="45" font-size="11">CAD SKETCH CONVERTER · ОФЛАЙН</text>
-<text x="1052" y="64" font-size="10">Схема требует инженерной проверки</text>
+<text x="1052" y="64" font-size="10">Распознавание символов · топология не реконструируется</text>
 </g>
-<g id="routes" fill="none" stroke="#000" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">''']
+<g id="symbols" fill="none" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">''']
     # Routes are drawn as straight-segment polylines; aspect-ratio fitting avoids stretching the source layout.
     dxf = ezdxf.new('R2010')
     dxf.units = units.MM
@@ -116,26 +122,7 @@ def main(spec_path: Path, out_dir: Path):
     add_dxf_text(msp, title, 42, 44, 15, layer='ANNOTATIONS')
     add_dxf_text(msp, subtitle, 42, 69, 11, layer='ANNOTATIONS')
     add_dxf_text(msp, 'CAD SKETCH CONVERTER - OFFLINE', 1052, 45, 11, layer='ANNOTATIONS')
-    add_dxf_text(msp, 'Engineering review required', 1052, 64, 10, layer='ANNOTATIONS')
-
-    for route in routes:
-        if not isinstance(route, dict): continue
-        points = route.get('points')
-        if not isinstance(points, list): continue
-        valid = [xy(p[0], p[1]) for p in points if isinstance(p, (list,tuple)) and len(p)>=2]
-        if len(valid) < 2: continue
-        kind = safe_text(route.get('kind', 'main'), 20).lower()
-        width = 2.15 if kind in ('main', 'trunk', 'основная') else 1.45
-        layer = 'PIPE_MAIN' if width > 2 else 'PIPE_BRANCH'
-        svg.append(f'<polyline points="{" ".join(f"{x:.2f},{y:.2f}" for x,y in valid)}" fill="none" stroke="#000" stroke-width="{width}"/>')
-        msp.add_lwpolyline([to_dxf(x,y) for x,y in valid], dxfattribs={'layer':layer})
-        rlabel = safe_text(route.get('label') or route.get('id'), 40)
-        if rlabel and len(valid) > 2:
-            mid = valid[len(valid)//2]
-            # route identifier in an outlined label, like a technical drawing callout
-            svg.append(f'<circle cx="{mid[0]:.2f}" cy="{mid[1]:.2f}" r="11" fill="#fff" stroke="#000" stroke-width="1.1"/>')
-            svg.append(f'<text x="{mid[0]:.2f}" y="{mid[1]+3.8:.2f}" text-anchor="middle" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif" font-size="10">{esc(rlabel)}</text>')
-            add_dxf_text(msp, rlabel, mid[0], mid[1]-2, 10, layer='ANNOTATIONS', align='CENTER')
+    add_dxf_text(msp, 'Topology NOT reconstructed', 1052, 64, 10, layer='ANNOTATIONS')
 
     for dim in dimensions:
         if not isinstance(dim, dict): continue
@@ -199,7 +186,7 @@ def main(spec_path: Path, out_dir: Path):
     svg.append('<text x="48" y="822" font-size="11" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none" font-weight="bold">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>')
     add_dxf_text(msp,'УСЛОВНЫЕ ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ',48,822,11,layer='ANNOTATIONS')
     if not legend:
-        legend = ["Чертёж восстановлен приблизительно по изображению.", "Числовые значения и расположение соединений требуют проверки."]
+        legend = ["Модель распознала символы и текст.", "Топология схемы не реконструируется автоматически.", "Соединения и геометрию определяйте вручную по исходному изображению."]
     for i, item in enumerate(legend[:6]):
         txt = safe_text(item.get('text') if isinstance(item,dict) else item,150)
         yy = legend_y + i*18
@@ -210,9 +197,9 @@ def main(spec_path: Path, out_dir: Path):
     svg.append('<line x1="962" y1="837" x2="1367" y2="837" stroke="#000" stroke-width="0.8"/>')
     svg.append(f'<text x="980" y="862" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Наименование: {esc(title[:48])}</text>')
     svg.append('<text x="980" y="885" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Формат: A3 · Единицы: мм (условные)</text>')
-    svg.append('<text x="980" y="908" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Источник: фотография/скан эскиза</text>')
-    svg.append('<text x="980" y="931" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Проверить: геометрию, узлы, размеры, подписи</text>')
-    for yy, txt in [(828,'ОСНОВНАЯ НАДПИСЬ'),(862,'Наименование: '+title[:48]),(885,'Формат: A3 | Единицы: мм (условные)'),(908,'Источник: фото/скан эскиза'),(931,'Проверить: геометрию, узлы, размеры')]:
+    svg.append('<text x="980" y="908" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Источник: фото/скан эскиза</text>')
+    svg.append('<text x="980" y="931" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Проверить: символы, размеры, подписи</text>')
+    for yy, txt in [(828,'ОСНОВНАЯ НАДПИСЬ'),(862,'Наименование: '+title[:48]),(885,'Формат: A3 | Единицы: мм (условные)'),(908,'Источник: фото/скан эскиза'),(931,'Проверить: символы, размеры, подписи')]:
         add_dxf_text(msp,txt,980,yy,10 if yy!=828 else 11,layer='ANNOTATIONS')
 
     svg.append('</g></svg>')
@@ -223,13 +210,21 @@ def main(spec_path: Path, out_dir: Path):
     svg_path.write_text(svg_text,encoding='utf-8')
     cairosvg.svg2png(bytestring=svg_text.encode('utf-8'),write_to=str(png_path),output_width=1960,output_height=1400)
     dxf.saveas(dxf_path)
-    return {'title': title, 'routes': len(routes), 'symbols': len(symbols), 'labels': len(labels), 'dimensions': len(dimensions), 'sheet': 'A3 · CAD-реконструкция (приблизительная)', 'width':1960,'height':1400}
+    return {'title': title, 'symbols': len(symbols), 'labels': len(labels), 'dimensions': len(dimensions), 'sheet': 'A3 · распознавание символов', 'width':1960,'height':1400}
 
 if __name__=='__main__':
     try:
-        if len(sys.argv)!=3:
-            print('Usage: cad_renderer.py spec.json OUTPUT_DIR',file=sys.stderr); sys.exit(2)
-        result=main(Path(sys.argv[1]),Path(sys.argv[2]))
+        if len(sys.argv) < 3:
+            print('Usage: cad_renderer.py spec.json OUTPUT_DIR [source_image]',file=sys.stderr); sys.exit(2)
+        source_image = None
+        if len(sys.argv) >= 4 and Path(sys.argv[3]).exists():
+            raw = Path(sys.argv[3]).read_bytes()
+            mime = 'image/jpeg'
+            lower = sys.argv[3].lower()
+            if lower.endswith('.png'): mime = 'image/png'
+            elif lower.endswith('.webp'): mime = 'image/webp'
+            source_image = f'data:{mime};base64,{base64.b64encode(raw).decode("ascii")}'
+        result=main(Path(sys.argv[1]),Path(sys.argv[2]), source_image)
         print(json.dumps({'ok':True,**result},ensure_ascii=False))
     except Exception as exc:
         print(f'CAD renderer error: {exc}',file=sys.stderr)
