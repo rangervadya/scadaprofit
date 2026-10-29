@@ -414,7 +414,40 @@ async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode,
       'Проверьте режим /no_think и лимит генерации.'
     );
   }
-  return extractJsonObject(content);
+  let parsed;
+  try {
+    parsed = extractJsonObject(content);
+  } catch (error) {
+    console.warn('[CAD-QWEN-RAW]', JSON.stringify({
+      tile: Number(tile.index || 1),
+      model: QWEN_MODEL,
+      doneReason: data?.done_reason || 'unknown',
+      evalCount: data?.eval_count ?? null,
+      contentChars: content.length,
+      contentPreview: content.slice(0, 1000),
+      parseError: String(error?.message || error)
+    }));
+    throw error;
+  }
+
+  const nodes = Array.isArray(parsed?.nodes) ? parsed.nodes : [];
+  const connections = Array.isArray(parsed?.connections) ? parsed.connections : [];
+  console.log('[CAD-QWEN-RAW]', JSON.stringify({
+    tile: Number(tile.index || 1),
+    model: QWEN_MODEL,
+    doneReason: data?.done_reason || 'unknown',
+    evalCount: data?.eval_count ?? null,
+    contentChars: content.length,
+    keys: Object.keys(parsed || {}),
+    title: cleanText(parsed?.title || '', 80),
+    summary: cleanText(parsed?.summary || '', 180),
+    nodesCount: nodes.length,
+    connectionsCount: connections.length,
+    nodesSample: nodes.slice(0, 3),
+    connectionsSample: connections.slice(0, 3),
+    labelsCount: Array.isArray(parsed?.labels) ? parsed.labels.length : 0
+  }));
+  return parsed;
 }
 
 async function reconstructWithQwen(tileDescriptors, tempDir, notes, strictMode, sourceStats = {}) {
@@ -444,6 +477,17 @@ async function reconstructWithQwen(tileDescriptors, tempDir, notes, strictMode, 
         parsed = await callOllamaForTile(tilePath, localTile, sourceStats, notes, strictMode,
           attempt === 1 ? '' : 'ПОВТОРНАЯ ПРОВЕРКА: предыдущий ответ содержит слишком мало достоверной геометрии. Не упрощай схему. Перечисли каждый видимый участок между двумя реальными узлами, используй общие node id в местах подтверждённых ответвлений; добавь все настоящие промежуточные вершины в points. Не добавляй декоративных линий и не угадывай соединения.');
         local = normalizeTileGraph(parsed, localTile);
+        console.log('[CAD-QWEN-NORMALIZED]', JSON.stringify({
+          tile: Number(tile.index || 1),
+          rawNodes: Array.isArray(parsed?.nodes) ? parsed.nodes.length : 0,
+          rawConnections: Array.isArray(parsed?.connections) ? parsed.connections.length : 0,
+          validNodeCount: local.nodeCount,
+          normalizedRouteCount: local.routes.length,
+          normalizedRoutesSample: local.routes.slice(0, 3).map((route) => ({
+            id: route.id, fromNode: route.fromNode, toNode: route.toNode,
+            pointsCount: route.points.length, points: route.points.slice(0, 4)
+          }))
+        }));
         if (local.routes.length > 0 || Number(tile.inkRatio || 0) < 0.004) break;
         tileError = new Error('Для фрагмента не извлечены соединения.');
       } catch (error) {
