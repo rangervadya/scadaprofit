@@ -120,138 +120,372 @@ function runProcessor(inputPath, outputDir) {
 }
 
 function extractJsonObject(rawText) {
-  let text = String(rawText || '').trim();
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const text = String(rawText || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('Qwen не вернул JSON для CAD-реконструкции.');
+  if (start < 0 || end <= start) throw new Error('Ollama не вернул JSON-объект.');
   return JSON.parse(text.slice(start, end + 1));
 }
 
-function normalizeCadSpec(input) {
-  const clamp = (value, low, high, fallback = 0) => {
-    const n = Number(value);
-    return Number.isFinite(n) ? Math.max(low, Math.min(high, n)) : fallback;
-  };
-  const txt = (value, max = 160) => String(value ?? '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
-  const routes = (Array.isArray(input.routes) ? input.routes : []).slice(0, 32).map((r, i) => ({
-    id: txt(r?.id ?? '', 24), label: txt(r?.label ?? '', 40), kind: txt(r?.kind ?? 'main', 20),
-    points: (Array.isArray(r?.points) ? r.points : []).slice(0, 30)
-      .filter((p) => Array.isArray(p) && p.length >= 2)
-      .map((p) => [clamp(p[0], 0, 1000), clamp(p[1], 0, 600)])
-  })).filter((r) => r.points.length >= 2);
-  if (routes.length === 0) throw new Error('Qwen не описал линии схемы для чистового чертежа.');
-  const symbols = (Array.isArray(input.symbols) ? input.symbols : []).slice(0, 120).map((s) => ({
-    type: txt(s?.type ?? 'junction', 20), x: clamp(s?.x, 0, 1000), y: clamp(s?.y, 0, 600), label: txt(s?.label ?? s?.id ?? '', 32)
-  }));
-  const labels = (Array.isArray(input.labels) ? input.labels : []).slice(0, 160).map((l) => ({
-    x: clamp(l?.x, 0, 1000), y: clamp(l?.y, 0, 600), text: txt(l?.text ?? '', 160),
-    angle: clamp(l?.angle, -90, 90), size: clamp(l?.size, 6, 18, 10), kind: txt(l?.kind ?? 'note', 20)
-  })).filter((l) => l.text);
-  const dimensions = (Array.isArray(input.dimensions) ? input.dimensions : []).slice(0, 120).map((d) => ({
-    x1: clamp(d?.x1, 0, 1000), y1: clamp(d?.y1, 0, 600), x2: clamp(d?.x2, 0, 1000), y2: clamp(d?.y2, 0, 600), text: txt(d?.text ?? '', 40)
-  })).filter((d) => d.text);
-  const legend = (Array.isArray(input.legend) ? input.legend : []).slice(0, 8).map((item) => txt(typeof item === 'object' ? item.text : item, 150)).filter(Boolean);
+// Ollama structured outputs constrain the response shape. This improves parsing reliability,
+// but does not guarantee that the model's interpretation of the drawing is correct.
+const CAD_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    summary: { type: 'string' },
+    nodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, type: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' },
+          label: { type: 'string' }, confidence: { type: 'number' }
+        },
+        required: ['id', 'type', 'x', 'y', 'label', 'confidence']
+      }
+    },
+    connections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, from_node: { type: 'string' }, to_node: { type: 'string' },
+          points: {
+            type: 'array',
+            items: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] }
+          },
+          kind: { type: 'string' }, label: { type: 'string' }, confidence: { type: 'number' }
+        },
+        required: ['id', 'from_node', 'to_node', 'points', 'kind', 'label', 'confidence']
+      }
+    },
+    labels: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' },
+          angle: { type: 'number' }, kind: { type: 'string' }, size: { type: 'number' }, confidence: { type: 'number' }
+        },
+        required: ['text', 'x', 'y', 'angle', 'kind', 'size', 'confidence']
+      }
+    },
+    dimensions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          x1: { type: 'number' }, y1: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
+          text: { type: 'string' }, confidence: { type: 'number' }
+        },
+        required: ['x1', 'y1', 'x2', 'y2', 'text', 'confidence']
+      }
+    },
+    legend: { type: 'array', items: { type: 'string' } },
+    uncertainties: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['title', 'summary', 'nodes', 'connections', 'labels', 'dimensions', 'legend', 'uncertainties']
+};
+
+function clampNumber(value, low, high, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(low, Math.min(high, n)) : fallback;
+}
+function cleanText(value, max = 160) {
+  return String(value ?? '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function transformLocalPoint(point, tile) {
+  const x = clampNumber(point?.x, 0, 1000);
+  const y = clampNumber(point?.y, 0, 1000);
+  const fullWidth = Math.max(1, Number(tile.fullWidth || tile.width || 1));
+  const fullHeight = Math.max(1, Number(tile.fullHeight || tile.height || 1));
+  return [
+    clampNumber(((Number(tile.x || 0) + (x / 1000) * Number(tile.width || fullWidth)) / fullWidth) * 1000, 0, 1000),
+    clampNumber(((Number(tile.y || 0) + (y / 1000) * Number(tile.height || fullHeight)) / fullHeight) * 1000, 0, 1000)
+  ];
+}
+
+function normalizeTileGraph(raw, tile) {
+  const parsed = raw && typeof raw === 'object' ? raw : {};
+  const localNodes = new Map();
+  const symbols = [];
+  for (const [i, node] of (Array.isArray(parsed.nodes) ? parsed.nodes : []).slice(0, 180).entries()) {
+    const id = cleanText(node?.id || `N${i + 1}`, 32);
+    if (!id) continue;
+    const [x, y] = transformLocalPoint({ x: node?.x, y: node?.y }, tile);
+    const n = { id, x, y, type: cleanText(node?.type || 'unknown', 24).toLowerCase(), label: cleanText(node?.label || '', 40), confidence: clampNumber(node?.confidence, 0, 1, 0.5) };
+    localNodes.set(id, n);
+    if ((n.type && n.type !== 'unknown') && (n.type !== 'junction' || n.label)) {
+      symbols.push({ type: n.type, x: n.x, y: n.y, label: n.label, confidence: n.confidence, sourceNodeId: id, tileIndex: Number(tile.index || 1) });
+    }
+  }
+
+  const routes = [];
+  for (const [i, connection] of (Array.isArray(parsed.connections) ? parsed.connections : []).slice(0, 240).entries()) {
+    const from = localNodes.get(cleanText(connection?.from_node || '', 32));
+    const to = localNodes.get(cleanText(connection?.to_node || '', 32));
+    if (!from || !to) continue;
+    const mid = (Array.isArray(connection?.points) ? connection.points : []).slice(0, 20)
+      .map((p) => transformLocalPoint(p, tile));
+    const points = [[from.x, from.y], ...mid, [to.x, to.y]];
+    const unique = [];
+    for (const point of points) {
+      const prev = unique[unique.length - 1];
+      if (!prev || Math.hypot(prev[0] - point[0], prev[1] - point[1]) > 1.5) unique.push(point);
+    }
+    if (unique.length < 2 || Math.hypot(unique[0][0] - unique[unique.length - 1][0], unique[0][1] - unique[unique.length - 1][1]) < 3) continue;
+    routes.push({
+      id: `T${tile.index || 1}-${cleanText(connection?.id || `S${i + 1}`, 24)}`,
+      label: cleanText(connection?.label || '', 40), kind: cleanText(connection?.kind || 'branch', 20),
+      points: unique, confidence: clampNumber(connection?.confidence, 0, 1, 0.5),
+      fromNode: from.id, toNode: to.id, tileIndex: Number(tile.index || 1)
+    });
+  }
+
+  const labels = (Array.isArray(parsed.labels) ? parsed.labels : []).slice(0, 80).map((label) => {
+    const [x, y] = transformLocalPoint({ x: label?.x, y: label?.y }, tile);
+    return { x, y, text: cleanText(label?.text, 160), angle: clampNumber(label?.angle, -90, 90), size: clampNumber(label?.size, 6, 18, 10), kind: cleanText(label?.kind || 'note', 20), confidence: clampNumber(label?.confidence, 0, 1, 0.5), tileIndex: Number(tile.index || 1) };
+  }).filter((label) => label.text);
+
+  const dimensions = (Array.isArray(parsed.dimensions) ? parsed.dimensions : []).slice(0, 50).map((dim) => {
+    const [x1, y1] = transformLocalPoint({ x: dim?.x1, y: dim?.y1 }, tile);
+    const [x2, y2] = transformLocalPoint({ x: dim?.x2, y: dim?.y2 }, tile);
+    return { x1, y1, x2, y2, text: cleanText(dim?.text, 40), confidence: clampNumber(dim?.confidence, 0, 1, 0.5), tileIndex: Number(tile.index || 1) };
+  }).filter((dim) => dim.text);
+
   return {
-    title: txt(input.title || 'СХЕМА ТРУБОПРОВОДА', 100),
-    subtitle: txt(input.subtitle || 'Перерисовано по исходному эскизу', 180),
-    summary: txt(input.summary || 'Схема приблизительно восстановлена по изображению.', 900),
-    routes, symbols, labels, dimensions, legend
+    title: cleanText(parsed.title || '', 100), summary: cleanText(parsed.summary || '', 700),
+    routes, symbols,
+    labels, dimensions,
+    legend: (Array.isArray(parsed.legend) ? parsed.legend : []).slice(0, 8).map((s) => cleanText(s, 150)).filter(Boolean),
+    uncertainties: (Array.isArray(parsed.uncertainties) ? parsed.uncertainties : []).slice(0, 20).map((s) => cleanText(s, 180)).filter(Boolean),
+    nodeCount: localNodes.size,
+    connectionCount: routes.length
   };
+}
+
+function routeSignature(route) {
+  const forward = route.points.map(([x, y]) => `${Math.round(x / 7)},${Math.round(y / 7)}`).join('|');
+  const reverse = route.points.slice().reverse().map(([x, y]) => `${Math.round(x / 7)},${Math.round(y / 7)}`).join('|');
+  return forward < reverse ? forward : reverse;
+}
+
+function mergeCloseRouteEndpoints(routes, tolerance = 8) {
+  const endpoints = [];
+  routes.forEach((route, routeIndex) => {
+    if (route.points.length < 2) return;
+    endpoints.push({ routeIndex, pointIndex: 0, point: route.points[0] });
+    endpoints.push({ routeIndex, pointIndex: route.points.length - 1, point: route.points[route.points.length - 1] });
+  });
+  const parent = endpoints.map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
+  for (let i = 0; i < endpoints.length; i++) {
+    for (let j = i + 1; j < endpoints.length; j++) {
+      if (endpoints[i].routeIndex === endpoints[j].routeIndex) continue;
+      if (routes[endpoints[i].routeIndex].tileIndex === routes[endpoints[j].routeIndex].tileIndex) continue;
+      if (Math.hypot(endpoints[i].point[0] - endpoints[j].point[0], endpoints[i].point[1] - endpoints[j].point[1]) <= tolerance) union(i, j);
+    }
+  }
+  const groups = new Map();
+  endpoints.forEach((entry, i) => {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(entry.point);
+  });
+  const centers = new Map();
+  for (const [root, points] of groups) {
+    centers.set(root, [points.reduce((sum, p) => sum + p[0], 0) / points.length, points.reduce((sum, p) => sum + p[1], 0) / points.length]);
+  }
+  endpoints.forEach((entry, i) => { routes[entry.routeIndex].points[entry.pointIndex] = centers.get(find(i)); });
+}
+
+function dedupeObjectsNear(items, getPos, threshold, getKey = (item) => '') {
+  const result = [];
+  for (const item of items) {
+    const pos = getPos(item);
+    const key = getKey(item);
+    const match = result.find((candidate) => {
+      if (item.tileIndex !== undefined && candidate.tileIndex !== undefined && item.tileIndex === candidate.tileIndex) return false;
+      if (key && getKey(candidate) && key !== getKey(candidate)) return false;
+      const other = getPos(candidate);
+      return Math.hypot(pos[0] - other[0], pos[1] - other[1]) <= threshold;
+    });
+    if (!match) result.push(item);
+    else if ((item.confidence || 0) > (match.confidence || 0)) Object.assign(match, item);
+  }
+  return result;
 }
 
 function cadQualityIssue(spec, sourceStats = {}) {
   const contours = Number(sourceStats.contours || 0);
   const sourceWidth = Number(sourceStats.width || 0);
   const sourceHeight = Number(sourceStats.height || 0);
-  // Photos with many contours are normally full engineering drawings, not a single pipe.
   const complex = contours >= 80 || (sourceWidth * sourceHeight >= 500000 && contours >= 35);
   const routeCount = spec.routes.length;
   const pointCount = spec.routes.reduce((sum, route) => sum + route.points.length, 0);
-  const uniquePoints = new Set(spec.routes.flatMap(route => route.points.map(point => `${Math.round(point[0])},${Math.round(point[1])}`)));
-  const minRoutes = complex ? 4 : 1;
-  const minPoints = complex ? 14 : 4;
-
-  if (routeCount < minRoutes) {
-    return `слишком мало отдельных трасс: ${routeCount}; для сложности исходника требуется не менее ${minRoutes}`;
-  }
-  if (pointCount < minPoints) {
-    return `слишком мало вершин: ${pointCount}; требуется не менее ${minPoints}`;
-  }
-  if (complex && uniquePoints.size < 8) {
-    return `геометрия схлопнулась: только ${uniquePoints.size} уникальных координат для сложной схемы`;
-  }
+  const uniquePoints = new Set(spec.routes.flatMap(route => route.points.map(point => `${Math.round(point[0] / 4)},${Math.round(point[1] / 4)}`)));
+  const xs = spec.routes.flatMap((r) => r.points.map((p) => p[0]));
+  const ys = spec.routes.flatMap((r) => r.points.map((p) => p[1]));
+  const spanX = xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
+  const spanY = ys.length ? Math.max(...ys) - Math.min(...ys) : 0;
+  const minRoutes = complex ? 5 : 2;
+  const minPoints = complex ? 12 : 4;
+  if (routeCount < minRoutes) return `слишком мало отдельных соединений: ${routeCount}; требуется не менее ${minRoutes}`;
+  if (pointCount < minPoints) return `слишком мало точек геометрии: ${pointCount}; требуется не менее ${minPoints}`;
+  if (complex && uniquePoints.size < 8) return `геометрия схлопнулась: только ${uniquePoints.size} уникальных точек`;
+  if (complex && Math.max(spanX, spanY) < 250) return `геометрия занимает слишком маленькую область (${Math.round(spanX)}×${Math.round(spanY)})`;
+  const directionBins = new Set(spec.routes.map((route) => {
+    const first = route.points[0], last = route.points[route.points.length - 1];
+    let angle = Math.atan2(last[1] - first[1], last[0] - first[0]) * 180 / Math.PI;
+    angle = (angle + 180) % 180;
+    return Math.round(angle / 15);
+  }));
+  if (complex && directionBins.size < 2) return 'все сегменты имеют практически одно направление; ответ похож на одну линию, а не на сеть';
   return null;
 }
 
-async function reconstructWithQwen(imagePath, notes, strictMode, sourceStats = {}) {
-  const img = await fs.readFile(imagePath);
-  const isComplex = Number(sourceStats.contours || 0) >= 80 ||
-    (Number(sourceStats.width || 0) * Number(sourceStats.height || 0) >= 500000 && Number(sourceStats.contours || 0) >= 35);
-  const minRoutes = isComplex ? 5 : 1;
-  const minPoints = isComplex ? 16 : 4;
-  const aspect = Number(sourceStats.height) > 0 ? Number(sourceStats.width) / Number(sourceStats.height) : 1.42;
-  const ocrHints = Array.isArray(sourceStats.ocr) ? sourceStats.ocr.slice(0, 35).map(String).filter(Boolean) : [];
-  let lastProblem = '';
+function makeTilePrompt(tile, sourceStats, notes, strictMode, correction = '') {
+  const aspect = Number(tile.width || 1) / Math.max(1, Number(tile.height || 1));
+  return [
+    'Ты — визуальный парсер инженерной схемы трубопровода для подготовки CAD. Не рисуй картинку и не описывай её свободным текстом: извлеки конкретную геометрию в узлы и соединения.',
+    'Используй прикреплённое изображение текущего фрагмента. Возвращай координаты ОТНОСИТЕЛЬНО ТОЛЬКО ЭТОГО ФРАГМЕНТА: x и y от 0 до 1000, начало в левом верхнем углу. Пропорции изображения должны сохраняться.',
+    'Сначала найди узлы: концы линий, повороты, места реального соединения и символы арматуры. Каждый видимый конец/поворот/узел получает отдельный id (например n1, n2). Затем создай connections, каждое соединение обязано ссылаться на существующие id через from_node и to_node.',
+    'Соединение — один прямой сегмент или одна ломаная между двумя узлами. Для изгибов и поворотов используй points с промежуточными точками. Не превращай несколько разных ветвей в одну длинную ломаную. Не заменяй сеть одной кривой, диагональю или декоративным маршрутом.',
+    'Не выдумывай невидимые ветви и не соединяй перекрещивающиеся линии, если нет признака соединения. Для неоднозначного перекрёстка добавь uncertainties. Не угадывай цифры: неразборчивые подписи пропусти или укажи в uncertainties.',
+    'Тип узла: junction, end, valve, pump, tank, unknown. Тип соединения: main, branch, unknown. Координаты должны быть числовыми. Если на фрагменте нет схемы, возвращай пустые nodes/connections, а не придумывай геометрию.',
+    'labels размещай по центру читаемой надписи, dimensions содержат конечные координаты размерной линии и точно прочитанный текст. Узлы и соединения важнее заголовка и легенды.',
+    'Перед отправкой проверь: у каждой connection from_node и to_node существуют; у каждого сегмента есть две разные конечные точки; ветви при настоящем соединении используют один узел; не дублируй одно соединение без необходимости.',
+    `Фрагмент ${tile.index || 1}; локальный размер ${tile.width}×${tile.height} px; отношение сторон ${aspect.toFixed(3)}. Это один фрагмент большого эскиза, не пытайся восстанавливать отсутствующие за его границами области.`,
+    strictMode ? 'Строгий режим: если координаты/связь не подтверждаются изображением, пропусти элемент и перечисли неопределённость.' : '',
+    notes ? `Примечания пользователя: ${notes}` : '',
+    correction,
+    'Ответ формируется по строгой JSON Schema. Заполни title, summary, nodes, connections, labels, dimensions, legend, uncertainties. Не добавляй объяснения вне JSON.'
+  ].filter(Boolean).join('\n');
+}
 
-  // One corrective retry prevents a one-line/one-curve answer from being presented as a CAD drawing.
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const correction = attempt === 1 ? '' : [
-      'ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН ПРОВЕРКОЙ КАЧЕСТВА: ' + lastProblem + '.',
-      'Это не рисунок одной трубки. Повторно внимательно изучи всё изображение и восстанови основную трассу И КАЖДОЕ видимое ответвление отдельными маршрутами.',
-      `Обязательно верни минимум ${minRoutes} разных объектов в routes и минимум ${minPoints} точек суммарно. Не дублируй один маршрут и не заменяй сеть одной длинной ломаной.`,
-      'Координаты соседних трасс должны совпадать в местах реальных соединений. Геометрию строят прямые отрезки между точками; кривые/сплайны не использовать.'
-    ].join('\n');
-
-    const prompt = [
-      'Ты — инженер-чертёжник, который преобразует фото рукописной трубопроводной/технической схемы в структурированный 2D-чертёж для последующего рендеринга. Это НЕ задача фильтрации фото и НЕ задача рисования одной декоративной линии.',
-      'Верни только один валидный JSON-объект без Markdown, без текста до/после JSON.',
-      `Исходное изображение имеет размер ${sourceStats.width || '?'}×${sourceStats.height || '?'} px, отношение сторон ${aspect.toFixed(3)}. Поле координат: x от 0 до 1000 слева направо, y от 0 до 600 сверху вниз. Эти оси соответствуют всей ширине и всей высоте исходного изображения; не обрезай и не сплющивай расположение схемы. Рендерер сохранит исходное отношение сторон.`,
-      'ГЛАВНОЕ: восстанови СЕТЬ, а не контур всей картинки. Каждую отдельную магистраль/ветвь между узлами или концами укажи отдельным объектом routes. В местах разветвления разделяй пути на разные routes и повторяй одни и те же координаты точки соединения у соседних ветвей. Не объединяй всё в один route. Не возвращай одну кривую или одну диагональ вместо схемы.',
-      'Каждый route — ломаная из прямых отрезков. Никаких кривых, сплайнов, декоративных линий, волн, случайных изгибов или сглаживания. Используй отдельные вершины при каждом повороте линии и каждом узле. Сохраняй относительное положение, порядок и направления ветвей как на фото.',
-      isComplex
-        ? `На исходнике много элементов. Нужны минимум ${minRoutes} отдельных routes и минимум ${minPoints} координатных точек суммарно. Обычно сложная схема содержит 5–20 трасс; опиши каждую видимую ветвь. Не создавай несуществующую геометрию: если область нечитаема, сохрани только уверенно видимое.`
-        : `Минимум ${minRoutes} route и ${minPoints} точек суммарно. Если схема содержит несколько ветвей, каждая ветвь должна стать отдельным route.`,
-      'Подписи и размеры переноси только если они читаются. Не исправляй числа «по смыслу» и не придумывай их. Для непонятных значений лучше не создавать label, а отметить неопределённость в summary. Узлы размещай только на видимых соединениях. Символы клапанов/арматуры указывай лишь если они действительно различимы.',
-      'JSON-формат: {"title":"название","subtitle":"подзаголовок","summary":"что восстановлено и что требует проверки","routes":[{"id":"R1","label":"","kind":"main|branch","points":[[100,100],[180,100],[180,150]]}],"symbols":[{"type":"junction|valve|pump|end|tank|node","x":180,"y":100,"label":"1"}],"labels":[{"x":200,"y":90,"text":"видимый текст","angle":0,"kind":"note|dimension|node","size":10}],"dimensions":[{"x1":100,"y1":100,"x2":180,"y2":100,"text":"прочитанный размер"}],"legend":["примечание"]}.',
-      `Ограничения вывода: routes — ${minRoutes}–24 объекта, в каждом 2–18 points; symbols до 40; labels до 50; dimensions до 24; legend до 6 пунктов. Координаты числовые, x в диапазоне 0..1000, y в 0..600. Маршруты должны заметно различаться по расположению и/или направлению. Не дублируй трассы.`,
-      'Оформление будет добавлено программой. От тебя требуется правильная геометрическая структура и достоверные данные, а не придумывание рамки/дизайна. Вывод предназначен для последующей проверки человеком; точность важнее украшательства.',
-      strictMode ? 'Строгий режим: не угадывай числа и соединения. Если сомневаешься — пропусти ненадёжную подпись и перечисли сомнение в summary.' : '',
-      ocrHints.length ? `Возможные OCR-подсказки с этого же фото (могут содержать ошибки; сверяй с изображением и не считай автоматически правильными): ${ocrHints.join(' | ')}` : '',
-      notes ? `Пожелания пользователя: ${notes}` : '',
-      correction
-    ].filter(Boolean).join('\n');
-
-    try {
-      const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: QWEN_MODEL,
-          messages: [{ role: 'user', content: prompt, images: [img.toString('base64')] }],
-          stream: false,
-          format: 'json',
-          options: { num_ctx: 6144, num_predict: 2600, temperature: 0.0, top_p: 0.85 }
-        })
-      }, 300000);
-      if (!response.ok) throw new Error(`Ollama ответил HTTP ${response.status}`);
-      const body = await response.json();
-      const parsed = extractJsonObject(body?.message?.content || '');
-      const spec = normalizeCadSpec(parsed);
-      spec.sourceAspect = Math.max(0.4, Math.min(2.5, aspect));
-      const issue = cadQualityIssue(spec, sourceStats);
-      if (issue) {
-        lastProblem = issue;
-        console.warn(`Qwen CAD attempt ${attempt} rejected by geometry validation: ${issue}`);
-        continue;
-      }
-      return spec;
-    } catch (error) {
-      lastProblem = String(error?.message || error).slice(0, 400);
-      console.warn(`Qwen CAD attempt ${attempt} failed: ${lastProblem}`);
+async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode, correction = '') {
+  const img = await fs.readFile(tilePath);
+  const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: QWEN_MODEL,
+      messages: [{ role: 'user', content: makeTilePrompt(tile, sourceStats, notes, strictMode, correction), images: [img.toString('base64')] }],
+      stream: false,
+      format: CAD_JSON_SCHEMA,
+      options: { num_ctx: 4096, num_predict: 2200, temperature: 0, top_p: 0.8, repeat_penalty: 1.05 }
+    })
+  }, 300000);
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    if (response.status === 404) {
+      throw new Error(`Ollama HTTP 404: модель '${QWEN_MODEL}' не найдена в Docker-хранилище. Выполните: docker compose exec ollama ollama pull ${QWEN_MODEL}. Ответ Ollama: ${body.slice(0, 240)}`);
     }
+    throw new Error(`Ollama HTTP ${response.status}: ${body.slice(0, 240)}`);
   }
-  throw new Error(`Qwen не восстановил достаточно подробную геометрию после двух попыток (${lastProblem}). Некорректный чертёж не выдан. Попробуйте загрузить более чёткое фото или отдельные крупные фрагменты схемы.`);
+  const data = await response.json();
+  const content = data?.message?.content;
+  if (!content) throw new Error('Ollama вернул пустой ответ для фрагмента.');
+  return extractJsonObject(content);
+}
+
+async function reconstructWithQwen(tileDescriptors, tempDir, notes, strictMode, sourceStats = {}) {
+  const visionSize = sourceStats.visionSize || { width: sourceStats.width || 1, height: sourceStats.height || 1 };
+  let allRoutes = [];
+  let allSymbols = [];
+  let allLabels = [];
+  let allDimensions = [];
+  let summaries = [];
+  let titles = [];
+  let uncertainties = [];
+  let tileSuccess = 0;
+  let tileErrors = [];
+  const tiles = (Array.isArray(tileDescriptors) && tileDescriptors.length ? tileDescriptors : [{ file: 'vision.jpg', index: 1, x: 0, y: 0, width: visionSize.width, height: visionSize.height, fullWidth: visionSize.width, fullHeight: visionSize.height, inkRatio: 1 }]);
+  const nonBlankTiles = tiles.filter((tile) => Number(tile.inkRatio ?? 1) >= 0.0006);
+  const workTiles = nonBlankTiles.length ? nonBlankTiles : [tiles[0]];
+
+  for (const tile of workTiles) {
+    const tilePath = path.join(tempDir, path.basename(tile.file || 'vision.jpg'));
+    const localTile = { ...tile, fullWidth: Number(tile.fullWidth || visionSize.width), fullHeight: Number(tile.fullHeight || visionSize.height) };
+    let parsed = null;
+    let local = null;
+    let tileError = null;
+    // Empty/very faint areas often correctly contain no lines. Retry only if a non-empty tile returns no connections.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        parsed = await callOllamaForTile(tilePath, localTile, sourceStats, notes, strictMode,
+          attempt === 1 ? '' : 'ПРЕДЫДУЩИЙ ОТВЕТ НЕ СОДЕРЖАЛ ДОСТАТОЧНО СВЯЗЕЙ. Повторно исследуй этот фрагмент. Выдели каждую видимую линию как отдельный connection между узлами. Не выдумывай элементы; если фрагмент пуст, оставь массивы пустыми.');
+        local = normalizeTileGraph(parsed, localTile);
+        if (local.routes.length > 0 || Number(tile.inkRatio || 0) < 0.004) break;
+        tileError = new Error('Для фрагмента не извлечены соединения.');
+      } catch (error) {
+        tileError = error;
+        if (/Ollama HTTP 404/.test(String(error?.message || error))) throw error;
+      }
+    }
+    if (!local) {
+      tileErrors.push(`Фрагмент ${tile.index}: ${String(tileError?.message || tileError).slice(0, 120)}`);
+      continue;
+    }
+    if (!local.routes.length && Number(tile.inkRatio || 0) >= 0.004) {
+      tileErrors.push(`Фрагмент ${tile.index}: модель не извлекла линии`);
+      continue;
+    }
+    tileSuccess++;
+    allRoutes.push(...local.routes);
+    allSymbols.push(...local.symbols);
+    allLabels.push(...local.labels);
+    allDimensions.push(...local.dimensions);
+    if (local.summary) summaries.push(local.summary);
+    if (local.title) titles.push(local.title);
+    uncertainties.push(...local.uncertainties);
+  }
+
+  // Deduplicate routes from overlapping crops. Then snap near-identical endpoints so the same junction
+  // detected in two neighboring tiles is rendered as a common point.
+  let uniqueRoutes = [];
+  const signatures = new Set();
+  for (const route of allRoutes) {
+    if (!route.points || route.points.length < 2) continue;
+    const sig = routeSignature(route);
+    if (signatures.has(sig)) continue;
+    signatures.add(sig);
+    uniqueRoutes.push(route);
+  }
+  mergeCloseRouteEndpoints(uniqueRoutes, 7);
+  uniqueRoutes = uniqueRoutes.filter((r) => r.points.length >= 2 && Math.hypot(r.points[0][0] - r.points[r.points.length - 1][0], r.points[0][1] - r.points[r.points.length - 1][1]) >= 3);
+  if (!uniqueRoutes.length) {
+    const details = tileErrors.length ? ` Причины: ${tileErrors.join('; ')}` : '';
+    throw new Error(`Qwen не извлёк ни одного достоверного соединения из ${workTiles.length} фрагментов.${details}`);
+  }
+
+  allSymbols = dedupeObjectsNear(allSymbols, (s) => [s.x, s.y], 10, (s) => s.type);
+  allLabels = dedupeObjectsNear(allLabels, (l) => [l.x, l.y], 16, (l) => l.text.toLowerCase());
+  allDimensions = dedupeObjectsNear(allDimensions, (d) => [(d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2], 14, (d) => d.text.toLowerCase());
+
+  const spec = {
+    title: (titles.find((title) => title && !/^(?:техническая схема|схема|чертёж)$/i.test(title)) || 'СХЕМА ТРУБОПРОВОДА').slice(0, 100),
+    subtitle: 'Реконструкция структуры по фрагментам изображения · требуется проверка',
+    summary: [...new Set(summaries)].join(' | ').slice(0, 1200) || 'Геометрия извлечена из отдельных фрагментов. Соединения необходимо проверить.',
+    routes: uniqueRoutes.slice(0, 180),
+    symbols: allSymbols.slice(0, 160),
+    labels: allLabels.slice(0, 160),
+    dimensions: allDimensions.slice(0, 100),
+    legend: [
+      `Проанализировано фрагментов: ${tileSuccess}/${workTiles.length}.`,
+      ...[...new Set(uncertainties)].slice(0, 3),
+      ...(tileErrors.length ? [`Не полностью обработано: ${tileErrors.join('; ').slice(0, 180)}`] : []),
+      'Автоматическая реконструкция приблизительна; проверьте все размеры и соединения.'
+    ].slice(0, 6),
+    sourceAspect: Number(sourceStats.width) / Math.max(1, Number(sourceStats.height)),
+    diagnostics: { tilesProcessed: tileSuccess, tilesTotal: workTiles.length, rejectedTiles: tileErrors, rawConnections: allRoutes.length }
+  };
+  const issue = cadQualityIssue(spec, sourceStats);
+  if (issue) throw new Error(`Геометрия после объединения фрагментов не прошла проверку: ${issue}. ${tileErrors.join('; ')}`.trim());
+  return spec;
 }
 
 function runCadRenderer(specPath, outputDir) {
@@ -305,7 +539,7 @@ async function analyzeWithQwen(imagePath, notes, strictMode) {
       options: { num_ctx: 4096, num_predict: 650, temperature: 0.1 }
     })
   }, 240000);
-  if (!response.ok) throw new Error(`Ollama ответил HTTP ${response.status}`);
+  if (!response.ok) { const detail = await response.text().catch(() => ''); if (response.status === 404) throw new Error(`Ollama HTTP 404: модель '${QWEN_MODEL}' не найдена в выбранном Ollama. Проверьте docker compose exec ollama ollama list; при необходимости выполните docker compose exec ollama ollama pull ${QWEN_MODEL}. ${detail.slice(0, 180)}`); throw new Error(`Ollama ответил HTTP ${response.status}: ${detail.slice(0, 180)}`); }
   const body = await response.json();
   const content = body?.message?.content?.trim();
   if (!content) throw new Error('Qwen не вернул анализ схемы.');
@@ -358,10 +592,11 @@ app.post('/api/convert', convertLimiter, (req, res, next) => {
     let cadReconstructed = false;
     if (mode === 'cad') {
       try {
-        const spec = await reconstructWithQwen(path.join(tempDir, 'vision.jpg'), notes, strictMode, {
+        const spec = await reconstructWithQwen(processed.vision_tiles || [], tempDir, notes, strictMode, {
           contours: processed.trace?.contours || 0,
           width: processed.source_size?.width || 0,
           height: processed.source_size?.height || 0,
+          visionSize: processed.vision_size || processed.source_size,
           ocr: processed.ocr || []
         });
         const specPath = path.join(tempDir, 'cad-spec.json');
@@ -370,9 +605,9 @@ app.post('/api/convert', convertLimiter, (req, res, next) => {
         image = await fs.readFile(path.join(tempDir, 'cad-redraw.png'));
         svg = await fs.readFile(path.join(tempDir, 'cad-redraw.svg'));
         dxf = await fs.readFile(path.join(tempDir, 'cad-redraw.dxf'));
-        analysis = spec.summary || 'Схема восстановлена по визуальной оценке Qwen.';
+        analysis = [spec.summary, ...(spec.legend || [])].filter(Boolean).join('\n');
         qwenAvailable = true;
-        stats = { ...renderStats, width: 1960, height: 1400, sheet: 'A3 · приблизительная CAD-реконструкция' };
+        stats = { ...renderStats, width: 1960, height: 1400, sheet: 'A3 · приблизительная CAD-реконструкция', tilesProcessed: spec.diagnostics?.tilesProcessed || 0, tilesTotal: spec.diagnostics?.tilesTotal || 0 };
         note = 'Внимание: линии, символы и подписи реконструированы моделью приблизительно. Сверьте все числа, размеры и соединения с оригиналом перед использованием.';
         filenamePrefix = 'cad-redraw';
         cadReconstructed = true;

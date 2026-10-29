@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a Qwen-extracted schematic specification to clean SVG, PNG and DXF.
 
-Coordinates in the specification are normalized to a 1000x600 drawing area.
+Coordinates in the specification are normalized to a 1000x1000 image-relative drawing area.
 This is an approximate reconstruction aid, not an engineering-authoritative CAD model.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ SVG_W, SVG_H = 1400.0, 1000.0
 # Drawing viewport is fitted to the source photo's aspect ratio to avoid squeezing/stretching geometry.
 MAX_DRAW_W, MAX_DRAW_H = 1280.0, 630.0
 DRAW_X, DRAW_Y, DRAW_W, DRAW_H = 60.0, 145.0, 1280.0, 630.0
-SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 600.0
+SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 1000.0
 
 def safe_text(value, max_len=160):
     if value is None:
@@ -33,7 +33,7 @@ def n(value, default=0.0, low=-10000.0, high=10000.0):
         return default
 
 def xy(x, y):
-    return DRAW_X + n(x, low=0, high=1000) * SCALE_X, DRAW_Y + n(y, low=0, high=600) * SCALE_Y
+    return DRAW_X + n(x, low=0, high=1000) * SCALE_X, DRAW_Y + n(y, low=0, high=1000) * SCALE_Y
 
 def esc(s):
     return (safe_text(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
@@ -67,7 +67,7 @@ def main(spec_path: Path, out_dir: Path):
         DRAW_W = DRAW_H * source_aspect
     DRAW_X = (SVG_W - DRAW_W) / 2.0
     DRAW_Y = 145.0 + (MAX_DRAW_H - DRAW_H) / 2.0
-    SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 600.0
+    SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 1000.0
     title = safe_text(spec.get('title') or 'СХЕМА ТРУБОПРОВОДА', 100)
     subtitle = safe_text(spec.get('subtitle') or 'Перерисовка по исходному эскизу', 180)
     routes = spec.get('routes') if isinstance(spec.get('routes'), list) else []
@@ -137,8 +137,8 @@ def main(spec_path: Path, out_dir: Path):
 
     for dim in dimensions:
         if not isinstance(dim, dict): continue
-        x1=n(dim.get('x1'),low=0,high=1000); y1=n(dim.get('y1'),low=0,high=600)
-        x2=n(dim.get('x2'),low=0,high=1000); y2=n(dim.get('y2'),low=0,high=600)
+        x1=n(dim.get('x1'),low=0,high=1000); y1=n(dim.get('y1'),low=0,high=1000)
+        x2=n(dim.get('x2'),low=0,high=1000); y2=n(dim.get('y2'),low=0,high=1000)
         a=xy(x1,y1); b=xy(x2,y2)
         txt=safe_text(dim.get('text'),40)
         svg.append(f'<g fill="none" stroke="#000" stroke-width="0.75"><line x1="{a[0]:.2f}" y1="{a[1]:.2f}" x2="{b[0]:.2f}" y2="{b[1]:.2f}"/><line x1="{a[0]-3:.2f}" y1="{a[1]-4:.2f}" x2="{a[0]+3:.2f}" y2="{a[1]+4:.2f}"/><line x1="{b[0]-3:.2f}" y1="{b[1]-4:.2f}" x2="{b[0]+3:.2f}" y2="{b[1]+4:.2f}"/></g>')

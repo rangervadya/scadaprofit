@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-converter-offline",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
-  "description": "Dockerized offline CAD reconstruction: Qwen2.5-VL, OpenCV, OCR, SVG and DXF with geometry validation",
+  "description": "Offline CAD reconstruction using Ollama structured JSON, overlapping vision tiles, OpenCV, OCR, SVG and DXF.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"

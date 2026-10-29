@@ -137,9 +137,9 @@ function startLoading() {
   downloadSvgButton.disabled = true;
   downloadDxfButton.disabled = true;
   const hints = [
-    modeInput?.value === 'cad' ? 'Qwen анализирует компоновку и восстанавливает схему в CAD-стиле.' : 'OpenCV очищает фон и выравнивает контраст.',
+    modeInput?.value === 'cad' ? 'Qwen разбирает перекрывающиеся фрагменты в структурированный JSON: узлы и соединения.' : 'OpenCV очищает фон и выравнивает контраст.',
     'Tesseract пытается распознать подписи и числовые обозначения.',
-    modeInput?.value === 'cad' ? 'Строим чистовой векторный лист с ровными линиями и условными знаками.' : 'Строим контуры для SVG и DXF.',
+    modeInput?.value === 'cad' ? 'Объединяем линии фрагментов, стыкуем близкие узлы и проверяем геометрию.' : 'Строим контуры для SVG и DXF.',
     'Выполняем локальную обработку; размеры и соединения потом нужно проверить.'
   ];
   let index = 0;
@@ -223,7 +223,7 @@ convertButton.addEventListener('click', async () => {
     resultTag.textContent = 'ГОТОВО';
     resultTag.classList.add('ready');
     resultMeta.textContent = data.mode === 'cad' && data.stats?.routes
-      ? `${data.stats.routes} трасс · ${data.stats.symbols || 0} символов · ${data.stats.labels || 0} подписей · ${data.stats.sheet || 'CAD'}`
+      ? `${data.stats.routes} сегментов · ${data.stats.symbols || 0} символов · ${data.stats.labels || 0} подписей${data.stats.tilesTotal ? ` · ${data.stats.tilesProcessed}/${data.stats.tilesTotal} фрагм.` : ''} · ${data.stats.sheet || 'CAD'}`
       : `${data.stats?.width || '?'} × ${data.stats?.height || '?'} px · ${data.stats?.contours || '?'} контуров · ${data.stats?.sheet || 'A4'}`;
     downloadButton.disabled = false;
     downloadSvgButton.disabled = false;

@@ -1,6 +1,4 @@
-# Optional: app in Docker, reusing the existing Ollama service/model on the Ubuntu host.
-# On Linux, host networking allows the container to reach Ollama on 127.0.0.1:11434
-# and the app to listen directly on host port 3001.
+# App in Docker, reusing host Ollama on 127.0.0.1:11434. Ollama itself remains on the host.
 services:
   app:
     build:
@@ -13,7 +11,7 @@ services:
       NODE_ENV: production
       PORT: "3001"
       HOST: "0.0.0.0"
-      QWEN_MODEL: "qwen2.5vl:3b"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
       OLLAMA_CHAT_URL: "http://127.0.0.1:11434/api/chat"
       OLLAMA_TAGS_URL: "http://127.0.0.1:11434/api/tags"
       PYTHON_BIN: "/opt/venv/bin/python"

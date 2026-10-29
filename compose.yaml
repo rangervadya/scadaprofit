@@ -14,6 +14,8 @@ services:
       OLLAMA_KEEP_ALIVE: "5m"
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      OLLAMA_NO_CLOUD: "true"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -22,6 +24,27 @@ services:
       timeout: 10s
       retries: 20
       start_period: 30s
+
+  model-init:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "Checking Ollama model: $${QWEN_MODEL}"
+        if ollama list | awk 'NR > 1 {print $$1}' | grep -Fxq "$${QWEN_MODEL}"; then
+          echo "Model $${QWEN_MODEL} is already present."
+        else
+          echo "Model is missing; pulling it into the persistent Docker volume..."
+          ollama pull "$${QWEN_MODEL}"
+        fi
 
   app:
     build:
@@ -35,13 +58,13 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOST: "0.0.0.0"
-      QWEN_MODEL: "qwen2.5vl:3b"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       PYTHON_BIN: "/opt/venv/bin/python"
     depends_on:
-      ollama:
-        condition: service_healthy
+      model-init:
+        condition: service_completed_successfully
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m
     security_opt:

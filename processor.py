@@ -175,7 +175,45 @@ def main():
     if max(width, height) > max_analysis:
         ratio = max_analysis / max(width, height)
         analysis_image = cv2.resize(analysis_image, (round(width * ratio), round(height * ratio)), interpolation=cv2.INTER_AREA)
-    cv2.imwrite(str(out_dir / 'vision.jpg'), analysis_image, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
+    cv2.imwrite(str(out_dir / 'vision.jpg'), analysis_image, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+
+    # Use overlapping tiles for dense/high-resolution drawings. This gives the vision model
+    # larger local details while retaining enough overlap to merge shared junctions.
+    analysis_h, analysis_w = analysis_image.shape[:2]
+    vision_tiles = []
+    should_tile = max(analysis_w, analysis_h) >= 1200 and min(analysis_w, analysis_h) >= 520
+    if should_tile:
+        tile_w = max(1, int(round(analysis_w * 0.62)))
+        tile_h = max(1, int(round(analysis_h * 0.62)))
+        x_starts = sorted(set([0, max(0, analysis_w - tile_w)]))
+        y_starts = sorted(set([0, max(0, analysis_h - tile_h)]))
+        tile_index = 0
+        for y0 in y_starts:
+            for x0 in x_starts:
+                crop = analysis_image[y0:y0 + tile_h, x0:x0 + tile_w]
+                if crop.size == 0:
+                    continue
+                tile_index += 1
+                filename = f'vision-tile-{tile_index}.jpg'
+                cv2.imwrite(str(out_dir / filename), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+                crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                background_level = float(np.median(crop_gray))
+                ink_ratio = float(np.mean(crop_gray < max(0.0, background_level - 25.0)))
+                vision_tiles.append({
+                    'file': filename, 'index': tile_index, 'x': x0, 'y': y0,
+                    'width': int(crop.shape[1]), 'height': int(crop.shape[0]),
+                    'fullWidth': analysis_w, 'fullHeight': analysis_h,
+                    'inkRatio': round(ink_ratio, 5)
+                })
+    if not vision_tiles:
+        crop_gray = cv2.cvtColor(analysis_image, cv2.COLOR_BGR2GRAY)
+        vision_tiles = [{
+            'file': 'vision.jpg', 'index': 1, 'x': 0, 'y': 0,
+            'width': analysis_w, 'height': analysis_h,
+            'fullWidth': analysis_w, 'fullHeight': analysis_h,
+            'inkRatio': round(float(np.mean(crop_gray < max(0.0, float(np.median(crop_gray)) - 25.0))), 5)
+        }]
+    print(f'Vision tiles prepared: {len(vision_tiles)} ({analysis_w}x{analysis_h})', file=sys.stderr, flush=True)
 
     print('OCR: processing image (bounded timeout)', file=sys.stderr, flush=True)
     t_ocr = time.perf_counter()
@@ -189,6 +227,8 @@ def main():
         'ok': True,
         'source_size': {'width': original_w, 'height': original_h},
         'processed_size': {'width': width, 'height': height},
+        'vision_size': {'width': analysis_w, 'height': analysis_h},
+        'vision_tiles': vision_tiles,
         'ocr': ocr_items,
         'ocr_error': ocr_error,
         'trace': trace,
