@@ -38,6 +38,12 @@ def xy(x, y):
 def esc(s):
     return (safe_text(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
 
+def esc_attr(s):
+    # Escape XML special characters without truncating — used for data: URIs in <image href>.
+    if s is None:
+        return ''
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+
 def path_d(points):
     coords = [xy(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
     if len(coords) < 2:
@@ -84,7 +90,7 @@ def main(spec_path: Path, out_dir: Path, source_image: str | None = None):
     # can compare recognised symbols against the actual sketch. Topology is NOT drawn.
     bg_svg = ''
     if source_image:
-        bg_svg = f'<image href="{esc(source_image)}" x="{DRAW_X:.2f}" y="{DRAW_Y:.2f}" width="{DRAW_W:.2f}" height="{DRAW_H:.2f}" preserveAspectRatio="xMidYMid meet" opacity="0.55"/>'
+        bg_svg = f'<image href="{esc_attr(source_image)}" x="{DRAW_X:.2f}" y="{DRAW_Y:.2f}" width="{DRAW_W:.2f}" height="{DRAW_H:.2f}" preserveAspectRatio="xMidYMid meet" opacity="0.55"/>'
 
     svg = [f'''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {SVG_W:.0f} {SVG_H:.0f}">
