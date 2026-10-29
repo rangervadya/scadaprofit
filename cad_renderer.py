@@ -5,7 +5,7 @@ Coordinates in the specification are normalized to a 1000x1000 image-relative dr
 This is an approximate reconstruction aid, not an engineering-authoritative CAD model.
 """
 from __future__ import annotations
-import json, math, sys, traceback
+import base64, json, math, sys, traceback
 from pathlib import Path
 import cairosvg
 import ezdxf
@@ -35,14 +35,152 @@ def n(value, default=0.0, low=-10000.0, high=10000.0):
 def xy(x, y):
     return DRAW_X + n(x, low=0, high=1000) * SCALE_X, DRAW_Y + n(y, low=0, high=1000) * SCALE_Y
 
+def _pt_xy(p):
+    if isinstance(p, dict):
+        return n(p.get('x')), n(p.get('y'))
+    if isinstance(p, (list, tuple)) and len(p) >= 2:
+        return n(p[0]), n(p[1])
+    return 0.0, 0.0
+
 def esc(s):
     return (safe_text(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
 
+def esc_attr(s):
+    # Escape XML special characters without truncating — used for data: URIs in <image href>.
+    if s is None:
+        return ''
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+
 def path_d(points):
-    coords = [xy(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+    coords = [xy(*_pt_xy(p)) for p in points if _pt_xy(p) != (0.0, 0.0) or isinstance(p, (list, tuple, dict))]
+    coords = [c for c in coords if c]
     if len(coords) < 2:
         return ''
     return 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in coords)
+
+def _dist(a, b):
+    return math.hypot(n(a[0]) - n(b[0]), n(a[1]) - n(b[1]))
+
+def dedupe_symbols(symbols, threshold=26.0):
+    """Collapse symbols reported at nearly identical positions, keeping the highest-confidence one."""
+    out = []
+    for sym in symbols:
+        x, y = n(sym.get('x')), n(sym.get('y'))
+        match = None
+        for cand in out:
+            if _dist((cand['x'], cand['y']), (x, y)) <= threshold:
+                match = cand
+                break
+        if not match:
+            out.append({'x': x, 'y': y, 'type': safe_text(sym.get('type'), 24).lower(),
+                        'label': safe_text(sym.get('label') or sym.get('id'), 32),
+                        'id': safe_text(sym.get('id'), 32)})
+        elif n(sym.get('confidence', 0), 0) > n(match.get('confidence', 0), 0):
+            match.update({'x': x, 'y': y, 'type': safe_text(sym.get('type'), 24).lower(),
+                          'label': safe_text(sym.get('label') or sym.get('id'), 32),
+                          'id': safe_text(sym.get('id'), 32)})
+    return out
+
+def _route_points(route):
+    pts = route.get('points') if isinstance(route, dict) else None
+    if not isinstance(pts, list) or len(pts) < 2:
+        return None
+    valid = []
+    for p in pts:
+        if isinstance(p, dict):
+            x, y = p.get('x'), p.get('y')
+        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+            x, y = p[0], p[1]
+        else:
+            continue
+        if x is None or y is None:
+            continue
+        valid.append((n(x), n(y)))
+    return valid if len(valid) >= 2 else None
+
+def merge_routes(routes, threshold=26.0):
+    """Concatenate route fragments whose ends are close to another route's ends.
+
+    The per-tile vision model reports each straight segment as its own route, so a
+    single hand-drawn pipe arrives as several short pieces. Snapping the loose ends
+    together turns them into continuous polylines and removes the orphan stubs that
+    otherwise float disconnected on the sheet.
+    """
+    if len(routes) < 2:
+        return routes
+    items = []
+    for r in routes:
+        pts = _route_points(r)
+        if not pts:
+            continue
+        items.append({'route': r, 'pts': pts, 'a': pts[0], 'b': pts[-1]})
+
+    parent = list(range(len(items)))
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            ei, ej = items[i], items[j]
+            if _dist(ei['b'], ej['a']) <= threshold or _dist(ei['a'], ej['b']) <= threshold \
+               or _dist(ei['a'], ej['a']) <= threshold or _dist(ei['b'], ej['b']) <= threshold:
+                union(i, j)
+
+    groups = {}
+    for i, item in enumerate(items):
+        groups.setdefault(find(i), []).append(item)
+
+    merged = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0]['route'])
+            continue
+        # Walk the fragments end-to-end into one polyline.
+        remaining = list(group)
+        chain = [remaining.pop(0)]
+        changed = True
+        while remaining and changed:
+            changed = False
+            last = chain[-1]
+            for cand in list(remaining):
+                if _dist(last['b'], cand['a']) <= threshold:
+                    chain.append(cand)
+                    remaining.remove(cand)
+                    changed = True
+                    break
+                if _dist(last['b'], cand['b']) <= threshold:
+                    cand = dict(cand)
+                    cand['pts'] = cand['pts'][::-1]
+                    cand['a'], cand['b'] = cand['b'], cand['a']
+                    chain.append(cand)
+                    remaining.remove(cand)
+                    changed = True
+                    break
+        # Build the combined polyline from the walked chain.
+        combined_pts = []
+        for node in chain:
+            for p in node['pts']:
+                if not combined_pts or _dist(combined_pts[-1], p) > 1.5:
+                    combined_pts.append(p)
+        if len(combined_pts) < 2:
+            continue
+        base = chain[0]['route']
+        merged.append({
+            'id': safe_text(base.get('id'), 24),
+            'kind': safe_text(base.get('kind', 'branch'), 20).lower(),
+            'label': safe_text(base.get('label'), 40),
+            'points': [{'x': round(p[0], 3), 'y': round(p[1], 3)} for p in combined_pts],
+            'confidence': n(base.get('confidence', 0.5), 0.5),
+            'fromNode': '', 'toNode': ''
+        })
+    return merged
 
 def add_dxf_text(msp, text, x, y, height_px, angle=0, layer='ANNOTATIONS', align='LEFT'):
     text = safe_text(text, 160)
@@ -77,7 +215,24 @@ def main(spec_path: Path, out_dir: Path):
     symbols = spec.get('symbols') if isinstance(spec.get('symbols'), list) else []
     dimensions = spec.get('dimensions') if isinstance(spec.get('dimensions'), list) else []
     legend = spec.get('legend') if isinstance(spec.get('legend'), list) else []
-    routes, labels, symbols, dimensions, legend = routes[:32], labels[:160], symbols[:120], dimensions[:120], legend[:8]
+    routes, labels, symbols, dimensions, legend = routes[:200], labels[:160], symbols[:120], dimensions[:120], legend[:8]
+
+    # Deduplicate symbols that the model reported at almost identical positions — the
+    # per-tile passes often re-detect the same junction, producing stacked circles.
+    symbols = dedupe_symbols(symbols, 26)
+
+    # Merge routes whose endpoints are near-duplicates and snap loose ends together so
+    # neighbouring segments read as one continuous line instead of a broken zig-zag.
+    # Done before truncation so every fragment is eligible for snapping.
+    routes = merge_routes(routes, 26)
+    routes = routes[:48]
+
+    # The original drawing is embedded as a semi-transparent background so the engineer
+    # can compare recognised symbols against the actual sketch. Topology is NOT drawn.
+    bg_svg = ''
+    source_image = spec.get('sourceImage')
+    if source_image:
+        bg_svg = f'<image href="{esc_attr(source_image)}" x="{DRAW_X:.2f}" y="{DRAW_Y:.2f}" width="{DRAW_W:.2f}" height="{DRAW_H:.2f}" preserveAspectRatio="xMidYMid meet" opacity="0.5"/>'
 
     svg = [f'''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {SVG_W:.0f} {SVG_H:.0f}">
@@ -89,9 +244,10 @@ def main(spec_path: Path, out_dir: Path):
 <line x1="30" y1="91" x2="1370" y2="91" stroke-width="1.1"/>
 <rect x="1040" y="25" width="330" height="54" fill="none" stroke-width="1"/>
 <text x="1052" y="45" font-size="11">CAD SKETCH CONVERTER · ОФЛАЙН</text>
-<text x="1052" y="64" font-size="10">Распознавание символов · топология не реконструируется</text>
-</g>
-<g id="symbols" fill="none" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">''']
+ <text x="1052" y="64" font-size="10">Распознавание символов · топология не реконструируется</text>
+ </g>
+ {bg_svg}
+ <g id="symbols" fill="none" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">''']
     # Routes are drawn as straight-segment polylines; aspect-ratio fitting avoids stretching the source layout.
     dxf = ezdxf.new('R2010')
     dxf.units = units.MM
@@ -120,7 +276,8 @@ def main(spec_path: Path, out_dir: Path):
         if not isinstance(route, dict): continue
         points = route.get('points')
         if not isinstance(points, list): continue
-        valid = [xy(p[0], p[1]) for p in points if isinstance(p, (list,tuple)) and len(p)>=2]
+        valid = [xy(*_pt_xy(p)) for p in points]
+        valid = [v for v in valid if v]
         if len(valid) < 2: continue
         kind = safe_text(route.get('kind', 'main'), 20).lower()
         width = 2.15 if kind in ('main', 'trunk', 'основная') else 1.45

@@ -385,13 +385,62 @@ async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, so
     uncertainties.push(...local.uncertainties);
   }
 
-  allSymbols = dedupeObjectsNear(allSymbols, (s) => [s.x, s.y], 10, (s) => s.type);
-  allLabels = dedupeObjectsNear(allLabels, (l) => [l.x, l.y], 16, (l) => l.text.toLowerCase());
+  allSymbols = dedupeObjectsNear(allSymbols, (s) => [s.x, s.y], 26, (s) => s.type);
+  allLabels = dedupeObjectsNear(allLabels, (l) => [l.x, l.y], 30, (l) => l.text.toLowerCase());
   allDimensions = dedupeObjectsNear(allDimensions, (d) => [(d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2], 14, (d) => d.text.toLowerCase());
+
+  // Infer symbol types from nearby node labels: the vision model frequently reports a
+  // symbol's type as "unknown" while the label beside it (К1, P1, F2, T3, …) is plain
+  // to read. Mapping common Russian/European node prefixes (К=клапан/коробка, P=насос,
+  // F=фильтр, T=резервуар, V=заслонка/задвижка) restores the symbol kind without
+  // waiting for the model to guess it a second time.
+  const labelPrefixType = [
+    { re: /\b(к|cl|кл|клеп)\d+/i, type: 'valve' },
+    { re: /\bp\d+/i, type: 'pump' },
+    { re: /\b(п|пр)\d+/i, type: 'pump' },
+    { re: /\b(f|ф|filter|фильтр)\d*/i, type: 'filter' },
+    { re: /\b(t|т|рез|рз|tank|резервуар|бак)\d*/i, type: 'tank' },
+    { re: /\b(v|в|зас|задв|clap|закрывающий)\d*/i, type: 'valve' },
+  ];
+  for (const sym of allSymbols) {
+    if (sym.type && sym.type !== 'unknown') continue;
+    if (sym.label && labelPrefixType.some((rule) => rule.re.test(sym.label))) {
+      sym.type = labelPrefixType.find((rule) => rule.re.test(sym.label)).type;
+    }
+  }
+  // Attach nearby text labels to their nearest symbol so the renderer shows e.g. "K1"
+  // next to the valve rather than as a floating orphan note.
+  for (const sym of allSymbols) {
+    if (sym.label) continue;
+    let best = null;
+    for (const lbl of allLabels) {
+      const d = Math.hypot(sym.x - lbl.x, sym.y - lbl.y);
+      if (d < 46 && (!best || d < best.d)) best = { d, label: lbl };
+    }
+    if (best) {
+      const m = String(best.label.text);
+      if (labelPrefixType.some((rule) => rule.re.test(m))) sym.type = labelPrefixType.find((rule) => rule.re.test(m)).type;
+      sym.label = m;
+    }
+  }
+
+  // Embed the source drawing as a faint background so the rendered CAD sheet can be
+  // compared against the original sketch. Topology is still NOT reconstructed.
+  let sourceImage = '';
+  try {
+    const visionPath = path.join(tempDir, 'vision.jpg');
+    if (existsSync(visionPath)) {
+      const buf = await fs.readFile(visionPath);
+      sourceImage = `data:image/jpeg;base64,${buf.toString('base64')}`;
+    }
+  } catch {
+    // Background is optional — rendering continues without it.
+  }
 
   return {
     title: (titles.find((title) => title && !/^(?:техническая схема|схема|чертёж)$/i.test(title)) || 'СХЕМА ТРУБОПРОВОДА').slice(0, 100),
     subtitle: 'Распознавание символов и линий по фрагментам изображения · топология не реконструируется',
+    sourceImage,
     summary: [...new Set(summaries)].join(' | ').slice(0, 1200) || 'Символы, линии и текст распознаны по отдельным фрагментам. Топологию и соединения определяйте вручную.',
     routes: allRoutes.slice(0, 180),
     symbols: allSymbols.slice(0, 160),
