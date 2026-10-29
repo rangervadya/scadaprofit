@@ -1,4 +1,4 @@
-# Docker Compose 2.3
+# Docker Compose 2.4
 
 ## Services
 - `app`: Express, OpenCV, Tesseract, JSON-schema parser, SVG/DXF/PNG renderer.

@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-converter-offline",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
-  "description": "Offline CAD reconstruction using Ollama structured JSON, overlapping vision tiles, OpenCV, OCR, SVG and DXF.",
+  "description": "Offline CAD sketch reconstruction using Ollama graph extraction, OpenCV, OCR, SVG and DXF.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"
