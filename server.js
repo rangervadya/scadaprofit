@@ -127,9 +127,9 @@ function extractJsonObject(rawText) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-// Ollama structured outputs constrain the response shape. The model is used ONLY as a
-// symbol/annotation recogniser (Path 3): it reports what symbols and text it sees, with
-// their locations. It does NOT attempt to infer topology — that is left to the engineer.
+// Ollama structured outputs constrain the response shape. The model is used as a
+// symbol/annotation recogniser AND as a rough line detector. It does NOT attempt to
+// infer topology: routes are reported as-is, without cross-tile junction merging.
 const SYMBOL_JSON_SCHEMA = {
   type: 'object',
   properties: {
@@ -144,6 +144,21 @@ const SYMBOL_JSON_SCHEMA = {
           label: { type: 'string' }, confidence: { type: 'number' }
         },
         required: ['id', 'type', 'x', 'y', 'label', 'confidence']
+      }
+    },
+    routes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, from_node: { type: 'string' }, to_node: { type: 'string' },
+          points: {
+            type: 'array',
+            items: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] }
+          },
+          kind: { type: 'string' }, label: { type: 'string' }, confidence: { type: 'number' }
+        },
+        required: ['id', 'from_node', 'to_node', 'points', 'kind', 'label', 'confidence']
       }
     },
     labels: {
@@ -171,7 +186,7 @@ const SYMBOL_JSON_SCHEMA = {
     legend: { type: 'array', items: { type: 'string' } },
     uncertainties: { type: 'array', items: { type: 'string' } }
   },
-  required: ['title', 'summary', 'symbols', 'labels', 'dimensions', 'legend', 'uncertainties']
+  required: ['title', 'summary', 'symbols', 'routes', 'labels', 'dimensions', 'legend', 'uncertainties']
 };
 
 function clampNumber(value, low, high, fallback = 0) {
@@ -194,8 +209,10 @@ function transformLocalPoint(point, tile) {
 }
 
 function normalizeTileGraph(raw, tile) {
-  // Path 3: the model is used ONLY as a symbol/annotation recogniser. It reports what
-  // symbols and text it sees, with their locations. It does NOT report topology.
+  // The model reports symbols, labels and routes. Routes are passed through as-is:
+  // cross-tile junction merging is intentionally NOT applied, because the model's
+  // per-tile node IDs do not correspond across tiles and merging them produces
+  // disconnected fragments rather than a coherent network.
   const parsed = raw && typeof raw === 'object' ? raw : {};
   const symbols = [];
   for (const [i, sym] of (Array.isArray(parsed.symbols) ? parsed.symbols : []).slice(0, 120).entries()) {
@@ -207,6 +224,25 @@ function normalizeTileGraph(raw, tile) {
       type: cleanText(sym?.type || 'unknown', 24).toLowerCase(),
       label: cleanText(sym?.label || '', 40),
       confidence: clampNumber(sym?.confidence, 0, 1, 0.5),
+      tileIndex: Number(tile.index || 1)
+    });
+  }
+
+  const routes = [];
+  for (const [i, connection] of (Array.isArray(parsed.routes) ? parsed.routes : []).slice(0, 240).entries()) {
+    const mid = (Array.isArray(connection?.points) ? connection.points : []).slice(0, 20)
+      .map((p) => transformLocalPoint(p, tile));
+    const points = [];
+    for (const point of mid) {
+      const prev = points[points.length - 1];
+      if (!prev || Math.hypot(prev[0] - point[0], prev[1] - point[1]) > 1.5) points.push(point);
+    }
+    if (points.length < 2) continue;
+    routes.push({
+      id: `T${tile.index || 1}-${cleanText(connection?.id || `S${i + 1}`, 24)}`,
+      label: cleanText(connection?.label || '', 40), kind: cleanText(connection?.kind || 'branch', 20),
+      points, confidence: clampNumber(connection?.confidence, 0, 1, 0.5),
+      fromNode: cleanText(connection?.from_node || '', 32), toNode: cleanText(connection?.to_node || '', 32),
       tileIndex: Number(tile.index || 1)
     });
   }
@@ -224,10 +260,11 @@ function normalizeTileGraph(raw, tile) {
 
   return {
     title: cleanText(parsed.title || '', 100), summary: cleanText(parsed.summary || '', 700),
-    symbols, labels, dimensions,
+    symbols, routes, labels, dimensions,
     legend: (Array.isArray(parsed.legend) ? parsed.legend : []).slice(0, 8).map((s) => cleanText(s, 150)).filter(Boolean),
     uncertainties: (Array.isArray(parsed.uncertainties) ? parsed.uncertainties : []).slice(0, 20).map((s) => cleanText(s, 180)).filter(Boolean),
-    symbolCount: symbols.length
+    symbolCount: symbols.length,
+    routeCount: routes.length
   };
 }
 
@@ -251,19 +288,19 @@ function dedupeObjectsNear(items, getPos, threshold, getKey = (item) => '') {
 function makeTilePrompt(tile, sourceStats, notes, strictMode, correction = '') {
   const aspect = Number(tile.width || 1) / Math.max(1, Number(tile.height || 1));
   return [
-    'Ты — помощник по распознаванию инженерной схемы трубопровода. Ты НЕ определяешь топологию и НЕ соединяешь линии. Ты только от/reportаешь, какие символы и текст ты видишь на изображении.',
+    'Ты — помощник по распознаванию инженерной схемы трубопровода. Ты НЕ определяешь топологию и НЕ соединяешь линии в узлы. Ты только отчётливо перечисляешь, что ты видишь на изображении.',
     'Используй прикреплённое изображение текущего фрагмента. Возвращай координаты ОТНОСИТЕЛЬНО ТОЛЬКО ЭТОГО ФРАГМЕНТА: x и y от 0 до 1000, начало в левом верхнем углу. Пропорции изображения должны сохраняться.',
-    'SYMBOLS — перечисли каждый условный символ, который ты видишь: клапаны/задвижки, насосы, резервуары/баки, клеммы/коробки, манометры, фильтры,Heat exchangers, арматура. Для каждого укажи id, тип (valve, pump, tank, junction, end, unknown), приблизительные координаты x,y центра символа, подпись/метку если она есть и confidence 0..1. Если тип неясен — unknown. Не придумывай символы, которых нет на изображении.',
+    'SYMBOLS — перечисли каждый условный символ, который ты видишь: клапаны/задвижки, насосы, резервуары/баки, клеммы/коробки, манометры, фильтры, арматура. Для каждого укажи id, тип (valve, pump, tank, junction, end, unknown), приблизительные координаты x,y центра символа, подпись/метку если она есть и confidence 0..1. Если тип неясен — unknown. Не придумывай символы, которых нет на изображении.',
+    'ROUTES — перечисли каждую видимую линию как отдельный route. Для каждой линии укажи id, from_node и to_node (любые строковые id, не обязательно связанные с other routes), kind (main, branch, unknown), координаты концов и промежуточных точек в points, подпись если есть, confidence 0..1. Важно: описывай только реальные линии, которые видишь. Не соединяй разные линии в одну, не выдумывай ветви, не соединяй перекрещивающиеся линии, если нет признака соединения. Если линия имеет изгибы/повороты, добавь промежуточные точки. Если на фрагменте нет линий, оставь массив пустым.',
     'LABELS — перечисли каждый читаемый текст: позиционные обозначения (например К1, К2, П1), номиналы, названия узлов, подписи к стрелкам. Для каждого: текст, координаты x,y, угол наклона текста в градусах (-90..90), kind (node, dimension, note, title), размер шрифта, confidence 0..1. Неразборчивые подписи не включай; взамен добавь текст в uncertainties.',
     'DIMENSIONS — размерные линии с конечными точками (x1,y1,x2,y2) и точно прочитанным текстом размера. Не угадывай цифры: если не читается, не включай в dimensions, а укажи в uncertainties.',
     'UNCERTAINTIES — перечисли, в чём неопределённость: неразборчивый текст, неясный символ, перекрещивающиеся линии, где непонятно соединение или нет. Будь честен: лучше перечислить сомнение, чем придумать.',
     'LEGEND — если на фрагменте есть легенда/таблица с условными обозначениями, перечисли её пункты.',
-    'Не описывай линии и не рисуй топологию. Не определяй, какие узлы соединены. Твоя задача — только распознать символы и текст.',
     `Фрагмент ${tile.index || 1}; локальный размер ${tile.width}×${tile.height} px; отношение сторон ${aspect.toFixed(3)}. Это один фрагмент большого эскиза, не пытайся восстанавливать отсутствующие за его границами области.`,
     strictMode ? 'Строгий режим: если элемент не подтверждается изображением, пропусти и перечисли неопределённость.' : '',
     notes ? `Примечания пользователя: ${notes}` : '',
     correction,
-    'Ответ формируется по строгой JSON Schema. Заполни title, summary, symbols, labels, dimensions, legend, uncertainties. Не добавляй объяснения вне JSON.'
+    'Ответ формируется по строгой JSON Schema. Заполни title, summary, symbols, routes, labels, dimensions, legend, uncertainties. Не добавляй объяснения вне JSON.'
   ].filter(Boolean).join('\n');
 }
 
@@ -294,10 +331,13 @@ async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode,
 }
 
 async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, sourceStats = {}) {
-  // Path 3: the model is used ONLY as a symbol/annotation recogniser. It reports what
-  // symbols and text it sees, with their locations. It does NOT report topology.
+  // The model reports symbols, labels, dimensions and routes. Routes are passed through
+  // as-is: cross-tile junction merging is intentionally NOT applied, because the model's
+  // per-tile node IDs do not correspond across tiles and merging them produces
+  // disconnected fragments rather than a coherent network.
   const visionSize = sourceStats.visionSize || { width: sourceStats.width || 1, height: sourceStats.height || 1 };
   let allSymbols = [];
+  let allRoutes = [];
   let allLabels = [];
   let allDimensions = [];
   let summaries = [];
@@ -318,9 +358,9 @@ async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, so
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         parsed = await callOllamaForTile(tilePath, localTile, sourceStats, notes, strictMode,
-          attempt === 1 ? '' : 'ПРЕДЫДУЩИЙ ОТВЕТ НЕ СОДЕРЖАЛ ДОСТАТОЧНО СИМВОЛОВ ИЛИ ТЕКСТА. Повторно исследуй этот фрагмент. Перечисли каждый видимый условный символ и читаемый текст с координатами. Не придумывай элементы; если фрагмент пуст, оставь массивы пустыми.');
+          attempt === 1 ? '' : 'ПРЕДЫДУЩИЙ ОТВЕТ НЕ СОДЕРЖАЛ ДОСТАТОЧНО СИМВОЛОВ ИЛИ ЛИНИЙ. Повторно исследуй этот фрагмент. Перечисли каждый видимый условный символ, каждую видимую линию и читаемый текст с координатами. Не придумывай элементы; если фрагмент пуст, оставь массивы пустыми.');
         local = normalizeTileGraph(parsed, localTile);
-        if (local.symbolCount > 0 || Number(tile.inkRatio || 0) < 0.004) break;
+        if ((local.symbolCount > 0 || local.routeCount > 0) || Number(tile.inkRatio || 0) < 0.004) break;
         tileError = new Error('Для фрагмента не извлечены символы.');
       } catch (error) {
         tileError = error;
@@ -331,12 +371,13 @@ async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, so
       tileErrors.push(`Фрагмент ${tile.index}: ${String(tileError?.message || tileError).slice(0, 120)}`);
       continue;
     }
-    if (!local.symbolCount && Number(tile.inkRatio || 0) >= 0.004) {
+    if (!local.symbolCount && !local.routeCount && Number(tile.inkRatio || 0) >= 0.004) {
       tileErrors.push(`Фрагмент ${tile.index}: модель не нашла символов`);
       continue;
     }
     tileSuccess++;
     allSymbols.push(...local.symbols);
+    allRoutes.push(...local.routes);
     allLabels.push(...local.labels);
     allDimensions.push(...local.dimensions);
     if (local.summary) summaries.push(local.summary);
@@ -350,8 +391,9 @@ async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, so
 
   return {
     title: (titles.find((title) => title && !/^(?:техническая схема|схема|чертёж)$/i.test(title)) || 'СХЕМА ТРУБОПРОВОДА').slice(0, 100),
-    subtitle: 'Распознавание символов и подписей по фрагментам изображения · топология не реконструируется',
-    summary: [...new Set(summaries)].join(' | ').slice(0, 1200) || 'Символы и текст распознаны по отдельным фрагментам. Топологию и соединения определяйте вручную.',
+    subtitle: 'Распознавание символов и линий по фрагментам изображения · топология не реконструируется',
+    summary: [...new Set(summaries)].join(' | ').slice(0, 1200) || 'Символы, линии и текст распознаны по отдельным фрагментам. Топологию и соединения определяйте вручную.',
+    routes: allRoutes.slice(0, 180),
     symbols: allSymbols.slice(0, 160),
     labels: allLabels.slice(0, 160),
     dimensions: allDimensions.slice(0, 100),
@@ -362,17 +404,15 @@ async function recognizeWithQwen(tileDescriptors, tempDir, notes, strictMode, so
       'Топология схемы не реконструируется автоматически — соединения определяются вручную.'
     ].slice(0, 6),
     sourceAspect: Number(sourceStats.width) / Math.max(1, Number(sourceStats.height)),
-    diagnostics: { tilesProcessed: tileSuccess, tilesTotal: workTiles.length, rejectedTiles: tileErrors }
+    diagnostics: { tilesProcessed: tileSuccess, tilesTotal: workTiles.length, rejectedTiles: tileErrors, rawRoutes: allRoutes.length }
   };
 }
 
-function runCadRenderer(specPath, outputDir, sourceImagePath = '') {
+function runCadRenderer(specPath, outputDir) {
   return new Promise((resolve, reject) => {
     const python = pythonCandidates[0] || 'python3';
     const scriptPath = path.join(__dirname, 'cad_renderer.py');
-    const args = [scriptPath, specPath, outputDir];
-    if (sourceImagePath) args.push(sourceImagePath);
-    const child = spawn(python, args, {
+    const child = spawn(python, [scriptPath, specPath, outputDir], {
       cwd: __dirname,
       env: { ...process.env, PYTHONUNBUFFERED: '1' }
     });
@@ -480,15 +520,14 @@ app.post('/api/convert', convertLimiter, (req, res, next) => {
         });
         const specPath = path.join(tempDir, 'cad-spec.json');
         await fs.writeFile(specPath, JSON.stringify(spec, null, 2), 'utf8');
-        const sourceImgPath = path.join(tempDir, 'vision.jpg');
-        const renderStats = await runCadRenderer(specPath, tempDir, sourceImgPath);
+        const renderStats = await runCadRenderer(specPath, tempDir);
         image = await fs.readFile(path.join(tempDir, 'cad-redraw.png'));
         svg = await fs.readFile(path.join(tempDir, 'cad-redraw.svg'));
         dxf = await fs.readFile(path.join(tempDir, 'cad-redraw.dxf'));
         analysis = [spec.summary, ...(spec.legend || [])].filter(Boolean).join('\n');
         qwenAvailable = true;
-        stats = { ...renderStats, width: 1960, height: 1400, sheet: 'A3 · распознавание символов', symbols: renderStats.symbols || 0, labels: renderStats.labels || 0, tilesProcessed: spec.diagnostics?.tilesProcessed || 0, tilesTotal: spec.diagnostics?.tilesTotal || 0 };
-        note = 'Модель распознала символы и подписи. Топология и соединения не реконструируются автоматически — определяйте вручную по исходному изображению.';
+        stats = { ...renderStats, width: 1960, height: 1400, sheet: 'A3 · распознавание символов', routes: renderStats.routes || 0, symbols: renderStats.symbols || 0, labels: renderStats.labels || 0, tilesProcessed: spec.diagnostics?.tilesProcessed || 0, tilesTotal: spec.diagnostics?.tilesTotal || 0 };
+        note = 'Модель распознала символы и линии. Топология и соединения не реконструируются автоматически — определяйте вручную по исходному изображению.';
         filenamePrefix = 'cad-redraw';
         cadReconstructed = true;
       } catch (error) {
