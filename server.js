@@ -273,24 +273,26 @@ function routeSignature(route) {
 }
 
 function mergeCloseRouteEndpoints(routes, tolerance = 8) {
-  const endpoints = [];
+  // Collect every point from every route (endpoints AND intermediate bends).
+  // Junctions often appear as a bend in one route and an endpoint in another;
+  // merging only endpoints leaves the network fragmented at those junctions.
+  const allPoints = [];
   routes.forEach((route, routeIndex) => {
-    if (route.points.length < 2) return;
-    endpoints.push({ routeIndex, pointIndex: 0, point: route.points[0] });
-    endpoints.push({ routeIndex, pointIndex: route.points.length - 1, point: route.points[route.points.length - 1] });
+    route.points.forEach((point, pointIndex) => {
+      allPoints.push({ routeIndex, pointIndex, point });
+    });
   });
-  const parent = endpoints.map((_, i) => i);
+  const parent = allPoints.map((_, i) => i);
   const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
-  for (let i = 0; i < endpoints.length; i++) {
-    for (let j = i + 1; j < endpoints.length; j++) {
-      if (endpoints[i].routeIndex === endpoints[j].routeIndex) continue;
-      if (routes[endpoints[i].routeIndex].tileIndex === routes[endpoints[j].routeIndex].tileIndex) continue;
-      if (Math.hypot(endpoints[i].point[0] - endpoints[j].point[0], endpoints[i].point[1] - endpoints[j].point[1]) <= tolerance) union(i, j);
+  for (let i = 0; i < allPoints.length; i++) {
+    for (let j = i + 1; j < allPoints.length; j++) {
+      if (allPoints[i].routeIndex === allPoints[j].routeIndex) continue;
+      if (Math.hypot(allPoints[i].point[0] - allPoints[j].point[0], allPoints[i].point[1] - allPoints[j].point[1]) <= tolerance) union(i, j);
     }
   }
   const groups = new Map();
-  endpoints.forEach((entry, i) => {
+  allPoints.forEach((entry, i) => {
     const root = find(i);
     if (!groups.has(root)) groups.set(root, []);
     groups.get(root).push(entry.point);
@@ -299,7 +301,7 @@ function mergeCloseRouteEndpoints(routes, tolerance = 8) {
   for (const [root, points] of groups) {
     centers.set(root, [points.reduce((sum, p) => sum + p[0], 0) / points.length, points.reduce((sum, p) => sum + p[1], 0) / points.length]);
   }
-  endpoints.forEach((entry, i) => { routes[entry.routeIndex].points[entry.pointIndex] = centers.get(find(i)); });
+  allPoints.forEach((entry, i) => { routes[entry.routeIndex].points[entry.pointIndex] = centers.get(find(i)); });
 }
 
 function dedupeObjectsNear(items, getPos, threshold, getKey = (item) => '') {
@@ -352,14 +354,14 @@ function makeTilePrompt(tile, sourceStats, notes, strictMode, correction = '') {
   return [
     'Ты — визуальный парсер инженерной схемы трубопровода для подготовки CAD. Не рисуй картинку и не описывай её свободным текстом: извлеки конкретную геометрию в узлы и соединения.',
     'Используй прикреплённое изображение текущего фрагмента. Возвращай координаты ОТНОСИТЕЛЬНО ТОЛЬКО ЭТОГО ФРАГМЕНТА: x и y от 0 до 1000, начало в левом верхнем углу. Пропорции изображения должны сохраняться.',
-    'Сначала найди узлы: концы линий, повороты, места реального соединения и символы арматуры. Каждый видимый конец/поворот/узел получает отдельный id (например n1, n2). Затем создай connections, каждое соединение обязано ссылаться на существующие id через from_node и to_node.',
-    'Соединение — один прямой сегмент или одна ломаная между двумя узлами. Для изгибов и поворотов используй points с промежуточными точками. Не превращай несколько разных ветвей в одну длинную ломаную. Не заменяй сеть одной кривой, диагональю или декоративным маршрутом.',
+    'ШАГ 1 — УЗЛЫ. Внимательно найди КАЖДЫЙ видимый конец линии, поворот ломаной и место реального соединения (T-стык, крест, пересечение). Каждый такой узел получает отдельный id (например n1, n2, n3...). Если две линии явно сходятся в одной точке — это ОДИН узел, даже если на фото они касаются неидеально. Расставляй узлы вдоль всей схемы, включая изгибы ломаных линий.',
+    'ШАГ 2 — СОЕДИНЕНИЯ. Для каждой линии на схеме создай ОДНО соединение, которое описывает этот отрезок от одного узла до другого. from_node и to_node должны ссылаться на id узлов, которые ты определил на Шаге 1. Если линия имеет изгибы/повороты, добавь промежуточные точки в points. Каждое соединение — это одна непрерывная линия, а не несколько ветвей. НЕ объединяй разные ветви в одну ломаную.',
+    'ШАГ 3 — ПРОВЕРКА. Убедись: (а) каждое соединение ссылается на существующие from_node и to_node; (б) у каждого соединения две разные конечные точки; (в) если две ветви действительно соединены, они используют ОДИН и тот же узел id; (г) нет дублирования одного и того же соединения.',
     'Не выдумывай невидимые ветви и не соединяй перекрещивающиеся линии, если нет признака соединения. Для неоднозначного перекрёстка добавь uncertainties. Не угадывай цифры: неразборчивые подписи пропусти или укажи в uncertainties.',
     'Тип узла: junction, end, valve, pump, tank, unknown. Тип соединения: main, branch, unknown. Координаты должны быть числовыми. Если на фрагменте нет схемы, возвращай пустые nodes/connections, а не придумывай геометрию.',
     'labels размещай по центру читаемой надписи, dimensions содержат конечные координаты размерной линии и точно прочитанный текст. Узлы и соединения важнее заголовка и легенды.',
-    'Перед отправкой проверь: у каждой connection from_node и to_node существуют; у каждого сегмента есть две разные конечные точки; ветви при настоящем соединении используют один узел; не дублируй одно соединение без необходимости.',
     `Фрагмент ${tile.index || 1}; локальный размер ${tile.width}×${tile.height} px; отношение сторон ${aspect.toFixed(3)}. Это один фрагмент большого эскиза, не пытайся восстанавливать отсутствующие за его границами области.`,
-    strictMode ? 'Строгий режим: если координаты/связь не подтверждаются изображением, пропусти элемент и перечисли неопределённость.' : '',
+    strictMode ? 'Строгий режим: если координаты/связь не поддерживаются изображением, пропусти элемент и перечисли неопределённость.' : '',
     notes ? `Примечания пользователя: ${notes}` : '',
     correction,
     'Ответ формируется по строгой JSON Schema. Заполни title, summary, nodes, connections, labels, dimensions, legend, uncertainties. Не добавляй объяснения вне JSON.'
@@ -456,6 +458,13 @@ async function reconstructWithQwen(tileDescriptors, tempDir, notes, strictMode, 
     uniqueRoutes.push(route);
   }
   mergeCloseRouteEndpoints(uniqueRoutes, 7);
+  // Snap all points to a coarse grid so that near-identical junctions from different tiles
+  // land on exactly the same coordinates. Floating-point drift from tile transforms
+  // otherwise leaves routes looking disconnected even after merging.
+  const snapGrid = 4;
+  for (const route of uniqueRoutes) {
+    route.points = route.points.map((p) => [Math.round(p[0] / snapGrid) * snapGrid, Math.round(p[1] / snapGrid) * snapGrid]);
+  }
   uniqueRoutes = uniqueRoutes.filter((r) => r.points.length >= 2 && Math.hypot(r.points[0][0] - r.points[r.points.length - 1][0], r.points[0][1] - r.points[r.points.length - 1][1]) >= 3);
   if (!uniqueRoutes.length) {
     const details = tileErrors.length ? ` Причины: ${tileErrors.join('; ')}` : '';

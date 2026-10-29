@@ -177,16 +177,24 @@ def main():
         analysis_image = cv2.resize(analysis_image, (round(width * ratio), round(height * ratio)), interpolation=cv2.INTER_AREA)
     cv2.imwrite(str(out_dir / 'vision.jpg'), analysis_image, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
 
-    # Use overlapping tiles for dense/high-resolution drawings. This gives the vision model
-    # larger local details while retaining enough overlap to merge shared junctions.
+    # Use overlapping tiles for dense/high-resolution drawings. A sliding window with
+    # generous overlap gives the vision model larger local detail while guaranteeing
+    # that every part of the sheet (including the centre of wide drawings) is covered.
     analysis_h, analysis_w = analysis_image.shape[:2]
     vision_tiles = []
     should_tile = max(analysis_w, analysis_h) >= 1200 and min(analysis_w, analysis_h) >= 520
     if should_tile:
+        # Tile size ~62% of the sheet, with ~38% overlap so neighbouring tiles share content.
         tile_w = max(1, int(round(analysis_w * 0.62)))
         tile_h = max(1, int(round(analysis_h * 0.62)))
-        x_starts = sorted(set([0, max(0, analysis_w - tile_w)]))
-        y_starts = sorted(set([0, max(0, analysis_h - tile_h)]))
+        step_x = max(1, int(round(tile_w * 0.62)))
+        step_y = max(1, int(round(tile_h * 0.62)))
+        x_starts = list(range(0, max(1, analysis_w - tile_w + 1), step_x))
+        y_starts = list(range(0, max(1, analysis_h - tile_h + 1), step_y))
+        if x_starts[-1] < analysis_w - tile_w:
+            x_starts.append(max(0, analysis_w - tile_w))
+        if y_starts[-1] < analysis_h - tile_h:
+            y_starts.append(max(0, analysis_h - tile_h))
         tile_index = 0
         for y0 in y_starts:
             for x0 in x_starts:

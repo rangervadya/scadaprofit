@@ -59,6 +59,8 @@ def main(spec_path: Path, out_dir: Path):
     spec = json.loads(spec_path.read_text(encoding='utf-8'))
     out_dir.mkdir(parents=True, exist_ok=True)
     source_aspect = n(spec.get('sourceAspect'), 1.42, 0.4, 2.5)
+    # Clamp extreme aspect ratios so the drawing is never squeezed into a sliver or blown up.
+    source_aspect = min(2.2, max(0.5, source_aspect))
     # Preserve relative geometry from the source instead of stretching every drawing to one wide viewport.
     DRAW_W = min(MAX_DRAW_W, MAX_DRAW_H * source_aspect)
     DRAW_H = DRAW_W / source_aspect
