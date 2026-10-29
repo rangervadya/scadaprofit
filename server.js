@@ -385,7 +385,7 @@ async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode,
       messages: [{ role: 'user', content: makeTilePrompt(tile, sourceStats, notes, strictMode, correction), images: [img.toString('base64')] }],
       stream: false,
       format: CAD_JSON_SCHEMA,
-      options: { num_ctx: 4096, num_predict: 2200, temperature: 0, top_p: 0.8, repeat_penalty: 1.05 }
+      options: { num_ctx: 8192, num_predict: 3000, temperature: 0, top_p: 0.8, repeat_penalty: 1.05 }
     })
   }, 300000);
   if (!response.ok) {
