@@ -377,12 +377,18 @@ function makeTilePrompt(tile, sourceStats, notes, strictMode, correction = '') {
 }
 async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode, correction = '') {
   const img = await fs.readFile(tilePath);
+  const isQwen3VLModel = /^qwen3-vl(?::|$)/i.test(QWEN_MODEL);
+  const tilePrompt = makeTilePrompt(tile, sourceStats, notes, strictMode, correction);
+  // Some Qwen3-VL Ollama templates ignore the API think=false flag. Put /no_think
+  // at the very beginning of the user message as an additional model-level switch.
+  const userContent = isQwen3VLModel ? `/no_think\n${tilePrompt}` : tilePrompt;
   const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: QWEN_MODEL,
-      messages: [{ role: 'user', content: makeTilePrompt(tile, sourceStats, notes, strictMode, correction), images: [img.toString('base64')] }],
+      messages: [{ role: 'user', content: userContent, images: [img.toString('base64')] }],
+      ...(isQwen3VLModel ? { think: false } : {}),
       stream: false,
       format: CAD_JSON_SCHEMA,
       options: { num_ctx: 8192, num_predict: 3000, temperature: 0, top_p: 0.8, repeat_penalty: 1.05 }
@@ -396,8 +402,18 @@ async function callOllamaForTile(tilePath, tile, sourceStats, notes, strictMode,
     throw new Error(`Ollama HTTP ${response.status}: ${body.slice(0, 240)}`);
   }
   const data = await response.json();
-  const content = data?.message?.content;
-  if (!content) throw new Error('Ollama вернул пустой ответ для фрагмента.');
+  const content = typeof data?.message?.content === 'string' ? data.message.content.trim() : '';
+  if (!content) {
+    const thinking = data?.message?.thinking
+      || data?.message?.reasoning
+      || data?.message?.reasoning_content
+      || '';
+    throw new Error(
+      `Ollama не вернул итоговый ответ для фрагмента: thinking_chars=${String(thinking).length}, ` +
+      `done_reason=${data?.done_reason || 'unknown'}, eval_count=${data?.eval_count ?? 'unknown'}. ` +
+      'Проверьте режим /no_think и лимит генерации.'
+    );
+  }
   return extractJsonObject(content);
 }
 
@@ -538,14 +554,17 @@ async function analyzeWithQwen(imagePath, notes, strictMode) {
     notes ? `Пожелания пользователя: ${notes}` : ''
   ].filter(Boolean).join('\n');
 
+  const isQwen3VLModel = /^qwen3-vl(?::|$)/i.test(QWEN_MODEL);
+  const analysisPrompt = isQwen3VLModel ? `/no_think\n${prompt}` : prompt;
   const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: QWEN_MODEL,
-      messages: [{ role: 'user', content: prompt, images: [img.toString('base64')] }],
+      messages: [{ role: 'user', content: analysisPrompt, images: [img.toString('base64')] }],
+      ...(isQwen3VLModel ? { think: false } : {}),
       stream: false,
-      options: { num_ctx: 4096, num_predict: 650, temperature: 0.1 }
+      options: { num_ctx: isQwen3VLModel ? 8192 : 4096, num_predict: 1000, temperature: 0.1 }
     })
   }, 240000);
   if (!response.ok) { const detail = await response.text().catch(() => ''); if (response.status === 404) throw new Error(`Ollama HTTP 404: модель '${QWEN_MODEL}' не найдена в выбранном Ollama. Проверьте docker compose exec ollama ollama list; при необходимости выполните docker compose exec ollama ollama pull ${QWEN_MODEL}. ${detail.slice(0, 180)}`); throw new Error(`Ollama ответил HTTP ${response.status}: ${detail.slice(0, 180)}`); }
@@ -632,7 +651,7 @@ app.post('/api/convert', convertLimiter, (req, res, next) => {
         analysis = await analyzeWithQwen(path.join(tempDir, 'vision.jpg'), notes, strictMode);
         qwenAvailable = true;
       } catch (error) {
-        analysisNotice = 'Векторизация и OCR выполнены. Qwen-анализ сейчас недоступен: проверьте, что Ollama запущен и модель qwen2.5vl:3b скачана.';
+        analysisNotice = `Векторизация и OCR выполнены. Qwen-анализ сейчас недоступен: проверьте, что Ollama запущен и модель ${QWEN_MODEL} скачана.`;
         console.warn('Local Qwen analysis skipped:', error?.message || error);
       }
     }
