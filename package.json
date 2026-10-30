@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-converter-offline",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
-  "description": "Offline pen-stroke vector tracing using OpenCV skeleton graphs, Tesseract OCR, SVG and DXF.",
+  "description": "Offline OpenCV tracing plus a Qwen JSON graph and route debugging workbench.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"

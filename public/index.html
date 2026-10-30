@@ -129,6 +129,98 @@
       </div>
     </section>
 
+    <section class="json-lab" id="jsonLab" aria-label="Лаборатория JSON Qwen">
+      <div class="workspace-heading json-lab-heading">
+        <div>
+          <p class="section-kicker">ОТЛАДКА МОДЕЛИ · НЕ CAD-РЕНДЕРЕР</p>
+          <h2>Лаборатория Qwen JSON</h2>
+          <p class="lab-intro">Сначала Qwen извлекает точки и связи из фотографии. Затем его JSON можно передать отдельному запросу для построения пути. Справа отображается геометрия, нарисованная напрямую из JSON браузером — без CAD-рендерера.</p>
+        </div>
+        <span class="analysis-chip" id="qwenModelChip">МОДЕЛЬ: ПРОВЕРКА…</span>
+      </div>
+
+      <div class="json-lab-grid">
+        <section class="json-panel">
+          <div class="panel-head">
+            <div class="panel-title-group"><span class="panel-number">A</span><h3>Входные данные и промпт</h3></div>
+            <span class="panel-note">JSON → ПУТЬ</span>
+          </div>
+          <button type="button" class="primary-button lab-action" id="qwenExtractButton" disabled>
+            <span class="button-icon">✳</span><span>1. Извлечь точки и линии с фото</span><span class="button-arrow">↗</span>
+          </button>
+          <p class="lab-help">Используется выбранное выше изображение. Сохраняется полный исходный ответ Qwen, включая ошибочный или пустой JSON.</p>
+
+          <div class="control-block">
+            <div class="field-line"><label class="field-label" for="graphInput">Входной JSON графа</label><div class="field-inline-actions"><button type="button" class="text-button" id="previewInputJson">Показать на графике</button><button type="button" class="text-button" id="resetGraphJson">Пример P1 → P2</button></div></div>
+            <textarea id="graphInput" class="code-input" spellcheck="false" rows="13">{
+  "points": [
+    {"id": "P1", "x": 199, "y": 415},
+    {"id": "P2", "x": 854, "y": 217}
+  ],
+  "lines": [
+    {"from": "P1", "to": "P2"}
+  ],
+  "warnings": []
+}</textarea>
+          </div>
+
+          <div class="route-endpoints">
+            <label class="control-block"><span class="field-label">Начальная точка</span><input id="startPointId" class="text-input" value="P1" placeholder="Например P1"></label>
+            <label class="control-block"><span class="field-label">Конечная точка</span><input id="endPointId" class="text-input" value="P2" placeholder="Например P8"></label>
+          </div>
+          <button type="button" class="primary-button lab-action" id="qwenRouteButton">
+            <span class="button-icon">↗</span><span>2. Построить путь по этому JSON</span><span class="button-arrow">↗</span>
+          </button>
+          <p class="lab-help">Запрос отправляет JSON и большой промпт в Qwen. Локальная проверка отдельно сравнит путь и длину модели с входными данными.</p>
+
+          <details class="prompt-editor">
+            <summary>Показать / изменить большой промпт построения</summary>
+            <textarea id="routePrompt" class="code-input prompt-input" spellcheck="false" rows="26" placeholder="Загрузка системного промпта…"></textarea>
+            <div class="prompt-actions"><button type="button" class="download-button" id="restorePrompt">Восстановить стандартный промпт</button></div>
+          </details>
+        </section>
+
+        <section class="json-panel json-visual-panel">
+          <div class="panel-head">
+            <div class="panel-title-group"><span class="panel-number">B</span><h3>Как модель строит линию</h3></div>
+            <span class="result-tag review" id="jsonStatus">ОЖИДАНИЕ</span>
+          </div>
+          <div class="json-compare">
+            <div class="json-mini-source">
+              <div class="compare-label">ИСХОДНОЕ ФОТО</div>
+              <div class="mini-image-stage"><img id="qwenSourceMini" alt="Исходное изображение рядом с JSON-графом"><span id="qwenSourcePlaceholder">Загрузи фото<br>в верхней форме</span></div>
+            </div>
+            <div class="json-mini-graph">
+              <div class="compare-label">ПОСТРОЕНИЕ ИЗ JSON</div>
+              <div class="graph-stage" id="graphStage">
+            <svg id="graphSvg" viewBox="0 0 1000 650" role="img" aria-label="Граф точек и направленных линий">
+              <defs><marker id="graphArrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#171713"></path></marker><marker id="graphArrowActive" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#b26a28"></path></marker></defs>
+              <g id="graphEdges"></g><g id="graphNodes"></g>
+            </svg>
+            <div class="graph-empty" id="graphEmpty">Здесь появятся точки P1, P2…<br>и стрелки между ними.</div>
+              </div>
+            </div>
+          </div>
+          <div class="graph-controls">
+            <button type="button" class="download-button" id="stepPrev" disabled>← Предыдущий</button>
+            <span id="stepLabel">Нет сегментов</span>
+            <button type="button" class="download-button" id="stepNext" disabled>Следующий →</button>
+          </div>
+          <div class="graph-legend"><span><i class="legend-line"></i> Обычная связь</span><span><i class="legend-line active"></i> Текущий шаг</span><span><i class="legend-dot"></i> Точка</span></div>
+          <div class="json-result-tabs" role="tablist" aria-label="Ответы модели">
+            <button type="button" class="json-tab active" data-json-tab="extract" role="tab" aria-selected="true">1 · JSON с фото</button>
+            <button type="button" class="json-tab" data-json-tab="route" role="tab" aria-selected="false">2 · JSON пути</button>
+            <button type="button" class="json-tab" data-json-tab="check" role="tab" aria-selected="false">Проверка</button>
+          </div>
+          <pre class="json-output" id="rawExtractOutput">Ожидаю запуск извлечения JSON из изображения.</pre>
+          <pre class="json-output hidden" id="rawRouteOutput">Ожидаю запуск построения пути из входного JSON.</pre>
+          <pre class="json-output hidden" id="routeCheckOutput">Результат независимой проверки появится здесь.</pre>
+          <div class="json-output-actions"><button type="button" class="download-button" id="copyCurrentJson">Копировать показанный JSON</button><button type="button" class="download-button" id="downloadCurrentJson">Скачать JSON</button></div>
+          <p class="analysis-footnote" id="qwenTiming">Визуализация строится непосредственно из координат JSON. Если JSON верный, а здесь линия неправильная — это ошибка визуализатора; если точки/связи ошибочны уже в JSON — проблема на этапе Qwen.</p>
+        </section>
+      </div>
+    </section>
+
     <section class="how-section">
       <div class="how-title"><span class="section-kicker">ПРОСТОЙ ПРОЦЕСС</span><h2>Три шага до чистого листа</h2></div>
       <div class="how-grid">

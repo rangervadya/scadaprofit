@@ -1,4 +1,4 @@
-# Docker: CAD Sketch Converter 2.5.0
+# Docker: CAD Sketch Converter 2.6.0
 
 ## Запуск
 
@@ -25,7 +25,7 @@ docker compose up -d --force-recreate app
 
 ## Ollama
 
-Векторизация и экспорт больше не вызывают Ollama. Сервис и volume `ollama_data` оставлены для сохранения прежней установки, но приложение не зависит от наличия модели. Сервис `model-init` отключён от обычного старта профилем `ai-setup`.
+Основная OpenCV-векторизация не вызывает Ollama. Лаборатория Qwen JSON использует Ollama отдельно; для неё требуется установленная модель и доступный endpoint. Сервис `model-init` отключён от обычного старта профилем `ai-setup`.
 
 Если требуется вручную загрузить модель для отдельного эксперимента:
 
@@ -44,4 +44,4 @@ docker compose exec app node -p "require('./package.json').version"
 curl -s http://127.0.0.1:3001/api/health
 ```
 
-Ожидаемая версия: `2.5.0`. `/api/health` должен показывать `processorReady: true` и `geometryEngine: "opencv-skeleton-graph"`.
+Ожидаемая версия: `2.6.0`. `/api/health` должен показывать `processorReady: true` и `geometryEngine: "opencv-skeleton-graph"`. Для лаборатории дополнительно проверь `ollamaReachable` и `qwenAvailable`.
