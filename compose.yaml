@@ -1,4 +1,6 @@
 services:
+  # Kept for future experiments, but the Two Mask Lab does not call Ollama.
+  # Existing ollama_data volume is preserved.
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -25,44 +27,19 @@ services:
       retries: 20
       start_period: 30s
 
-  model-init:
-    profiles: ["ai-setup"]
-    image: ollama/ollama:latest
-    restart: "no"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_HOST: "http://ollama:11434"
-      QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        if ollama list | awk 'NR > 1 {print $$1}' | grep -Fxq "$${QWEN_MODEL}"; then
-          echo "Model $${QWEN_MODEL} is already present."
-        else
-          ollama pull "$${QWEN_MODEL}"
-        fi
-
   app:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
-    depends_on:
-      ollama:
-        condition: service_healthy
     ports:
       - "${WEB_PORT:-3001}:3000"
     environment:
       NODE_ENV: production
       PORT: "3000"
       HOST: "0.0.0.0"
-      QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
-      OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
-      OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
+      MASK_PYTHON: "/opt/venv/bin/python"
     security_opt:
       - no-new-privileges:true
 

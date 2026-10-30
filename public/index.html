@@ -4,122 +4,120 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f4f0">
-  <meta name="description" content="Лаборатория JSON: Qwen распознаёт точки и связи на схеме, затем строит направленный путь с пошаговой визуализацией.">
-  <title>CAD Sketch JSON Brain — лаборатория</title>
+  <meta name="description" content="Офлайн-лаборатория: разделение рукописной схемы на маску текста и маску линий.">
+  <title>Two Mask Lab — текст и линии</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="JSON Brain">
+    <a class="brand" href="/" aria-label="Two Mask Lab">
       <span class="brand-mark"><i></i><i></i><i></i></span>
-      <span>JSON BRAIN<span class="brand-dot">.</span></span>
+      <span>TWO MASK LAB<span class="brand-dot">.</span></span>
     </a>
-    <div class="topbar-status"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка Ollama…</span><span class="version" id="versionChip">v2.9.0</span></div>
+    <div class="topbar-status">
+      <span class="status-dot" id="apiDot"></span>
+      <span id="apiStatus">Проверка локального обработчика…</span>
+      <span class="version" id="versionChip">v3.0.0</span>
+    </div>
   </header>
 
   <main class="shell">
     <section class="intro">
-      <p class="eyebrow">ЛАБОРАТОРИЯ РАСПОЗНАВАНИЯ И ТОПОЛОГИИ</p>
-      <h1>Сначала JSON.<br><em>Потом линия.</em></h1>
-      <p class="intro-copy">Старый конвейер OpenCV → CAD отключён. Сначала Qwen превращает каждый видимый штрих в полилинию координат; затем сервер строит соседние сегменты, не угадывая соединения между разными штрихами.</p>
+      <p class="eyebrow">ЭКСПЕРИМЕНТ С ДВУМЯ МАСКАМИ</p>
+      <h1>Сначала отделим<br><em>текст от линий.</em></h1>
+      <p class="intro-copy">Qwen на этом этапе не используется. OpenCV выделяет чернила, Tesseract находит текстовые области. Первая маска показывает чернила внутри областей текста, вторая — остальные штрихи. Никаких соединений или координат пока не строим.</p>
     </section>
 
-    <section class="top-grid">
-      <article class="panel upload-panel">
-        <div class="panel-head"><div><span class="eyebrow">ШАГ 01</span><h2>Фото схемы → полилинии JSON</h2></div><span class="stage-tag">QWEN VISION</span></div>
+    <section class="workspace">
+      <article class="panel control-panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">ШАГ 01</span><h2>Исходная фотография</h2></div>
+          <span class="stage-tag">OFFLINE · LOCAL</span>
+        </div>
         <label class="dropzone" id="dropzone" for="imageInput">
           <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
           <span class="upload-icon">↑</span>
-          <strong id="uploadTitle">Перетащи сюда фото или выбери файл</strong>
+          <strong id="uploadTitle">Перетащи фото сюда или выбери файл</strong>
           <small id="uploadHint">PNG · JPG · WEBP · до 15 МБ</small>
         </label>
         <div class="upload-actions">
-          <button class="button button-primary" id="extractButton" type="button" disabled>1. Извлечь линии (полилинии)</button>
+          <button class="button button-primary" id="processButton" type="button" disabled>Построить две маски</button>
           <button class="button button-ghost" id="removeImage" type="button" disabled>Убрать фото</button>
         </div>
-        <p class="hint">Сначала Qwen выдаёт отдельные штрихи с координатами поворотов. Сервер преобразует каждый штрих в последовательность точек и сегментов. Разные штрихи не соединяются автоматически.</p>
-        <details class="prompt-details">
-          <summary>Промпт извлечения координатных штрихов</summary>
-          <textarea id="visionPrompt" class="code-input" rows="22" spellcheck="false"></textarea>
-          <button class="button button-ghost" id="resetVisionPrompt" type="button">Восстановить промпт</button>
-        </details>
+
+        <div class="settings">
+          <div class="settings-title">Настройки разделения</div>
+          <label class="setting-row"><span>Тип чернил</span>
+            <select id="inkMode">
+              <option value="auto" selected>Авто — определить цвет ручки</option>
+              <option value="blue">Синяя / фиолетовая ручка</option>
+              <option value="dark">Чёрная ручка / карандаш</option>
+            </select>
+          </label>
+          <label class="setting-row"><span>Уверенность OCR</span>
+            <div class="setting-control"><input id="minConfidence" type="range" min="0" max="70" step="5" value="15"><output id="confidenceValue">15</output></div>
+          </label>
+          <label class="setting-row"><span>Расширение области текста</span>
+            <div class="setting-control"><input id="padding" type="range" min="0" max="12" step="1" value="3"><output id="paddingValue">3 px</output></div>
+          </label>
+          <p class="hint">Меньше OCR-уверенность — больше надписей попадёт в текстовую маску, но больше риск принять символы и части труб за текст. Расширение помогает захватывать края букв.</p>
+        </div>
+
+        <div class="note-block">
+          <strong>Как считаются маски</strong>
+          <p><b>Маска текста:</b> пиксели чернил внутри прямоугольников текста, найденных OCR.</p>
+          <p><b>Маска линий:</b> остальные пиксели чернил за пределами этих прямоугольников.</p>
+          <p>Это экспериментальное разделение. Рукописные цифры, которые OCR не распознает, могут остаться в маске линий. Участок трубы внутри OCR-прямоугольника может попасть в текстовую маску.</p>
+        </div>
       </article>
 
-      <article class="panel compare-panel">
-        <div class="panel-head"><div><span class="eyebrow">ПАРАЛЛЕЛЬНОЕ ОКНО</span><h2>Фото и построение</h2></div><span class="stage-tag">LIVE GRAPH</span></div>
-        <div class="compare-grid">
-          <div class="compare-col">
-            <div class="compare-label">ОРИГИНАЛ</div>
-            <div class="image-stage" id="imageStage"><div class="placeholder" id="imagePlaceholder">Исходное фото<br>появится здесь</div><img id="sourceImage" alt="Исходная фотография схемы" class="hidden"></div>
-          </div>
-          <div class="compare-col">
-            <div class="compare-label">JSON → ЛИНИЯ</div>
-            <div class="graph-stage">
-              <svg id="graphSvg" viewBox="0 0 1000 650" role="img" aria-label="Построение точек и направленных линий">
-                <defs>
-                  <marker id="arrowInput" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a5a59d"/></marker>
-                  <marker id="arrowModel" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d77a24"/></marker>
-                </defs>
-                <g id="inputEdges"></g><g id="modelEdges"></g><g id="graphNodes"></g>
-              </svg>
-              <div class="graph-empty" id="graphEmpty">Добавь фотографию<br>или введи JSON ниже</div>
-            </div>
-          </div>
+      <article class="panel results-panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">ШАГ 02</span><h2>Две маски рядом с оригиналом</h2></div>
+          <span class="stage-tag" id="resultTag">ОЖИДАНИЕ</span>
         </div>
-        <div class="legend"><span><i class="legend-gray"></i> Входные связи</span><span><i class="legend-orange"></i> Ответ Qwen</span><span><i class="legend-point"></i> Точки и id</span></div>
-        <div class="step-controls">
-          <button class="button button-ghost" id="prevStep" type="button" disabled>← Предыдущий</button>
-          <strong id="stepLabel">Нет сегментов</strong>
-          <button class="button button-ghost" id="nextStep" type="button" disabled>Следующий →</button>
+
+        <div class="mask-grid">
+          <section class="mask-card">
+            <div class="mask-heading"><span class="mask-number">00</span><div><strong>Оригинал</strong><small>Исходное изображение</small></div></div>
+            <div class="mask-view" id="sourceView"><div class="placeholder">Загрузи фотографию</div><img id="sourceImage" class="hidden" alt="Исходное изображение"></div>
+          </section>
+          <section class="mask-card text-mask-card">
+            <div class="mask-heading"><span class="mask-number">01</span><div><strong>Маска текста</strong><small>Белое — чернила в OCR-областях</small></div></div>
+            <div class="mask-view mask-black"><div class="placeholder" id="textPlaceholder">Здесь появится маска текста</div><img id="textMaskImage" class="hidden" alt="Маска текста"></div>
+            <a class="download-link hidden" id="downloadText" download="text-mask.png">Скачать text-mask.png</a>
+          </section>
+          <section class="mask-card line-mask-card">
+            <div class="mask-heading"><span class="mask-number">02</span><div><strong>Маска линий</strong><small>Белое — все остальные штрихи</small></div></div>
+            <div class="mask-view mask-black"><div class="placeholder" id="linePlaceholder">Здесь появится маска линий</div><img id="lineMaskImage" class="hidden" alt="Маска линий"></div>
+            <a class="download-link hidden" id="downloadLines" download="line-mask.png">Скачать line-mask.png</a>
+          </section>
         </div>
-        <div class="route-state" id="routeState">Ожидаю JSON-граф.</div>
+
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat"><span>Размер</span><strong id="statSize">—</strong></div>
+          <div class="stat"><span>Чернила</span><strong id="statInk">—</strong></div>
+          <div class="stat"><span>Областей OCR</span><strong id="statOcr">—</strong></div>
+          <div class="stat"><span>Текстовая маска</span><strong id="statText">—</strong></div>
+          <div class="stat"><span>Маска линий</span><strong id="statLines">—</strong></div>
+          <div class="stat"><span>Время</span><strong id="statTime">—</strong></div>
+        </div>
+
+        <div class="warnings hidden" id="warnings"></div>
+        <details class="debug-details">
+          <summary>Распознанные OCR-фрагменты и диагностика</summary>
+          <pre id="debugOutput" class="debug-output">Здесь появятся числа, подписи и уверенность OCR.</pre>
+        </details>
+        <div class="download-row hidden" id="downloadRow">
+          <a class="button button-ghost" id="downloadInk" download="ink-mask.png">Скачать общую маску чернил</a>
+          <a class="button button-ghost" id="downloadOverlay" download="mask-overlay.png">Скачать цветное наложение</a>
+          <button class="button button-ghost" id="downloadReport" type="button">Скачать отчёт JSON</button>
+        </div>
       </article>
     </section>
 
-    <section class="lower-grid">
-      <article class="panel graph-input-panel">
-        <div class="panel-head"><div><span class="eyebrow">ШАГ 02</span><h2>Входной граф</h2></div><button class="link-button" id="sampleGraph" type="button">Вставить пример P1 → P2</button></div>
-        <p class="hint">Проверь и при необходимости поправь JSON. Координаты и id здесь являются источником истины для следующего этапа.</p>
-        <textarea id="graphInput" class="code-input graph-editor" spellcheck="false">{
-  "points": [
-    {"id": "P1", "x": 199, "y": 415},
-    {"id": "P2", "x": 854, "y": 217}
-  ],
-  "lines": [
-    {"from": "P1", "to": "P2"}
-  ],
-  "warnings": []
-}</textarea>
-        <div class="inline-actions"><button class="button button-ghost" id="previewGraph" type="button">Показать входной JSON</button><button class="button button-ghost" id="downloadInput" type="button">Скачать входной JSON</button></div>
-        <div class="endpoint-grid">
-          <label>Начальная точка (START_ID)<input id="startId" type="text" value="P1" autocomplete="off"></label>
-          <label>Конечная точка (END_ID)<input id="endId" type="text" value="P2" autocomplete="off"></label>
-        </div>
-        <button class="button button-primary full-button" id="routeButton" type="button">2. Построить путь по этому JSON</button>
-        <details class="prompt-details" open>
-          <summary>Большой промпт «JSON-мозга»</summary>
-          <textarea id="routePrompt" class="code-input" rows="27" spellcheck="false"></textarea>
-          <button class="button button-ghost" id="resetRoutePrompt" type="button">Восстановить стандартный промпт</button>
-        </details>
-      </article>
-
-      <article class="panel raw-panel">
-        <div class="panel-head"><div><span class="eyebrow">ШАГ 03</span><h2>Что реально вернула модель</h2></div><span class="stage-tag" id="modelChip">QWEN: —</span></div>
-        <div class="tabs" role="tablist" aria-label="JSON ответы">
-          <button class="tab active" data-tab="extract" type="button">1 · Raw JSON полилиний с фото</button>
-          <button class="tab" data-tab="route" type="button">2 · Raw JSON пути</button>
-          <button class="tab" data-tab="check" type="button">3 · Проверка</button>
-        </div>
-        <pre class="raw-output" id="extractRaw">Здесь появится дословный message.content от Ollama при распознавании фотографии.</pre>
-        <pre class="raw-output hidden" id="routeRaw">Здесь появится дословный message.content от Ollama при построении пути.</pre>
-        <pre class="raw-output hidden" id="checkRaw">Независимая проверка пока не запускалась.</pre>
-        <div class="inline-actions raw-actions"><button class="button button-ghost" id="copyCurrent" type="button">Копировать</button><button class="button button-ghost" id="downloadCurrent" type="button">Скачать JSON/TXT</button></div>
-        <div class="timing" id="timing">После вызова Qwen здесь будут модель, время, done_reason и eval_count.</div>
-      </article>
-    </section>
-
-    <footer class="footer"><strong>JSON BRAIN 2.9.0</strong><span>Только Qwen JSON · независимая проверка · без старого CAD/OpenCV-способа</span></footer>
+    <footer class="footer"><strong>TWO MASK LAB 3.0.0</strong><span>OpenCV ink mask + Tesseract text regions · Qwen не вызывается</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

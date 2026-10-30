@@ -1,13 +1,10 @@
-import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
 import multer from 'multer';
 import { rateLimit } from 'express-rate-limit';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { QWEN_DEFAULT_ROUTE_PROMPT, QWEN_VISION_PROMPT } from './prompts.js';
-import { validateInputGraph, validateRouteOutput } from './graph.js';
-import { strokesToGraph } from './strokes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,34 +12,9 @@ const app = express();
 const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE_SIZE = 15 * 1024 * 1024;
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
-
-const VISION_JSON_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    strokes: { type: 'array', maxItems: 24, items: {
-      type: 'object', additionalProperties: false,
-      properties: {
-        id: { type: 'string', minLength: 1, maxLength: 12 },
-        confidence: { type: 'number', minimum: 0, maximum: 1 },
-        points: { type: 'array', minItems: 2, maxItems: 10, items: {
-          type: 'object', additionalProperties: false,
-          properties: {
-            x: { type: 'integer', minimum: 0, maximum: 1000 },
-            y: { type: 'integer', minimum: 0, maximum: 650 },
-          },
-          required: ['x', 'y'],
-        } },
-      },
-      required: ['id', 'confidence', 'points'],
-    } },
-    warnings: { type: 'array', maxItems: 12, items: { type: 'string', maxLength: 220 } },
-    image_summary: { type: 'string', maxLength: 240 },
-  },
-  required: ['strokes', 'warnings', 'image_summary'],
-};
-const OLLAMA_CHAT_URL = process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat';
-const OLLAMA_TAGS_URL = process.env.OLLAMA_TAGS_URL || 'http://127.0.0.1:11434/api/tags';
+const MASK_PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
+const MASK_TIMEOUT_MS = 90000;
+const MAX_PROCESSOR_OUTPUT = 40 * 1024 * 1024;
 
 app.disable('x-powered-by');
 app.use(helmet({
@@ -56,7 +28,6 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false,
 }));
-app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: '5m',
   setHeaders(res, filePath) {
@@ -66,7 +37,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 2, fieldSize: 20000 },
+  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 4, fieldSize: 12000 },
   fileFilter: (_req, file, callback) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) {
       return callback(new Error('Поддерживаются только PNG, JPG/JPEG и WEBP.'));
@@ -75,12 +46,12 @@ const upload = multer({
   },
 });
 
-const aiLimiter = rateLimit({
+const maskLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30,
+  limit: 40,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  message: { error: 'Слишком много запросов. Подождите 15 минут и попробуйте снова.' },
+  message: { error: 'Слишком много обработок. Подожди 15 минут и попробуй снова.' },
 });
 
 function hasValidImageSignature(buffer, mimeType) {
@@ -91,89 +62,83 @@ function hasValidImageSignature(buffer, mimeType) {
   return false;
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 360000) {
-  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
 }
 
-async function getOllamaStatus() {
-  try {
-    const response = await fetchWithTimeout(OLLAMA_TAGS_URL, {}, 2500);
-    if (!response.ok) return { reachable: false, modelAvailable: false, model: QWEN_MODEL };
-    const payload = await response.json();
-    const models = Array.isArray(payload.models) ? payload.models : [];
-    return {
-      reachable: true,
-      modelAvailable: models.some(entry => entry.name === QWEN_MODEL),
-      model: QWEN_MODEL,
-      installedModels: models.map(entry => entry.name),
-    };
-  } catch (error) {
-    return { reachable: false, modelAvailable: false, model: QWEN_MODEL, error: String(error.message || error) };
-  }
+function runMaskProcessor(imageBuffer, config) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(MASK_PYTHON, [path.join(__dirname, 'mask_processor.py'), JSON.stringify(config)], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, OMP_THREAD_LIMIT: '2', OPENBLAS_NUM_THREADS: '1' },
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error('Обработка изображения превысила 90 секунд. Уменьши разрешение или попробуй другой файл.'));
+    }, MASK_TIMEOUT_MS);
+
+    function finish(error, result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+    }
+
+    child.stdout.on('data', chunk => {
+      outputBytes += chunk.length;
+      if (outputBytes > MAX_PROCESSOR_OUTPUT) {
+        child.kill('SIGKILL');
+        finish(new Error('Ответ обработчика слишком большой. Изображение имеет чрезмерное разрешение.'));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on('data', chunk => {
+      if (Buffer.concat(stderr).length < 12000) stderr.push(chunk);
+    });
+    child.on('error', error => finish(new Error(`Не удалось запустить локальный обработчик масок: ${error.message}`)));
+    child.on('close', code => {
+      if (settled) return;
+      const output = Buffer.concat(stdout).toString('utf8');
+      let parsed;
+      try { parsed = JSON.parse(output); }
+      catch {
+        const detail = Buffer.concat(stderr).toString('utf8').slice(0, 1000);
+        finish(new Error(`Обработчик масок вернул некорректный ответ (code=${code}). ${detail}`));
+        return;
+      }
+      if (code !== 0 || !parsed.ok) {
+        finish(new Error(parsed.error || Buffer.concat(stderr).toString('utf8').slice(0, 1200) || `Обработчик завершился с кодом ${code}.`));
+        return;
+      }
+      finish(null, parsed);
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(imageBuffer);
+  });
 }
 
-function parseModelJson(raw, doneReason = 'unknown') {
-  const text = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (!text) throw new Error('Модель вернула пустой текстовый ответ.');
-  if (first < 0) throw new Error('Ответ не содержит открывающую фигурную скобку JSON.');
-  if (last < first) {
-    if (doneReason === 'length') throw new Error('JSON начался, но не завершился: генерация оборвана по лимиту токенов (нет закрывающей скобки).');
-    throw new Error('JSON начался, но в ответе нет закрывающей фигурной скобки.');
-  }
-  try { return JSON.parse(text.slice(first, last + 1)); }
-  catch (error) { throw new Error(`JSON-объект найден, но синтаксис повреждён: ${error.message}`); }
-}
-
-async function callOllama({ messages, numPredict = 4096, timeoutMs = 360000, format = 'json' }) {
-  const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: QWEN_MODEL,
-      messages,
-      stream: false,
-      format,
-      think: false,
-      options: { num_ctx: 8192, num_predict: numPredict, temperature: 0, top_p: 0.8, repeat_penalty: 1.0 },
-    }),
-  }, timeoutMs);
-  const bodyText = await response.text();
-  if (!response.ok) throw new Error(`Ollama HTTP ${response.status}: ${bodyText.slice(0, 700)}`);
-  let payload;
-  try { payload = JSON.parse(bodyText); }
-  catch { throw new Error(`Ollama вернула некорректный HTTP JSON: ${bodyText.slice(0, 500)}`); }
-  return {
-    rawContent: String(payload?.message?.content || ''),
-    thinking: String(payload?.message?.thinking || payload?.message?.reasoning || ''),
-    doneReason: payload?.done_reason || 'unknown',
-    evalCount: payload?.eval_count ?? null,
-    promptEvalCount: payload?.prompt_eval_count ?? null,
-    totalDurationNs: payload?.total_duration ?? null,
-    model: payload?.model || QWEN_MODEL,
-  };
-}
-
-app.get('/api/health', async (_req, res) => {
-  const ollama = await getOllamaStatus();
+app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    appVersion: '2.9.0',
-    mode: 'json-lab-only',
-    model: QWEN_MODEL,
-    ollamaReachable: ollama.reachable,
-    qwenAvailable: ollama.modelAvailable,
-    pipeline: 'photo → raw Qwen polylines → deterministic stroke graph → Qwen route JSON → independent validator → SVG preview',
-    legacyCadPipeline: false,
+    appVersion: '3.0.0',
+    mode: 'two-mask-lab',
+    processor: 'OpenCV ink segmentation + Tesseract OCR boxes',
+    qwenUsed: false,
+    masks: ['text', 'lines'],
+    note: 'Text mask = pen pixels inside OCR word boxes; line mask = remaining pen pixels. No geometry is generated.',
   });
 });
 
-app.get('/api/prompts', (_req, res) => {
-  res.json({ model: QWEN_MODEL, visionPrompt: QWEN_VISION_PROMPT, routePrompt: QWEN_DEFAULT_ROUTE_PROMPT });
-});
-
-app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
+app.post('/api/masks', maskLimiter, (req, res, next) => {
   upload.single('image')(req, res, error => {
     if (error) return res.status(400).json({ error: error.message || 'Не удалось принять изображение.' });
     next();
@@ -182,149 +147,32 @@ app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
   if (!req.file || !hasValidImageSignature(req.file.buffer, req.file.mimetype)) {
     return res.status(400).json({ error: 'Загрузите исходное изображение PNG, JPG или WEBP.' });
   }
+  const modeValue = String(req.body?.mode || 'auto');
+  const mode = ['auto', 'blue', 'dark'].includes(modeValue) ? modeValue : 'auto';
+  const minConfidence = boundedNumber(req.body?.minConfidence, 15, 0, 90);
+  const padding = Math.round(boundedNumber(req.body?.padding, 3, 0, 24));
+  const started = Date.now();
   try {
-    const prompt = String(req.body.prompt || QWEN_VISION_PROMPT).slice(0, 24000);
-    const result = await callOllama({
-      messages: [{ role: 'user', content: prompt, images: [req.file.buffer.toString('base64')] }],
-      numPredict: 5000,
-      format: VISION_JSON_SCHEMA,
-    });
-    let parsed = null;
-    let parseError = '';
-    try { parsed = parseModelJson(result.rawContent, result.doneReason); }
-    catch (error) { parseError = String(error.message || error); }
-    const extractionWarnings = [];
-    let graph = { points: [], lines: [], warnings: [] };
-    let graphStats = { strokeCount: 0, skippedStrokes: 0 };
-    if (!result.rawContent) extractionWarnings.push('Ollama вернула пустой message.content.');
-    if (result.doneReason === 'length') extractionWarnings.push('Ответ оборван по лимиту генерации. Проверь JSON в Raw JSON — он может быть неполным.');
-    if (parseError) extractionWarnings.push(`JSON не разобран: ${parseError}`);
-    if (parsed && !Array.isArray(parsed.strokes)) extractionWarnings.push('В JSON отсутствует массив strokes.');
-    if (parsed && Array.isArray(parsed.strokes)) {
-      const converted = strokesToGraph(parsed);
-      graph = { points: converted.points, lines: converted.lines, warnings: converted.warnings };
-      graphStats = { strokeCount: converted.strokeCount, skippedStrokes: converted.skippedStrokes };
-      if (!converted.strokeCount && /линии|штрих|трасс|поворот/i.test(String(parsed.image_summary || ''))) {
-        extractionWarnings.push('ПРОТИВОРЕЧИЕ: image_summary сообщает о видимых линиях, но модель не вернула координатные полилинии.');
-      }
-      if (!converted.strokeCount) extractionWarnings.push('Модель распознала описание изображения, но не локализовала ни одного штриха координатами.');
-    }
-    console.log('[QWEN-EXTRACT]', JSON.stringify({
-      model: result.model,
-      rawChars: result.rawContent.length,
-      strokes: parsed?.strokes?.length ?? null,
-      strokeCount: graphStats.strokeCount,
-      skippedStrokes: graphStats.skippedStrokes,
-      generatedPoints: graph.points.length,
-      generatedLines: graph.lines.length,
-      parseError,
-      doneReason: result.doneReason,
-      evalCount: result.evalCount,
-      rawPreview: result.rawContent.slice(0, 2400),
-      warnings: extractionWarnings,
+    const result = await runMaskProcessor(req.file.buffer, { mode, minConfidence, padding });
+    const elapsedMs = Date.now() - started;
+    console.log('[TWO-MASK]', JSON.stringify({
+      filename: req.file.originalname,
+      bytes: req.file.size,
+      width: result.width,
+      height: result.height,
+      mode: result.mode?.modeUsed,
+      dominantHue: result.mode?.dominantHue,
+      inkPixels: result.stats?.inkPixels,
+      textPixels: result.stats?.textPixels,
+      linePixels: result.stats?.linePixels,
+      ocrBoxes: result.stats?.ocrBoxes,
+      elapsedMs,
+      warnings: result.warnings,
     }));
-    res.json({ ok: true, stage: 'image-to-polylines', ...result, parsed, graph, graphStats, parseError, extractionWarnings, promptUsed: prompt });
+    res.json({ ...result, elapsedMs });
   } catch (error) {
-    console.error('Qwen image graph extraction failed:', error?.stack || error);
-    res.status(502).json({ error: String(error.message || error).slice(0, 1200), model: QWEN_MODEL });
-  }
-});
-
-app.post('/api/qwen-route', aiLimiter, async (req, res) => {
-  try {
-    const rawInput = typeof req.body?.inputJson === 'string'
-      ? req.body.inputJson
-      : JSON.stringify(req.body?.inputJson ?? {});
-    if (rawInput.length > 100000) return res.status(413).json({ error: 'Входной JSON слишком большой (максимум 100 КБ).' });
-    let input;
-    try { input = JSON.parse(rawInput); }
-    catch (error) { return res.status(400).json({ error: `Входной JSON повреждён: ${error.message}` }); }
-
-    const inputValidation = validateInputGraph(input);
-    if (inputValidation.valid && (input.points.length < 2 || input.lines.length < 1)) {
-      inputValidation.valid = false;
-      inputValidation.warnings.push('Для построения пути нужен непустой граф: минимум две точки и одна связь.');
-    }
-    if (!inputValidation.valid) {
-      return res.status(400).json({
-        error: 'Входной граф не прошёл проверку. Сначала исправь JSON.',
-        inputValidation,
-      });
-    }
-
-    const startId = String(req.body?.startId || '').trim().slice(0, 64);
-    const endId = String(req.body?.endId || '').trim().slice(0, 64);
-    if (Boolean(startId) !== Boolean(endId)) {
-      return res.status(400).json({ error: 'Укажи обе точки: START_ID и END_ID, либо очисти оба поля.' });
-    }
-    if (startId && endId) {
-      const knownIds = new Set(input.points.map(point => point.id));
-      if (!knownIds.has(startId) || !knownIds.has(endId)) {
-        return res.status(400).json({ error: 'START_ID и END_ID должны существовать во входном points.', inputValidation, requested: { startId, endId } });
-      }
-      if (startId === endId) return res.status(400).json({ error: 'START_ID и END_ID должны быть разными точками.' });
-    }
-    const prompt = String(req.body?.prompt || QWEN_DEFAULT_ROUTE_PROMPT).slice(0, 24000);
-    const task = [
-      prompt,
-      '',
-      'ПАРАМЕТРЫ ЭТОГО ЗАПРОСА:',
-      `START_ID: ${startId || '(не задан)'}`,
-      `END_ID: ${endId || '(не задан)'}`,
-      'ВХОДНОЙ JSON (ИСТОЧНИК ИСТИНЫ; НЕ ИЗМЕНЯЙ ЕГО):',
-      JSON.stringify(input),
-      'Ещё раз: не придумывай новых точек или связей. Верни только JSON заданной структуры.',
-    ].join('\n');
-
-    const result = await callOllama({
-      messages: [{ role: 'user', content: task }],
-      numPredict: 3000,
-      timeoutMs: 240000,
-    });
-    let parsed = null;
-    let parseError = '';
-    let localValidation = null;
-    try {
-      parsed = parseModelJson(result.rawContent, result.doneReason);
-      localValidation = validateRouteOutput(parsed, input, startId, endId);
-    } catch (error) {
-      parseError = String(error.message || error);
-    }
-    if (result.doneReason === 'length') {
-      localValidation ||= { valid: false, warnings: [] };
-      localValidation.valid = false;
-      localValidation.warnings.push('Ответ модели завершился по лимиту длины (done_reason=length).');
-    }
-    console.log('[QWEN-ROUTE]', JSON.stringify({
-      model: result.model,
-      rawChars: result.rawContent.length,
-      status: parsed?.status || 'unparsed',
-      parseError,
-      points: parsed?.points?.length ?? null,
-      lines: parsed?.lines?.length ?? null,
-      path: parsed?.path || null,
-      modelLength: parsed?.total_length ?? null,
-      computedLength: localValidation?.computedLength ?? null,
-      doneReason: result.doneReason,
-      evalCount: result.evalCount,
-      localValid: localValidation?.valid ?? false,
-      validationWarnings: localValidation?.warnings || [],
-      rawPreview: result.rawContent.slice(0, 1200),
-    }));
-    res.json({
-      ok: true,
-      stage: 'graph-to-route',
-      ...result,
-      parsed,
-      parseError,
-      inputValidation,
-      localValidation,
-      input,
-      promptUsed: task,
-    });
-  } catch (error) {
-    console.error('Qwen route validation failed:', error?.stack || error);
-    res.status(502).json({ error: String(error.message || error).slice(0, 1200), model: QWEN_MODEL });
+    console.error('[TWO-MASK-ERROR]', error?.stack || error);
+    res.status(502).json({ error: String(error.message || error).slice(0, 1400) });
   }
 });
 
@@ -334,6 +182,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`CAD Sketch JSON Brain 2.9.0 запущен: http://${HOST}:${PORT}`);
-  console.log(`Только JSON-конвейер; Qwen model=${QWEN_MODEL}; старый OpenCV/CAD-способ отключён.`);
+  console.log(`TWO MASK LAB 3.0.0 запущена: http://${HOST}:${PORT}`);
+  console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
 });
