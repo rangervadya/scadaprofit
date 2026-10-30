@@ -1,4 +1,4 @@
-# Изменения 2.7.0
+# Изменения 2.8.0
 
 - Удалён старый интерфейс трассировки OpenCV и CAD-рендеринга.
 - Удалён endpoint `/api/convert` и зависимости Python/OpenCV/Tesseract/ezdxf/cairosvg.

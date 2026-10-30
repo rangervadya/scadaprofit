@@ -211,8 +211,8 @@ async function loadPrompts() {
     routePrompt.value = data.routePrompt || '';
     modelChip.textContent = `QWEN: ${data.model || '—'}`;
     try {
-      const storedVision = localStorage.getItem('jsonBrainVisionPrompt');
-      const storedRoute = localStorage.getItem('jsonBrainRoutePrompt');
+      const storedVision = localStorage.getItem('jsonBrainVisionPrompt_v28');
+      const storedRoute = localStorage.getItem('jsonBrainRoutePrompt_v28');
       if (storedVision) visionPrompt.value = storedVision;
       if (storedRoute) routePrompt.value = storedRoute;
     } catch { /* storage may be disabled */ }
@@ -289,7 +289,7 @@ extractButton.addEventListener('click', async () => {
   const form = new FormData();
   form.append('image', selected, selected.name);
   form.append('prompt', visionPrompt.value);
-  localStorage.setItem('jsonBrainVisionPrompt', visionPrompt.value);
+  try { localStorage.setItem('jsonBrainVisionPrompt_v28', visionPrompt.value); } catch { /* storage may be disabled */ }
   const started = performance.now();
   try {
     const response = await fetch('/api/qwen-extract', { method: 'POST', body: form });
@@ -325,7 +325,7 @@ extractButton.addEventListener('click', async () => {
         setRouteState(`Qwen вернул JSON, но граф пуст (${data.parsed.points.length} точек, ${data.parsed.lines.length} связей). Смотри Raw JSON и предупреждения — распознавание пока не выполнено.`, 'bad');
       }
     } else {
-      setRouteState(`Qwen не вернул читаемый объект JSON. ${data.parseError || ''}`, 'bad');
+      setRouteState(`JSON не разобран: ${data.parseError || 'неизвестная ошибка'}${data.doneReason === 'length' ? ' Ответ был оборван по лимиту генерации.' : ''}`, 'bad');
     }
     notify(data.parsed ? 'Raw JSON Qwen получен. Проверь точки и линии до построения пути.' : 'Ответ Qwen не удалось разобрать как JSON.', !data.parsed);
   } catch (error) {
@@ -352,7 +352,7 @@ routeButton.addEventListener('click', async () => {
     endId: endIdInput.value.trim(),
     prompt: routePrompt.value,
   };
-  try { localStorage.setItem('jsonBrainRoutePrompt', routePrompt.value); } catch { /* storage may be disabled */ }
+  try { localStorage.setItem('jsonBrainRoutePrompt_v28', routePrompt.value); } catch { /* storage may be disabled */ }
   try {
     const response = await fetch('/api/qwen-route', {
       method: 'POST',
@@ -432,12 +432,12 @@ $('#sampleGraph').addEventListener('click', () => {
 
 $('#resetVisionPrompt').addEventListener('click', () => {
   visionPrompt.value = promptDefaults.visionPrompt || '';
-  try { localStorage.removeItem('jsonBrainVisionPrompt'); } catch { /* storage may be disabled */ }
+  try { localStorage.removeItem('jsonBrainVisionPrompt_v28'); localStorage.removeItem('jsonBrainVisionPrompt'); } catch { /* storage may be disabled */ }
   notify('Промпт извлечения восстановлен.');
 });
 $('#resetRoutePrompt').addEventListener('click', () => {
   routePrompt.value = promptDefaults.routePrompt || '';
-  try { localStorage.removeItem('jsonBrainRoutePrompt'); } catch { /* storage may be disabled */ }
+  try { localStorage.removeItem('jsonBrainRoutePrompt_v28'); localStorage.removeItem('jsonBrainRoutePrompt'); } catch { /* storage may be disabled */ }
   notify('Большой промпт построения восстановлен.');
 });
 

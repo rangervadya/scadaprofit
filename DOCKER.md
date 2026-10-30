@@ -31,7 +31,7 @@ curl -s http://127.0.0.1:3001/api/health | python3 -m json.tool
 docker compose logs --since=10m app ollama
 ```
 
-Ожидается версия 2.7.0 и `legacyCadPipeline: false`.
+Ожидается версия 2.8.0 и `legacyCadPipeline: false`.
 
 ## Логи диагностических этапов
 

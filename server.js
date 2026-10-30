@@ -15,6 +15,26 @@ const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE_SIZE = 15 * 1024 * 1024;
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
+
+const VISION_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    points: { type: 'array', maxItems: 60, items: {
+      type: 'object', additionalProperties: false,
+      properties: { id: { type: 'string', minLength: 1, maxLength: 16 }, x: { type: 'integer', minimum: 0, maximum: 1000 }, y: { type: 'integer', minimum: 0, maximum: 650 } },
+      required: ['id', 'x', 'y']
+    } },
+    lines: { type: 'array', maxItems: 100, items: {
+      type: 'object', additionalProperties: false,
+      properties: { from: { type: 'string', minLength: 1, maxLength: 16 }, to: { type: 'string', minLength: 1, maxLength: 16 } },
+      required: ['from', 'to']
+    } },
+    warnings: { type: 'array', maxItems: 12, items: { type: 'string', maxLength: 220 } },
+    image_summary: { type: 'string', maxLength: 240 }
+  },
+  required: ['points', 'lines', 'warnings', 'image_summary']
+};
 const OLLAMA_CHAT_URL = process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat';
 const OLLAMA_TAGS_URL = process.env.OLLAMA_TAGS_URL || 'http://127.0.0.1:11434/api/tags';
 
@@ -86,15 +106,21 @@ async function getOllamaStatus() {
   }
 }
 
-function parseModelJson(raw) {
+function parseModelJson(raw, doneReason = 'unknown') {
   const text = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');
-  if (first < 0 || last <= first) throw new Error('Ответ модели не содержит JSON-объект.');
-  return JSON.parse(text.slice(first, last + 1));
+  if (!text) throw new Error('Модель вернула пустой текстовый ответ.');
+  if (first < 0) throw new Error('Ответ не содержит открывающую фигурную скобку JSON.');
+  if (last < first) {
+    if (doneReason === 'length') throw new Error('JSON начался, но не завершился: генерация оборвана по лимиту токенов (нет закрывающей скобки).');
+    throw new Error('JSON начался, но в ответе нет закрывающей фигурной скобки.');
+  }
+  try { return JSON.parse(text.slice(first, last + 1)); }
+  catch (error) { throw new Error(`JSON-объект найден, но синтаксис повреждён: ${error.message}`); }
 }
 
-async function callOllama({ messages, numPredict = 4096, timeoutMs = 360000 }) {
+async function callOllama({ messages, numPredict = 4096, timeoutMs = 360000, format = 'json' }) {
   const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -102,7 +128,7 @@ async function callOllama({ messages, numPredict = 4096, timeoutMs = 360000 }) {
       model: QWEN_MODEL,
       messages,
       stream: false,
-      format: 'json',
+      format,
       think: false,
       options: { num_ctx: 8192, num_predict: numPredict, temperature: 0, top_p: 0.8, repeat_penalty: 1.0 },
     }),
@@ -127,7 +153,7 @@ app.get('/api/health', async (_req, res) => {
   const ollama = await getOllamaStatus();
   res.json({
     ok: true,
-    appVersion: '2.7.0',
+    appVersion: '2.8.0',
     mode: 'json-lab-only',
     model: QWEN_MODEL,
     ollamaReachable: ollama.reachable,
@@ -154,15 +180,16 @@ app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
     const prompt = String(req.body.prompt || QWEN_VISION_PROMPT).slice(0, 24000);
     const result = await callOllama({
       messages: [{ role: 'user', content: prompt, images: [req.file.buffer.toString('base64')] }],
-      numPredict: 6000,
+      numPredict: 3600,
+      format: VISION_JSON_SCHEMA,
     });
     let parsed = null;
     let parseError = '';
-    try { parsed = parseModelJson(result.rawContent); }
+    try { parsed = parseModelJson(result.rawContent, result.doneReason); }
     catch (error) { parseError = String(error.message || error); }
     const extractionWarnings = [];
     if (!result.rawContent) extractionWarnings.push('Ollama вернула пустой message.content.');
-    if (result.doneReason === 'length') extractionWarnings.push('Ответ обрезан по лимиту генерации; JSON может быть неполным.');
+    if (result.doneReason === 'length') extractionWarnings.push('Ответ оборван по лимиту генерации. Уменьши детализацию или проверь лимит токенов.');
     if (parseError) extractionWarnings.push(`JSON не разобран: ${parseError}`);
     if (parsed && (!Array.isArray(parsed.points) || !Array.isArray(parsed.lines))) {
       extractionWarnings.push('В JSON отсутствуют массивы points и/или lines.');
@@ -178,7 +205,7 @@ app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
       parseError,
       doneReason: result.doneReason,
       evalCount: result.evalCount,
-      rawPreview: result.rawContent.slice(0, 900),
+      rawPreview: result.rawContent.slice(0, 1800),
       warnings: extractionWarnings,
     }));
     res.json({ ok: true, stage: 'image-to-graph', ...result, parsed, parseError, extractionWarnings, promptUsed: prompt });
@@ -243,7 +270,7 @@ app.post('/api/qwen-route', aiLimiter, async (req, res) => {
     let parseError = '';
     let localValidation = null;
     try {
-      parsed = parseModelJson(result.rawContent);
+      parsed = parseModelJson(result.rawContent, result.doneReason);
       localValidation = validateRouteOutput(parsed, input, startId, endId);
     } catch (error) {
       parseError = String(error.message || error);
@@ -292,6 +319,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`CAD Sketch JSON Brain 2.7.0 запущен: http://${HOST}:${PORT}`);
+  console.log(`CAD Sketch JSON Brain 2.8.0 запущен: http://${HOST}:${PORT}`);
   console.log(`Только JSON-конвейер; Qwen model=${QWEN_MODEL}; старый OpenCV/CAD-способ отключён.`);
 });
