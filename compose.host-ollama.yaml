@@ -1,21 +1,7 @@
-# App in Docker, reusing host Ollama on 127.0.0.1:11434. Ollama itself remains on the host.
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    network_mode: host
     environment:
-      NODE_ENV: production
-      PORT: "3001"
-      HOST: "0.0.0.0"
-      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
-      OLLAMA_CHAT_URL: "http://127.0.0.1:11434/api/chat"
-      OLLAMA_TAGS_URL: "http://127.0.0.1:11434/api/tags"
-      PYTHON_BIN: "/opt/venv/bin/python"
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,size=512m
-    security_opt:
-      - no-new-privileges:true
+      OLLAMA_CHAT_URL: "http://host.docker.internal:11434/api/chat"
+      OLLAMA_TAGS_URL: "http://host.docker.internal:11434/api/tags"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

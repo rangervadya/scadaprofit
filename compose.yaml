@@ -39,11 +39,9 @@ services:
     command:
       - |
         set -eu
-        echo "Checking Ollama model: $${QWEN_MODEL}"
         if ollama list | awk 'NR > 1 {print $$1}' | grep -Fxq "$${QWEN_MODEL}"; then
           echo "Model $${QWEN_MODEL} is already present."
         else
-          echo "Model is missing; pulling it into the persistent Docker volume..."
           ollama pull "$${QWEN_MODEL}"
         fi
 
@@ -53,6 +51,9 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
+    depends_on:
+      ollama:
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-3001}:3000"
     environment:
@@ -62,9 +63,6 @@ services:
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
-      PYTHON_BIN: "/opt/venv/bin/python"
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,size=512m
     security_opt:
       - no-new-privileges:true
 

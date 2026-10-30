@@ -1,16 +1,13 @@
 {
-  "name": "cad-sketch-converter-offline",
-  "version": "2.6.0",
+  "name": "cad-sketch-json-brain",
+  "version": "2.7.0",
   "private": true,
-  "description": "Offline OpenCV tracing plus a Qwen JSON graph and route debugging workbench.",
+  "description": "JSON-only Qwen vision extraction and directed graph route inspection workbench.",
   "type": "module",
-  "engines": {
-    "node": ">=20.17.0"
-  },
+  "engines": { "node": ">=20.17.0" },
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check public/app.js && python3 -m py_compile processor.py cad_renderer.py && python3 -m unittest discover -s tests"
+    "check": "node --check server.js && node --check graph.js && node --check public/app.js && node --test"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

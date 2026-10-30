@@ -3,156 +3,85 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f5f2">
-  <meta name="description" content="Локальная векторная трассировка рукописных инженерных схем с OpenCV, OCR и SVG/DXF.">
-  <title>Чертёж — офлайн-конвертер схем</title>
+  <meta name="theme-color" content="#f4f4f0">
+  <meta name="description" content="Лаборатория JSON: Qwen распознаёт точки и связи на схеме, затем строит направленный путь с пошаговой визуализацией.">
+  <title>CAD Sketch JSON Brain — лаборатория</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Чертёж — главная">
-      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
-      <span class="brand-name">ЧЕРТЁЖ<span class="brand-dot">.</span></span>
+    <a class="brand" href="/" aria-label="JSON Brain">
+      <span class="brand-mark"><i></i><i></i><i></i></span>
+      <span>JSON BRAIN<span class="brand-dot">.</span></span>
     </a>
-    <div class="topbar-right">
-      <span class="status-pill"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка локальных сервисов…</span></span>
-      <span class="beta-tag">BETA</span>
-    </div>
+    <div class="topbar-status"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка Ollama…</span><span class="version" id="versionChip">v2.7.0</span></div>
   </header>
 
-  <main class="page-shell">
+  <main class="shell">
     <section class="intro">
-      <div class="eyebrow"><span class="eyebrow-line"></span> ИНСТРУМЕНТ ДЛЯ СЛУЖБЫ И МОНТАЖА</div>
-      <h1>Из эскиза —<br><span>в чистый чертёж.</span></h1>
-      <p class="intro-copy">Извлечение центральных линий непосредственно из штрихов исходного фото. Геометрия не дорисовывается языковой моделью; результат остаётся трассировкой пикселей и требует проверки.</p>
-      <div class="feature-row">
-        <div class="feature"><span class="feature-icon">⌁</span><span>Чёрные линии<br>на белом фоне</span></div>
-        <div class="feature"><span class="feature-icon">↗</span><span>SVG и DXF<br>векторный экспорт</span></div>
-        <div class="feature"><span class="feature-icon">№</span><span>Размеры и подписи<br>нужно проверить</span></div>
-      </div>
+      <p class="eyebrow">ЛАБОРАТОРИЯ РАСПОЗНАВАНИЯ И ТОПОЛОГИИ</p>
+      <h1>Сначала JSON.<br><em>Потом линия.</em></h1>
+      <p class="intro-copy">Старый конвейер OpenCV → CAD отключён. Здесь отдельно проверяем, что Qwen извлекает из фотографии, что он возвращает по большому промпту и как из координат строится каждый сегмент.</p>
     </section>
 
-    <section class="workspace" aria-label="Обработка схемы">
-      <div class="workspace-heading">
-        <div>
-          <p class="section-kicker">РАБОЧАЯ ОБЛАСТЬ</p>
-          <h2>Преобразование схемы</h2>
+    <section class="top-grid">
+      <article class="panel upload-panel">
+        <div class="panel-head"><div><span class="eyebrow">ШАГ 01</span><h2>Фото схемы → JSON</h2></div><span class="stage-tag">QWEN VISION</span></div>
+        <label class="dropzone" id="dropzone" for="imageInput">
+          <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
+          <span class="upload-icon">↑</span>
+          <strong id="uploadTitle">Перетащи сюда фото или выбери файл</strong>
+          <small id="uploadHint">PNG · JPG · WEBP · до 15 МБ</small>
+        </label>
+        <div class="upload-actions">
+          <button class="button button-primary" id="extractButton" type="button" disabled>1. Извлечь точки и линии</button>
+          <button class="button button-ghost" id="removeImage" type="button" disabled>Убрать фото</button>
         </div>
-        <div class="step-label"><span>01</span> ЗАГРУЗИТЬ <i></i><span>02</span> ОБРАБОТАТЬ <i></i><span>03</span> СКАЧАТЬ</div>
-      </div>
+        <p class="hint">Модель должна вернуть точки на каждом конце и повороте, затем направленные связи между соседними точками. Пустые массивы не считаются успешным распознаванием.</p>
+        <details class="prompt-details">
+          <summary>Промпт извлечения из фотографии</summary>
+          <textarea id="visionPrompt" class="code-input" rows="22" spellcheck="false"></textarea>
+          <button class="button button-ghost" id="resetVisionPrompt" type="button">Восстановить промпт</button>
+        </details>
+      </article>
 
-      <div class="work-grid">
-        <section class="panel source-panel">
-          <div class="panel-head">
-            <div class="panel-title-group"><span class="panel-number">01</span><h3>Исходный эскиз</h3></div>
-            <span class="panel-note">JPG · PNG · WEBP</span>
+      <article class="panel compare-panel">
+        <div class="panel-head"><div><span class="eyebrow">ПАРАЛЛЕЛЬНОЕ ОКНО</span><h2>Фото и построение</h2></div><span class="stage-tag">LIVE GRAPH</span></div>
+        <div class="compare-grid">
+          <div class="compare-col">
+            <div class="compare-label">ОРИГИНАЛ</div>
+            <div class="image-stage" id="imageStage"><div class="placeholder" id="imagePlaceholder">Исходное фото<br>появится здесь</div><img id="sourceImage" alt="Исходная фотография схемы" class="hidden"></div>
           </div>
-
-          <label class="dropzone" id="dropzone" for="fileInput" tabindex="0">
-            <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
-            <div class="upload-glyph" aria-hidden="true">
-              <svg viewBox="0 0 48 48" fill="none"><path d="M24 31V8m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 29v9a2 2 0 0 0 2 2h26a2 2 0 0 0 2-2v-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <div class="compare-col">
+            <div class="compare-label">JSON → ЛИНИЯ</div>
+            <div class="graph-stage">
+              <svg id="graphSvg" viewBox="0 0 1000 650" role="img" aria-label="Построение точек и направленных линий">
+                <defs>
+                  <marker id="arrowInput" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#a5a59d"/></marker>
+                  <marker id="arrowModel" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d77a24"/></marker>
+                </defs>
+                <g id="inputEdges"></g><g id="modelEdges"></g><g id="graphNodes"></g>
+              </svg>
+              <div class="graph-empty" id="graphEmpty">Добавь фотографию<br>или введи JSON ниже</div>
             </div>
-            <strong id="uploadTitle">Перетащите фото сюда</strong>
-            <span class="drop-copy" id="uploadSubtitle">или <span class="text-link">выберите файл</span> на устройстве</span>
-            <span class="file-limit">Максимальный размер файла — 15 МБ</span>
-          </label>
-
-          <div class="preview-wrap hidden" id="sourcePreviewWrap">
-            <div class="preview-toolbar"><span class="preview-file" id="sourceName">scheme.jpg</span><button type="button" class="text-button" id="removeFile">Убрать ×</button></div>
-            <div class="image-stage source-stage"><img id="sourcePreview" alt="Предпросмотр загруженного эскиза"></div>
           </div>
-
-          <div class="control-block">
-            <label class="field-label" for="notes">Примечание на листе <span>НЕОБЯЗАТЕЛЬНО</span></label>
-            <textarea id="notes" rows="3" maxlength="1500" placeholder="Например: объект № 14, участок котельной, эскиз от 28.10.2026…"></textarea>
-          </div>
-          <div class="control-block mode-control">
-            <label class="field-label" for="mode">Режим результата</label>
-            <select id="mode" class="mode-select">
-              <option value="cad" selected>Векторизовать центральные линии (OpenCV)</option>
-              <option value="clean">Показать очищенное чёрно-белое фото</option>
-            </select>
-            <small class="mode-help">OpenCV выделяет штрихи и строит их центральные линии. Это трассировка рисунка, а не распознавание инженерной семантики; сверяйте геометрию с оригиналом.</small>
-          </div>
-          <label class="check-row" for="strictMode">
-            <input id="strictMode" type="checkbox" checked>
-            <span class="custom-check" aria-hidden="true"></span>
-            <span class="check-copy"><strong>Сохранять больше мелких деталей</strong><small>Больше коротких штрихов попадёт в DXF; вместе с ними могут сохраниться рукописные пометки.</small></span>
-          </label>
-
-          <button type="button" class="primary-button" id="convertButton" disabled>
-            <span class="button-icon">✳</span><span id="convertButtonText">Обработать локально</span><span class="button-arrow">↗</span>
-          </button>
-          <p class="privacy-note"><span class="lock-icon">▣</span> Файл обрабатывается локально на вашем сервере и удаляется после запроса.</p>
-        </section>
-
-        <section class="panel result-panel">
-          <div class="panel-head">
-            <div class="panel-title-group"><span class="panel-number">02</span><h3>Результат</h3></div>
-            <span class="result-tag" id="resultTag">ОЖИДАНИЕ</span>
-          </div>
-
-          <div class="result-stage" id="resultStage">
-            <div class="stage-grid" aria-hidden="true"></div>
-            <div class="empty-state" id="emptyState">
-              <div class="empty-drawing" aria-hidden="true">
-                <svg viewBox="0 0 220 138" fill="none"><path d="M18 104 39 104 54 70 79 70 91 43 124 43 139 63 172 63 190 28" stroke="currentColor" stroke-width="1.35"/><path d="M18 104h35m26-34 9-9m36-18 15-13m33 33 18-22" stroke="currentColor" stroke-width="1.1"/><path d="M44 98h11m21-34 4 5m45-29 5 5m38 18 6-5" stroke="currentColor" stroke-width="1.2"/><circle cx="91" cy="43" r="4" stroke="currentColor"/><circle cx="139" cy="63" r="4" stroke="currentColor"/><path d="M39 110v-12m-4 6h8M168 76v-12m-4 6h8" stroke="currentColor" stroke-width="1.2"/><path d="M24 120h165" stroke="currentColor" stroke-width=".7" stroke-dasharray="3 4"/></svg>
-                <span class="drawing-cross cross-one">+</span><span class="drawing-cross cross-two">+</span>
-              </div>
-              <strong>Здесь появится чертёж</strong>
-              <p>Загрузите исходную схему<br>и запустите преобразование.</p>
-            </div>
-            <div class="loading-state hidden" id="loadingState" aria-live="polite">
-              <div class="loader-art"><span></span><span></span><span></span><span></span><span></span></div>
-              <strong>Перестраиваем линии</strong>
-              <p id="loadingHint">OpenCV выделяет штрихи и строит граф центральных линий; Tesseract ищет текстовые кандидаты.</p>
-              <div class="loading-track"><span></span></div>
-            </div>
-            <div class="result-image-wrap hidden" id="resultImageWrap"><img id="resultImage" alt="Реконструированная техническая схема в CAD-стиле"></div>
-          </div>
-
-          <div class="result-footer">
-            <div class="result-meta"><span class="meta-dot"></span><span id="resultMeta">Формат результата: PNG</span></div>
-            <div class="download-actions"><button type="button" class="download-button" id="downloadButton" disabled><span>↓</span> PNG</button><button type="button" class="download-button" id="downloadSvgButton" disabled>SVG</button><button type="button" class="download-button" id="downloadDxfButton" disabled>DXF</button></div>
-          </div>
-          <div class="warning-box"><span class="warning-symbol">!</span><p><strong>Важно для инженерных схем.</strong> SVG/DXF являются трассировкой пикселей, а не готовой инженерной моделью. Реальный масштаб не калибруется; пересечения могут не означать соединение. Перед работой проверьте все линии, узлы, диаметры и размеры по оригиналу.</p></div>
-          <section class="analysis-card" id="analysisCard">
-            <div class="analysis-head"><span class="analysis-chip">OPENCV · SKELETON GRAPH</span><span class="analysis-caption">ЛОКАЛЬНАЯ ТРАССИРОВКА</span></div>
-            <h4>Анализ схемы</h4>
-            <pre id="analysisText">После обработки здесь появится статистика извлечённых центральных линий.</pre>
-            <details class="ocr-details"><summary>Распознанный текст (OCR)</summary><p id="ocrText">После обработки появятся найденные подписи и цифры.</p></details>
-            <p class="analysis-footnote" id="analysisNote">Геометрия извлекается локально из пикселей. Ollama и облачный API для трассировки не используются.</p>
-          </section>
-        </section>
-      </div>
+        </div>
+        <div class="legend"><span><i class="legend-gray"></i> Входные связи</span><span><i class="legend-orange"></i> Ответ Qwen</span><span><i class="legend-point"></i> Точки и id</span></div>
+        <div class="step-controls">
+          <button class="button button-ghost" id="prevStep" type="button" disabled>← Предыдущий</button>
+          <strong id="stepLabel">Нет сегментов</strong>
+          <button class="button button-ghost" id="nextStep" type="button" disabled>Следующий →</button>
+        </div>
+        <div class="route-state" id="routeState">Ожидаю JSON-граф.</div>
+      </article>
     </section>
 
-    <section class="json-lab" id="jsonLab" aria-label="Лаборатория JSON Qwen">
-      <div class="workspace-heading json-lab-heading">
-        <div>
-          <p class="section-kicker">ОТЛАДКА МОДЕЛИ · НЕ CAD-РЕНДЕРЕР</p>
-          <h2>Лаборатория Qwen JSON</h2>
-          <p class="lab-intro">Сначала Qwen извлекает точки и связи из фотографии. Затем его JSON можно передать отдельному запросу для построения пути. Справа отображается геометрия, нарисованная напрямую из JSON браузером — без CAD-рендерера.</p>
-        </div>
-        <span class="analysis-chip" id="qwenModelChip">МОДЕЛЬ: ПРОВЕРКА…</span>
-      </div>
-
-      <div class="json-lab-grid">
-        <section class="json-panel">
-          <div class="panel-head">
-            <div class="panel-title-group"><span class="panel-number">A</span><h3>Входные данные и промпт</h3></div>
-            <span class="panel-note">JSON → ПУТЬ</span>
-          </div>
-          <button type="button" class="primary-button lab-action" id="qwenExtractButton" disabled>
-            <span class="button-icon">✳</span><span>1. Извлечь точки и линии с фото</span><span class="button-arrow">↗</span>
-          </button>
-          <p class="lab-help">Используется выбранное выше изображение. Сохраняется полный исходный ответ Qwen, включая ошибочный или пустой JSON.</p>
-
-          <div class="control-block">
-            <div class="field-line"><label class="field-label" for="graphInput">Входной JSON графа</label><div class="field-inline-actions"><button type="button" class="text-button" id="previewInputJson">Показать на графике</button><button type="button" class="text-button" id="resetGraphJson">Пример P1 → P2</button></div></div>
-            <textarea id="graphInput" class="code-input" spellcheck="false" rows="13">{
+    <section class="lower-grid">
+      <article class="panel graph-input-panel">
+        <div class="panel-head"><div><span class="eyebrow">ШАГ 02</span><h2>Входной граф</h2></div><button class="link-button" id="sampleGraph" type="button">Вставить пример P1 → P2</button></div>
+        <p class="hint">Проверь и при необходимости поправь JSON. Координаты и id здесь являются источником истины для следующего этапа.</p>
+        <textarea id="graphInput" class="code-input graph-editor" spellcheck="false">{
   "points": [
     {"id": "P1", "x": 199, "y": 415},
     {"id": "P2", "x": 854, "y": 217}
@@ -162,77 +91,36 @@
   ],
   "warnings": []
 }</textarea>
-          </div>
+        <div class="inline-actions"><button class="button button-ghost" id="previewGraph" type="button">Показать входной JSON</button><button class="button button-ghost" id="downloadInput" type="button">Скачать входной JSON</button></div>
+        <div class="endpoint-grid">
+          <label>Начальная точка (START_ID)<input id="startId" type="text" value="P1" autocomplete="off"></label>
+          <label>Конечная точка (END_ID)<input id="endId" type="text" value="P2" autocomplete="off"></label>
+        </div>
+        <button class="button button-primary full-button" id="routeButton" type="button">2. Построить путь по этому JSON</button>
+        <details class="prompt-details" open>
+          <summary>Большой промпт «JSON-мозга»</summary>
+          <textarea id="routePrompt" class="code-input" rows="27" spellcheck="false"></textarea>
+          <button class="button button-ghost" id="resetRoutePrompt" type="button">Восстановить стандартный промпт</button>
+        </details>
+      </article>
 
-          <div class="route-endpoints">
-            <label class="control-block"><span class="field-label">Начальная точка</span><input id="startPointId" class="text-input" value="P1" placeholder="Например P1"></label>
-            <label class="control-block"><span class="field-label">Конечная точка</span><input id="endPointId" class="text-input" value="P2" placeholder="Например P8"></label>
-          </div>
-          <button type="button" class="primary-button lab-action" id="qwenRouteButton">
-            <span class="button-icon">↗</span><span>2. Построить путь по этому JSON</span><span class="button-arrow">↗</span>
-          </button>
-          <p class="lab-help">Запрос отправляет JSON и большой промпт в Qwen. Локальная проверка отдельно сравнит путь и длину модели с входными данными.</p>
-
-          <details class="prompt-editor">
-            <summary>Показать / изменить большой промпт построения</summary>
-            <textarea id="routePrompt" class="code-input prompt-input" spellcheck="false" rows="26" placeholder="Загрузка системного промпта…"></textarea>
-            <div class="prompt-actions"><button type="button" class="download-button" id="restorePrompt">Восстановить стандартный промпт</button></div>
-          </details>
-        </section>
-
-        <section class="json-panel json-visual-panel">
-          <div class="panel-head">
-            <div class="panel-title-group"><span class="panel-number">B</span><h3>Как модель строит линию</h3></div>
-            <span class="result-tag review" id="jsonStatus">ОЖИДАНИЕ</span>
-          </div>
-          <div class="json-compare">
-            <div class="json-mini-source">
-              <div class="compare-label">ИСХОДНОЕ ФОТО</div>
-              <div class="mini-image-stage"><img id="qwenSourceMini" alt="Исходное изображение рядом с JSON-графом"><span id="qwenSourcePlaceholder">Загрузи фото<br>в верхней форме</span></div>
-            </div>
-            <div class="json-mini-graph">
-              <div class="compare-label">ПОСТРОЕНИЕ ИЗ JSON</div>
-              <div class="graph-stage" id="graphStage">
-            <svg id="graphSvg" viewBox="0 0 1000 650" role="img" aria-label="Граф точек и направленных линий">
-              <defs><marker id="graphArrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#171713"></path></marker><marker id="graphArrowActive" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#b26a28"></path></marker></defs>
-              <g id="graphEdges"></g><g id="graphNodes"></g>
-            </svg>
-            <div class="graph-empty" id="graphEmpty">Здесь появятся точки P1, P2…<br>и стрелки между ними.</div>
-              </div>
-            </div>
-          </div>
-          <div class="graph-controls">
-            <button type="button" class="download-button" id="stepPrev" disabled>← Предыдущий</button>
-            <span id="stepLabel">Нет сегментов</span>
-            <button type="button" class="download-button" id="stepNext" disabled>Следующий →</button>
-          </div>
-          <div class="graph-legend"><span><i class="legend-line"></i> Обычная связь</span><span><i class="legend-line active"></i> Текущий шаг</span><span><i class="legend-dot"></i> Точка</span></div>
-          <div class="json-result-tabs" role="tablist" aria-label="Ответы модели">
-            <button type="button" class="json-tab active" data-json-tab="extract" role="tab" aria-selected="true">1 · JSON с фото</button>
-            <button type="button" class="json-tab" data-json-tab="route" role="tab" aria-selected="false">2 · JSON пути</button>
-            <button type="button" class="json-tab" data-json-tab="check" role="tab" aria-selected="false">Проверка</button>
-          </div>
-          <pre class="json-output" id="rawExtractOutput">Ожидаю запуск извлечения JSON из изображения.</pre>
-          <pre class="json-output hidden" id="rawRouteOutput">Ожидаю запуск построения пути из входного JSON.</pre>
-          <pre class="json-output hidden" id="routeCheckOutput">Результат независимой проверки появится здесь.</pre>
-          <div class="json-output-actions"><button type="button" class="download-button" id="copyCurrentJson">Копировать показанный JSON</button><button type="button" class="download-button" id="downloadCurrentJson">Скачать JSON</button></div>
-          <p class="analysis-footnote" id="qwenTiming">Визуализация строится непосредственно из координат JSON. Если JSON верный, а здесь линия неправильная — это ошибка визуализатора; если точки/связи ошибочны уже в JSON — проблема на этапе Qwen.</p>
-        </section>
-      </div>
+      <article class="panel raw-panel">
+        <div class="panel-head"><div><span class="eyebrow">ШАГ 03</span><h2>Что реально вернула модель</h2></div><span class="stage-tag" id="modelChip">QWEN: —</span></div>
+        <div class="tabs" role="tablist" aria-label="JSON ответы">
+          <button class="tab active" data-tab="extract" type="button">1 · Raw JSON с фото</button>
+          <button class="tab" data-tab="route" type="button">2 · Raw JSON пути</button>
+          <button class="tab" data-tab="check" type="button">3 · Проверка</button>
+        </div>
+        <pre class="raw-output" id="extractRaw">Здесь появится дословный message.content от Ollama при распознавании фотографии.</pre>
+        <pre class="raw-output hidden" id="routeRaw">Здесь появится дословный message.content от Ollama при построении пути.</pre>
+        <pre class="raw-output hidden" id="checkRaw">Независимая проверка пока не запускалась.</pre>
+        <div class="inline-actions raw-actions"><button class="button button-ghost" id="copyCurrent" type="button">Копировать</button><button class="button button-ghost" id="downloadCurrent" type="button">Скачать JSON/TXT</button></div>
+        <div class="timing" id="timing">После вызова Qwen здесь будут модель, время, done_reason и eval_count.</div>
+      </article>
     </section>
 
-    <section class="how-section">
-      <div class="how-title"><span class="section-kicker">ПРОСТОЙ ПРОЦЕСС</span><h2>Три шага до чистого листа</h2></div>
-      <div class="how-grid">
-        <article class="how-card"><span class="how-index">01 / ВХОД</span><div class="how-icon icon-paper">▤</div><h3>Фото от слесаря</h3><p>Сфотографируйте бумагу ровно, в хорошем свете, чтобы подписи и размеры были различимы.</p></article>
-        <article class="how-card"><span class="how-index">02 / ОБРАБОТКА</span><div class="how-icon icon-process">⌘</div><h3>Локальная обработка</h3><p>OpenCV выделяет цветные штрихи или контрастные линии, строит их скелет и граф; Tesseract отдельно ищет надписи.</p></article>
-        <article class="how-card"><span class="how-index">03 / РЕЗУЛЬТАТ</span><div class="how-icon icon-export">↓</div><h3>Скачайте файлы</h3><p>PNG для просмотра, SVG и DXF для редактирования векторных центральных линий. Масштаб не калиброван, соединения требуют проверки.</p></article>
-      </div>
-    </section>
-
-    <footer class="footer"><span>ЧЕРТЁЖ<span class="brand-dot">.</span> <span class="footer-muted">OFFLINE VECTOR TRACE</span></span><span>Полностью локальная обработка · не заменяет проверку инженера</span></footer>
+    <footer class="footer"><strong>JSON BRAIN 2.7.0</strong><span>Только Qwen JSON · независимая проверка · без старого CAD/OpenCV-способа</span></footer>
   </main>
-
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
