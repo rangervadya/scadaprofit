@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { QWEN_DEFAULT_ROUTE_PROMPT, QWEN_VISION_PROMPT } from './prompts.js';
 import { validateInputGraph, validateRouteOutput } from './graph.js';
+import { strokesToGraph } from './strokes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,23 +18,28 @@ const MAX_FILE_SIZE = 15 * 1024 * 1024;
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
 
 const VISION_JSON_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
+  type: 'object', additionalProperties: false,
   properties: {
-    points: { type: 'array', maxItems: 60, items: {
+    strokes: { type: 'array', maxItems: 24, items: {
       type: 'object', additionalProperties: false,
-      properties: { id: { type: 'string', minLength: 1, maxLength: 16 }, x: { type: 'integer', minimum: 0, maximum: 1000 }, y: { type: 'integer', minimum: 0, maximum: 650 } },
-      required: ['id', 'x', 'y']
-    } },
-    lines: { type: 'array', maxItems: 100, items: {
-      type: 'object', additionalProperties: false,
-      properties: { from: { type: 'string', minLength: 1, maxLength: 16 }, to: { type: 'string', minLength: 1, maxLength: 16 } },
-      required: ['from', 'to']
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 12 },
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        points: { type: 'array', minItems: 2, maxItems: 10, items: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            x: { type: 'integer', minimum: 0, maximum: 1000 },
+            y: { type: 'integer', minimum: 0, maximum: 650 },
+          },
+          required: ['x', 'y'],
+        } },
+      },
+      required: ['id', 'confidence', 'points'],
     } },
     warnings: { type: 'array', maxItems: 12, items: { type: 'string', maxLength: 220 } },
-    image_summary: { type: 'string', maxLength: 240 }
+    image_summary: { type: 'string', maxLength: 240 },
   },
-  required: ['points', 'lines', 'warnings', 'image_summary']
+  required: ['strokes', 'warnings', 'image_summary'],
 };
 const OLLAMA_CHAT_URL = process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat';
 const OLLAMA_TAGS_URL = process.env.OLLAMA_TAGS_URL || 'http://127.0.0.1:11434/api/tags';
@@ -153,12 +159,12 @@ app.get('/api/health', async (_req, res) => {
   const ollama = await getOllamaStatus();
   res.json({
     ok: true,
-    appVersion: '2.8.0',
+    appVersion: '2.9.0',
     mode: 'json-lab-only',
     model: QWEN_MODEL,
     ollamaReachable: ollama.reachable,
     qwenAvailable: ollama.modelAvailable,
-    pipeline: 'photo → raw Qwen JSON → editable graph → Qwen route JSON → independent validator → SVG preview',
+    pipeline: 'photo → raw Qwen polylines → deterministic stroke graph → Qwen route JSON → independent validator → SVG preview',
     legacyCadPipeline: false,
   });
 });
@@ -180,7 +186,7 @@ app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
     const prompt = String(req.body.prompt || QWEN_VISION_PROMPT).slice(0, 24000);
     const result = await callOllama({
       messages: [{ role: 'user', content: prompt, images: [req.file.buffer.toString('base64')] }],
-      numPredict: 3600,
+      numPredict: 5000,
       format: VISION_JSON_SCHEMA,
     });
     let parsed = null;
@@ -188,27 +194,36 @@ app.post('/api/qwen-extract', aiLimiter, (req, res, next) => {
     try { parsed = parseModelJson(result.rawContent, result.doneReason); }
     catch (error) { parseError = String(error.message || error); }
     const extractionWarnings = [];
+    let graph = { points: [], lines: [], warnings: [] };
+    let graphStats = { strokeCount: 0, skippedStrokes: 0 };
     if (!result.rawContent) extractionWarnings.push('Ollama вернула пустой message.content.');
-    if (result.doneReason === 'length') extractionWarnings.push('Ответ оборван по лимиту генерации. Уменьши детализацию или проверь лимит токенов.');
+    if (result.doneReason === 'length') extractionWarnings.push('Ответ оборван по лимиту генерации. Проверь JSON в Raw JSON — он может быть неполным.');
     if (parseError) extractionWarnings.push(`JSON не разобран: ${parseError}`);
-    if (parsed && (!Array.isArray(parsed.points) || !Array.isArray(parsed.lines))) {
-      extractionWarnings.push('В JSON отсутствуют массивы points и/или lines.');
-    }
-    if (parsed && Array.isArray(parsed.points) && Array.isArray(parsed.lines) && (!parsed.points.length || !parsed.lines.length)) {
-      extractionWarnings.push('Модель вернула пустой граф. Проверьте raw JSON и промпт; линия на фото не считается распознанной.');
+    if (parsed && !Array.isArray(parsed.strokes)) extractionWarnings.push('В JSON отсутствует массив strokes.');
+    if (parsed && Array.isArray(parsed.strokes)) {
+      const converted = strokesToGraph(parsed);
+      graph = { points: converted.points, lines: converted.lines, warnings: converted.warnings };
+      graphStats = { strokeCount: converted.strokeCount, skippedStrokes: converted.skippedStrokes };
+      if (!converted.strokeCount && /линии|штрих|трасс|поворот/i.test(String(parsed.image_summary || ''))) {
+        extractionWarnings.push('ПРОТИВОРЕЧИЕ: image_summary сообщает о видимых линиях, но модель не вернула координатные полилинии.');
+      }
+      if (!converted.strokeCount) extractionWarnings.push('Модель распознала описание изображения, но не локализовала ни одного штриха координатами.');
     }
     console.log('[QWEN-EXTRACT]', JSON.stringify({
       model: result.model,
       rawChars: result.rawContent.length,
-      points: parsed?.points?.length ?? null,
-      lines: parsed?.lines?.length ?? null,
+      strokes: parsed?.strokes?.length ?? null,
+      strokeCount: graphStats.strokeCount,
+      skippedStrokes: graphStats.skippedStrokes,
+      generatedPoints: graph.points.length,
+      generatedLines: graph.lines.length,
       parseError,
       doneReason: result.doneReason,
       evalCount: result.evalCount,
-      rawPreview: result.rawContent.slice(0, 1800),
+      rawPreview: result.rawContent.slice(0, 2400),
       warnings: extractionWarnings,
     }));
-    res.json({ ok: true, stage: 'image-to-graph', ...result, parsed, parseError, extractionWarnings, promptUsed: prompt });
+    res.json({ ok: true, stage: 'image-to-polylines', ...result, parsed, graph, graphStats, parseError, extractionWarnings, promptUsed: prompt });
   } catch (error) {
     console.error('Qwen image graph extraction failed:', error?.stack || error);
     res.status(502).json({ error: String(error.message || error).slice(0, 1200), model: QWEN_MODEL });
@@ -319,6 +334,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`CAD Sketch JSON Brain 2.8.0 запущен: http://${HOST}:${PORT}`);
+  console.log(`CAD Sketch JSON Brain 2.9.0 запущен: http://${HOST}:${PORT}`);
   console.log(`Только JSON-конвейер; Qwen model=${QWEN_MODEL}; старый OpenCV/CAD-способ отключён.`);
 });

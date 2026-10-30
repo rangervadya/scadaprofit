@@ -15,19 +15,19 @@
       <span class="brand-mark"><i></i><i></i><i></i></span>
       <span>JSON BRAIN<span class="brand-dot">.</span></span>
     </a>
-    <div class="topbar-status"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка Ollama…</span><span class="version" id="versionChip">v2.8.0</span></div>
+    <div class="topbar-status"><span class="status-dot" id="apiDot"></span><span id="apiStatus">Проверка Ollama…</span><span class="version" id="versionChip">v2.9.0</span></div>
   </header>
 
   <main class="shell">
     <section class="intro">
       <p class="eyebrow">ЛАБОРАТОРИЯ РАСПОЗНАВАНИЯ И ТОПОЛОГИИ</p>
       <h1>Сначала JSON.<br><em>Потом линия.</em></h1>
-      <p class="intro-copy">Старый конвейер OpenCV → CAD отключён. Здесь отдельно проверяем, что Qwen извлекает из фотографии, что он возвращает по большому промпту и как из координат строится каждый сегмент.</p>
+      <p class="intro-copy">Старый конвейер OpenCV → CAD отключён. Сначала Qwen превращает каждый видимый штрих в полилинию координат; затем сервер строит соседние сегменты, не угадывая соединения между разными штрихами.</p>
     </section>
 
     <section class="top-grid">
       <article class="panel upload-panel">
-        <div class="panel-head"><div><span class="eyebrow">ШАГ 01</span><h2>Фото схемы → JSON</h2></div><span class="stage-tag">QWEN VISION</span></div>
+        <div class="panel-head"><div><span class="eyebrow">ШАГ 01</span><h2>Фото схемы → полилинии JSON</h2></div><span class="stage-tag">QWEN VISION</span></div>
         <label class="dropzone" id="dropzone" for="imageInput">
           <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
           <span class="upload-icon">↑</span>
@@ -35,12 +35,12 @@
           <small id="uploadHint">PNG · JPG · WEBP · до 15 МБ</small>
         </label>
         <div class="upload-actions">
-          <button class="button button-primary" id="extractButton" type="button" disabled>1. Извлечь точки и линии</button>
+          <button class="button button-primary" id="extractButton" type="button" disabled>1. Извлечь линии (полилинии)</button>
           <button class="button button-ghost" id="removeImage" type="button" disabled>Убрать фото</button>
         </div>
-        <p class="hint">Модель должна вернуть точки на каждом конце и повороте, затем направленные связи между соседними точками. Пустые массивы не считаются успешным распознаванием.</p>
+        <p class="hint">Сначала Qwen выдаёт отдельные штрихи с координатами поворотов. Сервер преобразует каждый штрих в последовательность точек и сегментов. Разные штрихи не соединяются автоматически.</p>
         <details class="prompt-details">
-          <summary>Промпт извлечения из фотографии</summary>
+          <summary>Промпт извлечения координатных штрихов</summary>
           <textarea id="visionPrompt" class="code-input" rows="22" spellcheck="false"></textarea>
           <button class="button button-ghost" id="resetVisionPrompt" type="button">Восстановить промпт</button>
         </details>
@@ -107,7 +107,7 @@
       <article class="panel raw-panel">
         <div class="panel-head"><div><span class="eyebrow">ШАГ 03</span><h2>Что реально вернула модель</h2></div><span class="stage-tag" id="modelChip">QWEN: —</span></div>
         <div class="tabs" role="tablist" aria-label="JSON ответы">
-          <button class="tab active" data-tab="extract" type="button">1 · Raw JSON с фото</button>
+          <button class="tab active" data-tab="extract" type="button">1 · Raw JSON полилиний с фото</button>
           <button class="tab" data-tab="route" type="button">2 · Raw JSON пути</button>
           <button class="tab" data-tab="check" type="button">3 · Проверка</button>
         </div>
@@ -119,7 +119,7 @@
       </article>
     </section>
 
-    <footer class="footer"><strong>JSON BRAIN 2.8.0</strong><span>Только Qwen JSON · независимая проверка · без старого CAD/OpenCV-способа</span></footer>
+    <footer class="footer"><strong>JSON BRAIN 2.9.0</strong><span>Только Qwen JSON · независимая проверка · без старого CAD/OpenCV-способа</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

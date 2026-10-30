@@ -211,8 +211,8 @@ async function loadPrompts() {
     routePrompt.value = data.routePrompt || '';
     modelChip.textContent = `QWEN: ${data.model || '—'}`;
     try {
-      const storedVision = localStorage.getItem('jsonBrainVisionPrompt_v28');
-      const storedRoute = localStorage.getItem('jsonBrainRoutePrompt_v28');
+      const storedVision = localStorage.getItem('jsonBrainVisionPrompt_v29');
+      const storedRoute = localStorage.getItem('jsonBrainRoutePrompt_v29');
       if (storedVision) visionPrompt.value = storedVision;
       if (storedRoute) routePrompt.value = storedRoute;
     } catch { /* storage may be disabled */ }
@@ -282,14 +282,14 @@ function formatStats(result, elapsed) {
 extractButton.addEventListener('click', async () => {
   if (!selectedFile) return notify('Сначала выбери фото.', true);
   const selected = selectedFile;
-  setButtonBusy(extractButton, true, 'Qwen анализирует фото…', '1. Извлечь точки и линии');
+  setButtonBusy(extractButton, true, 'Qwen анализирует фото…', '1. Извлечь линии (полилинии)');
   extractRaw.textContent = 'Отправляю фотографию в Ollama. Жду дословный ответ…';
   setRawTab('extract');
   setRouteState('Qwen анализирует изображение; прежний OpenCV/CAD-конвейер в этой версии не вызывается.');
   const form = new FormData();
   form.append('image', selected, selected.name);
   form.append('prompt', visionPrompt.value);
-  try { localStorage.setItem('jsonBrainVisionPrompt_v28', visionPrompt.value); } catch { /* storage may be disabled */ }
+  try { localStorage.setItem('jsonBrainVisionPrompt_v29', visionPrompt.value); } catch { /* storage may be disabled */ }
   const started = performance.now();
   try {
     const response = await fetch('/api/qwen-extract', { method: 'POST', body: form });
@@ -303,38 +303,41 @@ extractButton.addEventListener('click', async () => {
       parseError: data.parseError,
       doneReason: data.doneReason,
       evalCount: data.evalCount,
-      points: data.parsed?.points?.length ?? null,
-      lines: data.parsed?.lines?.length ?? null,
+      strokes: data.parsed?.strokes?.length ?? null,
+      generatedPoints: data.graph?.points?.length ?? 0,
+      generatedLines: data.graph?.lines?.length ?? 0,
+      graphStats: data.graphStats || null,
       warnings: data.extractionWarnings || [],
       modelWarnings: data.parsed?.warnings || [],
       imageSummary: data.parsed?.image_summary || '',
+      graphWarnings: data.graph?.warnings || [],
     };
     checkRaw.textContent = pretty(check);
     setRawTab('extract');
-    if (data.parsed && Array.isArray(data.parsed.points) && Array.isArray(data.parsed.lines)) {
-      graphInput.value = pretty(data.parsed);
-      const ids = data.parsed.points.map(point => point?.id).filter(id => typeof id === 'string');
+    if (data.parsed && Array.isArray(data.parsed.strokes) && data.graph && Array.isArray(data.graph.points) && Array.isArray(data.graph.lines)) {
+      graphInput.value = pretty(data.graph);
+      const ids = data.graph.points.map(point => point?.id).filter(id => typeof id === 'string');
       if (ids.length) {
         startIdInput.value = ids[0];
         endIdInput.value = ids.at(-1);
       }
-      renderGraph(data.parsed);
-      if (data.parsed.points.length && data.parsed.lines.length) {
-        setRouteState(`JSON разобран: ${data.parsed.points.length} точек, ${data.parsed.lines.length} связей. Это ответ Qwen, не проверенный чертёж.`, 'good');
+      renderGraph(data.graph);
+      if (data.graph.points.length && data.graph.lines.length) {
+        setRouteState(`Извлечено ${data.graphStats?.strokeCount || 0} полилиний → ${data.graph.points.length} точек и ${data.graph.lines.length} последовательных отрезков. Разные штрихи пока не объединены в узлах.`, 'good');
       } else {
-        setRouteState(`Qwen вернул JSON, но граф пуст (${data.parsed.points.length} точек, ${data.parsed.lines.length} связей). Смотри Raw JSON и предупреждения — распознавание пока не выполнено.`, 'bad');
+        setRouteState(`Qwen описала изображение, но не выдала координаты штрихов. Смотри Raw JSON и предупреждения.`, 'bad');
       }
     } else {
       setRouteState(`JSON не разобран: ${data.parseError || 'неизвестная ошибка'}${data.doneReason === 'length' ? ' Ответ был оборван по лимиту генерации.' : ''}`, 'bad');
     }
-    notify(data.parsed ? 'Raw JSON Qwen получен. Проверь точки и линии до построения пути.' : 'Ответ Qwen не удалось разобрать как JSON.', !data.parsed);
+    notify(data.parsed ? 'Raw JSON полилиний получен. Проверь координаты и сегменты.' : 'Ответ Qwen не удалось разобрать как JSON.', !data.parsed);
   } catch (error) {
     extractRaw.textContent = error.message || String(error);
     setRouteState(error.message || 'Ошибка извлечения.', 'bad');
     notify(error.message || 'Ошибка запроса.', true);
   } finally {
     extractButton.disabled = !selectedFile;
-    extractButton.textContent = '1. Извлечь точки и линии';
+    extractButton.textContent = '1. Извлечь линии (полилинии)';
   }
 });
 
@@ -352,7 +355,7 @@ routeButton.addEventListener('click', async () => {
     endId: endIdInput.value.trim(),
     prompt: routePrompt.value,
   };
-  try { localStorage.setItem('jsonBrainRoutePrompt_v28', routePrompt.value); } catch { /* storage may be disabled */ }
+  try { localStorage.setItem('jsonBrainRoutePrompt_v29', routePrompt.value); } catch { /* storage may be disabled */ }
   try {
     const response = await fetch('/api/qwen-route', {
       method: 'POST',
@@ -432,12 +435,12 @@ $('#sampleGraph').addEventListener('click', () => {
 
 $('#resetVisionPrompt').addEventListener('click', () => {
   visionPrompt.value = promptDefaults.visionPrompt || '';
-  try { localStorage.removeItem('jsonBrainVisionPrompt_v28'); localStorage.removeItem('jsonBrainVisionPrompt'); } catch { /* storage may be disabled */ }
+  try { localStorage.removeItem('jsonBrainVisionPrompt_v29'); localStorage.removeItem('jsonBrainVisionPrompt_v28'); localStorage.removeItem('jsonBrainVisionPrompt'); } catch { /* storage may be disabled */ }
   notify('Промпт извлечения восстановлен.');
 });
 $('#resetRoutePrompt').addEventListener('click', () => {
   routePrompt.value = promptDefaults.routePrompt || '';
-  try { localStorage.removeItem('jsonBrainRoutePrompt_v28'); localStorage.removeItem('jsonBrainRoutePrompt'); } catch { /* storage may be disabled */ }
+  try { localStorage.removeItem('jsonBrainRoutePrompt_v29'); localStorage.removeItem('jsonBrainRoutePrompt_v28'); localStorage.removeItem('jsonBrainRoutePrompt'); } catch { /* storage may be disabled */ }
   notify('Большой промпт построения восстановлен.');
 });
 

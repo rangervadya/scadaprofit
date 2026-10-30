@@ -1,13 +1,13 @@
 {
   "name": "cad-sketch-json-brain",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "private": true,
   "description": "JSON-only Qwen vision extraction and directed graph route inspection workbench.",
   "type": "module",
   "engines": { "node": ">=20.17.0" },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check graph.js && node --check public/app.js && node --test"
+    "check": "node --check server.js && node --check graph.js && node --check strokes.js && node --check public/app.js && node --test"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
