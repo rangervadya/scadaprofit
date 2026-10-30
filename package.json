@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-converter-offline",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
-  "description": "Offline CAD sketch reconstruction using Ollama graph extraction, OpenCV, OCR, SVG and DXF.",
+  "description": "Offline pen-stroke vector tracing using OpenCV skeleton graphs, Tesseract OCR, SVG and DXF.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check public/app.js && python3 -m py_compile processor.py cad_renderer.py"
+    "check": "node --check server.js && node --check public/app.js && python3 -m py_compile processor.py cad_renderer.py && python3 -m unittest discover -s tests"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

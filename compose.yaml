@@ -26,6 +26,7 @@ services:
       start_period: 30s
 
   model-init:
+    profiles: ["ai-setup"]
     image: ollama/ollama:latest
     restart: "no"
     depends_on:
@@ -33,7 +34,7 @@ services:
         condition: service_healthy
     environment:
       OLLAMA_HOST: "http://ollama:11434"
-      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -58,13 +59,10 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOST: "0.0.0.0"
-      QWEN_MODEL: "${QWEN_MODEL:-qwen2.5vl:3b}"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       PYTHON_BIN: "/opt/venv/bin/python"
-    depends_on:
-      model-init:
-        condition: service_completed_successfully
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m
     security_opt:

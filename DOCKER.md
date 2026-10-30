@@ -1,42 +1,47 @@
-# Docker Compose 2.4
+# Docker: CAD Sketch Converter 2.5.0
 
-## Services
-- `app`: Express, OpenCV, Tesseract, JSON-schema parser, SVG/DXF/PNG renderer.
-- `ollama`: local model API.
-- `model-init`: one-shot setup that uses Ollama API to check/pull `QWEN_MODEL` into the persistent volume before the app starts.
-
-## Start
+## Запуск
 
 ```bash
+cp -n .env.example .env
+docker compose config --quiet
 docker compose up -d --build
-docker compose ps
+```
+
+Приложение доступно по `http://IP_СЕРВЕРА:3001`.
+
+## Обновление текущего проекта
+
+Не стирайте каталог, не удаляйте named volumes и не запускайте `down -v`.
+
+```bash
+cd /opt/scadaprofit
+tar -czf /root/scadaprofit-backup-$(date +%F-%H%M).tar.gz .
+# Распакуйте новый полный архив поверх /opt/scadaprofit
+docker compose config --quiet
+docker compose build --no-cache app
+docker compose up -d --force-recreate app
+```
+
+## Ollama
+
+Векторизация и экспорт больше не вызывают Ollama. Сервис и volume `ollama_data` оставлены для сохранения прежней установки, но приложение не зависит от наличия модели. Сервис `model-init` отключён от обычного старта профилем `ai-setup`.
+
+Если требуется вручную загрузить модель для отдельного эксперимента:
+
+```bash
 docker compose exec ollama ollama list
-curl -s http://127.0.0.1:3001/api/health | python3 -m json.tool
+docker compose exec ollama ollama pull qwen3-vl:4b-instruct
 ```
 
-For the first run, model-init downloads the model if missing. To pull explicitly:
+Эта модель не используется для координат труб. Не удаляйте хранилище моделей при обновлении проекта.
+
+## Проверка
 
 ```bash
-docker compose exec ollama ollama pull qwen2.5vl:3b
-docker compose restart app
+docker compose ps
+docker compose exec app node -p "require('./package.json').version"
+curl -s http://127.0.0.1:3001/api/health
 ```
 
-Do not run `docker compose down -v` unless you want to delete the persistent model volume.
-
-## Reuse host Ollama instead
-
-The alternative `compose.host-ollama.yaml` places only the app in Docker and points it to Ollama already installed on the host:
-
-```bash
-docker compose -f compose.host-ollama.yaml up -d --build
-```
-
-Do not run both variants on the same port simultaneously.
-
-## GTX 1060 note
-
-Use only one model/query at a time; avoid other GPU-heavy applications. A 6 GB GTX 1060 is a tight configuration. Ollama can offload some work to RAM, but this lowers speed. If GPU passthrough is unavailable, verify NVIDIA Container Toolkit and run `docker run --rm --gpus all ubuntu nvidia-smi`. Restarting Docker may briefly interrupt other containers.
-
-## Quality note
-
-The model receives JSON Schema output constraints and analyzes overlapping crops. This guarantees JSON structure, not correct topology. The app rejects obvious one-line/collapsed responses. All line connections and labels still require human verification before engineering use.
+Ожидаемая версия: `2.5.0`. `/api/health` должен показывать `processorReady: true` и `geometryEngine: "opencv-skeleton-graph"`.

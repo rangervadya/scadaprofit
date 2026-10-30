@@ -21,7 +21,7 @@ const apiDot = document.querySelector('#apiDot');
 const apiStatus = document.querySelector('#apiStatus');
 const toast = document.querySelector('#toast');
 const notesInput = document.querySelector('#notes');
-const strictModeInput = document.querySelector('#strictMode');
+const preserveDetailsInput = document.querySelector('#strictMode');
 const modeInput = document.querySelector('#mode');
 const loadingHint = document.querySelector('#loadingHint');
 const analysisText = document.querySelector('#analysisText');
@@ -33,7 +33,7 @@ let sourceObjectUrl = null;
 let resultDataUrl = null;
 let resultSvgUrl = null;
 let resultDxfUrl = null;
-let filenames = { png: 'cad-clean.png', svg: 'cad-trace.svg', dxf: 'cad-trace.dxf' };
+let filenames = { png: 'cad-vector-preview.png', svg: 'cad-centerline-trace.svg', dxf: 'cad-centerline-trace.dxf' };
 let toastTimer = null;
 let loadingTimer = null;
 
@@ -42,25 +42,24 @@ function showToast(message, isError = false) {
   toast.classList.toggle('error', isError);
   toast.classList.remove('hidden');
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => toast.classList.add('hidden'), 6200);
+  toastTimer = window.setTimeout(() => toast.classList.add('hidden'), 7000);
 }
 
-function setServiceStatus({ qwenAvailable = false, ollamaReachable = false } = {}) {
-  apiDot.classList.toggle('ok', Boolean(qwenAvailable));
-  apiDot.classList.toggle('bad', !qwenAvailable);
-  if (qwenAvailable) apiStatus.textContent = 'Офлайн · Qwen готов';
-  else if (ollamaReachable) apiStatus.textContent = 'Ollama запущен · модель не найдена';
-  else apiStatus.textContent = 'Офлайн-режим · без Qwen';
+function setServiceStatus({ processorReady = false } = {}) {
+  apiDot.classList.toggle('ok', Boolean(processorReady));
+  apiDot.classList.toggle('bad', !processorReady);
+  apiStatus.textContent = processorReady ? 'Офлайн · OpenCV готов' : 'Локальный процессор недоступен';
 }
 
 async function checkServices() {
   try {
     const response = await fetch('/api/health');
     const data = await response.json();
+    if (!response.ok) throw new Error('Health-check failed');
     setServiceStatus(data);
-    analysisNote.textContent = data.qwenAvailable
-      ? `Локальная модель ${data.model} обнаружена. Внешний API не используется.`
-      : 'OpenCV/OCR работают локально. Для анализа Qwen установите Ollama и скачайте модель qwen2.5vl:3b.';
+    analysisNote.textContent = data.processorReady
+      ? 'Геометрия трассируется локально из пикселей: Ollama не рисует и не придумывает трубопровод. Масштаб и соединения нужно сверить с оригиналом.'
+      : 'Локальный процессор не готов. Проверьте журнал Docker.';
   } catch {
     apiStatus.textContent = 'Локальный сервер недоступен';
     apiDot.classList.add('bad');
@@ -119,10 +118,10 @@ function clearResult() {
   downloadSvgButton.disabled = true;
   downloadDxfButton.disabled = true;
   resultTag.textContent = 'ОЖИДАНИЕ';
-  resultTag.classList.remove('ready');
+  resultTag.classList.remove('ready', 'review');
   resultMeta.textContent = 'PNG · SVG · DXF';
-  analysisText.textContent = 'После обработки здесь появится анализ Qwen, если локальная модель установлена.';
-  ocrText.textContent = 'После обработки появятся найденные подписи и цифры.';
+  analysisText.textContent = 'После обработки здесь появится статистика трассировки OpenCV.';
+  ocrText.textContent = 'После обработки появятся кандидаты OCR. Текст нужно сверить вручную.';
 }
 
 function startLoading() {
@@ -130,24 +129,25 @@ function startLoading() {
   resultImageWrap.classList.add('hidden');
   loadingState.classList.remove('hidden');
   resultTag.textContent = 'ОБРАБОТКА';
-  resultTag.classList.remove('ready');
+  resultTag.classList.remove('ready', 'review');
   convertButton.disabled = true;
   convertButtonText.textContent = 'Идёт локальная обработка…';
   downloadButton.disabled = true;
   downloadSvgButton.disabled = true;
   downloadDxfButton.disabled = true;
   const hints = [
-    modeInput?.value === 'cad' ? 'Qwen разбирает перекрывающиеся фрагменты в структурированный JSON: узлы и соединения.' : 'OpenCV очищает фон и выравнивает контраст.',
-    'Tesseract пытается распознать подписи и числовые обозначения.',
-    modeInput?.value === 'cad' ? 'Объединяем линии фрагментов, стыкуем близкие узлы и проверяем геометрию.' : 'Строим контуры для SVG и DXF.',
-    'Выполняем локальную обработку; размеры и соединения потом нужно проверить.'
+    'OpenCV выделяет цветные штрихи ручки или контрастные линии на бумаге.',
+    'Утолщённые штрихи сжимаются до центральных линий (skeleton).',
+    'Строим граф пикселей и сохраняем ветвления; ничего не дорисовываем по догадке.',
+    'Tesseract ищет текстовые кандидаты отдельно от геометрии.',
+    'Формируем PNG, SVG и DXF. Масштаб и соединения потребуют проверки.',
   ];
   let index = 0;
   loadingHint.textContent = hints[index];
   loadingTimer = window.setInterval(() => {
     index = (index + 1) % hints.length;
     loadingHint.textContent = hints[index];
-  }, 3800);
+  }, 3300);
 }
 
 function stopLoading() {
@@ -203,7 +203,7 @@ convertButton.addEventListener('click', async () => {
     const formData = new FormData();
     formData.append('image', selectedFile, selectedFile.name);
     formData.append('notes', notesInput.value.trim());
-    formData.append('strictMode', String(strictModeInput.checked));
+    formData.append('preserveDetails', String(Boolean(preserveDetailsInput?.checked)));
     formData.append('mode', modeInput?.value || 'cad');
 
     const response = await fetch('/api/convert', { method: 'POST', body: formData });
@@ -220,22 +220,24 @@ convertButton.addEventListener('click', async () => {
     resultImage.src = resultDataUrl;
     resultImageWrap.classList.remove('hidden');
     emptyState.classList.add('hidden');
-    resultTag.textContent = 'ГОТОВО';
-    resultTag.classList.add('ready');
-    resultMeta.textContent = data.mode === 'cad' && data.stats?.routes
-      ? `${data.stats.routes} сегментов · ${data.stats.symbols || 0} символов · ${data.stats.labels || 0} подписей${data.stats.tilesTotal ? ` · ${data.stats.tilesProcessed}/${data.stats.tilesTotal} фрагм.` : ''} · ${data.stats.sheet || 'CAD'}`
-      : `${data.stats?.width || '?'} × ${data.stats?.height || '?'} px · ${data.stats?.contours || '?'} контуров · ${data.stats?.sheet || 'A4'}`;
+    resultTag.textContent = 'НУЖНА ПРОВЕРКА';
+    resultTag.classList.remove('ready');
+    resultTag.classList.add('review');
+
+    const stats = data.stats || {};
+    resultMeta.textContent = `${stats.primaryPaths ?? 0} основных штрихов · ${stats.detailPaths ?? 0} дополнительных · ${stats.ocrCount ?? 0} OCR-кандидатов · ${stats.sheet || 'A3'}`;
     downloadButton.disabled = false;
     downloadSvgButton.disabled = false;
     downloadDxfButton.disabled = false;
-    analysisText.textContent = data.analysis || 'Qwen-анализ не выполнен. PNG/SVG/DXF и OCR обработаны локально.';
+    analysisText.textContent = data.analysis || 'Векторная трассировка выполнена локально.';
     ocrText.textContent = data.ocrText || 'Надписи не найдены.';
-    analysisNote.textContent = [data.note, data.analysisNotice].filter(Boolean).join(' ');
-    if (data.qwenAvailable) setServiceStatus({ qwenAvailable: true, ollamaReachable: true });
-    showToast(data.cadReconstructed ? 'CAD-реконструкция создана локально. Обязательно проверьте подписи, размеры и соединения.' : data.analysisNotice ? 'Qwen не смог перестроить схему; показан резервный результат очистки.' : data.qwenAvailable ? 'Готово. Проверьте размеры и соединения.' : 'Векторизация готова без Qwen. Проверьте результат.', Boolean(data.analysisNotice) || !data.qwenAvailable || (data.mode === 'cad' && !data.cadReconstructed));
+    analysisNote.textContent = [data.note, ...(data.warnings || [])].filter(Boolean).join(' ');
+    setServiceStatus({ processorReady: true });
+    showToast('Векторная трассировка построена. Сверьте каждый участок, поворот и узел с исходным эскизом.');
   } catch (error) {
     emptyState.classList.remove('hidden');
     resultTag.textContent = 'ОШИБКА';
+    resultTag.classList.remove('ready', 'review');
     showToast(error.message || 'Не удалось выполнить локальную обработку.', true);
   } finally {
     stopLoading();

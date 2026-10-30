@@ -200,3 +200,6 @@ textarea:focus { border-color: #77776e; box-shadow: 0 0 0 2px rgba(20,20,20,.04)
 .mode-select { width: 100%; min-height: 44px; padding: 11px 12px; border: 1px solid #d7d7cf; border-radius: 4px; background: #fff; color: #1f1f1a; font: 12px/1.4 var(--font); }
 .mode-select:focus { outline: 2px solid #8e8e82; outline-offset: 2px; }
 .mode-help { display: block; margin-top: 8px; color: #77776f; font-size: 10px; line-height: 1.55; }
+
+/* Honest status: vector preview always requires manual engineering review. */
+.result-tag.review { color: #725c16; background: #f4edcf; }

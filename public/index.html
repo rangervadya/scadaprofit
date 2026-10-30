@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f5f2">
-  <meta name="description" content="Локальная приблизительная реконструкция рукописных инженерных схем в CAD-стиле с Qwen, OpenCV и SVG/DXF.">
+  <meta name="description" content="Локальная векторная трассировка рукописных инженерных схем с OpenCV, OCR и SVG/DXF.">
   <title>Чертёж — офлайн-конвертер схем</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
@@ -25,7 +25,7 @@
     <section class="intro">
       <div class="eyebrow"><span class="eyebrow-line"></span> ИНСТРУМЕНТ ДЛЯ СЛУЖБЫ И МОНТАЖА</div>
       <h1>Из эскиза —<br><span>в чистый чертёж.</span></h1>
-      <p class="intro-copy">Реконструкция схемы в аккуратный технический лист на локальном сервере. Qwen помогает восстановить линии, узлы и подписи; результат остаётся приблизительным и требует проверки.</p>
+      <p class="intro-copy">Извлечение центральных линий непосредственно из штрихов исходного фото. Геометрия не дорисовывается языковой моделью; результат остаётся трассировкой пикселей и требует проверки.</p>
       <div class="feature-row">
         <div class="feature"><span class="feature-icon">⌁</span><span>Чёрные линии<br>на белом фоне</span></div>
         <div class="feature"><span class="feature-icon">↗</span><span>SVG и DXF<br>векторный экспорт</span></div>
@@ -65,21 +65,21 @@
           </div>
 
           <div class="control-block">
-            <label class="field-label" for="notes">Пожелания к анализу <span>НЕОБЯЗАТЕЛЬНО</span></label>
-            <textarea id="notes" rows="3" maxlength="1500" placeholder="Например: обратить внимание на диаметры труб и соединения в правой части схемы…"></textarea>
+            <label class="field-label" for="notes">Примечание на листе <span>НЕОБЯЗАТЕЛЬНО</span></label>
+            <textarea id="notes" rows="3" maxlength="1500" placeholder="Например: объект № 14, участок котельной, эскиз от 28.10.2026…"></textarea>
           </div>
           <div class="control-block mode-control">
             <label class="field-label" for="mode">Режим результата</label>
             <select id="mode" class="mode-select">
-              <option value="cad" selected>Перерисовать в CAD-стиле (Qwen)</option>
-              <option value="clean">Только очистить исходное фото</option>
+              <option value="cad" selected>Векторизовать центральные линии (OpenCV)</option>
+              <option value="clean">Показать очищенное чёрно-белое фото</option>
             </select>
-            <small class="mode-help">CAD-режим заново строит упрощённую схему с ровными линиями и компьютерными подписями. Числа и соединения модель может перепутать — обязательно сверяйте с оригиналом.</small>
+            <small class="mode-help">OpenCV выделяет штрихи и строит их центральные линии. Это трассировка рисунка, а не распознавание инженерной семантики; сверяйте геометрию с оригиналом.</small>
           </div>
           <label class="check-row" for="strictMode">
             <input id="strictMode" type="checkbox" checked>
             <span class="custom-check" aria-hidden="true"></span>
-            <span class="check-copy"><strong>Строгий анализ</strong><small>Просить Qwen не угадывать нечитаемые размеры и подписи.</small></span>
+            <span class="check-copy"><strong>Сохранять больше мелких деталей</strong><small>Больше коротких штрихов попадёт в DXF; вместе с ними могут сохраниться рукописные пометки.</small></span>
           </label>
 
           <button type="button" class="primary-button" id="convertButton" disabled>
@@ -107,7 +107,7 @@
             <div class="loading-state hidden" id="loadingState" aria-live="polite">
               <div class="loader-art"><span></span><span></span><span></span><span></span><span></span></div>
               <strong>Перестраиваем линии</strong>
-              <p id="loadingHint">OpenCV очищает фото, Tesseract распознаёт текст, Qwen анализирует схему.</p>
+              <p id="loadingHint">OpenCV выделяет штрихи и строит граф центральных линий; Tesseract ищет текстовые кандидаты.</p>
               <div class="loading-track"><span></span></div>
             </div>
             <div class="result-image-wrap hidden" id="resultImageWrap"><img id="resultImage" alt="Реконструированная техническая схема в CAD-стиле"></div>
@@ -117,13 +117,13 @@
             <div class="result-meta"><span class="meta-dot"></span><span id="resultMeta">Формат результата: PNG</span></div>
             <div class="download-actions"><button type="button" class="download-button" id="downloadButton" disabled><span>↓</span> PNG</button><button type="button" class="download-button" id="downloadSvgButton" disabled>SVG</button><button type="button" class="download-button" id="downloadDxfButton" disabled>DXF</button></div>
           </div>
-          <div class="warning-box"><span class="warning-symbol">!</span><p><strong>Важно для инженерных схем.</strong> В CAD-режиме схема приблизительно реконструируется Qwen и строится как векторный лист. В режиме очистки SVG/DXF являются трассировкой пикселей. В обоих режимах числа, размеры и соединения обязательно сверьте с оригиналом.</p></div>
+          <div class="warning-box"><span class="warning-symbol">!</span><p><strong>Важно для инженерных схем.</strong> SVG/DXF являются трассировкой пикселей, а не готовой инженерной моделью. Реальный масштаб не калибруется; пересечения могут не означать соединение. Перед работой проверьте все линии, узлы, диаметры и размеры по оригиналу.</p></div>
           <section class="analysis-card" id="analysisCard">
-            <div class="analysis-head"><span class="analysis-chip">QWEN2.5-VL-3B</span><span class="analysis-caption">ЛОКАЛЬНЫЙ АНАЛИЗ</span></div>
+            <div class="analysis-head"><span class="analysis-chip">OPENCV · SKELETON GRAPH</span><span class="analysis-caption">ЛОКАЛЬНАЯ ТРАССИРОВКА</span></div>
             <h4>Анализ схемы</h4>
-            <pre id="analysisText">После обработки здесь появится анализ Qwen, если локальная модель установлена.</pre>
+            <pre id="analysisText">После обработки здесь появится статистика извлечённых центральных линий.</pre>
             <details class="ocr-details"><summary>Распознанный текст (OCR)</summary><p id="ocrText">После обработки появятся найденные подписи и цифры.</p></details>
-            <p class="analysis-footnote" id="analysisNote">Обработка выполняется локально. Для первого запуска необходимо заранее скачать зависимости и модель.</p>
+            <p class="analysis-footnote" id="analysisNote">Геометрия извлекается локально из пикселей. Ollama и облачный API для трассировки не используются.</p>
           </section>
         </section>
       </div>
@@ -133,12 +133,12 @@
       <div class="how-title"><span class="section-kicker">ПРОСТОЙ ПРОЦЕСС</span><h2>Три шага до чистого листа</h2></div>
       <div class="how-grid">
         <article class="how-card"><span class="how-index">01 / ВХОД</span><div class="how-icon icon-paper">▤</div><h3>Фото от слесаря</h3><p>Сфотографируйте бумагу ровно, в хорошем свете, чтобы подписи и размеры были различимы.</p></article>
-        <article class="how-card"><span class="how-index">02 / ОБРАБОТКА</span><div class="how-icon icon-process">⌘</div><h3>Локальная обработка</h3><p>OpenCV очищает изображение, OCR ищет подписи, Qwen описывает схему, а контуры экспортируются в SVG/DXF.</p></article>
-        <article class="how-card"><span class="how-index">03 / РЕЗУЛЬТАТ</span><div class="how-icon icon-export">↓</div><h3>Скачайте файлы</h3><p>PNG для просмотра, SVG для векторного листа и DXF для дальнейшего редактирования. CAD-реконструкция приблизительная.</p></article>
+        <article class="how-card"><span class="how-index">02 / ОБРАБОТКА</span><div class="how-icon icon-process">⌘</div><h3>Локальная обработка</h3><p>OpenCV выделяет цветные штрихи или контрастные линии, строит их скелет и граф; Tesseract отдельно ищет надписи.</p></article>
+        <article class="how-card"><span class="how-index">03 / РЕЗУЛЬТАТ</span><div class="how-icon icon-export">↓</div><h3>Скачайте файлы</h3><p>PNG для просмотра, SVG и DXF для редактирования векторных центральных линий. Масштаб не калиброван, соединения требуют проверки.</p></article>
       </div>
     </section>
 
-    <footer class="footer"><span>ЧЕРТЁЖ<span class="brand-dot">.</span> <span class="footer-muted">AI SCHEME REDRAW</span></span><span>Полностью локальная обработка · не заменяет проверку инженера</span></footer>
+    <footer class="footer"><span>ЧЕРТЁЖ<span class="brand-dot">.</span> <span class="footer-muted">OFFLINE VECTOR TRACE</span></span><span>Полностью локальная обработка · не заменяет проверку инженера</span></footer>
   </main>
 
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>

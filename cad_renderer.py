@@ -1,235 +1,221 @@
 #!/usr/bin/env python3
-"""Render a Qwen-extracted schematic specification to clean SVG, PNG and DXF.
+"""Render traced centerlines to an A3-style SVG, PNG and editable DXF.
 
-Coordinates in the specification are normalized to a 1000x1000 image-relative drawing area.
-This is an approximate reconstruction aid, not an engineering-authoritative CAD model.
+All coordinates are image-relative. The A3 page is only a presentation sheet;
+it does not establish real pipe lengths, diameters, scale or connectivity semantics.
 """
 from __future__ import annotations
-import json, math, sys, traceback
+
+import json
+import math
+import sys
+import traceback
 from pathlib import Path
+
 import cairosvg
 import ezdxf
 from ezdxf import units
 
-SVG_W, SVG_H = 1400.0, 1000.0
-# Drawing viewport is fitted to the source photo's aspect ratio to avoid squeezing/stretching geometry.
-MAX_DRAW_W, MAX_DRAW_H = 1280.0, 630.0
-DRAW_X, DRAW_Y, DRAW_W, DRAW_H = 60.0, 145.0, 1280.0, 630.0
-SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 1000.0
+SVG_W, SVG_H = 1400.0, 990.0
+SHEET_W, SHEET_H = 420.0, 297.0
+VIEW = (42.0, 112.0, 1316.0, 690.0)  # x, y, width, height in SVG units
 
-def safe_text(value, max_len=160):
-    if value is None:
-        return ''
-    text = ' '.join(str(value).replace('\x00', '').split())
-    return text[:max_len]
 
-def n(value, default=0.0, low=-10000.0, high=10000.0):
-    try:
-        result = float(value)
-        if not math.isfinite(result):
-            return default
-        return min(high, max(low, result))
-    except (TypeError, ValueError):
-        return default
+def esc(value, max_len=500):
+    text = ' '.join(str(value or '').replace('\x00', '').split())[:max_len]
+    return (text.replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;'))
 
-def xy(x, y):
-    return DRAW_X + n(x, low=0, high=1000) * SCALE_X, DRAW_Y + n(y, low=0, high=1000) * SCALE_Y
 
-def esc(s):
-    return (safe_text(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
-
-def path_d(points):
-    coords = [xy(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
-    if len(coords) < 2:
-        return ''
-    return 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in coords)
-
-def add_dxf_text(msp, text, x, y, height_px, angle=0, layer='ANNOTATIONS', align='LEFT'):
-    text = safe_text(text, 160)
+def add_text(msp, text, x_mm, y_mm, height_mm, layer='NOTES', rotation=0):
+    text = esc(text, 240)
     if not text:
         return
-    x_mm = x * 420.0 / SVG_W
-    y_mm = (SVG_H - y) * 297.0 / SVG_H
-    h_mm = max(1.3, height_px * 297.0 / SVG_H)
-    ent = msp.add_text(text, dxfattribs={'height': h_mm, 'rotation': -n(angle), 'layer': layer, 'style': 'Standard'})
-    ent.set_placement((x_mm, y_mm), align={'LEFT': ezdxf.enums.TextEntityAlignment.LEFT, 'CENTER': ezdxf.enums.TextEntityAlignment.CENTER, 'RIGHT': ezdxf.enums.TextEntityAlignment.RIGHT}.get(align, ezdxf.enums.TextEntityAlignment.LEFT))
+    entity = msp.add_text(text, dxfattribs={
+        'height': height_mm,
+        'rotation': rotation,
+        'layer': layer,
+        'style': 'Standard',
+    })
+    entity.set_placement((x_mm, y_mm), align=ezdxf.enums.TextEntityAlignment.LEFT)
 
-def main(spec_path: Path, out_dir: Path):
-    global DRAW_X, DRAW_Y, DRAW_W, DRAW_H, SCALE_X, SCALE_Y
-    spec = json.loads(spec_path.read_text(encoding='utf-8'))
+
+def to_sheet(point, source_width, source_height):
+    x, y = float(point[0]), float(point[1])
+    vx, vy, vw, vh = VIEW
+    scale = min(vw / max(1, source_width), vh / max(1, source_height))
+    drawn_w, drawn_h = source_width * scale, source_height * scale
+    ox = vx + (vw - drawn_w) / 2.0
+    oy = vy + (vh - drawn_h) / 2.0
+    return ox + x / 1000.0 * source_width * scale, oy + y / 1000.0 * source_height * scale
+
+
+def svg_to_mm(point):
+    x, y = point
+    return x * SHEET_W / SVG_W, (SVG_H - y) * SHEET_H / SVG_H
+
+
+def path_points(record, source_width, source_height):
+    points = record.get('points') if isinstance(record, dict) else None
+    if not isinstance(points, list) or len(points) < 2:
+        return []
+    result = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        try:
+            x = max(0.0, min(1000.0, float(point[0])))
+            y = max(0.0, min(1000.0, float(point[1])))
+        except (TypeError, ValueError):
+            continue
+        mapped = to_sheet((x, y), source_width, source_height)
+        if not result or math.hypot(mapped[0] - result[-1][0], mapped[1] - result[-1][1]) > 0.45:
+            result.append(mapped)
+    return result if len(result) >= 2 else []
+
+
+def main(vectors_path: Path, out_dir: Path):
+    data = json.loads(vectors_path.read_text(encoding='utf-8'))
     out_dir.mkdir(parents=True, exist_ok=True)
-    source_aspect = n(spec.get('sourceAspect'), 1.42, 0.4, 2.5)
-    # Preserve relative geometry from the source instead of stretching every drawing to one wide viewport.
-    DRAW_W = min(MAX_DRAW_W, MAX_DRAW_H * source_aspect)
-    DRAW_H = DRAW_W / source_aspect
-    if DRAW_H > MAX_DRAW_H:
-        DRAW_H = MAX_DRAW_H
-        DRAW_W = DRAW_H * source_aspect
-    DRAW_X = (SVG_W - DRAW_W) / 2.0
-    DRAW_Y = 145.0 + (MAX_DRAW_H - DRAW_H) / 2.0
-    SCALE_X, SCALE_Y = DRAW_W / 1000.0, DRAW_H / 1000.0
-    title = safe_text(spec.get('title') or 'СХЕМА ТРУБОПРОВОДА', 100)
-    subtitle = safe_text(spec.get('subtitle') or 'Перерисовка по исходному эскизу', 180)
-    routes = spec.get('routes') if isinstance(spec.get('routes'), list) else []
-    labels = spec.get('labels') if isinstance(spec.get('labels'), list) else []
-    symbols = spec.get('symbols') if isinstance(spec.get('symbols'), list) else []
-    dimensions = spec.get('dimensions') if isinstance(spec.get('dimensions'), list) else []
-    legend = spec.get('legend') if isinstance(spec.get('legend'), list) else []
-    if not routes or not any(isinstance(r, dict) and isinstance(r.get('points'), list) and len(r['points']) >= 2 for r in routes):
-        raise ValueError('Qwen не описал ни одной линии схемы. Попробуйте режим очистки или повторите с более чётким фото.')
-    routes, labels, symbols, dimensions, legend = routes[:400], labels[:160], symbols[:120], dimensions[:120], legend[:8]
+    source_size = data.get('sourceSize') or {}
+    source_width = max(1, int(source_size.get('width') or 1))
+    source_height = max(1, int(source_size.get('height') or 1))
+    primary = data.get('primaryPaths') if isinstance(data.get('primaryPaths'), list) else []
+    details = data.get('detailPaths') if isinstance(data.get('detailPaths'), list) else []
+    annotations = data.get('annotationPaths') if isinstance(data.get('annotationPaths'), list) else []
+    ocr = data.get('ocr') if isinstance(data.get('ocr'), list) else []
+    diag = data.get('diagnostics') if isinstance(data.get('diagnostics'), dict) else {}
+    user_note = esc(data.get('userNote') or '', 140)
+    title = 'СХЕМА · ВЕКТОРНАЯ ТРАССИРОВКА'
+    subtitle = f"Штрихи: OpenCV · {source_width}×{source_height} px · масштаб не калиброван"
 
     svg = [f'''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {SVG_W:.0f} {SVG_H:.0f}">
 <rect width="100%" height="100%" fill="#ffffff"/>
-<rect x="14" y="14" width="1372" height="972" fill="none" stroke="#000" stroke-width="1.5"/>
-<g font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
-<text x="42" y="44" font-size="15" font-weight="bold">{esc(title)}</text>
-<text x="42" y="69" font-size="11">{esc(subtitle)}</text>
-<line x1="30" y1="91" x2="1370" y2="91" stroke-width="1.1"/>
-<rect x="1040" y="25" width="330" height="54" fill="none" stroke-width="1"/>
-<text x="1052" y="45" font-size="11">CAD SKETCH CONVERTER · ОФЛАЙН</text>
-<text x="1052" y="64" font-size="10">Схема требует инженерной проверки</text>
+<rect x="15" y="15" width="1370" height="960" fill="none" stroke="#111" stroke-width="1.5"/>
+<g font-family="Arial, DejaVu Sans, sans-serif" fill="#111" stroke="#111">
+  <text x="42" y="48" font-size="18" font-weight="bold">{esc(title)}</text>
+  <text x="42" y="73" font-size="11" fill="#555" stroke="none">{esc(subtitle)}</text>
+  <line x1="30" y1="88" x2="1370" y2="88" stroke-width="1.2"/>
+  <rect x="1050" y="25" width="320" height="48" fill="none" stroke-width="0.9"/>
+  <text x="1062" y="45" font-size="10">CAD SKETCH CONVERTER · OFFLINE</text>
+  <text x="1062" y="61" font-size="9" stroke="none" fill="#555">Геометрия получена трассировкой пикселей</text>
 </g>
-<g id="routes" fill="none" stroke="#000" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">''']
-    # Routes are drawn as straight-segment polylines; aspect-ratio fitting avoids stretching the source layout.
+<rect x="32" y="100" width="1336" height="716" fill="none" stroke="#b9b9b9" stroke-width="0.7"/>
+''']
+
     dxf = ezdxf.new('R2010')
     dxf.units = units.MM
     dxf.header['$INSUNITS'] = 4
     dxf.header['$MEASUREMENT'] = 1
-    dxf.layers.new('PIPE_MAIN', dxfattribs={'color': 7, 'lineweight': 25})
-    dxf.layers.new('PIPE_BRANCH', dxfattribs={'color': 7, 'lineweight': 18})
-    dxf.layers.new('SYMBOLS', dxfattribs={'color': 7, 'lineweight': 18})
-    dxf.layers.new('DIMENSIONS', dxfattribs={'color': 7, 'lineweight': 13})
-    dxf.layers.new('ANNOTATIONS', dxfattribs={'color': 7, 'lineweight': 13})
-    dxf.layers.new('SHEET', dxfattribs={'color': 7, 'lineweight': 13})
+    for name, colour, lineweight in [
+        ('SHEET', 7, 13), ('CENTERLINE_PRIMARY', 7, 25),
+        ('DETAIL_TRACE', 8, 9), ('ANNOTATION_TRACE', 9, 5), ('NOTES', 7, 13),
+    ]:
+        if name not in dxf.layers:
+            dxf.layers.new(name, dxfattribs={'color': colour, 'lineweight': lineweight})
     msp = dxf.modelspace()
-    def to_dxf(xp, yp):
-        return (xp * 420.0 / SVG_W, (SVG_H - yp) * 297.0 / SVG_H)
-    # border + title structures in DXF
-    border = [(14,14),(1386,14),(1386,986),(14,986)]
-    msp.add_lwpolyline([to_dxf(x,y) for x,y in border], close=True, dxfattribs={'layer':'SHEET'})
-    msp.add_line(to_dxf(30,91), to_dxf(1370,91), dxfattribs={'layer':'SHEET'})
-    msp.add_lwpolyline([to_dxf(x,y) for x,y in [(1040,25),(1370,25),(1370,79),(1040,79)]], close=True, dxfattribs={'layer':'SHEET'})
-    add_dxf_text(msp, title, 42, 44, 15, layer='ANNOTATIONS')
-    add_dxf_text(msp, subtitle, 42, 69, 11, layer='ANNOTATIONS')
-    add_dxf_text(msp, 'CAD SKETCH CONVERTER - OFFLINE', 1052, 45, 11, layer='ANNOTATIONS')
-    add_dxf_text(msp, 'Engineering review required', 1052, 64, 10, layer='ANNOTATIONS')
 
-    for route in routes:
-        if not isinstance(route, dict): continue
-        points = route.get('points')
-        if not isinstance(points, list): continue
-        valid = [xy(p[0], p[1]) for p in points if isinstance(p, (list,tuple)) and len(p)>=2]
-        if len(valid) < 2: continue
-        kind = safe_text(route.get('kind', 'main'), 20).lower()
-        width = 2.15 if kind in ('main', 'trunk', 'основная') else 1.45
-        layer = 'PIPE_MAIN' if width > 2 else 'PIPE_BRANCH'
-        svg.append(f'<polyline points="{" ".join(f"{x:.2f},{y:.2f}" for x,y in valid)}" fill="none" stroke="#000" stroke-width="{width}"/>')
-        msp.add_lwpolyline([to_dxf(x,y) for x,y in valid], dxfattribs={'layer':layer})
-        rlabel = safe_text(route.get('label'), 40)  # Do not print internal IDs as drawing annotations.
-        if rlabel and len(valid) > 2:
-            mid = valid[len(valid)//2]
-            # route identifier in an outlined label, like a technical drawing callout
-            svg.append(f'<circle cx="{mid[0]:.2f}" cy="{mid[1]:.2f}" r="11" fill="#fff" stroke="#000" stroke-width="1.1"/>')
-            svg.append(f'<text x="{mid[0]:.2f}" y="{mid[1]+3.8:.2f}" text-anchor="middle" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif" font-size="10">{esc(rlabel)}</text>')
-            add_dxf_text(msp, rlabel, mid[0], mid[1]-2, 10, layer='ANNOTATIONS', align='CENTER')
+    # Border and header in the DXF page coordinate system.
+    border = [(15, 15), (1385, 15), (1385, 975), (15, 975)]
+    msp.add_lwpolyline([svg_to_mm(p) for p in border], close=True, dxfattribs={'layer': 'SHEET'})
+    msp.add_line(svg_to_mm((30, 88)), svg_to_mm((1370, 88)), dxfattribs={'layer': 'SHEET'})
+    msp.add_lwpolyline([svg_to_mm(p) for p in [(1050,25),(1370,25),(1370,73),(1050,73)]], close=True, dxfattribs={'layer': 'SHEET'})
+    add_text(msp, title, 12.6, 282.6, 5.4)
+    add_text(msp, subtitle, 12.6, 275.2, 3.3)
+    add_text(msp, 'CAD SKETCH CONVERTER - OFFLINE', 318, 283.5, 3.0)
+    add_text(msp, 'Pixel-derived vectors; scale not calibrated', 318, 278.8, 2.5)
 
-    for dim in dimensions:
-        if not isinstance(dim, dict): continue
-        x1=n(dim.get('x1'),low=0,high=1000); y1=n(dim.get('y1'),low=0,high=1000)
-        x2=n(dim.get('x2'),low=0,high=1000); y2=n(dim.get('y2'),low=0,high=1000)
-        a=xy(x1,y1); b=xy(x2,y2)
-        txt=safe_text(dim.get('text'),40)
-        svg.append(f'<g fill="none" stroke="#000" stroke-width="0.75"><line x1="{a[0]:.2f}" y1="{a[1]:.2f}" x2="{b[0]:.2f}" y2="{b[1]:.2f}"/><line x1="{a[0]-3:.2f}" y1="{a[1]-4:.2f}" x2="{a[0]+3:.2f}" y2="{a[1]+4:.2f}"/><line x1="{b[0]-3:.2f}" y1="{b[1]-4:.2f}" x2="{b[0]+3:.2f}" y2="{b[1]+4:.2f}"/></g>')
-        if txt:
-            mx=(a[0]+b[0])/2; my=(a[1]+b[1])/2-5
-            svg.append(f'<text x="{mx:.2f}" y="{my:.2f}" text-anchor="middle" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif" font-size="10">{esc(txt)}</text>')
-            add_dxf_text(msp, txt, mx, my, 10, layer='DIMENSIONS', align='CENTER')
-        msp.add_line(to_dxf(*a), to_dxf(*b), dxfattribs={'layer':'DIMENSIONS'})
+    primary_count = 0
+    detail_count = 0
+    annotation_count = 0
+    for record in primary:
+        points = path_points(record, source_width, source_height)
+        if len(points) < 2:
+            continue
+        svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#111111" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>')
+        msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'CENTERLINE_PRIMARY'})
+        primary_count += 1
 
-    for sym in symbols:
-        if not isinstance(sym, dict): continue
-        x,y=xy(sym.get('x'),sym.get('y'))
-        typ=safe_text(sym.get('type','junction'),20).lower()
-        label=safe_text(sym.get('label') or sym.get('id'),32)
-        if typ in ('valve','клапан','задвижка'):
-            pts=[(x-8,y),(x,y-6),(x+8,y),(x,y+6)]
-            svg.append(f'<polygon points="{" ".join(f"{px:.2f},{py:.2f}" for px,py in pts)}" fill="#fff" stroke="#000" stroke-width="1.2"/>')
-            msp.add_lwpolyline([to_dxf(*p) for p in pts], close=True, dxfattribs={'layer':'SYMBOLS'})
-        elif typ in ('pump','насос'):
-            svg.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="9" fill="#fff" stroke="#000" stroke-width="1.2"/><path d="M {x-3:.2f} {y-5:.2f} L {x+5:.2f} {y:.2f} L {x-3:.2f} {y+5:.2f} Z" fill="#fff" stroke="#000" stroke-width="1"/>')
-            msp.add_circle(to_dxf(x,y), radius=9*420/SVG_W, dxfattribs={'layer':'SYMBOLS'})
-            msp.add_lwpolyline([to_dxf(x-3,y-5),to_dxf(x+5,y),to_dxf(x-3,y+5)], close=True, dxfattribs={'layer':'SYMBOLS'})
-        elif typ in ('end','конец','terminal'):
-            svg.append(f'<line x1="{x-5:.2f}" y1="{y-8:.2f}" x2="{x+5:.2f}" y2="{y+8:.2f}" stroke="#000" stroke-width="1.5"/>')
-            msp.add_line(to_dxf(x-5,y-8),to_dxf(x+5,y+8),dxfattribs={'layer':'SYMBOLS'})
-        elif typ in ('tank','резервуар','box'):
-            svg.append(f'<rect x="{x-8:.2f}" y="{y-6:.2f}" width="16" height="12" fill="#fff" stroke="#000" stroke-width="1.2"/>')
-            msp.add_lwpolyline([to_dxf(x-8,y-6),to_dxf(x+8,y-6),to_dxf(x+8,y+6),to_dxf(x-8,y+6)],close=True,dxfattribs={'layer':'SYMBOLS'})
-        else:
-            svg.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="7" fill="#fff" stroke="#000" stroke-width="1.1"/><circle cx="{x:.2f}" cy="{y:.2f}" r="2" fill="#000" stroke="none"/>')
-            msp.add_circle(to_dxf(x,y), radius=7*420/SVG_W, dxfattribs={'layer':'SYMBOLS'})
-        if label:
-            tx,ty=x+12,y-8
-            svg.append(f'<text x="{tx:.2f}" y="{ty:.2f}" font-size="10" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif">{esc(label)}</text>')
-            add_dxf_text(msp,label,tx,ty,10,layer='ANNOTATIONS')
+    # Fine strokes are retained as a quieter secondary layer. They can be switched
+    # off in CAD to simplify the drawing; they are not silently discarded.
+    for record in details:
+        points = path_points(record, source_width, source_height)
+        if len(points) < 2:
+            continue
+        svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#555555" stroke-opacity="0.42" stroke-width="0.55" stroke-linecap="round" stroke-linejoin="round"/>')
+        msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'DETAIL_TRACE'})
+        detail_count += 1
 
-    for item in labels:
-        if not isinstance(item, dict): continue
-        x,y=xy(item.get('x'),item.get('y'))
-        text=safe_text(item.get('text'),160)
-        if not text: continue
-        angle=n(item.get('angle'),0,-90,90)
-        size=n(item.get('size'),10,6,18)
-        kind=safe_text(item.get('kind','note'),20).lower()
-        if kind in ('node','узел'):
-            svg.append(f'<circle cx="{x:.2f}" cy="{y-3:.2f}" r="9" fill="#fff" stroke="#000" stroke-width="1.1"/>')
-            svg.append(f'<text x="{x:.2f}" y="{y+0.5:.2f}" font-size="9" text-anchor="middle" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif">{esc(text)}</text>')
-            add_dxf_text(msp,text,x,y-1,9,layer='ANNOTATIONS',align='CENTER')
-        else:
-            svg.append(f'<text x="{x:.2f}" y="{y:.2f}" font-size="{size:.1f}" fill="#000" stroke="none" font-family="Arial, DejaVu Sans, sans-serif" transform="rotate({angle:.1f} {x:.2f} {y:.2f})">{esc(text)}</text>')
-            add_dxf_text(msp,text,x,y,size,angle,layer='DIMENSIONS' if kind in ('dimension','размер') else 'ANNOTATIONS')
 
-    # Legend block and drawing-note box: makes the output look like a plotted CAD sheet.
-    legend_y = 854.0
-    svg.append('<g fill="none" stroke="#000" stroke-width="0.8"><rect x="36" y="805" width="900" height="150"/><line x1="36" y1="830" x2="936" y2="830"/></g>')
-    svg.append('<text x="48" y="822" font-size="11" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none" font-weight="bold">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>')
-    add_dxf_text(msp,'УСЛОВНЫЕ ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ',48,822,11,layer='ANNOTATIONS')
-    if not legend:
-        legend = ["Чертёж восстановлен приблизительно по изображению.", "Числовые значения и расположение соединений требуют проверки."]
-    for i, item in enumerate(legend[:6]):
-        txt = safe_text(item.get('text') if isinstance(item,dict) else item,150)
-        yy = legend_y + i*18
-        svg.append(f'<text x="52" y="{yy:.2f}" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">{i+1}. {esc(txt)}</text>')
-        add_dxf_text(msp,f'{i+1}. {txt}',52,yy,10,layer='ANNOTATIONS')
-    svg.append('<rect x="962" y="805" width="405" height="150" fill="none" stroke="#000" stroke-width="0.8"/>')
-    svg.append('<text x="980" y="828" font-size="11" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none" font-weight="bold">ОСНОВНАЯ НАДПИСЬ</text>')
-    svg.append('<line x1="962" y1="837" x2="1367" y2="837" stroke="#000" stroke-width="0.8"/>')
-    svg.append(f'<text x="980" y="862" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Наименование: {esc(title[:48])}</text>')
-    svg.append('<text x="980" y="885" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Формат: A3 · Единицы: мм (условные)</text>')
-    svg.append('<text x="980" y="908" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Источник: фотография/скан эскиза</text>')
-    svg.append('<text x="980" y="931" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#000" stroke="none">Проверить: геометрию, узлы, размеры, подписи</text>')
-    for yy, txt in [(828,'ОСНОВНАЯ НАДПИСЬ'),(862,'Наименование: '+title[:48]),(885,'Формат: A3 | Единицы: мм (условные)'),(908,'Источник: фото/скан эскиза'),(931,'Проверить: геометрию, узлы, размеры')]:
-        add_dxf_text(msp,txt,980,yy,10 if yy!=828 else 11,layer='ANNOTATIONS')
+    # OCR-overlapping strokes are retained in a separate, very light layer. They
+    # are often handwritten dimensions/notes; OCR overlap is only a hint, never
+    # a reason to discard them from the editable DXF.
+    for record in annotations:
+        points = path_points(record, source_width, source_height)
+        if len(points) < 2:
+            continue
+        svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#999999" stroke-opacity="0.22" stroke-width="0.42" stroke-linecap="round" stroke-linejoin="round"/>')
+        msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'ANNOTATION_TRACE'})
+        annotation_count += 1
 
-    svg.append('</g></svg>')
-    svg_text='\n'.join(svg)
-    svg_path=out_dir/'cad-redraw.svg'
-    png_path=out_dir/'cad-redraw.png'
-    dxf_path=out_dir/'cad-redraw.dxf'
-    svg_path.write_text(svg_text,encoding='utf-8')
-    cairosvg.svg2png(bytestring=svg_text.encode('utf-8'),write_to=str(png_path),output_width=1960,output_height=1400)
+    # Notes and a conservative title block; no invented pipe sizes or dimensions.
+    svg.extend([
+        '<rect x="35" y="835" width="900" height="116" fill="none" stroke="#111" stroke-width="0.8"/>',
+        '<line x1="35" y1="860" x2="935" y2="860" stroke="#111" stroke-width="0.8"/>',
+        '<text x="48" y="852" font-size="11" font-family="Arial, DejaVu Sans, sans-serif" fill="#111" stroke="none" font-weight="bold">ПРИМЕЧАНИЯ И ПРОВЕРКИ</text>',
+        '<text x="50" y="882" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">1. Показаны центральные линии выделенных штрихов, а не автоматически распознанные трубы.</text>',
+        '<text x="50" y="901" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">2. Сверьте повороты, разветвления, пересечения и пропущенные участки с оригиналом.</text>',
+        '<text x="50" y="920" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">3. Реальный масштаб, диаметры и числовые размеры не определялись.</text>',
+        '<rect x="960" y="835" width="405" height="116" fill="none" stroke="#111" stroke-width="0.8"/>',
+        '<text x="978" y="858" font-size="11" font-family="Arial, DejaVu Sans, sans-serif" fill="#111" stroke="none" font-weight="bold">СТАТИСТИКА ТРАССИРОВКИ</text>',
+        f'<text x="978" y="883" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">Основные штрихи: {primary_count}</text>',
+        f'<text x="978" y="902" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">Детальные штрихи: {detail_count}</text>',
+        f'<text x="978" y="921" font-size="10" font-family="Arial, DejaVu Sans, sans-serif" fill="#333" stroke="none">OCR-кандидаты: {len(ocr)} · подписи: {annotation_count}</text>',
+        '<text x="978" y="940" font-size="9" font-family="Arial, DejaVu Sans, sans-serif" fill="#777" stroke="none">ПРЕДПРОСМОТР · ТРЕБУЕТ ПРОВЕРКИ</text>',
+        (f'<text x="50" y="939" font-size="9" font-family="Arial, DejaVu Sans, sans-serif" fill="#666" stroke="none">Примечание: {user_note}</text>' if user_note else ''),
+    ])
+    add_text(msp, 'ПРИМЕЧАНИЯ И ПРОВЕРКИ', 14.4, 40.5, 3.3)
+    add_text(msp, '1. Central lines of extracted strokes; not semantic pipe recognition.', 15.0, 34.0, 2.8)
+    add_text(msp, '2. Check bends, branches, crossings and missing segments against the source.', 15.0, 28.3, 2.8)
+    add_text(msp, '3. Real-world scale, diameters and numeric dimensions are not calibrated.', 15.0, 22.6, 2.8)
+    add_text(msp, f'Primary strokes: {primary_count}', 293, 34.0, 2.8)
+    add_text(msp, f'Detail strokes: {detail_count}', 293, 28.3, 2.8)
+    add_text(msp, f'OCR / annotation strokes: {len(ocr)} / {annotation_count}', 293, 22.6, 2.8)
+
+    svg.append('</svg>')
+    svg_text = '\n'.join(svg)
+    svg_path = out_dir / 'cad-redraw.svg'
+    png_path = out_dir / 'cad-redraw.png'
+    dxf_path = out_dir / 'cad-redraw.dxf'
+    svg_path.write_text(svg_text, encoding='utf-8')
+    cairosvg.svg2png(
+        bytestring=svg_text.encode('utf-8'), write_to=str(png_path),
+        output_width=1960, output_height=1386
+    )
     dxf.saveas(dxf_path)
-    return {'title': title, 'routes': len(routes), 'symbols': len(symbols), 'labels': len(labels), 'dimensions': len(dimensions), 'sheet': 'A3 · CAD-реконструкция (приблизительная)', 'width':1960,'height':1400}
+    return {
+        'primaryPaths': primary_count,
+        'detailPaths': detail_count,
+        'annotationPaths': annotation_count,
+        'ocrCount': len(ocr),
+        'sheet': 'A3 · масштаб не калиброван',
+        'width': 1960,
+        'height': 1386,
+    }
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
     try:
-        if len(sys.argv)!=3:
-            print('Usage: cad_renderer.py spec.json OUTPUT_DIR',file=sys.stderr); sys.exit(2)
-        result=main(Path(sys.argv[1]),Path(sys.argv[2]))
-        print(json.dumps({'ok':True,**result},ensure_ascii=False))
+        if len(sys.argv) != 3:
+            print('Usage: cad_renderer.py VECTORS_JSON OUTPUT_DIR', file=sys.stderr)
+            sys.exit(2)
+        result = main(Path(sys.argv[1]), Path(sys.argv[2]))
+        print(json.dumps({'ok': True, **result}, ensure_ascii=False))
     except Exception as exc:
-        print(f'CAD renderer error: {exc}',file=sys.stderr)
+        print(f'CAD renderer error: {exc}', file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
