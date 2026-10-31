@@ -43,6 +43,32 @@ class TwoMaskTests(unittest.TestCase):
         ratio50, _, _ = build_two_masks(ink, box, 0, 50)
         self.assertLess(cv2.countNonZero(px0), cv2.countNonZero(ratio50))
 
+    def test_polygon_lasso_masks_only_inside_contour(self):
+        ink = np.zeros((80, 100), dtype=np.uint8)
+        ink[10:70, 10:90] = 255
+        lasso = [{"x": 25, "y": 20}, {"x": 60, "y": 20}, {"x": 55, "y": 55}, {"x": 20, "y": 50}]
+        text_mask, line_mask, _ = build_two_masks(
+            ink, [{"x": 20, "y": 20, "width": 40, "height": 35, "polygon": lasso}], 0, 0
+        )
+        self.assertGreater(cv2.countNonZero(text_mask), 500)
+        self.assertGreater(cv2.countNonZero(line_mask), 1000)
+        self.assertEqual(cv2.countNonZero(cv2.bitwise_and(text_mask, line_mask)), 0)
+        self.assertTrue(np.array_equal(cv2.bitwise_or(text_mask, line_mask), ink))
+        # Pixel well outside the hand-drawn contour must remain a line pixel.
+        self.assertEqual(int(line_mask[65, 80]), 255)
+
+    def test_polygon_override_is_sanitized_and_preserved(self):
+        boxes = sanitize_override_boxes([
+            {"x": 0, "y": 0, "width": 1, "height": 1, "polygon": [
+                {"x": -5, "y": 10}, {"x": 30, "y": 10}, {"x": 25, "y": 35}, {"x": 10, "y": 30}
+            ], "manual": True, "mask": True}
+        ], 100, 80)
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(len(boxes[0]["polygon"]), 4)
+        self.assertEqual(boxes[0]["polygon"][0]["x"], 0)
+        self.assertEqual(boxes[0]["x"], 0)
+        self.assertEqual(boxes[0]["width"], 30)
+
     def test_min_component_area_removes_speckles(self):
         image = np.full((50, 80, 3), 245, dtype=np.uint8)
         cv2.line(image, (5, 25), (70, 25), (180, 45, 25), 2)

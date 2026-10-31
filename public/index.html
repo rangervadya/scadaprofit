@@ -18,7 +18,7 @@
     <div class="topbar-status">
       <span class="status-dot" id="apiDot"></span>
       <span id="apiStatus">Проверка локального обработчика…</span>
-      <span class="version" id="versionChip">v3.3.0</span>
+      <span class="version" id="versionChip">v3.4.0</span>
     </div>
   </header>
 
@@ -26,7 +26,7 @@
     <section class="intro">
       <p class="eyebrow">ЭКСПЕРИМЕНТ С ДВУМЯ МАСКАМИ</p>
       <h1>Сначала отделим<br><em>текст от линий.</em></h1>
-      <p class="intro-copy">Разделение рукописной схемы на текст и линии с ручной коррекцией подписей и чистым SVG.</p>
+      <p class="intro-copy">Разделение рукописной схемы на текст и линии, свободное выделение рукописи лассо и замена проверенными печатными подписями.</p>
     </section>
 
     <section class="workspace">
@@ -153,7 +153,13 @@
           <section class="mask-card">
             <div class="mask-heading"><span class="mask-number">00</span><div><strong>Оригинал</strong><small>Исходное изображение</small></div></div>
             <div class="mask-view" id="sourceView"><div class="placeholder">Загрузи фотографию</div><img id="sourceImage" class="hidden" alt="Исходное изображение"><canvas id="sourceSelectCanvas" aria-label="Выделение рукописной области"></canvas></div>
-            <div class="source-select-tools"><button class="button button-ghost" id="toggleManualRegion" type="button" disabled>Выделить надпись на фото</button><span id="selectionHint">Можно обвести цифры/буквы, которые OCR пропустил.</span></div>
+            <div class="source-select-tools source-select-tools-v34">
+              <div class="source-select-buttons">
+                <button class="button button-ghost" id="toggleManualRegion" type="button" disabled>Выделить прямоугольником</button>
+                <button class="button button-ghost" id="toggleLassoRegion" type="button" disabled>Обвести текст лассо</button>
+              </div>
+              <span id="selectionHint">Лассо — обведи только рукописные цифры или блок надписи. Маскирование будет по контуру, а не по прямоугольнику.</span>
+            </div>
           </section>
           <section class="mask-card text-mask-card">
             <div class="mask-heading"><span class="mask-number">01</span><div><strong>Маска текста</strong><small>Белое — чернила в OCR-областях</small></div></div>
@@ -181,11 +187,11 @@
             <div><span class="eyebrow">ШАГ 04</span><h3 id="cleanHeading">Чистый чертёж с печатными подписями</h3><p>Рукописные символы из подтверждённых OCR-областей закрываются белым фоном и заменяются аккуратным печатным текстом после ручной проверки. OCR-предложения не печатаются автоматически, чтобы не подменять неверные цифры и буквы.</p></div>
             <a class="download-link hidden" id="downloadClean" download="clean-drawing.svg">Скачать чистый SVG</a>
           </div>
-          <div class="vector-view clean-view"><div class="placeholder" id="cleanPlaceholder">После обработки появится чистый чертёж</div><img id="cleanDrawingImage" class="hidden" alt="Чистый чертёж с векторными линиями и печатными подписями"></div>
+          <div class="vector-view clean-view"><div class="placeholder" id="cleanPlaceholder">После обработки появится чистый чертёж; лассом можно убрать оставшиеся каракули</div><img id="cleanDrawingImage" class="hidden" alt="Чистый чертёж с векторными линиями и печатными подписями"></div>
           <div class="vector-stats" id="cleanStats">Печатные подписи ещё не сформированы.</div>
           <details class="label-editor-details" id="labelEditorDetails">
             <summary>Исправить распознанные цифры и буквы (<span id="labelCount">0</span>)</summary>
-            <p class="hint">«Убрать рукопись» исключает исходные пиксели из SVG линий. «Печатать» добавляет исправленный текст аккуратным шрифтом. OCR-текст не печатается, пока ты сам не поставишь эту галочку.</p>
+            <p class="hint">«Убрать рукопись» исключает исходные пиксели из SVG линий. Для сложных надписей используй свободное лассо: оно маскирует область по нарисованному контуру и меньше задевает соседние трубы. «Печатать» добавляет исправленный текст аккуратным шрифтом. OCR-текст не печатается, пока ты сам не поставишь эту галочку.</p>
             <div class="label-list-head"><span>Убрать рукопись</span><span>Текст — можно исправить</span><span>Печатать</span><span>%</span><span>Угол</span></div>
             <div id="labelList" class="label-list"><p class="empty-labels">Сначала построй две маски.</p></div>
             <button class="button button-primary" id="applyLabels" type="button" disabled>Применить подписи и пересобрать чистый чертёж</button>
@@ -214,7 +220,7 @@
       </article>
     </section>
 
-    <footer class="footer"><strong>TWO MASK LAB 3.3.0</strong><span>OpenCV two masks + OCR editor + clean SVG annotations · Qwen не вызывается</span></footer>
+    <footer class="footer"><strong>TWO MASK LAB 3.4.0</strong><span>OpenCV two masks + OCR + freehand lasso cleanup + editable SVG labels · Qwen не вызывается</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

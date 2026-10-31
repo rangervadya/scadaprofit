@@ -37,7 +37,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 32, fieldSize: 250000 },
+  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 32, fieldSize: 1000000 },
   fileFilter: (_req, file, callback) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) {
       return callback(new Error('Поддерживаются только PNG, JPG/JPEG и WEBP.'));
@@ -129,12 +129,12 @@ function runMaskProcessor(imageBuffer, config) {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    appVersion: '3.3.0',
-    mode: 'two-mask-lab-clean-labels',
-    processor: 'Two masks + OCR label editor + clean typeset SVG labels + centerline paths',
+    appVersion: '3.4.0',
+    mode: 'two-mask-lab-lasso-cleanup',
+    processor: 'Two masks + freehand polygon text masking + editable clean SVG labels + centerline paths',
     qwenUsed: false,
     masks: ['text', 'lines'],
-    note: 'Handwritten labels can be corrected in browser and replaced by clean editable SVG text; source binary masks remain unchanged.',
+    note: 'OCR boxes and manually drawn lasso polygons can mask handwritten text; corrected text is added as editable SVG. Source image remains unchanged.',
   });
 });
 
@@ -221,6 +221,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`TWO MASK LAB 3.3.0 запущена: http://${HOST}:${PORT}`);
+  console.log(`TWO MASK LAB 3.4.0 запущена: http://${HOST}:${PORT}`);
   console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
 });

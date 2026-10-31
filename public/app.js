@@ -55,8 +55,10 @@ let sourceUrl = null;
 let maskResult = null;
 let labelState = [];
 let manualSelectMode = false;
+let manualSelectionShape = 'rect';
 let manualDragStart = null;
 let manualDragCurrent = null;
+let manualPolygonPoints = [];
 let toastTimer = null;
 
 function notify(message, isError = false) {
@@ -111,6 +113,7 @@ function setBusy(busy) {
   processButton.textContent = busy ? 'Обрабатываю…' : 'Построить две маски';
   removeImageButton.disabled = busy || !selectedFile;
   $('#toggleManualRegion').disabled = busy || !selectedFile;
+  $('#toggleLassoRegion').disabled = busy || !selectedFile;
 }
 
 function clearResults() {
@@ -142,6 +145,7 @@ function clearResults() {
   $('#resultTag').textContent = 'ОЖИДАНИЕ';
   ['statSize', 'statInk', 'statOcr', 'statText', 'statLines', 'statTime'].forEach(id => $(`#${id}`).textContent = '—');
   $('#debugOutput').textContent = 'Здесь появятся числа, подписи и уверенность OCR.';
+  drawSelectionCanvas();
 }
 
 function setImage(file) {
@@ -159,6 +163,7 @@ function setImage(file) {
   processButton.disabled = false;
   removeImageButton.disabled = false;
   $('#toggleManualRegion').disabled = false;
+  $('#toggleLassoRegion').disabled = false;
   setManualSelectMode(false);
   clearResults();
 }
@@ -176,6 +181,7 @@ function removeImage() {
   processButton.disabled = true;
   removeImageButton.disabled = true;
   $('#toggleManualRegion').disabled = true;
+  $('#toggleLassoRegion').disabled = true;
   setManualSelectMode(false);
   clearResults();
 }
@@ -201,6 +207,7 @@ function makeLabelRow(label, index) {
       labelState[index].render = false;
       printText.checked = false;
     }
+    drawSelectionCanvas();
   });
 
   const text = document.createElement('input');
@@ -256,9 +263,26 @@ function makeLabelRow(label, index) {
       ctx.drawImage(sourceImage, sx, sy, sw, sh, (crop.width - dw) / 2, (crop.height - dh) / 2, dw, dh);
     }
   }
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'label-remove';
+  remove.textContent = 'Удалить область';
+  remove.title = 'Убрать эту область из списка маскирования';
+  remove.addEventListener('click', () => {
+    labelState.splice(index, 1);
+    renderLabelEditor(labelState);
+    drawSelectionCanvas();
+  });
+
   const lower = document.createElement('div');
   lower.className = 'label-row-lower';
-  lower.append(coords, crop);
+  const left = document.createElement('div');
+  left.className = 'label-row-lower-left';
+  const kind = document.createElement('span');
+  kind.className = 'label-kind';
+  kind.textContent = label.manual ? (label.polygon?.length ? 'РУЧНОЙ ЛАССО' : 'РУЧНАЯ ОБЛАСТЬ') : 'OCR';
+  left.append(coords, kind, remove);
+  lower.append(left, crop);
   row.append(main, lower);
   return row;
 }
@@ -270,6 +294,7 @@ function renderLabelEditor(boxes = []) {
     width: Number(box.width || 1), height: Number(box.height || 1),
     rotation: Number(box.rotation || 0), fontScale: Number(box.fontScale || 0.9),
     mask: box.mask !== false, render: box.render === true, manual: box.manual === true,
+    polygon: Array.isArray(box.polygon) ? box.polygon.map(point => ({ x: Number(point.x), y: Number(point.y) })) : [],
   }));
   const list = $('#labelList');
   list.replaceChildren();
@@ -280,6 +305,7 @@ function renderLabelEditor(boxes = []) {
   }
   $('#labelCount').textContent = String(labelState.length);
   $('#applyLabels').disabled = !selectedFile || !labelState.length;
+  drawSelectionCanvas();
 }
 
 async function applyLabelEdits() {
@@ -372,7 +398,7 @@ function renderResult(result) {
   else warningBox.classList.add('hidden');
 
   const report = {
-    appVersion: '3.3.0', dimensions: { width: result.width, height: result.height },
+    appVersion: '3.4.0', dimensions: { width: result.width, height: result.height },
     settings: result.settings, mode: result.mode, ocr: result.ocr, stats,
     warnings: result.warnings || [], recognizedTextBoxes: result.boxes || [],
     vectorization: result.vectorization || {}, cleanText: result.cleanText || {},
@@ -447,16 +473,29 @@ $('#resetSettings').addEventListener('click', () => setSettings(defaults, 'balan
 
 $('#applyLabels').addEventListener('click', applyLabelEdits);
 
-function setManualSelectMode(enabled) {
-  manualSelectMode = Boolean(enabled && selectedFile);
-  manualDragStart = null;
-  manualDragCurrent = null;
+function setManualSelectMode(shape) {
+  if (shape === false || !selectedFile) {
+    manualSelectMode = false;
+    manualDragStart = null;
+    manualDragCurrent = null;
+    manualPolygonPoints = [];
+  } else {
+    manualSelectMode = true;
+    manualSelectionShape = shape === 'lasso' ? 'lasso' : 'rect';
+    manualDragStart = null;
+    manualDragCurrent = null;
+    manualPolygonPoints = [];
+  }
   $('#sourceView').classList.toggle('selecting', manualSelectMode);
-  $('#toggleManualRegion').classList.toggle('button-primary', manualSelectMode);
-  $('#toggleManualRegion').textContent = manualSelectMode ? 'Завершить выделение' : 'Выделить надпись на фото';
-  $('#selectionHint').textContent = manualSelectMode
-    ? 'Зажми левую кнопку мыши и обведи область с рукописью. Отпусти, чтобы добавить её в список.'
-    : 'Можно обвести цифры/буквы, которые OCR пропустил.';
+  $('#toggleManualRegion').classList.toggle('button-primary', manualSelectMode && manualSelectionShape === 'rect');
+  $('#toggleLassoRegion').classList.toggle('button-primary', manualSelectMode && manualSelectionShape === 'lasso');
+  $('#toggleManualRegion').textContent = manualSelectMode && manualSelectionShape === 'rect' ? 'Завершить прямоугольник' : 'Выделить прямоугольником';
+  $('#toggleLassoRegion').textContent = manualSelectMode && manualSelectionShape === 'lasso' ? 'Завершить лассо' : 'Обвести текст лассо';
+  $('#selectionHint').textContent = !manualSelectMode
+    ? 'Прямоугольник — для крупных блоков. Лассо — обведи только буквы, чтобы не задеть близкие трубы.'
+    : manualSelectionShape === 'lasso'
+      ? 'Зажми кнопку и обведи рукописный текст по контуру. Лассо оставляет линии снаружи выделения.'
+      : 'Зажми кнопку и обведи прямоугольником текстовую область. Можно выбрать несколько участков подряд.';
   drawSelectionCanvas();
 }
 
@@ -472,10 +511,17 @@ function imagePointFromClient(clientX, clientY) {
   const localY = clientY - rect.top;
   if (localX < offsetX || localY < offsetY || localX > offsetX + shownW || localY > offsetY + shownH) return null;
   return {
-    x: Math.max(0, Math.min(sourceImage.naturalWidth, (localX - offsetX) / scale)),
-    y: Math.max(0, Math.min(sourceImage.naturalHeight, (localY - offsetY) / scale)),
+    x: Math.max(0, Math.min(sourceImage.naturalWidth - 1, (localX - offsetX) / scale)),
+    y: Math.max(0, Math.min(sourceImage.naturalHeight - 1, (localY - offsetY) / scale)),
     screenX: localX, screenY: localY,
   };
+}
+
+function screenPointFromImage(point, rect) {
+  const scale = Math.min(rect.width / sourceImage.naturalWidth, rect.height / sourceImage.naturalHeight);
+  const offsetX = (rect.width - sourceImage.naturalWidth * scale) / 2;
+  const offsetY = (rect.height - sourceImage.naturalHeight * scale) / 2;
+  return { x: offsetX + point.x * scale, y: offsetY + point.y * scale };
 }
 
 function drawSelectionCanvas() {
@@ -490,55 +536,134 @@ function drawSelectionCanvas() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, rect.width, rect.height);
-  if (!manualDragStart || !manualDragCurrent) return;
-  const x = Math.min(manualDragStart.screenX, manualDragCurrent.screenX);
-  const y = Math.min(manualDragStart.screenY, manualDragCurrent.screenY);
-  const w = Math.abs(manualDragStart.screenX - manualDragCurrent.screenX);
-  const h = Math.abs(manualDragStart.screenY - manualDragCurrent.screenY);
-  ctx.fillStyle = 'rgba(215,122,36,.16)';
+
+  // Persistent overlays show exactly which handwriting regions will be removed.
+  labelState.forEach((label, index) => {
+    if (label.mask === false) return;
+    const raw = label.polygon?.length >= 3
+      ? label.polygon
+      : [
+          { x: label.x, y: label.y },
+          { x: label.x + label.width, y: label.y },
+          { x: label.x + label.width, y: label.y + label.height },
+          { x: label.x, y: label.y + label.height },
+        ];
+    const points = raw.map(point => screenPointFromImage(point, rect));
+    if (points.length < 3) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+    ctx.closePath();
+    ctx.fillStyle = label.manual ? 'rgba(218,126,35,.20)' : 'rgba(44,129,104,.13)';
+    ctx.strokeStyle = label.manual ? '#d77a24' : '#32876f';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+    const center = screenPointFromImage({ x: label.x + 3, y: label.y + 12 }, rect);
+    ctx.fillStyle = label.manual ? '#9c5418' : '#236b55';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.fillText(String(index + 1), center.x, center.y);
+  });
+
+  if (!manualSelectMode || !manualDragStart || !manualDragCurrent) return;
+  ctx.fillStyle = 'rgba(215,122,36,.18)';
   ctx.strokeStyle = '#d77a24';
   ctx.lineWidth = 2;
   ctx.setLineDash([5, 3]);
-  ctx.fillRect(x, y, w, h);
-  ctx.strokeRect(x, y, w, h);
+  if (manualSelectionShape === 'lasso') {
+    const points = [...manualPolygonPoints, manualDragCurrent];
+    if (points.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].screenX, points[0].screenY);
+    points.slice(1).forEach(point => ctx.lineTo(point.screenX, point.screenY));
+    if (points.length >= 3) ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  } else {
+    const x = Math.min(manualDragStart.screenX, manualDragCurrent.screenX);
+    const y = Math.min(manualDragStart.screenY, manualDragCurrent.screenY);
+    const w = Math.abs(manualDragStart.screenX - manualDragCurrent.screenX);
+    const h = Math.abs(manualDragStart.screenY - manualDragCurrent.screenY);
+    ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+  }
   ctx.setLineDash([]);
 }
 
-$('#toggleManualRegion').addEventListener('click', () => setManualSelectMode(!manualSelectMode));
+function addManualRegion(region) {
+  labelState.push({
+    id: labelState.length, text: '', confidence: 100,
+    x: region.x, y: region.y, width: region.width, height: region.height,
+    polygon: region.polygon || [], rotation: 0, fontScale: 0.9,
+    mask: true, render: false, manual: true,
+  });
+  renderLabelEditor(labelState);
+  $('#labelEditorDetails').open = true;
+  drawSelectionCanvas();
+  notify('Область добавлена. Повтори лассо для следующей надписи или нажми «Завершить». Вне выделения трубные штрихи сохраняются.');
+}
+
+$('#toggleManualRegion').addEventListener('click', () => {
+  if (manualSelectMode && manualSelectionShape === 'rect') setManualSelectMode(false);
+  else setManualSelectMode('rect');
+});
+$('#toggleLassoRegion').addEventListener('click', () => {
+  if (manualSelectMode && manualSelectionShape === 'lasso') setManualSelectMode(false);
+  else setManualSelectMode('lasso');
+});
+
 sourceSelectCanvas.addEventListener('pointerdown', event => {
   if (!manualSelectMode) return;
   const point = imagePointFromClient(event.clientX, event.clientY);
   if (!point) return;
   manualDragStart = point;
   manualDragCurrent = point;
+  manualPolygonPoints = manualSelectionShape === 'lasso' ? [point] : [];
   sourceSelectCanvas.setPointerCapture(event.pointerId);
   drawSelectionCanvas();
 });
 sourceSelectCanvas.addEventListener('pointermove', event => {
   if (!manualSelectMode || !manualDragStart) return;
-  manualDragCurrent = imagePointFromClient(event.clientX, event.clientY) || manualDragCurrent;
+  const point = imagePointFromClient(event.clientX, event.clientY);
+  if (!point) return;
+  manualDragCurrent = point;
+  if (manualSelectionShape === 'lasso') {
+    const last = manualPolygonPoints[manualPolygonPoints.length - 1];
+    if (!last || Math.hypot(point.screenX - last.screenX, point.screenY - last.screenY) >= 2.5) {
+      if (manualPolygonPoints.length < 400) manualPolygonPoints.push(point);
+    }
+  }
   drawSelectionCanvas();
 });
 sourceSelectCanvas.addEventListener('pointerup', event => {
   if (!manualSelectMode || !manualDragStart || !manualDragCurrent) return;
-  const x = Math.floor(Math.min(manualDragStart.x, manualDragCurrent.x));
-  const y = Math.floor(Math.min(manualDragStart.y, manualDragCurrent.y));
-  const width = Math.ceil(Math.abs(manualDragStart.x - manualDragCurrent.x));
-  const height = Math.ceil(Math.abs(manualDragStart.y - manualDragCurrent.y));
-  manualDragStart = null;
-  manualDragCurrent = null;
+  let region = null;
+  if (manualSelectionShape === 'lasso') {
+    const polygon = [...manualPolygonPoints, manualDragCurrent]
+      .filter((point, index, array) => index === 0 || Math.hypot(point.x - array[index - 1].x, point.y - array[index - 1].y) > 1.0)
+      .map(point => ({ x: Math.round(point.x), y: Math.round(point.y) }));
+    if (polygon.length >= 4) {
+      const xs = polygon.map(point => point.x), ys = polygon.map(point => point.y);
+      const x = Math.min(...xs), y = Math.min(...ys);
+      const width = Math.max(...xs) - x, height = Math.max(...ys) - y;
+      if (width >= 4 && height >= 4) region = { x, y, width, height, polygon };
+    }
+  } else {
+    const x = Math.floor(Math.min(manualDragStart.x, manualDragCurrent.x));
+    const y = Math.floor(Math.min(manualDragStart.y, manualDragCurrent.y));
+    const width = Math.ceil(Math.abs(manualDragStart.x - manualDragCurrent.x));
+    const height = Math.ceil(Math.abs(manualDragStart.y - manualDragCurrent.y));
+    if (width >= 4 && height >= 4) region = { x, y, width, height };
+  }
+  manualDragStart = null; manualDragCurrent = null; manualPolygonPoints = [];
   drawSelectionCanvas();
-  if (width < 4 || height < 4) {
-    notify('Область слишком маленькая. Обведи надпись чуть крупнее.', true);
+  if (!region) {
+    notify(manualSelectionShape === 'lasso' ? 'Лассо слишком маленькое. Обведи область чуть шире.' : 'Область слишком маленькая. Обведи надпись чуть крупнее.', true);
     return;
   }
-  labelState.push({
-    id: labelState.length, text: '', confidence: 100, x, y, width, height,
-    rotation: 0, fontScale: 0.9, mask: true, render: false, manual: true,
-  });
-  renderLabelEditor(labelState);
-  $('#labelEditorDetails').open = true;
-  notify('Рукописная область добавлена. Введи аккуратный текст и включи «Печатать», если он нужен в чистом SVG.');
+  addManualRegion(region);
+});
+sourceSelectCanvas.addEventListener('pointercancel', () => {
+  manualDragStart = null; manualDragCurrent = null; manualPolygonPoints = [];
+  drawSelectionCanvas();
 });
 window.addEventListener('resize', drawSelectionCanvas);
 
@@ -550,7 +675,7 @@ async function checkHealth() {
     if (!response.ok) throw new Error(data.error || 'Health check error');
     $('#versionChip').textContent = `v${data.appVersion || '—'}`;
     dot.classList.add('good');
-    $('#apiStatus').textContent = 'Локальный Две маски + редактор печатных подписей · Qwen не вызывается';
+    $('#apiStatus').textContent = 'Две маски + ручное лассо для удаления рукописи · локально';
   } catch {
     dot.classList.add('bad');
     $('#apiStatus').textContent = 'Локальный обработчик недоступен';

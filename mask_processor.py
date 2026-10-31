@@ -245,6 +245,24 @@ def build_two_masks(
         x, y = int(box["x"]), int(box["y"])
         w, h = int(box["width"]), int(box["height"])
         extra = pad_px + round(min(w, h) * ratio)
+        polygon = box.get("polygon")
+        if isinstance(polygon, list) and len(polygon) >= 3:
+            # Freehand lasso mask: unlike a rectangle, it can remove a note
+            # while preserving a pipe that passes close beside it.
+            points = np.asarray([
+                [max(0, min(width - 1, int(round(point["x"])))),
+                 max(0, min(height - 1, int(round(point["y"]))))]
+                for point in polygon if isinstance(point, dict) and "x" in point and "y" in point
+            ], dtype=np.int32)
+            if len(points) >= 3:
+                region = np.zeros_like(ink_mask)
+                cv2.fillPoly(region, [points.reshape((-1, 1, 2))], 255)
+                if extra > 0:
+                    kernel_size = extra * 2 + 1
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+                    region = cv2.dilate(region, kernel, iterations=1)
+                text_regions = cv2.bitwise_or(text_regions, region)
+                continue
         x1, y1 = max(0, x - extra), max(0, y - extra)
         x2, y2 = min(width - 1, x + w + extra), min(height - 1, y + h + extra)
         cv2.rectangle(text_regions, (x1, y1), (x2, y2), 255, thickness=-1)
@@ -590,6 +608,27 @@ def sanitize_override_boxes(items: Any, width: int, height: int) -> list[dict[st
             font_scale = max(0.45, min(2.0, float(item.get("fontScale", 0.9))))
         except (TypeError, ValueError):
             continue
+        polygon_raw = item.get("polygon", [])
+        polygon: list[dict[str, int]] = []
+        if isinstance(polygon_raw, list):
+            for point in polygon_raw[:500]:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    px = max(0, min(width - 1, int(round(float(point.get("x", 0))))))
+                    py = max(0, min(height - 1, int(round(float(point.get("y", 0))))))
+                except (TypeError, ValueError):
+                    continue
+                if not polygon or polygon[-1] != {"x": px, "y": py}:
+                    polygon.append({"x": px, "y": py})
+        if len(polygon) < 3:
+            polygon = []
+        else:
+            # Derive a safe bounding box from the lasso itself.
+            xs = [point["x"] for point in polygon]
+            ys = [point["y"] for point in polygon]
+            x = min(xs); y = min(ys)
+            w = max(1, max(xs) - x); h = max(1, max(ys) - y)
         label = str(item.get("text", ""))[:100]
         mask_enabled = bool(item.get("mask", item.get("active", True)))
         render_enabled = bool(item.get("render", False))
@@ -600,6 +639,7 @@ def sanitize_override_boxes(items: Any, width: int, height: int) -> list[dict[st
             "x": x, "y": y, "width": w, "height": h,
             "rotation": rotation, "fontScale": font_scale,
             "mask": mask_enabled, "render": render_enabled, "manual": bool(item.get("manual", False)),
+            "polygon": polygon,
         })
     return result
 

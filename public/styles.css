@@ -73,3 +73,14 @@
 #sourceView.selecting #sourceSelectCanvas{pointer-events:auto;cursor:crosshair}
 #sourceView.selecting{outline:2px solid var(--accent);outline-offset:-2px}
 @media(max-width:700px){.source-select-tools{align-items:flex-start;flex-direction:column}}
+
+/* Two Mask Lab 3.4 — freehand lasso cleanup for handwritten annotations */
+.source-select-tools-v34{align-items:flex-start;flex-direction:column;gap:7px}
+.source-select-buttons{display:flex;flex-wrap:wrap;gap:6px;width:100%}
+.source-select-buttons .button{flex:1;min-width:145px}
+.label-row-lower-left{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}
+.label-kind{font:800 8px var(--mono);color:#7b7d72;background:#efefe9;border-radius:3px;padding:4px 6px}
+.label-remove{border:1px solid #e8d5d0;background:#fff8f6;color:#984d40;border-radius:3px;padding:5px 7px;font:800 8px var(--sans);cursor:pointer}
+.label-remove:hover{background:#f8e7e2}
+#sourceView.selecting #sourceSelectCanvas{cursor:crosshair}
+@media(max-width:700px){.source-select-buttons{flex-direction:column}.source-select-buttons .button{width:100%}.label-row-lower-left{gap:5px}}
