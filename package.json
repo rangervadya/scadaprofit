@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-two-mask-lab",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "private": true,
-  "description": "Offline two-mask segmentation with antialiased previews and corner-protected SVG centerline tracing.",
+  "description": "Offline two-mask segmentation, reviewed typography, SVG centerlines with conservative micro-gap joining.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"

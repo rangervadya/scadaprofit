@@ -490,6 +490,138 @@ def trace_skeleton_paths(skeleton: np.ndarray) -> tuple[list[list[tuple[float, f
     return paths, isolated
 
 
+
+def _endpoint_outward_vector(endpoint: int, coords: list[tuple[int, int]], adjacency: list[list[int]], steps: int = 6) -> np.ndarray | None:
+    """Estimate the outward tangent at a degree-1 skeleton pixel."""
+    chain = [endpoint]
+    previous = -1
+    current = endpoint
+    for _ in range(max(2, steps)):
+        candidates = [item for item in adjacency[current] if item != previous]
+        if len(candidates) != 1:
+            break
+        nxt = candidates[0]
+        chain.append(nxt)
+        previous, current = current, nxt
+        if len(adjacency[current]) != 2:
+            break
+    if len(chain) < 2:
+        return None
+    # Use a few pixels along the chain to reduce one-pixel tangent noise.
+    inner_idx = chain[min(len(chain) - 1, 4)]
+    y0, x0 = coords[endpoint]
+    y1, x1 = coords[inner_idx]
+    vector = np.asarray([x0 - x1, y0 - y1], dtype=np.float32)
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-6:
+        return None
+    return vector / norm
+
+
+def bridge_skeleton_gaps(
+    skeleton: np.ndarray,
+    max_gap_px: float = 20.0,
+    max_angle_deg: float = 18.0,
+    removed_text_regions: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[dict[str, float]]]:
+    """Join conservative endpoint gaps when both stroke tangents face each other.
+
+    This is intentionally conservative: it does not join crossings, endpoint-to-line
+    contacts, nearby parallel strokes, or endpoints whose tangent is ambiguous.
+    The source binary mask is not modified; only a copy of the vectorization skeleton
+    receives these inferred bridge pixels. Gaps longer than 4 px are eligible only
+    when most of the segment was removed by an OCR/lasso text region. This can restore
+    a pipe stroke hidden under a label without joining unrelated nearby strokes.
+    """
+    gap = max(0.0, min(24.0, float(max_gap_px)))
+    angle = max(5.0, min(45.0, float(max_angle_deg)))
+    if gap <= 0:
+        return skeleton.copy(), []
+
+    coords, adjacency = _pixel_adjacency(skeleton)
+    if not coords:
+        return skeleton.copy(), []
+    degrees = [len(items) for items in adjacency]
+    endpoints = [i for i, degree in enumerate(degrees) if degree == 1]
+    if len(endpoints) < 2:
+        return skeleton.copy(), []
+
+    component_count, component_labels = cv2.connectedComponents((skeleton > 0).astype(np.uint8), connectivity=8)
+    labels = [int(component_labels[y, x]) for y, x in coords]
+    area_counts = np.bincount(component_labels.ravel())
+    component_areas = {label: int(area_counts[label]) for label in set(labels) if label > 0 and label < len(area_counts)}
+    directions = {i: _endpoint_outward_vector(i, coords, adjacency) for i in endpoints}
+    cos_limit = float(np.cos(np.deg2rad(angle)))
+    candidates: list[tuple[float, int, int, float]] = []
+    for pos, a in enumerate(endpoints):
+        va = directions.get(a)
+        if va is None:
+            continue
+        ya, xa = coords[a]
+        for b in endpoints[pos + 1:]:
+            if labels[a] == labels[b]:
+                continue
+            # Tiny letter fragments and isolated marks are not suitable bridge anchors.
+            if component_areas.get(labels[a], 0) < 6 or component_areas.get(labels[b], 0) < 6:
+                continue
+            vb = directions.get(b)
+            if vb is None:
+                continue
+            yb, xb = coords[b]
+            dx, dy = float(xb - xa), float(yb - ya)
+            distance = float(np.hypot(dx, dy))
+            if distance < 1.5 or distance > gap + 1e-6:
+                continue
+            unit = np.asarray([dx / distance, dy / distance], dtype=np.float32)
+            face_a = float(np.dot(va, unit))
+            face_b = float(np.dot(vb, -unit))
+            if face_a < cos_limit or face_b < cos_limit:
+                continue
+            # Avoid page-edge title blocks and frame borders; they are often long, straight OCR leftovers.
+            if xa < 12 or xb < 12 or ya < 12 or yb < 12 or xa >= skeleton.shape[1] - 12 or xb >= skeleton.shape[1] - 12 or ya >= skeleton.shape[0] - 12 or yb >= skeleton.shape[0] - 12:
+                continue
+            # For gaps larger than a tiny raster defect, require evidence that OCR/lasso
+            # actually removed the ink in the gap. Without this, do not infer a pipe.
+            if distance > 4.0:
+                if removed_text_regions is None:
+                    continue
+                covered = []
+                for t in np.linspace(0.15, 0.85, max(3, int(distance * 1.2))):
+                    px = int(round(xa + dx * float(t)))
+                    py = int(round(ya + dy * float(t)))
+                    if 0 <= py < removed_text_regions.shape[0] and 0 <= px < removed_text_regions.shape[1]:
+                        covered.append(removed_text_regions[py, px] > 0)
+                if not covered or float(np.mean(covered)) < 0.65:
+                    continue
+
+            # Reject a bridge that would cross another existing stroke in its middle.
+            occupied = False
+            for t in np.linspace(0.30, 0.70, max(2, int(distance))):
+                px = int(round(xa + dx * float(t)))
+                py = int(round(ya + dy * float(t)))
+                if 0 <= py < skeleton.shape[0] and 0 <= px < skeleton.shape[1] and skeleton[py, px] > 0:
+                    occupied = True
+                    break
+            if occupied:
+                continue
+            # Prefer short gaps and better tangent agreement.
+            score = distance + (1.0 - face_a) * 1.5 + (1.0 - face_b) * 1.5
+            candidates.append((score, a, b, distance))
+
+    candidates.sort(key=lambda item: item[0])
+    used: set[int] = set()
+    result = skeleton.copy()
+    bridges: list[dict[str, float]] = []
+    for _score, a, b, distance in candidates:
+        if a in used or b in used:
+            continue
+        ya, xa = coords[a]
+        yb, xb = coords[b]
+        cv2.line(result, (xa, ya), (xb, yb), 255, 1, cv2.LINE_8)
+        used.update((a, b))
+        bridges.append({"x1": float(xa), "y1": float(ya), "x2": float(xb), "y2": float(yb), "length": round(distance, 2)})
+    return result, bridges
+
 def simplify_polyline(points: list[tuple[float, float]], epsilon: float) -> list[tuple[float, float]]:
     """Ramer-Douglas-Peucker simplification while retaining path endpoints."""
     if len(points) <= 2 or epsilon <= 0:
@@ -544,17 +676,25 @@ def _svg_path(points: list[tuple[float, float]], smoothing: float, protected_ang
 
 def create_line_svg(
     line_mask: np.ndarray,
-    simplify_tolerance: float = 0.8,
-    smoothing: float = 30,
-    corner_protection: float = 90,
+    simplify_tolerance: float = 1.6,
+    smoothing: float = 0,
+    corner_protection: float = 95,
     stroke_width: float = 2.0,
-    min_path_length: float = 1.5,
+    min_path_length: float = 5.0,
+    max_gap_bridge: float = 20.0,
+    max_bridge_angle: float = 18.0,
+    removed_text_regions: np.ndarray | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Vector preview of line-mask centerlines. It does not alter either mask."""
+    """Vector preview of line-mask centerlines with conservative endpoint gap joining.
+
+    Binary masks remain untouched. Micro-gaps are bridged when open endpoint tangents
+    face each other. Longer gaps are eligible only inside OCR/lasso-removed regions.
+    """
     skeleton = zhang_suen_skeleton(line_mask)
+    skeleton, bridges = bridge_skeleton_gaps(skeleton, max_gap_bridge, max_bridge_angle, removed_text_regions)
     traced, isolated = trace_skeleton_paths(skeleton)
     height, width = line_mask.shape[:2]
-    epsilon = max(0.0, min(3.0, float(simplify_tolerance)))
+    epsilon = max(0.0, min(4.0, float(simplify_tolerance)))
     smooth = max(0.0, min(100.0, float(smoothing)))
     # Higher protection means only very shallow kinks are rounded.
     angle_limit = 75.0 - (max(0.0, min(100.0, float(corner_protection))) / 100.0) * 55.0
@@ -587,6 +727,10 @@ def create_line_svg(
         "isolatedPixels": int(isolated), "vectorLengthPx": round(total_length, 1),
         "simplifyTolerancePx": epsilon, "smoothingPercent": smooth,
         "cornerAngleLimitDeg": round(angle_limit, 1), "strokeWidthPx": width_px,
+        "gapBridgeCount": len(bridges), "gapBridgeLengthPx": round(sum(item["length"] for item in bridges), 1),
+        "gapBridgeMaxPx": max(0.0, min(24.0, float(max_gap_bridge))),
+        "gapBridgeAngleDeg": max(5.0, min(45.0, float(max_bridge_angle))),
+        "gapBridges": bridges[:200],
     }
     return svg, stats
 
@@ -703,15 +847,15 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
     image = decode_image(raw)
     settings = {
         "mode": str(config.get("mode", "blue")),
-        "minConfidence": clamp(config.get("minConfidence"), 35, 0, 95),
-        "padding": clamp(config.get("padding"), 1, 0, 24, int),
-        "paddingRatio": clamp(config.get("paddingRatio"), 0, 0, 100),
+        "minConfidence": clamp(config.get("minConfidence"), 5, 0, 95),
+        "padding": clamp(config.get("padding"), 2, 0, 24, int),
+        "paddingRatio": clamp(config.get("paddingRatio"), 5, 0, 100),
         "ocrScale": clamp(config.get("ocrScale"), 2, 1, 3),
         "psm": clamp(config.get("psm"), 11, 3, 13, int),
         "language": str(config.get("language", "eng+rus")),
         "preprocess": str(config.get("preprocess", "original")),
-        "minBoxWidth": clamp(config.get("minBoxWidth"), 4, 1, 40, int),
-        "minBoxHeight": clamp(config.get("minBoxHeight"), 3, 1, 40, int),
+        "minBoxWidth": clamp(config.get("minBoxWidth"), 2, 1, 40, int),
+        "minBoxHeight": clamp(config.get("minBoxHeight"), 2, 1, 40, int),
         "hueMin": clamp(config.get("hueMin"), 90, 0, 179, int),
         "hueMax": clamp(config.get("hueMax"), 145, 0, 179, int),
         "hueTolerance": clamp(config.get("hueTolerance"), 24, 5, 60, int),
@@ -719,13 +863,15 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         "minBrightness": clamp(config.get("minBrightness"), 20, 0, 150, int),
         "maxBrightness": clamp(config.get("maxBrightness"), 252, 100, 255, int),
         "darkThreshold": clamp(config.get("darkThreshold"), 132, 30, 230, int),
-        "minComponentArea": clamp(config.get("minComponentArea"), 2, 1, 50, int),
+        "minComponentArea": clamp(config.get("minComponentArea"), 1, 1, 50, int),
         "previewScale": clamp(config.get("previewScale"), 3, 2, 4, int),
-        "vectorTolerance": clamp(config.get("vectorTolerance"), 0.8, 0, 3),
-        "vectorSmoothing": clamp(config.get("vectorSmoothing"), 30, 0, 100),
-        "cornerProtection": clamp(config.get("cornerProtection"), 90, 0, 100),
+        "vectorTolerance": clamp(config.get("vectorTolerance"), 1.6, 0, 4),
+        "vectorSmoothing": clamp(config.get("vectorSmoothing"), 0, 0, 100),
+        "cornerProtection": clamp(config.get("cornerProtection"), 95, 0, 100),
         "vectorStrokeWidth": clamp(config.get("vectorStrokeWidth"), 2.0, 0.6, 5),
-        "minVectorLength": clamp(config.get("minVectorLength"), 1.5, 0, 30),
+        "minVectorLength": clamp(config.get("minVectorLength"), 5.0, 0, 30),
+        "gapBridgePx": clamp(config.get("gapBridgePx"), 20.0, 0, 24),
+        "gapBridgeAngle": clamp(config.get("gapBridgeAngle"), 18.0, 5, 45),
         "labelMinConfidence": clamp(config.get("labelMinConfidence"), 0, 0, 95),
     }
     if settings["hueMin"] > settings["hueMax"]:
@@ -762,6 +908,9 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         settings["cornerProtection"],
         settings["vectorStrokeWidth"],
         settings["minVectorLength"],
+        settings["gapBridgePx"],
+        settings["gapBridgeAngle"],
+        text_regions,
     )
     clean_svg, clean_text_info = create_clean_drawing_svg(
         line_svg, boxes, image.shape[1], image.shape[0],

@@ -18,7 +18,7 @@
     <div class="topbar-status">
       <span class="status-dot" id="apiDot"></span>
       <span id="apiStatus">Проверка локального обработчика…</span>
-      <span class="version" id="versionChip">v3.4.0</span>
+      <span class="version" id="versionChip">v3.5.0</span>
     </div>
   </header>
 
@@ -49,12 +49,14 @@
         <div class="settings">
           <div class="settings-title">Настройки разделения</div>
           <div class="preset-row" aria-label="Быстрые пресеты">
-            <button type="button" class="preset-button active" data-preset="balanced">Баланс</button>
+            <button type="button" class="preset-button active" data-preset="handSketch">Синяя рукописная схема</button>
+            <button type="button" class="preset-button" data-preset="balanced">Баланс</button>
             <button type="button" class="preset-button" data-preset="moreText">Больше текста</button>
+            <button type="button" class="preset-button" data-preset="denseText">Плотный текст (PSM 6)</button>
             <button type="button" class="preset-button" data-preset="protectLines">Беречь линии</button>
             <button type="button" class="preset-button" data-preset="strict">Строгий OCR</button>
           </div>
-          <p class="hint">Начни с пресета «Баланс». Измени один-два параметра и нажми «Построить две маски» повторно.</p>
+          <p class="hint">Для твоей синей схемы начни с пресета «Синяя рукописная схема». Если часть труб пропадает из-за OCR — попробуй «Беречь линии».</p>
 
           <div class="settings-subtitle">1. Поиск чернил</div>
           <label class="setting-row"><span>Тип чернил</span>
@@ -81,12 +83,12 @@
             <label class="setting-row"><span>Синий диапазон: конец H</span><div class="setting-control"><input id="hueMax" type="range" min="90" max="179" step="1" value="145"><output id="hueMaxValue">145</output></div></label>
             <label class="setting-row"><span>Допуск авто-цвета ±</span><div class="setting-control"><input id="hueTolerance" type="range" min="5" max="60" step="1" value="24"><output id="hueToleranceValue">24</output></div></label>
             <label class="setting-row"><span>Порог тёмного карандаша</span><div class="setting-control"><input id="darkThreshold" type="range" min="30" max="230" step="1" value="132"><output id="darkThresholdValue">132</output></div></label>
-            <label class="setting-row"><span>Удалять точки меньше (px)</span><div class="setting-control"><input id="minComponentArea" type="range" min="1" max="30" step="1" value="2"><output id="minComponentAreaValue">2</output></div></label>
+            <label class="setting-row"><span>Удалять точки меньше (px)</span><div class="setting-control"><input id="minComponentArea" type="range" min="1" max="30" step="1" value="1"><output id="minComponentAreaValue">1</output></div></label>
             <p class="hint">H — оттенок OpenCV (0–179). Для синей ручки обычно подходят значения примерно 80–165. Снижение минимальной насыщенности помогает бледным чернилам, но добавляет шум.</p>
           </details>
 
           <div class="settings-subtitle">2. Распознавание текста</div>
-          <label class="setting-row"><span>Минимальная уверенность OCR</span><div class="setting-control"><input id="minConfidence" type="range" min="0" max="95" step="1" value="35"><output id="confidenceValue">35</output></div></label>
+          <label class="setting-row"><span>Минимальная уверенность OCR</span><div class="setting-control"><input id="minConfidence" type="range" min="0" max="95" step="1" value="5"><output id="confidenceValue">5</output></div></label>
           <small id="confidenceHint" class="confidence-hint">Средний порог: компромисс между количеством текста и ложными OCR-областями.</small>
           <label class="setting-row"><span>Увеличение для OCR</span>
             <select id="ocrScale"><option value="1">1× — без увеличения</option><option value="1.5">1.5×</option><option value="2" selected>2× — рекомендуется</option><option value="2.5">2.5×</option><option value="3">3× — мелкий почерк</option></select>
@@ -117,21 +119,23 @@
           </label>
 
           <div class="settings-subtitle">3. Размер текстовых областей</div>
-          <label class="setting-row"><span>Доп. отступ вокруг текста</span><div class="setting-control"><input id="padding" type="range" min="0" max="24" step="1" value="1"><output id="paddingValue">1 px</output></div></label>
-          <label class="setting-row"><span>Пропорциональное расширение</span><div class="setting-control"><input id="paddingRatio" type="range" min="0" max="100" step="1" value="0"><output id="paddingRatioValue">0%</output></div></label>
-          <label class="setting-row"><span>Минимальная ширина OCR-бокса</span><div class="setting-control"><input id="minBoxWidth" type="range" min="1" max="30" step="1" value="4"><output id="minBoxWidthValue">4 px</output></div></label>
-          <label class="setting-row"><span>Минимальная высота OCR-бокса</span><div class="setting-control"><input id="minBoxHeight" type="range" min="1" max="30" step="1" value="3"><output id="minBoxHeightValue">3 px</output></div></label>
-          <p class="hint">Уверенность ниже — больше OCR-кандидатов и выше риск захватить части труб. Отступы действуют только вокруг найденных OCR-слов. При нулевых отступах прямоугольник не расширяется.</p>
+          <label class="setting-row"><span>Доп. отступ вокруг текста</span><div class="setting-control"><input id="padding" type="range" min="0" max="24" step="1" value="2"><output id="paddingValue">2 px</output></div></label>
+          <label class="setting-row"><span>Пропорциональное расширение</span><div class="setting-control"><input id="paddingRatio" type="range" min="0" max="100" step="1" value="5"><output id="paddingRatioValue">5%</output></div></label>
+          <label class="setting-row"><span>Минимальная ширина OCR-бокса</span><div class="setting-control"><input id="minBoxWidth" type="range" min="1" max="30" step="1" value="2"><output id="minBoxWidthValue">2 px</output></div></label>
+          <label class="setting-row"><span>Минимальная высота OCR-бокса</span><div class="setting-control"><input id="minBoxHeight" type="range" min="1" max="30" step="1" value="2"><output id="minBoxHeightValue">2 px</output></div></label>
+          <p class="hint">Уверенность ниже — больше OCR-кандидатов и выше риск захватить части труб. Отступы действуют только вокруг найденных OCR-слов. При нулевых отступах прямоугольник не расширяется. Пресет PSM 6 находит больше рукописных фрагментов, но может вырезать часть близкой геометрии — сравни маски перед векторизацией.</p>
 
           <div class="settings-subtitle">4. Сглаженное отображение и SVG-линии</div>
           <label class="setting-row"><span>Масштаб сглаженного просмотра</span><div class="setting-control"><input id="previewScale" type="range" min="2" max="4" step="1" value="3"><output id="previewScaleValue">3×</output></div></label>
-          <label class="setting-row"><span>Упрощение пиксельной траектории</span><div class="setting-control"><input id="vectorTolerance" type="range" min="0" max="3" step="0.1" value="0.8"><output id="vectorToleranceValue">0,8 px</output></div></label>
-          <label class="setting-row"><span>Сглаживание мелких неровностей</span><div class="setting-control"><input id="vectorSmoothing" type="range" min="0" max="100" step="5" value="30"><output id="vectorSmoothingValue">30%</output></div></label>
-          <label class="setting-row"><span>Защита углов и поворотов</span><div class="setting-control"><input id="cornerProtection" type="range" min="0" max="100" step="5" value="90"><output id="cornerProtectionValue">90%</output></div></label>
+          <label class="setting-row"><span>Упрощение дрожания линии (RDP)</span><div class="setting-control"><input id="vectorTolerance" type="range" min="0" max="4" step="0.1" value="1.6"><output id="vectorToleranceValue">1,6 px</output></div></label>
+          <label class="setting-row"><span>Скругление мелких неровностей</span><div class="setting-control"><input id="vectorSmoothing" type="range" min="0" max="100" step="5" value="0"><output id="vectorSmoothingValue">0%</output></div></label>
+          <label class="setting-row"><span>Защита углов и поворотов</span><div class="setting-control"><input id="cornerProtection" type="range" min="0" max="100" step="5" value="95"><output id="cornerProtectionValue">95%</output></div></label>
+          <label class="setting-row"><span>Максимальный разрыв между концами</span><div class="setting-control"><input id="gapBridgePx" type="range" min="0" max="24" step="1" value="20"><output id="gapBridgePxValue">20 px</output></div></label>
+          <label class="setting-row"><span>Допустимое отклонение направления</span><div class="setting-control"><input id="gapBridgeAngle" type="range" min="5" max="45" step="1" value="18"><output id="gapBridgeAngleValue">18°</output></div></label>
           <label class="setting-row"><span>Толщина SVG-линии</span><div class="setting-control"><input id="vectorStrokeWidth" type="range" min="0.6" max="5" step="0.1" value="2"><output id="vectorStrokeWidthValue">2 px</output></div></label>
-          <label class="setting-row"><span>Минимальная длина штриха</span><div class="setting-control"><input id="minVectorLength" type="range" min="0" max="30" step="0.5" value="1.5"><output id="minVectorLengthValue">1,5 px</output></div></label>
+          <label class="setting-row"><span>Минимальная длина штриха</span><div class="setting-control"><input id="minVectorLength" type="range" min="0" max="30" step="0.5" value="5"><output id="minVectorLengthValue">5 px</output></div></label>
           <label class="setting-row"><span>Минимальная уверенность чистой подписи</span><div class="setting-control"><input id="labelMinConfidence" type="range" min="0" max="95" step="5" value="0"><output id="labelMinConfidenceValue">0</output></div></label>
-          <p class="hint">Масштаб просмотра не запускает OCR повторно. Параметры сглаживания не изменяют исходные пиксели масок. SVG строится из скелета маски линий; сильное упрощение может убрать мелкие детали, поэтому сохраняй защиту углов высокой.</p>
+          <p class="hint">Масштаб просмотра не запускает OCR повторно. Исходные маски не меняются. Разрыв до 4 px соединяется только между двумя свободными концами, направленными навстречу. Более длинный разрыв соединяется только если он проходит внутри удалённой OCR/лассо-области (т.е. линия могла быть скрыта надписью). Пересечения и параллельные линии не объединяются. Для более ровных прямых: RDP 1,6 px, скругление 0%, короткие фрагменты меньше 5 px скрыты только в SVG.</p>
           <div class="preset-row preset-row-bottom"><button type="button" class="button button-ghost" id="resetSettings">Сбросить настройки</button><span class="settings-footnote">Изменения применятся при следующей обработке</span></div>
         </div>
 
@@ -139,7 +143,7 @@
           <strong>Как считаются маски</strong>
           <p><b>Маска текста:</b> пиксели чернил внутри прямоугольников текста, найденных OCR.</p>
           <p><b>Маска линий:</b> остальные пиксели чернил за пределами этих прямоугольников.</p>
-          <p>Это экспериментальное разделение. Рукописные цифры, которые OCR не распознает, могут остаться в маске линий. Участок трубы внутри OCR-прямоугольника может попасть в текстовую маску.</p>
+          <p>Это экспериментальное разделение. Рукописные цифры, которые OCR не распознает, могут остаться в маске линий. Для чистых цифр: обведи рукопись лассо, включи «Убрать рукопись», введи проверенное значение и включи «Печатать». Иначе исходный почерк останется частью SVG.</p>
         </div>
       </article>
 
@@ -175,7 +179,7 @@
 
         <section class="vector-card" aria-labelledby="vectorHeading">
           <div class="vector-card-head">
-            <div><span class="eyebrow">ШАГ 03</span><h3 id="vectorHeading">Сглаженная векторная линия</h3><p>SVG осевых линий, построенный из маски линий. Повороты и ветви сохраняются как отдельные сегменты; близкие штрихи автоматически не соединяются.</p></div>
+            <div><span class="eyebrow">ШАГ 03</span><h3 id="vectorHeading">Сглаженная векторная линия</h3><p>SVG осевых линий, построенный из маски линий. Короткие штрихи меньше заданной длины скрываются в SVG; соединения через OCR-области проверяются по направлению концов.</p></div>
             <a class="download-link hidden" id="downloadVector" download="line-centerlines.svg">Скачать SVG</a>
           </div>
           <div class="vector-view"><div class="placeholder" id="vectorPlaceholder">После построения масок здесь появится SVG-векторизация</div><img id="vectorLinesImage" class="hidden" alt="Сглаженная SVG-векторизация маски линий"></div>
@@ -190,8 +194,8 @@
           <div class="vector-view clean-view"><div class="placeholder" id="cleanPlaceholder">После обработки появится чистый чертёж; лассом можно убрать оставшиеся каракули</div><img id="cleanDrawingImage" class="hidden" alt="Чистый чертёж с векторными линиями и печатными подписями"></div>
           <div class="vector-stats" id="cleanStats">Печатные подписи ещё не сформированы.</div>
           <details class="label-editor-details" id="labelEditorDetails">
-            <summary>Исправить распознанные цифры и буквы (<span id="labelCount">0</span>)</summary>
-            <p class="hint">«Убрать рукопись» исключает исходные пиксели из SVG линий. Для сложных надписей используй свободное лассо: оно маскирует область по нарисованному контуру и меньше задевает соседние трубы. «Печатать» добавляет исправленный текст аккуратным шрифтом. OCR-текст не печатается, пока ты сам не поставишь эту галочку.</p>
+            <summary>Очистить рукопись и заменить цифры печатным текстом (<span id="labelCount">0</span>)</summary>
+            <p class="hint">«Убрать рукопись» исключает исходные пиксели из SVG линий. Для сложных надписей используй свободное лассо: оно маскирует область по нарисованному контуру и меньше задевает соседние трубы. «Печатать» добавляет исправленный текст ровным шрифтом. OCR-текст не печатается, пока ты сам не поставишь эту галочку. Для цифры, которую OCR пропустил, обведи её лассо на оригинале, введи правильное значение и включи обе галочки.</p>
             <div class="label-list-head"><span>Убрать рукопись</span><span>Текст — можно исправить</span><span>Печатать</span><span>%</span><span>Угол</span></div>
             <div id="labelList" class="label-list"><p class="empty-labels">Сначала построй две маски.</p></div>
             <button class="button button-primary" id="applyLabels" type="button" disabled>Применить подписи и пересобрать чистый чертёж</button>
@@ -220,7 +224,7 @@
       </article>
     </section>
 
-    <footer class="footer"><strong>TWO MASK LAB 3.4.0</strong><span>OpenCV two masks + OCR + freehand lasso cleanup + editable SVG labels · Qwen не вызывается</span></footer>
+    <footer class="footer"><strong>TWO MASK LAB 3.5.0</strong><span>OpenCV two masks + OCR + freehand lasso cleanup + editable SVG labels · Qwen не вызывается</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

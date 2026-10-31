@@ -129,9 +129,9 @@ function runMaskProcessor(imageBuffer, config) {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    appVersion: '3.4.0',
+    appVersion: '3.5.0',
     mode: 'two-mask-lab-lasso-cleanup',
-    processor: 'Two masks + freehand polygon text masking + editable clean SVG labels + centerline paths',
+    processor: 'Two masks + lasso text cleanup + clean SVG labels + centerline paths with conservative endpoint gap joining',
     qwenUsed: false,
     masks: ['text', 'lines'],
     note: 'OCR boxes and manually drawn lasso polygons can mask handwritten text; corrected text is added as editable SVG. Source image remains unchanged.',
@@ -154,15 +154,15 @@ app.post('/api/masks', maskLimiter, (req, res, next) => {
   const psmValue = Math.round(boundedNumber(req.body?.psm, 11, 3, 13));
   const config = {
     mode,
-    minConfidence: boundedNumber(req.body?.minConfidence, 35, 0, 95),
-    padding: Math.round(boundedNumber(req.body?.padding, 1, 0, 24)),
-    paddingRatio: boundedNumber(req.body?.paddingRatio, 0, 0, 100),
+    minConfidence: boundedNumber(req.body?.minConfidence, 5, 0, 95),
+    padding: Math.round(boundedNumber(req.body?.padding, 2, 0, 24)),
+    paddingRatio: boundedNumber(req.body?.paddingRatio, 5, 0, 100),
     ocrScale: boundedNumber(req.body?.ocrScale, 2, 1, 3),
     psm: allowedPsm.includes(psmValue) ? psmValue : 11,
     language: ['eng+rus', 'eng', 'rus'].includes(String(req.body?.language)) ? String(req.body.language) : 'eng+rus',
     preprocess: ['original', 'ink', 'clahe', 'otsu', 'adaptive'].includes(String(req.body?.preprocess)) ? String(req.body.preprocess) : 'original',
-    minBoxWidth: Math.round(boundedNumber(req.body?.minBoxWidth, 4, 1, 40)),
-    minBoxHeight: Math.round(boundedNumber(req.body?.minBoxHeight, 3, 1, 40)),
+    minBoxWidth: Math.round(boundedNumber(req.body?.minBoxWidth, 2, 1, 40)),
+    minBoxHeight: Math.round(boundedNumber(req.body?.minBoxHeight, 2, 1, 40)),
     hueMin: Math.round(boundedNumber(req.body?.hueMin, 90, 0, 179)),
     hueMax: Math.round(boundedNumber(req.body?.hueMax, 145, 0, 179)),
     hueTolerance: Math.round(boundedNumber(req.body?.hueTolerance, 24, 5, 60)),
@@ -170,15 +170,17 @@ app.post('/api/masks', maskLimiter, (req, res, next) => {
     minBrightness: Math.round(boundedNumber(req.body?.minBrightness, 20, 0, 150)),
     maxBrightness: Math.round(boundedNumber(req.body?.maxBrightness, 252, 100, 255)),
     darkThreshold: Math.round(boundedNumber(req.body?.darkThreshold, 132, 30, 230)),
-    minComponentArea: Math.round(boundedNumber(req.body?.minComponentArea, 2, 1, 50)),
+    minComponentArea: Math.round(boundedNumber(req.body?.minComponentArea, 1, 1, 50)),
     previewScale: Math.round(boundedNumber(req.body?.previewScale, 3, 2, 4)),
-    vectorTolerance: boundedNumber(req.body?.vectorTolerance, 0.8, 0, 3),
-    vectorSmoothing: boundedNumber(req.body?.vectorSmoothing, 30, 0, 100),
-    cornerProtection: boundedNumber(req.body?.cornerProtection, 90, 0, 100),
+    vectorTolerance: boundedNumber(req.body?.vectorTolerance, 1.6, 0, 4),
+    vectorSmoothing: boundedNumber(req.body?.vectorSmoothing, 0, 0, 100),
+    cornerProtection: boundedNumber(req.body?.cornerProtection, 95, 0, 100),
     vectorStrokeWidth: boundedNumber(req.body?.vectorStrokeWidth, 2, 0.6, 5),
-    minVectorLength: boundedNumber(req.body?.minVectorLength, 1.5, 0, 30),
+    minVectorLength: boundedNumber(req.body?.minVectorLength, 5, 0, 30),
     labelMinConfidence: boundedNumber(req.body?.labelMinConfidence, 0, 0, 95),
   };
+  config.gapBridgePx = boundedNumber(req.body?.gapBridgePx, 20, 0, 24);
+  config.gapBridgeAngle = boundedNumber(req.body?.gapBridgeAngle, 18, 5, 45);
   if (req.body?.overrideBoxes) {
     try {
       const parsedBoxes = JSON.parse(String(req.body.overrideBoxes));
@@ -221,6 +223,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`TWO MASK LAB 3.4.0 запущена: http://${HOST}:${PORT}`);
+  console.log(`TWO MASK LAB 3.5.0 запущена: http://${HOST}:${PORT}`);
   console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
 });

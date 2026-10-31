@@ -1,7 +1,7 @@
 import unittest
 import cv2
 import numpy as np
-from mask_processor import (build_ink_mask, build_two_masks, preprocess_for_ocr, antialiased_preview, zhang_suen_skeleton, trace_skeleton_paths, create_line_svg, sanitize_override_boxes, create_clean_drawing_svg)
+from mask_processor import (build_ink_mask, build_two_masks, preprocess_for_ocr, antialiased_preview, zhang_suen_skeleton, trace_skeleton_paths, bridge_skeleton_gaps, create_line_svg, sanitize_override_boxes, create_clean_drawing_svg)
 
 
 class TwoMaskTests(unittest.TestCase):
@@ -125,6 +125,52 @@ class TwoMaskTests(unittest.TestCase):
         paths, isolated = trace_skeleton_paths(skeleton)
         self.assertGreaterEqual(len(paths), 3)
         self.assertEqual(isolated, 0)
+
+    def test_bridge_joins_only_short_facing_endpoints(self):
+        mask = np.zeros((50, 110), dtype=np.uint8)
+        cv2.line(mask, (5, 25), (45, 25), 255, 1)
+        cv2.line(mask, (49, 25), (100, 25), 255, 1)
+        skeleton = zhang_suen_skeleton(mask)
+        bridged, bridges = bridge_skeleton_gaps(skeleton, 6, 24)
+        self.assertEqual(len(bridges), 1)
+        paths, isolated = trace_skeleton_paths(bridged)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(isolated, 0)
+        # The input skeleton is not modified.
+        self.assertEqual(int(skeleton[25, 47]), 0)
+
+    def test_bridge_does_not_join_parallel_offset_lines(self):
+        mask = np.zeros((60, 110), dtype=np.uint8)
+        cv2.line(mask, (5, 22), (45, 22), 255, 1)
+        cv2.line(mask, (50, 27), (100, 27), 255, 1)
+        skeleton = zhang_suen_skeleton(mask)
+        bridged, bridges = bridge_skeleton_gaps(skeleton, 8, 24)
+        self.assertEqual(bridges, [])
+        paths, _ = trace_skeleton_paths(bridged)
+        self.assertEqual(len(paths), 2)
+
+    def test_long_bridge_requires_removed_text_region(self):
+        mask = np.zeros((60, 120), dtype=np.uint8)
+        cv2.line(mask, (5, 30), (45, 30), 255, 1)
+        cv2.line(mask, (60, 30), (110, 30), 255, 1)
+        skeleton = zhang_suen_skeleton(mask)
+        without_region, no_links = bridge_skeleton_gaps(skeleton, 20, 18, None)
+        self.assertEqual(no_links, [])
+        self.assertEqual(len(trace_skeleton_paths(without_region)[0]), 2)
+        removed = np.zeros_like(mask)
+        removed[25:36, 46:60] = 255
+        with_region, links = bridge_skeleton_gaps(skeleton, 20, 18, removed)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(len(trace_skeleton_paths(with_region)[0]), 1)
+
+    def test_bridge_disabled_keeps_gap(self):
+        mask = np.zeros((50, 110), dtype=np.uint8)
+        cv2.line(mask, (5, 25), (45, 25), 255, 1)
+        cv2.line(mask, (49, 25), (100, 25), 255, 1)
+        bridged, bridges = bridge_skeleton_gaps(zhang_suen_skeleton(mask), 0, 24)
+        self.assertEqual(bridges, [])
+        paths, _ = trace_skeleton_paths(bridged)
+        self.assertEqual(len(paths), 2)
 
     def test_svg_generation_is_valid_and_returns_vector_stats(self):
         mask = np.zeros((80, 100), dtype=np.uint8)

@@ -18,26 +18,33 @@ const linePlaceholder = $('#linePlaceholder');
 const toast = $('#toast');
 
 const defaults = {
-  inkMode: 'blue', minConfidence: 35, ocrScale: '2', preprocess: 'original', psm: '11', language: 'eng+rus',
-  padding: 1, paddingRatio: 0, minBoxWidth: 4, minBoxHeight: 3,
+  inkMode: 'blue', minConfidence: 5, ocrScale: '2', preprocess: 'original', psm: '11', language: 'eng+rus',
+  padding: 2, paddingRatio: 5, minBoxWidth: 2, minBoxHeight: 2,
   hueMin: 90, hueMax: 145, hueTolerance: 24, saturationMin: 18,
-  minBrightness: 20, maxBrightness: 252, darkThreshold: 132, minComponentArea: 2,
-  previewScale: 3, vectorTolerance: 0.8, vectorSmoothing: 30, cornerProtection: 90,
-  vectorStrokeWidth: 2, minVectorLength: 1.5, labelMinConfidence: 0,
+  minBrightness: 20, maxBrightness: 252, darkThreshold: 132, minComponentArea: 1,
+  previewScale: 3, vectorTolerance: 1.6, vectorSmoothing: 0, cornerProtection: 95,
+  vectorStrokeWidth: 2, minVectorLength: 5, gapBridgePx: 20, gapBridgeAngle: 18, labelMinConfidence: 0,
+};
+
+const balanced = {
+  ...defaults, minConfidence: 35, padding: 1, paddingRatio: 0, minBoxWidth: 4, minBoxHeight: 3,
+  minComponentArea: 2, vectorTolerance: 0.8, minVectorLength: 1.5, gapBridgePx: 4, gapBridgeAngle: 24,
 };
 
 const presets = {
-  balanced: { ...defaults },
-  moreText: { ...defaults, minConfidence: 15, ocrScale: '3', padding: 2, paddingRatio: 4, minBoxWidth: 2, minBoxHeight: 2, saturationMin: 8 },
-  protectLines: { ...defaults, minConfidence: 65, ocrScale: '2', padding: 0, paddingRatio: 0, minBoxWidth: 6, minBoxHeight: 5, minComponentArea: 1 },
-  strict: { ...defaults, minConfidence: 55, ocrScale: '2.5', preprocess: 'clahe', padding: 1, paddingRatio: 0, minBoxWidth: 5, minBoxHeight: 4 },
+  handSketch: { ...defaults },
+  balanced: { ...balanced },
+  moreText: { ...balanced, minConfidence: 15, ocrScale: '3', padding: 2, paddingRatio: 4, minBoxWidth: 2, minBoxHeight: 2, saturationMin: 8 },
+  denseText: { ...defaults, psm: '6', minConfidence: 5, padding: 2, paddingRatio: 5, minBoxWidth: 2, minBoxHeight: 2 },
+  protectLines: { ...balanced, minConfidence: 65, ocrScale: '2', padding: 0, paddingRatio: 0, minBoxWidth: 6, minBoxHeight: 5, minComponentArea: 1 },
+  strict: { ...balanced, minConfidence: 55, ocrScale: '2.5', preprocess: 'clahe', padding: 1, paddingRatio: 0, minBoxWidth: 5, minBoxHeight: 4 },
 };
 
 const fields = [
   'inkMode', 'minConfidence', 'ocrScale', 'preprocess', 'psm', 'language', 'padding', 'paddingRatio',
   'minBoxWidth', 'minBoxHeight', 'hueMin', 'hueMax', 'hueTolerance', 'saturationMin',
   'minBrightness', 'maxBrightness', 'darkThreshold', 'minComponentArea',
-  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength', 'labelMinConfidence',
+  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength', 'gapBridgePx', 'gapBridgeAngle', 'labelMinConfidence',
 ];
 const unitLabels = {
   padding: value => `${value} px`, paddingRatio: value => `${value}%`,
@@ -47,6 +54,8 @@ const unitLabels = {
   vectorSmoothing: value => `${value}%`, cornerProtection: value => `${value}%`,
   vectorStrokeWidth: value => `${Number(value).toLocaleString('ru-RU')} px`,
   minVectorLength: value => `${Number(value).toLocaleString('ru-RU')} px`,
+  gapBridgePx: value => `${Number(value).toLocaleString('ru-RU')} px`,
+  gapBridgeAngle: value => `${value}°`,
   labelMinConfidence: value => `${value}`,
 };
 
@@ -369,6 +378,8 @@ function renderResult(result) {
   const cleanTextInfo = result.cleanText || {};
   $('#cleanStats').textContent = `Печатных надписей: ${cleanTextInfo.renderedLabels ?? 0} · пропущено: ${cleanTextInfo.skippedLabels ?? 0} · шрифт: ${cleanTextInfo.fontFamily || 'Arial'}. Исправляй текст в списке ниже; повторная обработка OCR не выполняется.`;
   renderLabelEditor(result.boxes || []);
+  // Expose the handwriting cleanup panel after each run so handwritten digits are not mistaken for finished typography.
+  $('#labelEditorDetails').open = labelState.length > 0;
 
   const stats = result.stats || {};
   $('#resultTag').textContent = result.warnings?.length ? 'ГОТОВО · ЕСТЬ ЗАМЕЧАНИЯ' : 'МАСКИ ГОТОВЫ';
@@ -379,7 +390,7 @@ function renderResult(result) {
   $('#statLines').textContent = `${Number(stats.linePixels || 0).toLocaleString('ru-RU')} · ${stats.lineCoveragePercent ?? 0}%`;
   $('#statTime').textContent = `${((result.elapsedMs || 0) / 1000).toFixed(2)} с`;
   const vector = result.vectorization || {};
-  $('#vectorStats').textContent = `Скелет: ${Number(vector.skeletonPixels || 0).toLocaleString('ru-RU')} px · путей найдено: ${vector.tracedPaths ?? 0} · SVG-путей: ${vector.vectorPaths ?? 0} · длина: ${vector.vectorLengthPx ?? 0} px · допуск: ${vector.simplifyTolerancePx ?? 0} px · сглаживание: ${vector.smoothingPercent ?? 0}%`;
+  $('#vectorStats').textContent = `Скелет: ${Number(vector.skeletonPixels || 0).toLocaleString('ru-RU')} px · путей: ${vector.tracedPaths ?? 0} · SVG-путей: ${vector.vectorPaths ?? 0} · коротких разрывов соединено: ${vector.gapBridgeCount ?? 0} (до ${vector.gapBridgeMaxPx ?? 0} px) · длина: ${vector.vectorLengthPx ?? 0} px`;
 
   saveDownload($('#downloadText'), result.masks.textPngBase64);
   saveDownload($('#downloadLines'), result.masks.linesPngBase64);
@@ -398,7 +409,7 @@ function renderResult(result) {
   else warningBox.classList.add('hidden');
 
   const report = {
-    appVersion: '3.4.0', dimensions: { width: result.width, height: result.height },
+    appVersion: '3.5.0', dimensions: { width: result.width, height: result.height },
     settings: result.settings, mode: result.mode, ocr: result.ocr, stats,
     warnings: result.warnings || [], recognizedTextBoxes: result.boxes || [],
     vectorization: result.vectorization || {}, cleanText: result.cleanText || {},
@@ -406,7 +417,7 @@ function renderResult(result) {
     maskDefinition: {
       text: 'Original ink pixels inside OCR word boxes after explicit pixel + proportional padding.',
       lines: 'All other original ink pixels outside those OCR word boxes.',
-      note: 'Original 1x binary masks are unchanged. Clean SVG combines centerline paths with editable typeset labels. OCR errors need manual correction; no handwriting recognition accuracy is guaranteed.',
+      note: 'Original 1x binary masks are unchanged. SVG uses conservative endpoint-to-endpoint micro-gap joining only when local directions align. OCR handwriting still requires review; clean typed labels are manual.',
     },
   };
   $('#debugOutput').textContent = pretty(report);
@@ -683,5 +694,5 @@ async function checkHealth() {
 }
 
 imageInput.value = '';
-setSettings(defaults, 'balanced');
+setSettings(defaults, 'handSketch');
 checkHealth();
