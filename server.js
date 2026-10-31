@@ -129,12 +129,12 @@ function runMaskProcessor(imageBuffer, config) {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    appVersion: '3.1.0',
-    mode: 'two-mask-lab-configurable',
-    processor: 'OpenCV ink segmentation + configurable Tesseract preprocessing/PSM/upscale',
+    appVersion: '3.2.0',
+    mode: 'two-mask-lab-smooth-vector',
+    processor: 'OpenCV ink segmentation + configurable Tesseract + antialiased previews + skeleton SVG centerlines',
     qwenUsed: false,
     masks: ['text', 'lines'],
-    note: 'OCR parameters are configurable: confidence, scale, preprocessing, page segmentation mode, language, text-box size and padding; ink hue/saturation/brightness and speckle filtering.',
+    note: 'Binary masks stay unchanged; separate antialiased previews and editable centerline SVG use adjustable simplification and corner-preserving smoothing.',
   });
 });
 
@@ -171,6 +171,12 @@ app.post('/api/masks', maskLimiter, (req, res, next) => {
     maxBrightness: Math.round(boundedNumber(req.body?.maxBrightness, 252, 100, 255)),
     darkThreshold: Math.round(boundedNumber(req.body?.darkThreshold, 132, 30, 230)),
     minComponentArea: Math.round(boundedNumber(req.body?.minComponentArea, 2, 1, 50)),
+    previewScale: Math.round(boundedNumber(req.body?.previewScale, 3, 2, 4)),
+    vectorTolerance: boundedNumber(req.body?.vectorTolerance, 0.8, 0, 3),
+    vectorSmoothing: boundedNumber(req.body?.vectorSmoothing, 30, 0, 100),
+    cornerProtection: boundedNumber(req.body?.cornerProtection, 90, 0, 100),
+    vectorStrokeWidth: boundedNumber(req.body?.vectorStrokeWidth, 2, 0.6, 5),
+    minVectorLength: boundedNumber(req.body?.minVectorLength, 1.5, 0, 30),
   };
   const started = Date.now();
   try {
@@ -203,6 +209,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`TWO MASK LAB 3.1.0 запущена: http://${HOST}:${PORT}`);
+  console.log(`TWO MASK LAB 3.2.0 запущена: http://${HOST}:${PORT}`);
   console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
 });

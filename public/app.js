@@ -9,6 +9,8 @@ const removeImageButton = $('#removeImage');
 const sourceImage = $('#sourceImage');
 const textMaskImage = $('#textMaskImage');
 const lineMaskImage = $('#lineMaskImage');
+const vectorLinesImage = $('#vectorLinesImage');
+const vectorPlaceholder = $('#vectorPlaceholder');
 const textPlaceholder = $('#textPlaceholder');
 const linePlaceholder = $('#linePlaceholder');
 const toast = $('#toast');
@@ -18,6 +20,8 @@ const defaults = {
   padding: 1, paddingRatio: 0, minBoxWidth: 4, minBoxHeight: 3,
   hueMin: 90, hueMax: 145, hueTolerance: 24, saturationMin: 18,
   minBrightness: 20, maxBrightness: 252, darkThreshold: 132, minComponentArea: 2,
+  previewScale: 3, vectorTolerance: 0.8, vectorSmoothing: 30, cornerProtection: 90,
+  vectorStrokeWidth: 2, minVectorLength: 1.5,
 };
 
 const presets = {
@@ -31,11 +35,16 @@ const fields = [
   'inkMode', 'minConfidence', 'ocrScale', 'preprocess', 'psm', 'language', 'padding', 'paddingRatio',
   'minBoxWidth', 'minBoxHeight', 'hueMin', 'hueMax', 'hueTolerance', 'saturationMin',
   'minBrightness', 'maxBrightness', 'darkThreshold', 'minComponentArea',
+  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength',
 ];
 const unitLabels = {
   padding: value => `${value} px`, paddingRatio: value => `${value}%`,
   minBoxWidth: value => `${value} px`, minBoxHeight: value => `${value} px`,
-  ocrScale: value => `${value}×`,
+  ocrScale: value => `${value}×`, previewScale: value => `${value}×`,
+  vectorTolerance: value => `${Number(value).toLocaleString('ru-RU')} px`,
+  vectorSmoothing: value => `${value}%`, cornerProtection: value => `${value}%`,
+  vectorStrokeWidth: value => `${Number(value).toLocaleString('ru-RU')} px`,
+  minVectorLength: value => `${Number(value).toLocaleString('ru-RU')} px`,
 };
 
 let selectedFile = null;
@@ -100,6 +109,11 @@ function clearResults() {
   maskResult = null;
   textMaskImage.removeAttribute('src');
   lineMaskImage.removeAttribute('src');
+  vectorLinesImage.removeAttribute('src');
+  vectorLinesImage.classList.add('hidden');
+  vectorPlaceholder.classList.remove('hidden');
+  $('#downloadVector').classList.add('hidden');
+  $('#vectorStats').textContent = 'Векторизация ещё не выполнялась.';
   textMaskImage.classList.add('hidden');
   lineMaskImage.classList.add('hidden');
   textPlaceholder.classList.remove('hidden');
@@ -146,6 +160,7 @@ function removeImage() {
 }
 
 function dataUrl(base64) { return `data:image/png;base64,${base64}`; }
+function svgDataUrl(base64) { return `data:image/svg+xml;base64,${base64}`; }
 
 function saveDownload(anchor, base64) {
   anchor.href = dataUrl(base64);
@@ -154,12 +169,24 @@ function saveDownload(anchor, base64) {
 
 function renderResult(result) {
   maskResult = result;
-  textMaskImage.src = dataUrl(result.masks.textPngBase64);
-  lineMaskImage.src = dataUrl(result.masks.linesPngBase64);
+  // Display uses antialiased supersampled previews; downloads remain exact binary masks.
+  textMaskImage.src = dataUrl(result.masks.textPreviewPngBase64 || result.masks.textPngBase64);
+  lineMaskImage.src = dataUrl(result.masks.linesPreviewPngBase64 || result.masks.linesPngBase64);
   textMaskImage.classList.remove('hidden');
   lineMaskImage.classList.remove('hidden');
   textPlaceholder.classList.add('hidden');
   linePlaceholder.classList.add('hidden');
+
+  if (result.masks.lineSvgBase64) {
+    vectorLinesImage.src = svgDataUrl(result.masks.lineSvgBase64);
+    vectorLinesImage.classList.remove('hidden');
+    vectorPlaceholder.classList.add('hidden');
+    $('#downloadVector').href = svgDataUrl(result.masks.lineSvgBase64);
+    $('#downloadVector').classList.remove('hidden');
+  } else {
+    vectorLinesImage.classList.add('hidden');
+    vectorPlaceholder.classList.remove('hidden');
+  }
 
   const stats = result.stats || {};
   $('#resultTag').textContent = result.warnings?.length ? 'ГОТОВО · ЕСТЬ ЗАМЕЧАНИЯ' : 'МАСКИ ГОТОВЫ';
@@ -169,6 +196,8 @@ function renderResult(result) {
   $('#statText').textContent = `${Number(stats.textPixels || 0).toLocaleString('ru-RU')} · ${stats.textCoveragePercent ?? 0}%`;
   $('#statLines').textContent = `${Number(stats.linePixels || 0).toLocaleString('ru-RU')} · ${stats.lineCoveragePercent ?? 0}%`;
   $('#statTime').textContent = `${((result.elapsedMs || 0) / 1000).toFixed(2)} с`;
+  const vector = result.vectorization || {};
+  $('#vectorStats').textContent = `Скелет: ${Number(vector.skeletonPixels || 0).toLocaleString('ru-RU')} px · путей найдено: ${vector.tracedPaths ?? 0} · SVG-путей: ${vector.vectorPaths ?? 0} · длина: ${vector.vectorLengthPx ?? 0} px · допуск: ${vector.simplifyTolerancePx ?? 0} px · сглаживание: ${vector.smoothingPercent ?? 0}%`;
 
   saveDownload($('#downloadText'), result.masks.textPngBase64);
   saveDownload($('#downloadLines'), result.masks.linesPngBase64);
@@ -187,13 +216,14 @@ function renderResult(result) {
   else warningBox.classList.add('hidden');
 
   const report = {
-    appVersion: '3.1.0', dimensions: { width: result.width, height: result.height },
+    appVersion: '3.2.0', dimensions: { width: result.width, height: result.height },
     settings: result.settings, mode: result.mode, ocr: result.ocr, stats,
     warnings: result.warnings || [], recognizedTextBoxes: result.boxes || [],
+    vectorization: result.vectorization || {},
     maskDefinition: {
       text: 'Original ink pixels inside OCR word boxes after explicit pixel + proportional padding.',
       lines: 'All other original ink pixels outside those OCR word boxes.',
-      note: 'The original ink mask is partitioned without line synthesis, joining or geometry inference.',
+      note: 'Original 1x binary masks are unchanged. Display previews are supersampled and antialiased. SVG is a derived centerline approximation; it does not change source masks or infer pipe connectivity.',
     },
   };
   $('#debugOutput').textContent = pretty(report);

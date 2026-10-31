@@ -1,7 +1,7 @@
 import unittest
 import cv2
 import numpy as np
-from mask_processor import build_ink_mask, build_two_masks, preprocess_for_ocr
+from mask_processor import (build_ink_mask, build_two_masks, preprocess_for_ocr, antialiased_preview, zhang_suen_skeleton, trace_skeleton_paths, create_line_svg)
 
 
 class TwoMaskTests(unittest.TestCase):
@@ -73,6 +73,43 @@ class TwoMaskTests(unittest.TestCase):
             self.assertEqual(processed.shape, image.shape[:2])
             self.assertEqual(processed.dtype, np.uint8)
 
+
+    def test_antialiased_preview_is_scaled_and_source_is_unchanged(self):
+        mask = np.zeros((20, 30), dtype=np.uint8)
+        cv2.line(mask, (2, 3), (25, 17), 255, 2)
+        original = mask.copy()
+        preview = antialiased_preview(mask, 3)
+        self.assertEqual(preview.shape, (60, 90))
+        self.assertTrue(np.array_equal(mask, original))
+        self.assertTrue(np.any((preview > 0) & (preview < 255)))
+
+    def test_skeleton_reduces_stroke_width_and_preserves_connected_line(self):
+        mask = np.zeros((60, 80), dtype=np.uint8)
+        cv2.line(mask, (5, 30), (70, 30), 255, 5)
+        skeleton = zhang_suen_skeleton(mask)
+        self.assertGreater(cv2.countNonZero(skeleton), 40)
+        self.assertLess(cv2.countNonZero(skeleton), cv2.countNonZero(mask))
+
+    def test_skeleton_graph_traces_a_branch(self):
+        mask = np.zeros((80, 80), dtype=np.uint8)
+        cv2.line(mask, (10, 40), (40, 40), 255, 3)
+        cv2.line(mask, (40, 40), (65, 15), 255, 3)
+        cv2.line(mask, (40, 40), (65, 65), 255, 3)
+        skeleton = zhang_suen_skeleton(mask)
+        paths, isolated = trace_skeleton_paths(skeleton)
+        self.assertGreaterEqual(len(paths), 3)
+        self.assertEqual(isolated, 0)
+
+    def test_svg_generation_is_valid_and_returns_vector_stats(self):
+        mask = np.zeros((80, 100), dtype=np.uint8)
+        cv2.line(mask, (8, 40), (45, 40), 255, 3)
+        cv2.line(mask, (45, 40), (80, 22), 255, 3)
+        cv2.line(mask, (45, 40), (80, 58), 255, 3)
+        svg, stats = create_line_svg(mask, 0.6, 35, 90, 2.0, 1.0)
+        self.assertTrue(svg.startswith('<svg'))
+        self.assertIn('<path d=', svg)
+        self.assertTrue(svg.endswith('</svg>'))
+        self.assertGreaterEqual(stats['vectorPaths'], 2)
 
 if __name__ == "__main__":
     unittest.main()

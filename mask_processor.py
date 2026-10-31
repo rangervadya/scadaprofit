@@ -268,6 +268,307 @@ def make_overlay(image: np.ndarray, text_mask: np.ndarray, line_mask: np.ndarray
     return np.clip(mixed, 0, 255).astype(np.uint8)
 
 
+
+def antialiased_preview(mask: np.ndarray, scale: int = 3) -> np.ndarray:
+    """Create a presentation-only supersampled mask with antialiased edges.
+
+    The source binary mask is never modified; this preview is for display only.
+    """
+    scale = max(2, min(4, int(scale)))
+    height, width = mask.shape[:2]
+    enlarged = cv2.resize(
+        mask,
+        (width * scale, height * scale),
+        interpolation=cv2.INTER_LANCZOS4,
+    )
+    return np.clip(enlarged, 0, 255).astype(np.uint8)
+
+
+def zhang_suen_skeleton(mask: np.ndarray, max_iterations: int = 120) -> np.ndarray:
+    """Thin a binary mask to a one-pixel skeleton without adding dependencies."""
+    image = np.pad((mask > 0).astype(np.uint8), 1, mode="constant")
+    for _ in range(max_iterations):
+        changed = False
+        for phase in (0, 1):
+            p2 = image[:-2, 1:-1]
+            p3 = image[:-2, 2:]
+            p4 = image[1:-1, 2:]
+            p5 = image[2:, 2:]
+            p6 = image[2:, 1:-1]
+            p7 = image[2:, :-2]
+            p8 = image[1:-1, :-2]
+            p9 = image[:-2, :-2]
+            center = image[1:-1, 1:-1]
+            neighbours = (p2, p3, p4, p5, p6, p7, p8, p9)
+            count = sum(neighbours)
+            transitions = sum(
+                ((neighbours[i] == 0) & (neighbours[(i + 1) % 8] == 1)).astype(np.uint8)
+                for i in range(8)
+            )
+            base = (center == 1) & (count >= 2) & (count <= 6) & (transitions == 1)
+            if phase == 0:
+                remove = base & ((p2 * p4 * p6) == 0) & ((p4 * p6 * p8) == 0)
+            else:
+                remove = base & ((p2 * p4 * p8) == 0) & ((p2 * p6 * p8) == 0)
+            if np.any(remove):
+                center[remove] = 0
+                changed = True
+        if not changed:
+            break
+    return (image[1:-1, 1:-1] * 255).astype(np.uint8)
+
+
+def _pixel_adjacency(skeleton: np.ndarray) -> tuple[list[tuple[int, int]], list[list[int]]]:
+    coords = [tuple(map(int, point)) for point in np.argwhere(skeleton > 0)]
+    index = {point: i for i, point in enumerate(coords)}
+    adjacency: list[list[int]] = [[] for _ in coords]
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for i, (y, x) in enumerate(coords):
+        for dy, dx in directions:
+            neighbour = (y + dy, x + dx)
+            j = index.get(neighbour)
+            if j is None:
+                continue
+            # Do not add a diagonal shortcut when an orthogonal connection exists.
+            # This avoids artificial triangles around right-angle stair steps.
+            if dy != 0 and dx != 0:
+                if (y, x + dx) in index or (y + dy, x) in index:
+                    continue
+            adjacency[i].append(j)
+    return coords, adjacency
+
+
+def trace_skeleton_paths(skeleton: np.ndarray) -> tuple[list[list[tuple[float, float]]], int]:
+    """Convert a one-pixel skeleton into independent endpoint/junction paths.
+
+    Junction pixel clusters are represented by a shared centroid. Edges are not
+    inferred between spatially close but disconnected strokes.
+    """
+    coords, adjacency = _pixel_adjacency(skeleton)
+    if not coords:
+        return [], 0
+
+    degrees = [len(items) for items in adjacency]
+    special = {i for i, degree in enumerate(degrees) if degree != 2}
+    special_owner: dict[int, int] = {}
+    node_centers: dict[int, tuple[float, float]] = {}
+    clusters: list[list[int]] = []
+
+    # Collapse neighbouring endpoints/branch pixels into a single graph node.
+    unseen = set(special)
+    while unseen:
+        seed = unseen.pop()
+        cluster = [seed]
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            for neighbour in adjacency[current]:
+                if neighbour in unseen:
+                    unseen.remove(neighbour)
+                    cluster.append(neighbour)
+                    stack.append(neighbour)
+        cluster_id = len(clusters)
+        clusters.append(cluster)
+        for item in cluster:
+            special_owner[item] = cluster_id
+        xs = [coords[item][1] for item in cluster]
+        ys = [coords[item][0] for item in cluster]
+        node_centers[cluster_id] = (float(sum(xs) / len(xs)), float(sum(ys) / len(ys)))
+
+    visited_edges: set[tuple[int, int]] = set()
+    paths: list[list[tuple[float, float]]] = []
+
+    def edge_key(a: int, b: int) -> tuple[int, int]:
+        return (a, b) if a < b else (b, a)
+
+    def to_xy(index_value: int) -> tuple[float, float]:
+        y, x = coords[index_value]
+        return float(x), float(y)
+
+    # Trace every chain leaving a node cluster until the next node cluster.
+    for cluster_id, cluster in enumerate(clusters):
+        for start_pixel in cluster:
+            for neighbour in adjacency[start_pixel]:
+                if neighbour in special_owner:
+                    continue
+                first_edge = edge_key(start_pixel, neighbour)
+                if first_edge in visited_edges:
+                    continue
+                chain = [start_pixel, neighbour]
+                visited_edges.add(first_edge)
+                previous, current = start_pixel, neighbour
+                guard = 0
+                while current not in special_owner and guard <= len(coords):
+                    guard += 1
+                    next_candidates = [item for item in adjacency[current] if item != previous]
+                    if not next_candidates:
+                        break
+                    # Degree-two pixels have one forward neighbour. If a malformed
+                    # skeleton yields several, follow the first unvisited edge.
+                    next_pixel = next((item for item in next_candidates if edge_key(current, item) not in visited_edges), None)
+                    if next_pixel is None:
+                        break
+                    visited_edges.add(edge_key(current, next_pixel))
+                    chain.append(next_pixel)
+                    previous, current = current, next_pixel
+
+                end_node = special_owner.get(current)
+                start_xy = node_centers[cluster_id]
+                path = [start_xy]
+                path.extend(to_xy(item) for item in chain)
+                if end_node is not None:
+                    path.append(node_centers[end_node])
+                # Remove duplicate consecutive coordinates.
+                compact: list[tuple[float, float]] = []
+                for point in path:
+                    if not compact or abs(point[0] - compact[-1][0]) + abs(point[1] - compact[-1][1]) > 1e-6:
+                        compact.append(point)
+                if len(compact) >= 2:
+                    paths.append(compact)
+
+    # Components consisting entirely of degree-two pixels are closed loops.
+    remaining = set(range(len(coords)))
+    component_seen: set[int] = set()
+    while remaining:
+        seed = remaining.pop()
+        comp = [seed]
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            for neighbour in adjacency[current]:
+                if neighbour in remaining:
+                    remaining.remove(neighbour)
+                    comp.append(neighbour)
+                    stack.append(neighbour)
+        if not comp or any(degrees[item] != 2 for item in comp):
+            continue
+        start = comp[0]
+        candidates = adjacency[start]
+        if not candidates:
+            continue
+        loop = [start]
+        previous, current = start, candidates[0]
+        visited_edges.add(edge_key(start, current))
+        guard = 0
+        while current != start and guard <= len(comp) + 2:
+            guard += 1
+            loop.append(current)
+            next_candidates = [item for item in adjacency[current] if item != previous]
+            if not next_candidates:
+                break
+            next_pixel = next_candidates[0]
+            if edge_key(current, next_pixel) in visited_edges and next_pixel != start:
+                break
+            visited_edges.add(edge_key(current, next_pixel))
+            previous, current = current, next_pixel
+        if len(loop) >= 3:
+            paths.append([to_xy(item) for item in loop] + [to_xy(loop[0])])
+
+    # Keep singleton pixels visible as tiny vector dots in addition to path count.
+    isolated = sum(1 for degree in degrees if degree == 0)
+    return paths, isolated
+
+
+def simplify_polyline(points: list[tuple[float, float]], epsilon: float) -> list[tuple[float, float]]:
+    """Ramer-Douglas-Peucker simplification while retaining path endpoints."""
+    if len(points) <= 2 or epsilon <= 0:
+        return points
+    arr = np.asarray(points, dtype=np.float32)
+    start, end = arr[0], arr[-1]
+    segment = end - start
+    norm = float(np.linalg.norm(segment))
+    if norm <= 1e-8:
+        distances = np.linalg.norm(arr[1:-1] - start, axis=1)
+    else:
+        offsets = arr[1:-1] - start
+        distances = np.abs(segment[0] * offsets[:, 1] - segment[1] * offsets[:, 0]) / norm
+    if distances.size == 0 or float(distances.max()) <= epsilon:
+        return [points[0], points[-1]]
+    split = int(np.argmax(distances)) + 1
+    left = simplify_polyline(points[:split + 1], epsilon)
+    right = simplify_polyline(points[split:], epsilon)
+    return left[:-1] + right
+
+
+def _svg_path(points: list[tuple[float, float]], smoothing: float, protected_angle: float) -> str:
+    if len(points) < 2:
+        return ""
+    pts = points
+    commands = [f"M {pts[0][0]:.2f} {pts[0][1]:.2f}"]
+    amount = max(0.0, min(1.0, float(smoothing) / 100.0))
+    angle_limit = max(10.0, min(80.0, float(protected_angle)))
+    for index in range(1, len(pts) - 1):
+        prev = np.asarray(pts[index - 1], dtype=np.float32)
+        current = np.asarray(pts[index], dtype=np.float32)
+        nxt = np.asarray(pts[index + 1], dtype=np.float32)
+        incoming = current - prev
+        outgoing = nxt - current
+        len_in = float(np.linalg.norm(incoming))
+        len_out = float(np.linalg.norm(outgoing))
+        if len_in < 1e-6 or len_out < 1e-6:
+            commands.append(f"L {current[0]:.2f} {current[1]:.2f}")
+            continue
+        cosine = float(np.clip(np.dot(incoming, outgoing) / (len_in * len_out), -1, 1))
+        turn = float(np.degrees(np.arccos(cosine)))
+        if amount > 0 and turn <= angle_limit:
+            radius = min(2.5, len_in * 0.32, len_out * 0.32) * amount
+            before = current - incoming / len_in * radius
+            after = current + outgoing / len_out * radius
+            commands.append(f"L {before[0]:.2f} {before[1]:.2f} Q {current[0]:.2f} {current[1]:.2f} {after[0]:.2f} {after[1]:.2f}")
+        else:
+            commands.append(f"L {current[0]:.2f} {current[1]:.2f}")
+    commands.append(f"L {pts[-1][0]:.2f} {pts[-1][1]:.2f}")
+    return " ".join(commands)
+
+
+def create_line_svg(
+    line_mask: np.ndarray,
+    simplify_tolerance: float = 0.8,
+    smoothing: float = 30,
+    corner_protection: float = 90,
+    stroke_width: float = 2.0,
+    min_path_length: float = 1.5,
+) -> tuple[str, dict[str, Any]]:
+    """Vector preview of line-mask centerlines. It does not alter either mask."""
+    skeleton = zhang_suen_skeleton(line_mask)
+    traced, isolated = trace_skeleton_paths(skeleton)
+    height, width = line_mask.shape[:2]
+    epsilon = max(0.0, min(3.0, float(simplify_tolerance)))
+    smooth = max(0.0, min(100.0, float(smoothing)))
+    # Higher protection means only very shallow kinks are rounded.
+    angle_limit = 75.0 - (max(0.0, min(100.0, float(corner_protection))) / 100.0) * 55.0
+    min_length = max(0.0, min(30.0, float(min_path_length)))
+    svg_paths = []
+    kept = 0
+    total_length = 0.0
+    junction_candidates = 0
+    for raw_points in traced:
+        points = simplify_polyline(raw_points, epsilon)
+        length = sum(float(np.linalg.norm(np.asarray(points[i + 1]) - np.asarray(points[i]))) for i in range(len(points) - 1))
+        if len(points) < 2 or length < min_length:
+            continue
+        d = _svg_path(points, smooth, angle_limit)
+        if d:
+            svg_paths.append(f'<path d="{d}"/>')
+            kept += 1
+            total_length += length
+    # Transparent SVG with dark strokes is suitable for a white CAD canvas.
+    # The preview panel supplies its own background; no raster rectangle is exported.
+    width_px = max(0.6, min(5.0, float(stroke_width)))
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+        f'<g fill="none" stroke="#171814" stroke-width="{width_px:.2f}" '
+        f'stroke-linecap="round" stroke-linejoin="round">{"".join(svg_paths)}</g></svg>'
+    )
+    stats = {
+        "skeletonPixels": int(cv2.countNonZero(skeleton)),
+        "tracedPaths": len(traced), "vectorPaths": kept,
+        "isolatedPixels": int(isolated), "vectorLengthPx": round(total_length, 1),
+        "simplifyTolerancePx": epsilon, "smoothingPercent": smooth,
+        "cornerAngleLimitDeg": round(angle_limit, 1), "strokeWidthPx": width_px,
+    }
+    return svg, stats
+
 def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
     config = config or {}
     image = decode_image(raw)
@@ -290,6 +591,12 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         "maxBrightness": clamp(config.get("maxBrightness"), 252, 100, 255, int),
         "darkThreshold": clamp(config.get("darkThreshold"), 132, 30, 230, int),
         "minComponentArea": clamp(config.get("minComponentArea"), 2, 1, 50, int),
+        "previewScale": clamp(config.get("previewScale"), 3, 2, 4, int),
+        "vectorTolerance": clamp(config.get("vectorTolerance"), 0.8, 0, 3),
+        "vectorSmoothing": clamp(config.get("vectorSmoothing"), 30, 0, 100),
+        "cornerProtection": clamp(config.get("cornerProtection"), 90, 0, 100),
+        "vectorStrokeWidth": clamp(config.get("vectorStrokeWidth"), 2.0, 0.6, 5),
+        "minVectorLength": clamp(config.get("minVectorLength"), 1.5, 0, 30),
     }
     if settings["hueMin"] > settings["hueMax"]:
         settings["hueMin"], settings["hueMax"] = settings["hueMax"], settings["hueMin"]
@@ -305,6 +612,16 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
     )
     text_mask, line_mask, text_regions = build_two_masks(ink, boxes, settings["padding"], settings["paddingRatio"])
     overlay = make_overlay(image, text_mask, line_mask)
+    text_preview = antialiased_preview(text_mask, settings["previewScale"])
+    line_preview = antialiased_preview(line_mask, settings["previewScale"])
+    line_svg, vector_info = create_line_svg(
+        line_mask,
+        settings["vectorTolerance"],
+        settings["vectorSmoothing"],
+        settings["cornerProtection"],
+        settings["vectorStrokeWidth"],
+        settings["minVectorLength"],
+    )
 
     ink_pixels = int(cv2.countNonZero(ink))
     text_pixels = int(cv2.countNonZero(text_mask))
@@ -326,10 +643,14 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
             "textCoveragePercent": round((text_pixels / ink_pixels * 100), 1) if ink_pixels else 0,
             "lineCoveragePercent": round((line_pixels / ink_pixels * 100), 1) if ink_pixels else 0,
         },
-        "warnings": warnings, "boxes": boxes,
+        "warnings": warnings, "boxes": boxes, "vectorization": vector_info,
         "masks": {
+            # Binary PNGs are authoritative downloads; antialiased images are for display only.
             "inkPngBase64": encode_png(ink), "textPngBase64": encode_png(text_mask),
             "linesPngBase64": encode_png(line_mask), "overlayPngBase64": encode_png(overlay),
+            "textPreviewPngBase64": encode_png(text_preview),
+            "linesPreviewPngBase64": encode_png(line_preview),
+            "lineSvgBase64": base64.b64encode(line_svg.encode("utf-8")).decode("ascii"),
         },
     }
 

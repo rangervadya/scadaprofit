@@ -1,8 +1,8 @@
 {
   "name": "cad-sketch-two-mask-lab",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
-  "description": "Configurable offline two-mask segmentation lab with OCR tuning controls.",
+  "description": "Offline two-mask segmentation with antialiased previews and corner-protected SVG centerline tracing.",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"
