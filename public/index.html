@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f4f0">
   <meta name="description" content="Офлайн-лаборатория: разделение рукописной схемы на маску текста и маску линий.">
-  <title>Two Mask Lab — текст и линии</title>
+  <title>Two Mask Lab — чистые подписи</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -18,7 +18,7 @@
     <div class="topbar-status">
       <span class="status-dot" id="apiDot"></span>
       <span id="apiStatus">Проверка локального обработчика…</span>
-      <span class="version" id="versionChip">v3.2.0</span>
+      <span class="version" id="versionChip">v3.3.0</span>
     </div>
   </header>
 
@@ -26,7 +26,7 @@
     <section class="intro">
       <p class="eyebrow">ЭКСПЕРИМЕНТ С ДВУМЯ МАСКАМИ</p>
       <h1>Сначала отделим<br><em>текст от линий.</em></h1>
-      <p class="intro-copy">Настраиваемое разделение чернил на текст и линии. Бинарные маски сохраняются без изменений; для просмотра используются сглаженные превью, а для результата строится отдельная SVG-осевая линия.</p>
+      <p class="intro-copy">Разделение рукописной схемы на текст и линии с ручной коррекцией подписей и чистым SVG.</p>
     </section>
 
     <section class="workspace">
@@ -130,6 +130,7 @@
           <label class="setting-row"><span>Защита углов и поворотов</span><div class="setting-control"><input id="cornerProtection" type="range" min="0" max="100" step="5" value="90"><output id="cornerProtectionValue">90%</output></div></label>
           <label class="setting-row"><span>Толщина SVG-линии</span><div class="setting-control"><input id="vectorStrokeWidth" type="range" min="0.6" max="5" step="0.1" value="2"><output id="vectorStrokeWidthValue">2 px</output></div></label>
           <label class="setting-row"><span>Минимальная длина штриха</span><div class="setting-control"><input id="minVectorLength" type="range" min="0" max="30" step="0.5" value="1.5"><output id="minVectorLengthValue">1,5 px</output></div></label>
+          <label class="setting-row"><span>Минимальная уверенность чистой подписи</span><div class="setting-control"><input id="labelMinConfidence" type="range" min="0" max="95" step="5" value="0"><output id="labelMinConfidenceValue">0</output></div></label>
           <p class="hint">Масштаб просмотра не запускает OCR повторно. Параметры сглаживания не изменяют исходные пиксели масок. SVG строится из скелета маски линий; сильное упрощение может убрать мелкие детали, поэтому сохраняй защиту углов высокой.</p>
           <div class="preset-row preset-row-bottom"><button type="button" class="button button-ghost" id="resetSettings">Сбросить настройки</button><span class="settings-footnote">Изменения применятся при следующей обработке</span></div>
         </div>
@@ -151,7 +152,8 @@
         <div class="mask-grid">
           <section class="mask-card">
             <div class="mask-heading"><span class="mask-number">00</span><div><strong>Оригинал</strong><small>Исходное изображение</small></div></div>
-            <div class="mask-view" id="sourceView"><div class="placeholder">Загрузи фотографию</div><img id="sourceImage" class="hidden" alt="Исходное изображение"></div>
+            <div class="mask-view" id="sourceView"><div class="placeholder">Загрузи фотографию</div><img id="sourceImage" class="hidden" alt="Исходное изображение"><canvas id="sourceSelectCanvas" aria-label="Выделение рукописной области"></canvas></div>
+            <div class="source-select-tools"><button class="button button-ghost" id="toggleManualRegion" type="button" disabled>Выделить надпись на фото</button><span id="selectionHint">Можно обвести цифры/буквы, которые OCR пропустил.</span></div>
           </section>
           <section class="mask-card text-mask-card">
             <div class="mask-heading"><span class="mask-number">01</span><div><strong>Маска текста</strong><small>Белое — чернила в OCR-областях</small></div></div>
@@ -172,6 +174,22 @@
           </div>
           <div class="vector-view"><div class="placeholder" id="vectorPlaceholder">После построения масок здесь появится SVG-векторизация</div><img id="vectorLinesImage" class="hidden" alt="Сглаженная SVG-векторизация маски линий"></div>
           <div class="vector-stats" id="vectorStats">Векторизация ещё не выполнялась.</div>
+        </section>
+
+        <section class="vector-card clean-card" aria-labelledby="cleanHeading">
+          <div class="vector-card-head">
+            <div><span class="eyebrow">ШАГ 04</span><h3 id="cleanHeading">Чистый чертёж с печатными подписями</h3><p>Рукописные символы из подтверждённых OCR-областей закрываются белым фоном и заменяются аккуратным печатным текстом после ручной проверки. OCR-предложения не печатаются автоматически, чтобы не подменять неверные цифры и буквы.</p></div>
+            <a class="download-link hidden" id="downloadClean" download="clean-drawing.svg">Скачать чистый SVG</a>
+          </div>
+          <div class="vector-view clean-view"><div class="placeholder" id="cleanPlaceholder">После обработки появится чистый чертёж</div><img id="cleanDrawingImage" class="hidden" alt="Чистый чертёж с векторными линиями и печатными подписями"></div>
+          <div class="vector-stats" id="cleanStats">Печатные подписи ещё не сформированы.</div>
+          <details class="label-editor-details" id="labelEditorDetails">
+            <summary>Исправить распознанные цифры и буквы (<span id="labelCount">0</span>)</summary>
+            <p class="hint">«Убрать рукопись» исключает исходные пиксели из SVG линий. «Печатать» добавляет исправленный текст аккуратным шрифтом. OCR-текст не печатается, пока ты сам не поставишь эту галочку.</p>
+            <div class="label-list-head"><span>Убрать рукопись</span><span>Текст — можно исправить</span><span>Печатать</span><span>%</span><span>Угол</span></div>
+            <div id="labelList" class="label-list"><p class="empty-labels">Сначала построй две маски.</p></div>
+            <button class="button button-primary" id="applyLabels" type="button" disabled>Применить подписи и пересобрать чистый чертёж</button>
+          </details>
         </section>
 
         <div class="stats-grid" id="statsGrid">
@@ -196,7 +214,7 @@
       </article>
     </section>
 
-    <footer class="footer"><strong>TWO MASK LAB 3.2.0</strong><span>OpenCV ink mask + Tesseract + antialiased previews + SVG centerlines · Qwen не вызывается</span></footer>
+    <footer class="footer"><strong>TWO MASK LAB 3.3.0</strong><span>OpenCV two masks + OCR editor + clean SVG annotations · Qwen не вызывается</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

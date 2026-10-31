@@ -38,3 +38,38 @@
 .vector-view .placeholder{color:#999b91;}
 .vector-stats{padding:10px 14px;border-top:1px solid var(--line);font:10px/1.6 var(--mono);color:var(--muted);background:#fafaf7;}
 @media(max-width:700px){.vector-view{height:310px}.vector-card-head{flex-direction:column}.vector-card-head .download-link{align-self:flex-start}}
+
+/* Two Mask Lab 3.3 — replace OCR handwriting with editable typeset labels */
+.clean-card{margin-top:18px}
+.clean-view{background:#fff;height:470px}
+.clean-view img{background:#fff}
+.label-editor-details{border-top:1px solid var(--line);padding:13px 14px;background:#fff}
+.label-editor-details>summary{font-size:11px;font-weight:850;cursor:pointer}
+.label-list-head,.label-row{display:grid;grid-template-columns:76px minmax(140px,1fr) 76px 82px;gap:8px;align-items:center}
+.label-list-head{font-size:9px;color:var(--muted);font-weight:800;padding:8px 6px;border-bottom:1px solid var(--line)}
+.label-list{max-height:470px;overflow:auto;border:1px solid var(--line);border-radius:4px;margin:8px 0 12px}
+.label-row{padding:6px;border-bottom:1px solid #eeeeea;font-size:9px}
+.label-row:last-child{border-bottom:0}
+.label-row:nth-child(even){background:#fafaf7}
+.label-row input[type=text],.label-row input[type=number]{width:100%;min-width:0;border:1px solid var(--line);border-radius:3px;padding:7px 6px;font:11px var(--sans);background:#fff;color:var(--ink)}
+.label-row input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;justify-self:center}
+.label-confidence{font:10px var(--mono);color:var(--muted);text-align:center}
+.label-row .coords{grid-column:2/5;color:var(--muted);font:9px var(--mono);padding-left:3px}
+.empty-labels{padding:12px;color:var(--muted);font-size:10px}
+#applyLabels{width:100%}
+@media(max-width:700px){.clean-view{height:320px}.label-list-head{display:none}.label-row{grid-template-columns:32px minmax(100px,1fr) 54px 64px}.label-row .coords{grid-column:2/5}}
+.label-list-head{grid-template-columns:76px minmax(140px,1fr) 64px 64px 70px}
+.label-row{display:block;padding:7px 8px}
+.label-row-main{display:grid;grid-template-columns:76px minmax(140px,1fr) 64px 64px 70px;gap:8px;align-items:center}
+.label-row-main input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;justify-self:center}
+.label-row-lower{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:5px 0 0 86px}
+.label-row-lower .coords{color:var(--muted);font:9px var(--mono)}
+.label-crop{width:180px;height:50px;object-fit:contain;border:1px solid #e7e7df;border-radius:3px;background:#fff}
+@media(max-width:700px){.label-list-head{display:none}.label-row-main{grid-template-columns:30px minmax(90px,1fr) 34px 45px 56px}.label-row-lower{margin-left:38px}.label-crop{width:150px;height:44px}}
+.source-select-tools{display:flex;align-items:center;gap:9px;padding:8px 10px;border-top:1px solid var(--line);background:#fafaf7}
+.source-select-tools .button{white-space:nowrap;padding:7px 9px;font-size:9px}
+.source-select-tools span{font-size:9px;line-height:1.4;color:var(--muted)}
+#sourceSelectCanvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;touch-action:none}
+#sourceView.selecting #sourceSelectCanvas{pointer-events:auto;cursor:crosshair}
+#sourceView.selecting{outline:2px solid var(--accent);outline-offset:-2px}
+@media(max-width:700px){.source-select-tools{align-items:flex-start;flex-direction:column}}

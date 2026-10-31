@@ -7,9 +7,11 @@ const uploadHint = $('#uploadHint');
 const processButton = $('#processButton');
 const removeImageButton = $('#removeImage');
 const sourceImage = $('#sourceImage');
+const sourceSelectCanvas = $('#sourceSelectCanvas');
 const textMaskImage = $('#textMaskImage');
 const lineMaskImage = $('#lineMaskImage');
 const vectorLinesImage = $('#vectorLinesImage');
+const cleanDrawingImage = $('#cleanDrawingImage');
 const vectorPlaceholder = $('#vectorPlaceholder');
 const textPlaceholder = $('#textPlaceholder');
 const linePlaceholder = $('#linePlaceholder');
@@ -21,7 +23,7 @@ const defaults = {
   hueMin: 90, hueMax: 145, hueTolerance: 24, saturationMin: 18,
   minBrightness: 20, maxBrightness: 252, darkThreshold: 132, minComponentArea: 2,
   previewScale: 3, vectorTolerance: 0.8, vectorSmoothing: 30, cornerProtection: 90,
-  vectorStrokeWidth: 2, minVectorLength: 1.5,
+  vectorStrokeWidth: 2, minVectorLength: 1.5, labelMinConfidence: 0,
 };
 
 const presets = {
@@ -35,7 +37,7 @@ const fields = [
   'inkMode', 'minConfidence', 'ocrScale', 'preprocess', 'psm', 'language', 'padding', 'paddingRatio',
   'minBoxWidth', 'minBoxHeight', 'hueMin', 'hueMax', 'hueTolerance', 'saturationMin',
   'minBrightness', 'maxBrightness', 'darkThreshold', 'minComponentArea',
-  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength',
+  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength', 'labelMinConfidence',
 ];
 const unitLabels = {
   padding: value => `${value} px`, paddingRatio: value => `${value}%`,
@@ -45,11 +47,16 @@ const unitLabels = {
   vectorSmoothing: value => `${value}%`, cornerProtection: value => `${value}%`,
   vectorStrokeWidth: value => `${Number(value).toLocaleString('ru-RU')} px`,
   minVectorLength: value => `${Number(value).toLocaleString('ru-RU')} px`,
+  labelMinConfidence: value => `${value}`,
 };
 
 let selectedFile = null;
 let sourceUrl = null;
 let maskResult = null;
+let labelState = [];
+let manualSelectMode = false;
+let manualDragStart = null;
+let manualDragCurrent = null;
 let toastTimer = null;
 
 function notify(message, isError = false) {
@@ -103,6 +110,7 @@ function setBusy(busy) {
   processButton.disabled = busy || !selectedFile;
   processButton.textContent = busy ? 'Обрабатываю…' : 'Построить две маски';
   removeImageButton.disabled = busy || !selectedFile;
+  $('#toggleManualRegion').disabled = busy || !selectedFile;
 }
 
 function clearResults() {
@@ -110,6 +118,15 @@ function clearResults() {
   textMaskImage.removeAttribute('src');
   lineMaskImage.removeAttribute('src');
   vectorLinesImage.removeAttribute('src');
+  cleanDrawingImage.removeAttribute('src');
+  labelState = [];
+  $('#cleanDrawingImage').classList.add('hidden');
+  $('#cleanPlaceholder').classList.remove('hidden');
+  $('#downloadClean').classList.add('hidden');
+  $('#cleanStats').textContent = 'Печатные подписи ещё не сформированы.';
+  $('#labelList').innerHTML = '<p class="empty-labels">Сначала построй две маски.</p>';
+  $('#labelCount').textContent = '0';
+  $('#applyLabels').disabled = true;
   vectorLinesImage.classList.add('hidden');
   vectorPlaceholder.classList.remove('hidden');
   $('#downloadVector').classList.add('hidden');
@@ -141,6 +158,8 @@ function setImage(file) {
   uploadHint.textContent = `${(file.size / 1024 / 1024).toFixed(2)} МБ · готов к обработке`;
   processButton.disabled = false;
   removeImageButton.disabled = false;
+  $('#toggleManualRegion').disabled = false;
+  setManualSelectMode(false);
   clearResults();
 }
 
@@ -156,6 +175,8 @@ function removeImage() {
   uploadHint.textContent = 'PNG · JPG · WEBP · до 15 МБ';
   processButton.disabled = true;
   removeImageButton.disabled = true;
+  $('#toggleManualRegion').disabled = true;
+  setManualSelectMode(false);
   clearResults();
 }
 
@@ -165,6 +186,125 @@ function svgDataUrl(base64) { return `data:image/svg+xml;base64,${base64}`; }
 function saveDownload(anchor, base64) {
   anchor.href = dataUrl(base64);
   anchor.classList.remove('hidden');
+}
+
+function makeLabelRow(label, index) {
+  const row = document.createElement('div');
+  row.className = 'label-row';
+  const useMask = document.createElement('input');
+  useMask.type = 'checkbox';
+  useMask.checked = label.mask !== false;
+  useMask.title = 'Убрать рукописные пиксели из слоя линий';
+  useMask.addEventListener('change', () => {
+    labelState[index].mask = useMask.checked;
+    if (!useMask.checked) {
+      labelState[index].render = false;
+      printText.checked = false;
+    }
+  });
+
+  const text = document.createElement('input');
+  text.type = 'text';
+  text.value = label.text || '';
+  text.maxLength = 100;
+  text.placeholder = 'Исправь OCR или введи точный размер';
+  text.setAttribute('aria-label', `Текст подписи ${index + 1}`);
+  text.addEventListener('input', () => { labelState[index].text = text.value; });
+
+  const printText = document.createElement('input');
+  printText.type = 'checkbox';
+  printText.checked = label.render === true;
+  printText.title = 'Вывести исправленный текст печатным шрифтом в чистом SVG';
+  printText.addEventListener('change', () => {
+    labelState[index].render = printText.checked;
+    if (printText.checked && !useMask.checked) {
+      useMask.checked = true;
+      labelState[index].mask = true;
+    }
+  });
+
+  const confidence = document.createElement('span');
+  confidence.className = 'label-confidence';
+  confidence.textContent = `${Math.round(Number(label.confidence || 0))}%`;
+
+  const rotation = document.createElement('input');
+  rotation.type = 'number';
+  rotation.min = '-180'; rotation.max = '180'; rotation.step = '1';
+  rotation.value = String(label.rotation || 0);
+  rotation.title = 'Угол поворота печатной подписи';
+  rotation.addEventListener('input', () => { labelState[index].rotation = Math.max(-180, Math.min(180, Number(rotation.value) || 0)); });
+
+  const coords = document.createElement('span');
+  coords.className = 'coords';
+  coords.textContent = `#${index + 1} · x=${label.x}, y=${label.y}, w=${label.width}, h=${label.height}`;
+  const main = document.createElement('div');
+  main.className = 'label-row-main';
+  main.append(useMask, text, printText, confidence, rotation);
+  const crop = document.createElement('canvas');
+  crop.className = 'label-crop';
+  crop.width = 260; crop.height = 72;
+  const ctx = crop.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, crop.width, crop.height);
+  if (sourceImage.complete && sourceImage.naturalWidth) {
+    const pad = 6;
+    const sx = Math.max(0, label.x - pad), sy = Math.max(0, label.y - pad);
+    const sw = Math.min(sourceImage.naturalWidth - sx, label.width + pad * 2);
+    const sh = Math.min(sourceImage.naturalHeight - sy, label.height + pad * 2);
+    if (sw > 0 && sh > 0) {
+      const scale = Math.min((crop.width - 12) / sw, (crop.height - 12) / sh, 4);
+      const dw = sw * scale, dh = sh * scale;
+      ctx.drawImage(sourceImage, sx, sy, sw, sh, (crop.width - dw) / 2, (crop.height - dh) / 2, dw, dh);
+    }
+  }
+  const lower = document.createElement('div');
+  lower.className = 'label-row-lower';
+  lower.append(coords, crop);
+  row.append(main, lower);
+  return row;
+}
+
+function renderLabelEditor(boxes = []) {
+  labelState = (boxes || []).map((box, index) => ({
+    id: index, text: String(box.text || ''), confidence: Number(box.confidence || 0),
+    x: Number(box.x || 0), y: Number(box.y || 0),
+    width: Number(box.width || 1), height: Number(box.height || 1),
+    rotation: Number(box.rotation || 0), fontScale: Number(box.fontScale || 0.9),
+    mask: box.mask !== false, render: box.render === true, manual: box.manual === true,
+  }));
+  const list = $('#labelList');
+  list.replaceChildren();
+  if (!labelState.length) {
+    list.innerHTML = '<p class="empty-labels">OCR не нашёл текстовых областей. Можно продолжать со слоем линий.</p>';
+  } else {
+    labelState.forEach((label, index) => list.append(makeLabelRow(label, index)));
+  }
+  $('#labelCount').textContent = String(labelState.length);
+  $('#applyLabels').disabled = !selectedFile || !labelState.length;
+}
+
+async function applyLabelEdits() {
+  if (!selectedFile || !maskResult) return;
+  setBusy(true);
+  $('#applyLabels').disabled = true;
+  $('#resultTag').textContent = 'ПЕРЕСБОРКА ПОДПИСЕЙ…';
+  const form = new FormData();
+  form.append('image', selectedFile, selectedFile.name);
+  for (const [key, value] of Object.entries(currentSettings())) form.append(key === 'inkMode' ? 'mode' : key, String(value));
+  form.append('overrideBoxes', JSON.stringify(labelState));
+  const started = performance.now();
+  try {
+    const response = await fetch('/api/masks', { method: 'POST', body: form });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) throw new Error(result.error || `Ошибка пересборки (${response.status}).`);
+    result.elapsedMs = result.elapsedMs || (performance.now() - started);
+    renderResult(result);
+    notify('Маски пересобраны. Печатный текст добавлен только для отмеченных проверенных подписей.');
+  } catch (error) {
+    notify(error.message || 'Не удалось применить подписи.', true);
+  } finally {
+    setBusy(false);
+    $('#applyLabels').disabled = !labelState.length;
+  }
 }
 
 function renderResult(result) {
@@ -187,6 +327,22 @@ function renderResult(result) {
     vectorLinesImage.classList.add('hidden');
     vectorPlaceholder.classList.remove('hidden');
   }
+
+  if (result.masks.cleanSvgBase64) {
+    const cleanUrl = svgDataUrl(result.masks.cleanSvgBase64);
+    cleanDrawingImage.src = cleanUrl;
+    cleanDrawingImage.classList.remove('hidden');
+    $('#cleanPlaceholder').classList.add('hidden');
+    $('#downloadClean').href = cleanUrl;
+    $('#downloadClean').classList.remove('hidden');
+  } else {
+    cleanDrawingImage.classList.add('hidden');
+    $('#cleanPlaceholder').classList.remove('hidden');
+    $('#downloadClean').classList.add('hidden');
+  }
+  const cleanTextInfo = result.cleanText || {};
+  $('#cleanStats').textContent = `Печатных надписей: ${cleanTextInfo.renderedLabels ?? 0} · пропущено: ${cleanTextInfo.skippedLabels ?? 0} · шрифт: ${cleanTextInfo.fontFamily || 'Arial'}. Исправляй текст в списке ниже; повторная обработка OCR не выполняется.`;
+  renderLabelEditor(result.boxes || []);
 
   const stats = result.stats || {};
   $('#resultTag').textContent = result.warnings?.length ? 'ГОТОВО · ЕСТЬ ЗАМЕЧАНИЯ' : 'МАСКИ ГОТОВЫ';
@@ -216,14 +372,15 @@ function renderResult(result) {
   else warningBox.classList.add('hidden');
 
   const report = {
-    appVersion: '3.2.0', dimensions: { width: result.width, height: result.height },
+    appVersion: '3.3.0', dimensions: { width: result.width, height: result.height },
     settings: result.settings, mode: result.mode, ocr: result.ocr, stats,
     warnings: result.warnings || [], recognizedTextBoxes: result.boxes || [],
-    vectorization: result.vectorization || {},
+    vectorization: result.vectorization || {}, cleanText: result.cleanText || {},
+    labelsAfterEdit: labelState,
     maskDefinition: {
       text: 'Original ink pixels inside OCR word boxes after explicit pixel + proportional padding.',
       lines: 'All other original ink pixels outside those OCR word boxes.',
-      note: 'Original 1x binary masks are unchanged. Display previews are supersampled and antialiased. SVG is a derived centerline approximation; it does not change source masks or infer pipe connectivity.',
+      note: 'Original 1x binary masks are unchanged. Clean SVG combines centerline paths with editable typeset labels. OCR errors need manual correction; no handwriting recognition accuracy is guaranteed.',
     },
   };
   $('#debugOutput').textContent = pretty(report);
@@ -288,6 +445,103 @@ document.querySelectorAll('.settings select').forEach(select => {
 });
 $('#resetSettings').addEventListener('click', () => setSettings(defaults, 'balanced'));
 
+$('#applyLabels').addEventListener('click', applyLabelEdits);
+
+function setManualSelectMode(enabled) {
+  manualSelectMode = Boolean(enabled && selectedFile);
+  manualDragStart = null;
+  manualDragCurrent = null;
+  $('#sourceView').classList.toggle('selecting', manualSelectMode);
+  $('#toggleManualRegion').classList.toggle('button-primary', manualSelectMode);
+  $('#toggleManualRegion').textContent = manualSelectMode ? 'Завершить выделение' : 'Выделить надпись на фото';
+  $('#selectionHint').textContent = manualSelectMode
+    ? 'Зажми левую кнопку мыши и обведи область с рукописью. Отпусти, чтобы добавить её в список.'
+    : 'Можно обвести цифры/буквы, которые OCR пропустил.';
+  drawSelectionCanvas();
+}
+
+function imagePointFromClient(clientX, clientY) {
+  if (!sourceImage.naturalWidth || !sourceImage.naturalHeight) return null;
+  const rect = sourceSelectCanvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / sourceImage.naturalWidth, rect.height / sourceImage.naturalHeight);
+  const shownW = sourceImage.naturalWidth * scale;
+  const shownH = sourceImage.naturalHeight * scale;
+  const offsetX = (rect.width - shownW) / 2;
+  const offsetY = (rect.height - shownH) / 2;
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  if (localX < offsetX || localY < offsetY || localX > offsetX + shownW || localY > offsetY + shownH) return null;
+  return {
+    x: Math.max(0, Math.min(sourceImage.naturalWidth, (localX - offsetX) / scale)),
+    y: Math.max(0, Math.min(sourceImage.naturalHeight, (localY - offsetY) / scale)),
+    screenX: localX, screenY: localY,
+  };
+}
+
+function drawSelectionCanvas() {
+  const canvas = sourceSelectCanvas;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const targetWidth = Math.round(rect.width * dpr);
+  const targetHeight = Math.round(rect.height * dpr);
+  if (canvas.width !== targetWidth) canvas.width = targetWidth;
+  if (canvas.height !== targetHeight) canvas.height = targetHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  if (!manualDragStart || !manualDragCurrent) return;
+  const x = Math.min(manualDragStart.screenX, manualDragCurrent.screenX);
+  const y = Math.min(manualDragStart.screenY, manualDragCurrent.screenY);
+  const w = Math.abs(manualDragStart.screenX - manualDragCurrent.screenX);
+  const h = Math.abs(manualDragStart.screenY - manualDragCurrent.screenY);
+  ctx.fillStyle = 'rgba(215,122,36,.16)';
+  ctx.strokeStyle = '#d77a24';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
+}
+
+$('#toggleManualRegion').addEventListener('click', () => setManualSelectMode(!manualSelectMode));
+sourceSelectCanvas.addEventListener('pointerdown', event => {
+  if (!manualSelectMode) return;
+  const point = imagePointFromClient(event.clientX, event.clientY);
+  if (!point) return;
+  manualDragStart = point;
+  manualDragCurrent = point;
+  sourceSelectCanvas.setPointerCapture(event.pointerId);
+  drawSelectionCanvas();
+});
+sourceSelectCanvas.addEventListener('pointermove', event => {
+  if (!manualSelectMode || !manualDragStart) return;
+  manualDragCurrent = imagePointFromClient(event.clientX, event.clientY) || manualDragCurrent;
+  drawSelectionCanvas();
+});
+sourceSelectCanvas.addEventListener('pointerup', event => {
+  if (!manualSelectMode || !manualDragStart || !manualDragCurrent) return;
+  const x = Math.floor(Math.min(manualDragStart.x, manualDragCurrent.x));
+  const y = Math.floor(Math.min(manualDragStart.y, manualDragCurrent.y));
+  const width = Math.ceil(Math.abs(manualDragStart.x - manualDragCurrent.x));
+  const height = Math.ceil(Math.abs(manualDragStart.y - manualDragCurrent.y));
+  manualDragStart = null;
+  manualDragCurrent = null;
+  drawSelectionCanvas();
+  if (width < 4 || height < 4) {
+    notify('Область слишком маленькая. Обведи надпись чуть крупнее.', true);
+    return;
+  }
+  labelState.push({
+    id: labelState.length, text: '', confidence: 100, x, y, width, height,
+    rotation: 0, fontScale: 0.9, mask: true, render: false, manual: true,
+  });
+  renderLabelEditor(labelState);
+  $('#labelEditorDetails').open = true;
+  notify('Рукописная область добавлена. Введи аккуратный текст и включи «Печатать», если он нужен в чистом SVG.');
+});
+window.addEventListener('resize', drawSelectionCanvas);
+
 async function checkHealth() {
   const dot = $('#apiDot');
   try {
@@ -296,7 +550,7 @@ async function checkHealth() {
     if (!response.ok) throw new Error(data.error || 'Health check error');
     $('#versionChip').textContent = `v${data.appVersion || '—'}`;
     dot.classList.add('good');
-    $('#apiStatus').textContent = 'Локальный OpenCV + настраиваемый Tesseract · Qwen не вызывается';
+    $('#apiStatus').textContent = 'Локальный Две маски + редактор печатных подписей · Qwen не вызывается';
   } catch {
     dot.classList.add('bad');
     $('#apiStatus').textContent = 'Локальный обработчик недоступен';

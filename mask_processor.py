@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+import html
 from io import BytesIO
 from typing import Any
 
@@ -239,6 +240,8 @@ def build_two_masks(
     ratio = max(0.0, min(1.0, float(padding_ratio) / 100.0))
 
     for box in boxes:
+        if box.get("mask", True) is False:
+            continue
         x, y = int(box["x"]), int(box["y"])
         w, h = int(box["width"]), int(box["height"])
         extra = pad_px + round(min(w, h) * ratio)
@@ -569,6 +572,92 @@ def create_line_svg(
     }
     return svg, stats
 
+def sanitize_override_boxes(items: Any, width: int, height: int) -> list[dict[str, Any]]:
+    """Validate manually edited OCR labels before reusing them without another OCR pass."""
+    if not isinstance(items, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:300]):
+        if not isinstance(item, dict):
+            continue
+        try:
+            x = max(0, min(width - 1, int(float(item.get("x", 0)))))
+            y = max(0, min(height - 1, int(float(item.get("y", 0)))))
+            w = max(1, min(width - x, int(float(item.get("width", 1)))))
+            h = max(1, min(height - y, int(float(item.get("height", 1)))))
+            confidence = max(0.0, min(100.0, float(item.get("confidence", 0))))
+            rotation = max(-180.0, min(180.0, float(item.get("rotation", 0))))
+            font_scale = max(0.45, min(2.0, float(item.get("fontScale", 0.9))))
+        except (TypeError, ValueError):
+            continue
+        label = str(item.get("text", ""))[:100]
+        mask_enabled = bool(item.get("mask", item.get("active", True)))
+        render_enabled = bool(item.get("render", False))
+        if render_enabled:
+            mask_enabled = True
+        result.append({
+            "text": label, "confidence": round(confidence, 1),
+            "x": x, "y": y, "width": w, "height": h,
+            "rotation": rotation, "fontScale": font_scale,
+            "mask": mask_enabled, "render": render_enabled, "manual": bool(item.get("manual", False)),
+        })
+    return result
+
+
+def create_clean_drawing_svg(
+    line_svg: str,
+    boxes: list[dict[str, Any]],
+    width: int,
+    height: int,
+    font_family: str = "Arial, sans-serif",
+    label_min_confidence: float = 0.0,
+) -> tuple[str, dict[str, Any]]:
+    """Compose line centerlines with clean, editable typeset OCR labels.
+
+    Handwriting itself is not vectorized as typography. Labels are clean SVG text;
+    low-confidence labels can be excluded and corrected in the browser editor.
+    """
+    import re
+    inner = line_svg
+    match = re.search(r"<svg[^>]*>(.*)</svg>\s*$", line_svg, flags=re.S)
+    if match:
+        inner = match.group(1)
+    text_nodes: list[str] = []
+    rendered = 0
+    skipped = 0
+    safe_family = html.escape(font_family, quote=True)
+    for box in boxes:
+        text = str(box.get("text", "")).strip()
+        confidence = float(box.get("confidence", 0))
+        if not box.get("render", False) or not text or confidence < float(label_min_confidence):
+            skipped += 1
+            continue
+        x, y = float(box["x"]), float(box["y"])
+        w, h = float(box["width"]), float(box["height"])
+        cx, cy = x + w / 2, y + h / 2
+        font_size = max(7.0, min(24.0, h * float(box.get("fontScale", 0.9))))
+        rotation = float(box.get("rotation", 0))
+        safe_text = html.escape(text, quote=False)
+        # Use a separate white label plate so residual handwriting inside an OCR box
+        # is covered. The original raster masks remain available unchanged.
+        pad_x = max(1.5, font_size * 0.12)
+        pad_y = max(1.0, font_size * 0.08)
+        text_nodes.append(
+            f'<g transform="rotate({rotation:.2f} {cx:.2f} {cy:.2f})">'
+            f'<rect x="{x-pad_x:.2f}" y="{y-pad_y:.2f}" width="{w+2*pad_x:.2f}" height="{h+2*pad_y:.2f}" fill="#ffffff" fill-opacity="0.94"/>'
+            f'<text x="{cx:.2f}" y="{cy:.2f}" dominant-baseline="central" text-anchor="middle" '
+            f'font-family="{safe_family}" font-size="{font_size:.2f}" fill="#171814" '
+            f'textLength="{max(5.0,w):.2f}" lengthAdjust="spacingAndGlyphs">{safe_text}</text></g>'
+        )
+        rendered += 1
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+        f'<rect width="100%" height="100%" fill="#ffffff"/>'
+        f'{inner}{"".join(text_nodes)}</svg>'
+    )
+    return svg, {"renderedLabels": rendered, "skippedLabels": skipped, "fontFamily": font_family}
+
+
 def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
     config = config or {}
     image = decode_image(raw)
@@ -597,6 +686,7 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         "cornerProtection": clamp(config.get("cornerProtection"), 90, 0, 100),
         "vectorStrokeWidth": clamp(config.get("vectorStrokeWidth"), 2.0, 0.6, 5),
         "minVectorLength": clamp(config.get("minVectorLength"), 1.5, 0, 30),
+        "labelMinConfidence": clamp(config.get("labelMinConfidence"), 0, 0, 95),
     }
     if settings["hueMin"] > settings["hueMax"]:
         settings["hueMin"], settings["hueMax"] = settings["hueMax"], settings["hueMin"]
@@ -606,10 +696,21 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         settings["hueTolerance"], settings["saturationMin"], settings["minBrightness"],
         settings["maxBrightness"], settings["darkThreshold"], settings["minComponentArea"],
     )
-    boxes, warnings, ocr_info = detect_text_boxes(
-        image, ink, settings["minConfidence"], settings["ocrScale"], settings["psm"],
-        settings["language"], settings["preprocess"], settings["minBoxWidth"], settings["minBoxHeight"],
-    )
+    override_boxes = config.get("overrideBoxes")
+    if isinstance(override_boxes, list):
+        boxes = sanitize_override_boxes(override_boxes, image.shape[1], image.shape[0])
+        warnings = []
+        ocr_info = {"available": True, "source": "manual-edits", "keptBoxes": len(boxes), "rawWords": len(boxes)}
+    else:
+        boxes, warnings, ocr_info = detect_text_boxes(
+            image, ink, settings["minConfidence"], settings["ocrScale"], settings["psm"],
+            settings["language"], settings["preprocess"], settings["minBoxWidth"], settings["minBoxHeight"],
+        )
+        for box in boxes:
+            box["mask"] = True
+            box["render"] = False
+            box["rotation"] = 0
+            box["fontScale"] = 0.9
     text_mask, line_mask, text_regions = build_two_masks(ink, boxes, settings["padding"], settings["paddingRatio"])
     overlay = make_overlay(image, text_mask, line_mask)
     text_preview = antialiased_preview(text_mask, settings["previewScale"])
@@ -621,6 +722,10 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
         settings["cornerProtection"],
         settings["vectorStrokeWidth"],
         settings["minVectorLength"],
+    )
+    clean_svg, clean_text_info = create_clean_drawing_svg(
+        line_svg, boxes, image.shape[1], image.shape[0],
+        label_min_confidence=settings["labelMinConfidence"],
     )
 
     ink_pixels = int(cv2.countNonZero(ink))
@@ -644,6 +749,7 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
             "lineCoveragePercent": round((line_pixels / ink_pixels * 100), 1) if ink_pixels else 0,
         },
         "warnings": warnings, "boxes": boxes, "vectorization": vector_info,
+        "cleanText": clean_text_info,
         "masks": {
             # Binary PNGs are authoritative downloads; antialiased images are for display only.
             "inkPngBase64": encode_png(ink), "textPngBase64": encode_png(text_mask),
@@ -651,6 +757,7 @@ def process(raw: bytes, config: dict[str, Any] | None = None) -> dict[str, Any]:
             "textPreviewPngBase64": encode_png(text_preview),
             "linesPreviewPngBase64": encode_png(line_preview),
             "lineSvgBase64": base64.b64encode(line_svg.encode("utf-8")).decode("ascii"),
+            "cleanSvgBase64": base64.b64encode(clean_svg.encode("utf-8")).decode("ascii"),
         },
     }
 
