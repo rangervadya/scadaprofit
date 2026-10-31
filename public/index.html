@@ -18,7 +18,7 @@
     <div class="topbar-status">
       <span class="status-dot" id="apiDot"></span>
       <span id="apiStatus">Проверка локального обработчика…</span>
-      <span class="version" id="versionChip">v3.0.0</span>
+      <span class="version" id="versionChip">v3.1.0</span>
     </div>
   </header>
 
@@ -26,7 +26,7 @@
     <section class="intro">
       <p class="eyebrow">ЭКСПЕРИМЕНТ С ДВУМЯ МАСКАМИ</p>
       <h1>Сначала отделим<br><em>текст от линий.</em></h1>
-      <p class="intro-copy">Qwen на этом этапе не используется. OpenCV выделяет чернила, Tesseract находит текстовые области. Первая маска показывает чернила внутри областей текста, вторая — остальные штрихи. Никаких соединений или координат пока не строим.</p>
+      <p class="intro-copy">Настраиваемое разделение чернил на текст и линии. Меняй чувствительность OCR, масштаб, способ предобработки и цветовой фильтр, затем сравнивай маски на той же фотографии.</p>
     </section>
 
     <section class="workspace">
@@ -48,20 +48,81 @@
 
         <div class="settings">
           <div class="settings-title">Настройки разделения</div>
+          <div class="preset-row" aria-label="Быстрые пресеты">
+            <button type="button" class="preset-button active" data-preset="balanced">Баланс</button>
+            <button type="button" class="preset-button" data-preset="moreText">Больше текста</button>
+            <button type="button" class="preset-button" data-preset="protectLines">Беречь линии</button>
+            <button type="button" class="preset-button" data-preset="strict">Строгий OCR</button>
+          </div>
+          <p class="hint">Начни с пресета «Баланс». Измени один-два параметра и нажми «Построить две маски» повторно.</p>
+
+          <div class="settings-subtitle">1. Поиск чернил</div>
           <label class="setting-row"><span>Тип чернил</span>
             <select id="inkMode">
-              <option value="auto" selected>Авто — определить цвет ручки</option>
-              <option value="blue">Синяя / фиолетовая ручка</option>
+              <option value="auto">Авто — определить цвет</option>
+              <option value="blue" selected>Синяя / сине-фиолетовая ручка</option>
+              <option value="purple">Фиолетовая ручка</option>
               <option value="dark">Чёрная ручка / карандаш</option>
+              <option value="anycolor">Любые цветные чернила</option>
             </select>
           </label>
-          <label class="setting-row"><span>Уверенность OCR</span>
-            <div class="setting-control"><input id="minConfidence" type="range" min="0" max="70" step="5" value="15"><output id="confidenceValue">15</output></div>
+          <label class="setting-row"><span>Мин. насыщенность цвета</span>
+            <div class="setting-control"><input id="saturationMin" type="range" min="0" max="120" step="1" value="18"><output id="saturationMinValue">18</output></div>
           </label>
-          <label class="setting-row"><span>Расширение области текста</span>
-            <div class="setting-control"><input id="padding" type="range" min="0" max="12" step="1" value="3"><output id="paddingValue">3 px</output></div>
+          <label class="setting-row"><span>Яркость чернил: минимум</span>
+            <div class="setting-control"><input id="minBrightness" type="range" min="0" max="100" step="1" value="20"><output id="minBrightnessValue">20</output></div>
           </label>
-          <p class="hint">Меньше OCR-уверенность — больше надписей попадёт в текстовую маску, но больше риск принять символы и части труб за текст. Расширение помогает захватывать края букв.</p>
+          <label class="setting-row"><span>Яркость чернил: максимум</span>
+            <div class="setting-control"><input id="maxBrightness" type="range" min="150" max="255" step="1" value="252"><output id="maxBrightnessValue">252</output></div>
+          </label>
+          <details class="advanced-settings">
+            <summary>Точная настройка цвета и шума</summary>
+            <label class="setting-row"><span>Синий диапазон: начало H</span><div class="setting-control"><input id="hueMin" type="range" min="0" max="150" step="1" value="90"><output id="hueMinValue">90</output></div></label>
+            <label class="setting-row"><span>Синий диапазон: конец H</span><div class="setting-control"><input id="hueMax" type="range" min="90" max="179" step="1" value="145"><output id="hueMaxValue">145</output></div></label>
+            <label class="setting-row"><span>Допуск авто-цвета ±</span><div class="setting-control"><input id="hueTolerance" type="range" min="5" max="60" step="1" value="24"><output id="hueToleranceValue">24</output></div></label>
+            <label class="setting-row"><span>Порог тёмного карандаша</span><div class="setting-control"><input id="darkThreshold" type="range" min="30" max="230" step="1" value="132"><output id="darkThresholdValue">132</output></div></label>
+            <label class="setting-row"><span>Удалять точки меньше (px)</span><div class="setting-control"><input id="minComponentArea" type="range" min="1" max="30" step="1" value="2"><output id="minComponentAreaValue">2</output></div></label>
+            <p class="hint">H — оттенок OpenCV (0–179). Для синей ручки обычно подходят значения примерно 80–165. Снижение минимальной насыщенности помогает бледным чернилам, но добавляет шум.</p>
+          </details>
+
+          <div class="settings-subtitle">2. Распознавание текста</div>
+          <label class="setting-row"><span>Минимальная уверенность OCR</span><div class="setting-control"><input id="minConfidence" type="range" min="0" max="95" step="1" value="35"><output id="confidenceValue">35</output></div></label>
+          <small id="confidenceHint" class="confidence-hint">Средний порог: компромисс между количеством текста и ложными OCR-областями.</small>
+          <label class="setting-row"><span>Увеличение для OCR</span>
+            <select id="ocrScale"><option value="1">1× — без увеличения</option><option value="1.5">1.5×</option><option value="2" selected>2× — рекомендуется</option><option value="2.5">2.5×</option><option value="3">3× — мелкий почерк</option></select>
+          </label>
+          <label class="setting-row"><span>Предобработка перед OCR</span>
+            <select id="preprocess">
+              <option value="original" selected>Исходное серое изображение</option>
+              <option value="ink">Только чернила на белом</option>
+              <option value="clahe">Усилить локальный контраст</option>
+              <option value="otsu">Бинаризация Отсу</option>
+              <option value="adaptive">Адаптивный порог</option>
+            </select>
+          </label>
+          <label class="setting-row"><span>Режим поиска текста (PSM)</span>
+            <select id="psm">
+              <option value="11" selected>11 — разрозненные надписи</option>
+              <option value="12">12 — разрозненный текст + ориентация</option>
+              <option value="6">6 — единый текстовый блок</option>
+              <option value="3">3 — авто-разметка страницы</option>
+              <option value="4">4 — одна колонка</option>
+              <option value="7">7 — одна строка</option>
+              <option value="8">8 — одно слово</option>
+              <option value="13">13 — одна сырая строка</option>
+            </select>
+          </label>
+          <label class="setting-row"><span>Языки OCR</span>
+            <select id="language"><option value="eng+rus" selected>Английский + русский</option><option value="eng">Только английский</option><option value="rus">Только русский</option></select>
+          </label>
+
+          <div class="settings-subtitle">3. Размер текстовых областей</div>
+          <label class="setting-row"><span>Доп. отступ вокруг текста</span><div class="setting-control"><input id="padding" type="range" min="0" max="24" step="1" value="1"><output id="paddingValue">1 px</output></div></label>
+          <label class="setting-row"><span>Пропорциональное расширение</span><div class="setting-control"><input id="paddingRatio" type="range" min="0" max="100" step="1" value="0"><output id="paddingRatioValue">0%</output></div></label>
+          <label class="setting-row"><span>Минимальная ширина OCR-бокса</span><div class="setting-control"><input id="minBoxWidth" type="range" min="1" max="30" step="1" value="4"><output id="minBoxWidthValue">4 px</output></div></label>
+          <label class="setting-row"><span>Минимальная высота OCR-бокса</span><div class="setting-control"><input id="minBoxHeight" type="range" min="1" max="30" step="1" value="3"><output id="minBoxHeightValue">3 px</output></div></label>
+          <p class="hint">Уверенность ниже — больше OCR-кандидатов и выше риск захватить части труб. Отступы действуют только вокруг найденных OCR-слов. При нулевых отступах прямоугольник не расширяется.</p>
+          <div class="preset-row preset-row-bottom"><button type="button" class="button button-ghost" id="resetSettings">Сбросить настройки</button><span class="settings-footnote">Изменения применятся при следующей обработке</span></div>
         </div>
 
         <div class="note-block">
@@ -117,7 +178,7 @@
       </article>
     </section>
 
-    <footer class="footer"><strong>TWO MASK LAB 3.0.0</strong><span>OpenCV ink mask + Tesseract text regions · Qwen не вызывается</span></footer>
+    <footer class="footer"><strong>TWO MASK LAB 3.1.0</strong><span>OpenCV ink mask + configurable Tesseract · Qwen не вызывается</span></footer>
   </main>
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 </body>

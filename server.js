@@ -37,7 +37,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 4, fieldSize: 12000 },
+  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 32, fieldSize: 12000 },
   fileFilter: (_req, file, callback) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) {
       return callback(new Error('Поддерживаются только PNG, JPG/JPEG и WEBP.'));
@@ -129,12 +129,12 @@ function runMaskProcessor(imageBuffer, config) {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    appVersion: '3.0.0',
-    mode: 'two-mask-lab',
-    processor: 'OpenCV ink segmentation + Tesseract OCR boxes',
+    appVersion: '3.1.0',
+    mode: 'two-mask-lab-configurable',
+    processor: 'OpenCV ink segmentation + configurable Tesseract preprocessing/PSM/upscale',
     qwenUsed: false,
     masks: ['text', 'lines'],
-    note: 'Text mask = pen pixels inside OCR word boxes; line mask = remaining pen pixels. No geometry is generated.',
+    note: 'OCR parameters are configurable: confidence, scale, preprocessing, page segmentation mode, language, text-box size and padding; ink hue/saturation/brightness and speckle filtering.',
   });
 });
 
@@ -147,13 +147,34 @@ app.post('/api/masks', maskLimiter, (req, res, next) => {
   if (!req.file || !hasValidImageSignature(req.file.buffer, req.file.mimetype)) {
     return res.status(400).json({ error: 'Загрузите исходное изображение PNG, JPG или WEBP.' });
   }
-  const modeValue = String(req.body?.mode || 'auto');
-  const mode = ['auto', 'blue', 'dark'].includes(modeValue) ? modeValue : 'auto';
-  const minConfidence = boundedNumber(req.body?.minConfidence, 15, 0, 90);
-  const padding = Math.round(boundedNumber(req.body?.padding, 3, 0, 24));
+  const modeValue = String(req.body?.mode || 'blue');
+  const allowedModes = ['auto', 'blue', 'purple', 'dark', 'anycolor'];
+  const mode = allowedModes.includes(modeValue) ? modeValue : 'blue';
+  const allowedPsm = [3, 4, 6, 7, 8, 11, 12, 13];
+  const psmValue = Math.round(boundedNumber(req.body?.psm, 11, 3, 13));
+  const config = {
+    mode,
+    minConfidence: boundedNumber(req.body?.minConfidence, 35, 0, 95),
+    padding: Math.round(boundedNumber(req.body?.padding, 1, 0, 24)),
+    paddingRatio: boundedNumber(req.body?.paddingRatio, 0, 0, 100),
+    ocrScale: boundedNumber(req.body?.ocrScale, 2, 1, 3),
+    psm: allowedPsm.includes(psmValue) ? psmValue : 11,
+    language: ['eng+rus', 'eng', 'rus'].includes(String(req.body?.language)) ? String(req.body.language) : 'eng+rus',
+    preprocess: ['original', 'ink', 'clahe', 'otsu', 'adaptive'].includes(String(req.body?.preprocess)) ? String(req.body.preprocess) : 'original',
+    minBoxWidth: Math.round(boundedNumber(req.body?.minBoxWidth, 4, 1, 40)),
+    minBoxHeight: Math.round(boundedNumber(req.body?.minBoxHeight, 3, 1, 40)),
+    hueMin: Math.round(boundedNumber(req.body?.hueMin, 90, 0, 179)),
+    hueMax: Math.round(boundedNumber(req.body?.hueMax, 145, 0, 179)),
+    hueTolerance: Math.round(boundedNumber(req.body?.hueTolerance, 24, 5, 60)),
+    saturationMin: Math.round(boundedNumber(req.body?.saturationMin, 18, 0, 200)),
+    minBrightness: Math.round(boundedNumber(req.body?.minBrightness, 20, 0, 150)),
+    maxBrightness: Math.round(boundedNumber(req.body?.maxBrightness, 252, 100, 255)),
+    darkThreshold: Math.round(boundedNumber(req.body?.darkThreshold, 132, 30, 230)),
+    minComponentArea: Math.round(boundedNumber(req.body?.minComponentArea, 2, 1, 50)),
+  };
   const started = Date.now();
   try {
-    const result = await runMaskProcessor(req.file.buffer, { mode, minConfidence, padding });
+    const result = await runMaskProcessor(req.file.buffer, config);
     const elapsedMs = Date.now() - started;
     console.log('[TWO-MASK]', JSON.stringify({
       filename: req.file.originalname,
@@ -182,6 +203,6 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`TWO MASK LAB 3.0.0 запущена: http://${HOST}:${PORT}`);
+  console.log(`TWO MASK LAB 3.1.0 запущена: http://${HOST}:${PORT}`);
   console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
 });
