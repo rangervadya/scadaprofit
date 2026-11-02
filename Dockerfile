@@ -12,10 +12,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements-mask.txt /tmp/requirements-mask.txt
+COPY requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements-mask.txt
+    && /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 ENV PATH="/opt/venv/bin:${PATH}"
 

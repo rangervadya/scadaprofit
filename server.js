@@ -1,228 +1,80 @@
 import express from 'express';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import multer from 'multer';
-import { rateLimit } from 'express-rate-limit';
-import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = Number.parseInt(process.env.PORT || '3000', 10);
-const HOST = process.env.HOST || '0.0.0.0';
-const MAX_FILE_SIZE = 15 * 1024 * 1024;
-const MASK_PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
-const MASK_TIMEOUT_MS = 90000;
-const MAX_PROCESSOR_OUTPUT = 40 * 1024 * 1024;
+const PORT = Number(process.env.PORT || 3000);
+const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
+const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
+const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
+await mkdir(DATA, { recursive: true });
+await mkdir(UPLOAD_DIR, { recursive: true });
 
 app.disable('x-powered-by');
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"], baseUri: ["'self'"], fontSrc: ["'self'", 'data:'],
-      formAction: ["'self'"], frameAncestors: ["'none'"], imgSrc: ["'self'", 'data:', 'blob:'],
-      objectSrc: ["'none'"], scriptSrc: ["'self'"], styleSrc: ["'self'"],
-      connectSrc: ["'self'"], upgradeInsecureRequests: null,
-    },
-  },
-  crossOriginEmbedderPolicy: false,
-}));
-app.use(express.static(path.join(__dirname, 'public'), {
-  maxAge: '5m',
-  setHeaders(res, filePath) {
-    if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
-  },
-}));
+app.use(helmet({ contentSecurityPolicy: { directives: {
+  defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+  imgSrc: ["'self'", 'data:', 'blob:'], connectSrc: ["'self'"], objectSrc: ["'none'"],
+  frameAncestors: ["'none'"]
+} }, crossOriginEmbedderPolicy: false }));
+app.use(express.json({ limit: '15mb' }));
+app.use(rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+app.use('/jobs', express.static(DATA, { maxAge: '1h', dotfiles: 'deny', index: false }));
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 32, fieldSize: 1000000 },
-  fileFilter: (_req, file, callback) => {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) {
-      return callback(new Error('Поддерживаются только PNG, JPG/JPEG и WEBP.'));
-    }
-    callback(null, true);
-  },
-});
+const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => cb(null, /^image\/(jpeg|png|webp|tiff)$/.test(file.mimetype)) });
 
-const maskLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 40,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  message: { error: 'Слишком много обработок. Подожди 15 минут и попробуй снова.' },
-});
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.0.0', mode: 'cad-reconstruction-engine',
+  geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'advisory-only; never subtracts geometry', ollamaRequired: false }));
 
-function hasValidImageSignature(buffer, mimeType) {
-  if (!buffer || buffer.length < 12) return false;
-  if (mimeType === 'image/png') return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  if (mimeType === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-  if (mimeType === 'image/webp') return buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
-  return false;
-}
-
-function boundedNumber(value, fallback, min, max) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.max(min, Math.min(max, number));
-}
-
-function runMaskProcessor(imageBuffer, config) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(MASK_PYTHON, [path.join(__dirname, 'mask_processor.py'), JSON.stringify(config)], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, OMP_THREAD_LIMIT: '2', OPENBLAS_NUM_THREADS: '1' },
-    });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(new Error('Обработка изображения превысила 90 секунд. Уменьши разрешение или попробуй другой файл.'));
-    }, MASK_TIMEOUT_MS);
-
-    function finish(error, result) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(result);
-    }
-
-    child.stdout.on('data', chunk => {
-      outputBytes += chunk.length;
-      if (outputBytes > MAX_PROCESSOR_OUTPUT) {
-        child.kill('SIGKILL');
-        finish(new Error('Ответ обработчика слишком большой. Изображение имеет чрезмерное разрешение.'));
-        return;
-      }
-      stdout.push(chunk);
-    });
-    child.stderr.on('data', chunk => {
-      if (Buffer.concat(stderr).length < 12000) stderr.push(chunk);
-    });
-    child.on('error', error => finish(new Error(`Не удалось запустить локальный обработчик масок: ${error.message}`)));
-    child.on('close', code => {
-      if (settled) return;
-      const output = Buffer.concat(stdout).toString('utf8');
-      let parsed;
-      try { parsed = JSON.parse(output); }
-      catch {
-        const detail = Buffer.concat(stderr).toString('utf8').slice(0, 1000);
-        finish(new Error(`Обработчик масок вернул некорректный ответ (code=${code}). ${detail}`));
-        return;
-      }
-      if (code !== 0 || !parsed.ok) {
-        finish(new Error(parsed.error || Buffer.concat(stderr).toString('utf8').slice(0, 1200) || `Обработчик завершился с кодом ${code}.`));
-        return;
-      }
-      finish(null, parsed);
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(imageBuffer);
-  });
-}
-
-app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    appVersion: '3.5.0',
-    mode: 'two-mask-lab-lasso-cleanup',
-    processor: 'Two masks + lasso text cleanup + clean SVG labels + centerline paths with conservative endpoint gap joining',
-    qwenUsed: false,
-    masks: ['text', 'lines'],
-    note: 'OCR boxes and manually drawn lasso polygons can mask handwritten text; corrected text is added as editable SVG. Source image remains unchanged.',
-  });
-});
-
-app.post('/api/masks', maskLimiter, (req, res, next) => {
-  upload.single('image')(req, res, error => {
-    if (error) return res.status(400).json({ error: error.message || 'Не удалось принять изображение.' });
-    next();
-  });
-}, async (req, res) => {
-  if (!req.file || !hasValidImageSignature(req.file.buffer, req.file.mimetype)) {
-    return res.status(400).json({ error: 'Загрузите исходное изображение PNG, JPG или WEBP.' });
-  }
-  const modeValue = String(req.body?.mode || 'blue');
-  const allowedModes = ['auto', 'blue', 'purple', 'dark', 'anycolor'];
-  const mode = allowedModes.includes(modeValue) ? modeValue : 'blue';
-  const allowedPsm = [3, 4, 6, 7, 8, 11, 12, 13];
-  const psmValue = Math.round(boundedNumber(req.body?.psm, 11, 3, 13));
-  const config = {
-    mode,
-    minConfidence: boundedNumber(req.body?.minConfidence, 5, 0, 95),
-    padding: Math.round(boundedNumber(req.body?.padding, 2, 0, 24)),
-    paddingRatio: boundedNumber(req.body?.paddingRatio, 5, 0, 100),
-    ocrScale: boundedNumber(req.body?.ocrScale, 2, 1, 3),
-    psm: allowedPsm.includes(psmValue) ? psmValue : 11,
-    language: ['eng+rus', 'eng', 'rus'].includes(String(req.body?.language)) ? String(req.body.language) : 'eng+rus',
-    preprocess: ['original', 'ink', 'clahe', 'otsu', 'adaptive'].includes(String(req.body?.preprocess)) ? String(req.body.preprocess) : 'original',
-    minBoxWidth: Math.round(boundedNumber(req.body?.minBoxWidth, 2, 1, 40)),
-    minBoxHeight: Math.round(boundedNumber(req.body?.minBoxHeight, 2, 1, 40)),
-    hueMin: Math.round(boundedNumber(req.body?.hueMin, 90, 0, 179)),
-    hueMax: Math.round(boundedNumber(req.body?.hueMax, 145, 0, 179)),
-    hueTolerance: Math.round(boundedNumber(req.body?.hueTolerance, 24, 5, 60)),
-    saturationMin: Math.round(boundedNumber(req.body?.saturationMin, 18, 0, 200)),
-    minBrightness: Math.round(boundedNumber(req.body?.minBrightness, 20, 0, 150)),
-    maxBrightness: Math.round(boundedNumber(req.body?.maxBrightness, 252, 100, 255)),
-    darkThreshold: Math.round(boundedNumber(req.body?.darkThreshold, 132, 30, 230)),
-    minComponentArea: Math.round(boundedNumber(req.body?.minComponentArea, 1, 1, 50)),
-    previewScale: Math.round(boundedNumber(req.body?.previewScale, 3, 2, 4)),
-    vectorTolerance: boundedNumber(req.body?.vectorTolerance, 1.6, 0, 4),
-    vectorSmoothing: boundedNumber(req.body?.vectorSmoothing, 0, 0, 100),
-    cornerProtection: boundedNumber(req.body?.cornerProtection, 95, 0, 100),
-    vectorStrokeWidth: boundedNumber(req.body?.vectorStrokeWidth, 2, 0.6, 5),
-    minVectorLength: boundedNumber(req.body?.minVectorLength, 5, 0, 30),
-    labelMinConfidence: boundedNumber(req.body?.labelMinConfidence, 0, 0, 95),
-  };
-  config.gapBridgePx = boundedNumber(req.body?.gapBridgePx, 20, 0, 24);
-  config.gapBridgeAngle = boundedNumber(req.body?.gapBridgeAngle, 18, 5, 45);
-  if (req.body?.overrideBoxes) {
-    try {
-      const parsedBoxes = JSON.parse(String(req.body.overrideBoxes));
-      if (!Array.isArray(parsedBoxes) || parsedBoxes.length > 300) {
-        return res.status(400).json({ error: 'Список исправлений подписей должен быть массивом не более 300 элементов.' });
-      }
-      config.overrideBoxes = parsedBoxes;
-    } catch {
-      return res.status(400).json({ error: 'Не удалось прочитать JSON исправлений подписей.' });
-    }
-  }
-  const started = Date.now();
+app.post('/api/analyze', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
+  const id = randomUUID();
+  const jobDir = path.join(DATA, id);
+  await mkdir(jobDir, { recursive: true });
+  const ext = path.extname(req.file.originalname || '').toLowerCase() || '.img';
+  const sourcePath = path.join(jobDir, `source${ext}`);
   try {
-    const result = await runMaskProcessor(req.file.buffer, config);
-    const elapsedMs = Date.now() - started;
-    console.log('[TWO-MASK]', JSON.stringify({
-      filename: req.file.originalname,
-      bytes: req.file.size,
-      width: result.width,
-      height: result.height,
-      mode: result.mode?.modeUsed,
-      dominantHue: result.mode?.dominantHue,
-      inkPixels: result.stats?.inkPixels,
-      textPixels: result.stats?.textPixels,
-      linePixels: result.stats?.linePixels,
-      ocrBoxes: result.stats?.ocrBoxes,
-      elapsedMs,
-      warnings: result.warnings,
-    }));
-    res.json({ ...result, elapsedMs });
+    // move uploaded temp file into isolated job folder
+    const fs = await import('node:fs/promises');
+    await fs.copyFile(req.file.path, sourcePath);
+    await fs.rm(req.file.path, { force: true });
+    const { stdout, stderr } = await execFileAsync(PYTHON, [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
+      { timeout: 120_000, maxBuffer: 12 * 1024 * 1024 });
+    if (stderr?.trim()) console.log(`[ENGINE ${id.slice(0,8)}] ${stderr.trim().slice(-1200)}`);
+    const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
+    graph.jobId = id;
+    graph.sourceUrl = `/jobs/${id}/${path.basename(sourcePath)}`;
+    graph.overlayUrl = `/jobs/${id}/overlay.png`;
+    graph.inkUrl = `/jobs/${id}/ink-mask.png`;
+    graph.svgUrl = `/jobs/${id}/clean.svg`;
+    graph.dxfUrl = `/jobs/${id}/drawing.dxf`;
+    console.log(`[ENGINE ${id.slice(0,8)}] segments=${graph.summary.segment_candidates} nodes=${graph.summary.nodes} edges=${graph.summary.edges} crossings=${graph.summary.crossings_to_review}`);
+    res.json(graph);
   } catch (error) {
-    console.error('[TWO-MASK-ERROR]', error?.stack || error);
-    res.status(502).json({ error: String(error.message || error).slice(0, 1400) });
+    console.error('Analyze failed:', error?.stderr || error);
+    res.status(500).json({ error: 'Не удалось проанализировать изображение.', details: String(error?.stderr || error?.message || error).slice(-1600) });
+  } finally {
+    if (req.file?.path) { const fs = await import('node:fs/promises'); await fs.rm(req.file.path, { force: true }).catch(()=>{}); }
   }
 });
 
-app.use((error, _req, res, _next) => {
-  console.error('Unhandled server error:', error?.stack || error);
-  res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
+app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: err?.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 18 МБ.' : 'Ошибка запроса.', details: err.message });
 });
-
-app.listen(PORT, HOST, () => {
-  console.log(`TWO MASK LAB 3.5.0 запущена: http://${HOST}:${PORT}`);
-  console.log(`Локальная обработка: OpenCV + Tesseract. Ollama/Qwen не вызываются.`);
+app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
+  console.log(`CAD Reconstruction Engine 4.0.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log('Geometry: OpenCV line candidates; OCR is a separate annotation channel.');
 });

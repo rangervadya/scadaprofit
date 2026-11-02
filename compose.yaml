@@ -1,6 +1,6 @@
 services:
-  # Kept for future experiments, but the Two Mask Lab does not call Ollama.
-  # Existing ollama_data volume is preserved.
+  # Optional local Qwen service retained to preserve the existing model volume.
+  # Geometry detection does not depend on Ollama.
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -40,6 +40,7 @@ services:
       PORT: "3000"
       HOST: "0.0.0.0"
       MASK_PYTHON: "/opt/venv/bin/python"
+      DATA_DIR: "/tmp/cad-reconstruction-jobs"
     security_opt:
       - no-new-privileges:true
 

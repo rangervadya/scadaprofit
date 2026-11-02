@@ -1,698 +1,177 @@
-const $ = selector => document.querySelector(selector);
-
-const imageInput = $('#imageInput');
-const dropzone = $('#dropzone');
-const uploadTitle = $('#uploadTitle');
-const uploadHint = $('#uploadHint');
-const processButton = $('#processButton');
-const removeImageButton = $('#removeImage');
-const sourceImage = $('#sourceImage');
-const sourceSelectCanvas = $('#sourceSelectCanvas');
-const textMaskImage = $('#textMaskImage');
-const lineMaskImage = $('#lineMaskImage');
-const vectorLinesImage = $('#vectorLinesImage');
-const cleanDrawingImage = $('#cleanDrawingImage');
-const vectorPlaceholder = $('#vectorPlaceholder');
-const textPlaceholder = $('#textPlaceholder');
-const linePlaceholder = $('#linePlaceholder');
-const toast = $('#toast');
-
-const defaults = {
-  inkMode: 'blue', minConfidence: 5, ocrScale: '2', preprocess: 'original', psm: '11', language: 'eng+rus',
-  padding: 2, paddingRatio: 5, minBoxWidth: 2, minBoxHeight: 2,
-  hueMin: 90, hueMax: 145, hueTolerance: 24, saturationMin: 18,
-  minBrightness: 20, maxBrightness: 252, darkThreshold: 132, minComponentArea: 1,
-  previewScale: 3, vectorTolerance: 1.6, vectorSmoothing: 0, cornerProtection: 95,
-  vectorStrokeWidth: 2, minVectorLength: 5, gapBridgePx: 20, gapBridgeAngle: 18, labelMinConfidence: 0,
-};
-
-const balanced = {
-  ...defaults, minConfidence: 35, padding: 1, paddingRatio: 0, minBoxWidth: 4, minBoxHeight: 3,
-  minComponentArea: 2, vectorTolerance: 0.8, minVectorLength: 1.5, gapBridgePx: 4, gapBridgeAngle: 24,
-};
-
-const presets = {
-  handSketch: { ...defaults },
-  balanced: { ...balanced },
-  moreText: { ...balanced, minConfidence: 15, ocrScale: '3', padding: 2, paddingRatio: 4, minBoxWidth: 2, minBoxHeight: 2, saturationMin: 8 },
-  denseText: { ...defaults, psm: '6', minConfidence: 5, padding: 2, paddingRatio: 5, minBoxWidth: 2, minBoxHeight: 2 },
-  protectLines: { ...balanced, minConfidence: 65, ocrScale: '2', padding: 0, paddingRatio: 0, minBoxWidth: 6, minBoxHeight: 5, minComponentArea: 1 },
-  strict: { ...balanced, minConfidence: 55, ocrScale: '2.5', preprocess: 'clahe', padding: 1, paddingRatio: 0, minBoxWidth: 5, minBoxHeight: 4 },
-};
-
-const fields = [
-  'inkMode', 'minConfidence', 'ocrScale', 'preprocess', 'psm', 'language', 'padding', 'paddingRatio',
-  'minBoxWidth', 'minBoxHeight', 'hueMin', 'hueMax', 'hueTolerance', 'saturationMin',
-  'minBrightness', 'maxBrightness', 'darkThreshold', 'minComponentArea',
-  'previewScale', 'vectorTolerance', 'vectorSmoothing', 'cornerProtection', 'vectorStrokeWidth', 'minVectorLength', 'gapBridgePx', 'gapBridgeAngle', 'labelMinConfidence',
-];
-const unitLabels = {
-  padding: value => `${value} px`, paddingRatio: value => `${value}%`,
-  minBoxWidth: value => `${value} px`, minBoxHeight: value => `${value} px`,
-  ocrScale: value => `${value}×`, previewScale: value => `${value}×`,
-  vectorTolerance: value => `${Number(value).toLocaleString('ru-RU')} px`,
-  vectorSmoothing: value => `${value}%`, cornerProtection: value => `${value}%`,
-  vectorStrokeWidth: value => `${Number(value).toLocaleString('ru-RU')} px`,
-  minVectorLength: value => `${Number(value).toLocaleString('ru-RU')} px`,
-  gapBridgePx: value => `${Number(value).toLocaleString('ru-RU')} px`,
-  gapBridgeAngle: value => `${value}°`,
-  labelMinConfidence: value => `${value}`,
-};
-
+const $ = (id) => document.getElementById(id);
 let selectedFile = null;
-let sourceUrl = null;
-let maskResult = null;
-let labelState = [];
-let manualSelectMode = false;
-let manualSelectionShape = 'rect';
-let manualDragStart = null;
-let manualDragCurrent = null;
-let manualPolygonPoints = [];
-let toastTimer = null;
+let graph = null;
+let connectMode = false;
+let firstNode = null;
+let draggingNode = null;
+let showAllSegments = false;
 
-function notify(message, isError = false) {
-  toast.textContent = message;
-  toast.classList.remove('hidden', 'error');
-  if (isError) toast.classList.add('error');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.add('hidden'), 5500);
-}
-
-function pretty(value) { return JSON.stringify(value, null, 2); }
-
-function currentSettings() {
-  const settings = {};
-  for (const id of fields) {
-    const element = $(`#${id}`);
-    settings[id] = element.type === 'range' ? Number(element.value) : element.value;
-  }
-  return settings;
-}
-
-function updateSettingLabels() {
-  for (const id of fields) {
-    const input = $(`#${id}`);
-    const output = $(`#${id === 'minConfidence' ? 'confidenceValue' : `${id}Value`}`);
-    if (!input || !output || input.type !== 'range') continue;
-    const formatter = unitLabels[id];
-    output.textContent = formatter ? formatter(input.value) : input.value;
-  }
-  const confidence = Number($('#minConfidence').value);
-  const hint = confidence < 20
-    ? 'Низкий порог: много кандидатов, включая ошибочные символы и части труб.'
-    : confidence < 50
-      ? 'Средний порог: компромисс между количеством текста и ложными OCR-областями.'
-      : 'Высокий порог: остаются только более уверенные распознавания; рукописные цифры могут пропасть.';
-  $('#confidenceHint').textContent = hint;
-}
-
-function setSettings(values, activePreset = null) {
-  for (const [key, value] of Object.entries(values)) {
-    const el = $(`#${key}`);
-    if (el) el.value = String(value);
-  }
-  document.querySelectorAll('[data-preset]').forEach(button => {
-    button.classList.toggle('active', button.dataset.preset === activePreset);
-  });
-  updateSettingLabels();
-}
-
-function setBusy(busy) {
-  processButton.disabled = busy || !selectedFile;
-  processButton.textContent = busy ? 'Обрабатываю…' : 'Построить две маски';
-  removeImageButton.disabled = busy || !selectedFile;
-  $('#toggleManualRegion').disabled = busy || !selectedFile;
-  $('#toggleLassoRegion').disabled = busy || !selectedFile;
-}
-
-function clearResults() {
-  maskResult = null;
-  textMaskImage.removeAttribute('src');
-  lineMaskImage.removeAttribute('src');
-  vectorLinesImage.removeAttribute('src');
-  cleanDrawingImage.removeAttribute('src');
-  labelState = [];
-  $('#cleanDrawingImage').classList.add('hidden');
-  $('#cleanPlaceholder').classList.remove('hidden');
-  $('#downloadClean').classList.add('hidden');
-  $('#cleanStats').textContent = 'Печатные подписи ещё не сформированы.';
-  $('#labelList').innerHTML = '<p class="empty-labels">Сначала построй две маски.</p>';
-  $('#labelCount').textContent = '0';
-  $('#applyLabels').disabled = true;
-  vectorLinesImage.classList.add('hidden');
-  vectorPlaceholder.classList.remove('hidden');
-  $('#downloadVector').classList.add('hidden');
-  $('#vectorStats').textContent = 'Векторизация ещё не выполнялась.';
-  textMaskImage.classList.add('hidden');
-  lineMaskImage.classList.add('hidden');
-  textPlaceholder.classList.remove('hidden');
-  linePlaceholder.classList.remove('hidden');
-  $('#downloadText').classList.add('hidden');
-  $('#downloadLines').classList.add('hidden');
-  $('#downloadRow').classList.add('hidden');
-  $('#warnings').classList.add('hidden');
-  $('#resultTag').textContent = 'ОЖИДАНИЕ';
-  ['statSize', 'statInk', 'statOcr', 'statText', 'statLines', 'statTime'].forEach(id => $(`#${id}`).textContent = '—');
-  $('#debugOutput').textContent = 'Здесь появятся числа, подписи и уверенность OCR.';
-  drawSelectionCanvas();
-}
-
-function setImage(file) {
+const fileInput = $('fileInput');
+const dropzone = $('dropzone');
+fileInput.addEventListener('change', () => setFile(fileInput.files?.[0]));
+for (const name of ['dragenter','dragover']) dropzone.addEventListener(name, e => {e.preventDefault();dropzone.classList.add('over')});
+for (const name of ['dragleave','drop']) dropzone.addEventListener(name, e => {e.preventDefault();dropzone.classList.remove('over')});
+dropzone.addEventListener('drop', e => setFile(e.dataTransfer.files?.[0]));
+function setFile(file) {
   if (!file) return;
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return notify('Поддерживаются PNG, JPG и WEBP.', true);
-  if (file.size > 15 * 1024 * 1024) return notify('Максимальный размер файла — 15 МБ.', true);
-  selectedFile = file;
-  if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-  sourceUrl = URL.createObjectURL(file);
-  sourceImage.src = sourceUrl;
-  sourceImage.classList.remove('hidden');
-  $('#sourceView .placeholder').classList.add('hidden');
-  uploadTitle.textContent = file.name;
-  uploadHint.textContent = `${(file.size / 1024 / 1024).toFixed(2)} МБ · готов к обработке`;
-  processButton.disabled = false;
-  removeImageButton.disabled = false;
-  $('#toggleManualRegion').disabled = false;
-  $('#toggleLassoRegion').disabled = false;
-  setManualSelectMode(false);
-  clearResults();
+  if (!/^image\/(jpeg|png|webp|tiff)$/.test(file.type)) { alert('Поддерживаются JPG, PNG, WEBP и TIFF.'); return; }
+  selectedFile = file; $('fileName').textContent = file.name; $('analyzeBtn').disabled = false;
+  graph = null; $('statsPanel').hidden = true; $('edgePanel').hidden = true; $('nodePanel').hidden = true; $('textPanel').hidden = true;
+  $('sourceStage').classList.add('empty'); $('sourceStage').classList.remove('loaded'); $('sourceImage').src = '';
+  $('cleanStage').innerHTML = '<div class="emptymsg">Нажми «Найти линии» для анализа фотографии.</div>';
 }
 
-function removeImage() {
-  selectedFile = null;
-  imageInput.value = '';
-  if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-  sourceUrl = null;
-  sourceImage.removeAttribute('src');
-  sourceImage.classList.add('hidden');
-  $('#sourceView .placeholder').classList.remove('hidden');
-  uploadTitle.textContent = 'Перетащи фото сюда или выбери файл';
-  uploadHint.textContent = 'PNG · JPG · WEBP · до 15 МБ';
-  processButton.disabled = true;
-  removeImageButton.disabled = true;
-  $('#toggleManualRegion').disabled = true;
-  $('#toggleLassoRegion').disabled = true;
-  setManualSelectMode(false);
-  clearResults();
-}
-
-function dataUrl(base64) { return `data:image/png;base64,${base64}`; }
-function svgDataUrl(base64) { return `data:image/svg+xml;base64,${base64}`; }
-
-function saveDownload(anchor, base64) {
-  anchor.href = dataUrl(base64);
-  anchor.classList.remove('hidden');
-}
-
-function makeLabelRow(label, index) {
-  const row = document.createElement('div');
-  row.className = 'label-row';
-  const useMask = document.createElement('input');
-  useMask.type = 'checkbox';
-  useMask.checked = label.mask !== false;
-  useMask.title = 'Убрать рукописные пиксели из слоя линий';
-  useMask.addEventListener('change', () => {
-    labelState[index].mask = useMask.checked;
-    if (!useMask.checked) {
-      labelState[index].render = false;
-      printText.checked = false;
-    }
-    drawSelectionCanvas();
-  });
-
-  const text = document.createElement('input');
-  text.type = 'text';
-  text.value = label.text || '';
-  text.maxLength = 100;
-  text.placeholder = 'Исправь OCR или введи точный размер';
-  text.setAttribute('aria-label', `Текст подписи ${index + 1}`);
-  text.addEventListener('input', () => { labelState[index].text = text.value; });
-
-  const printText = document.createElement('input');
-  printText.type = 'checkbox';
-  printText.checked = label.render === true;
-  printText.title = 'Вывести исправленный текст печатным шрифтом в чистом SVG';
-  printText.addEventListener('change', () => {
-    labelState[index].render = printText.checked;
-    if (printText.checked && !useMask.checked) {
-      useMask.checked = true;
-      labelState[index].mask = true;
-    }
-  });
-
-  const confidence = document.createElement('span');
-  confidence.className = 'label-confidence';
-  confidence.textContent = `${Math.round(Number(label.confidence || 0))}%`;
-
-  const rotation = document.createElement('input');
-  rotation.type = 'number';
-  rotation.min = '-180'; rotation.max = '180'; rotation.step = '1';
-  rotation.value = String(label.rotation || 0);
-  rotation.title = 'Угол поворота печатной подписи';
-  rotation.addEventListener('input', () => { labelState[index].rotation = Math.max(-180, Math.min(180, Number(rotation.value) || 0)); });
-
-  const coords = document.createElement('span');
-  coords.className = 'coords';
-  coords.textContent = `#${index + 1} · x=${label.x}, y=${label.y}, w=${label.width}, h=${label.height}`;
-  const main = document.createElement('div');
-  main.className = 'label-row-main';
-  main.append(useMask, text, printText, confidence, rotation);
-  const crop = document.createElement('canvas');
-  crop.className = 'label-crop';
-  crop.width = 260; crop.height = 72;
-  const ctx = crop.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, crop.width, crop.height);
-  if (sourceImage.complete && sourceImage.naturalWidth) {
-    const pad = 6;
-    const sx = Math.max(0, label.x - pad), sy = Math.max(0, label.y - pad);
-    const sw = Math.min(sourceImage.naturalWidth - sx, label.width + pad * 2);
-    const sh = Math.min(sourceImage.naturalHeight - sy, label.height + pad * 2);
-    if (sw > 0 && sh > 0) {
-      const scale = Math.min((crop.width - 12) / sw, (crop.height - 12) / sh, 4);
-      const dw = sw * scale, dh = sh * scale;
-      ctx.drawImage(sourceImage, sx, sy, sw, sh, (crop.width - dw) / 2, (crop.height - dh) / 2, dw, dh);
-    }
-  }
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'label-remove';
-  remove.textContent = 'Удалить область';
-  remove.title = 'Убрать эту область из списка маскирования';
-  remove.addEventListener('click', () => {
-    labelState.splice(index, 1);
-    renderLabelEditor(labelState);
-    drawSelectionCanvas();
-  });
-
-  const lower = document.createElement('div');
-  lower.className = 'label-row-lower';
-  const left = document.createElement('div');
-  left.className = 'label-row-lower-left';
-  const kind = document.createElement('span');
-  kind.className = 'label-kind';
-  kind.textContent = label.manual ? (label.polygon?.length ? 'РУЧНОЙ ЛАССО' : 'РУЧНАЯ ОБЛАСТЬ') : 'OCR';
-  left.append(coords, kind, remove);
-  lower.append(left, crop);
-  row.append(main, lower);
-  return row;
-}
-
-function renderLabelEditor(boxes = []) {
-  labelState = (boxes || []).map((box, index) => ({
-    id: index, text: String(box.text || ''), confidence: Number(box.confidence || 0),
-    x: Number(box.x || 0), y: Number(box.y || 0),
-    width: Number(box.width || 1), height: Number(box.height || 1),
-    rotation: Number(box.rotation || 0), fontScale: Number(box.fontScale || 0.9),
-    mask: box.mask !== false, render: box.render === true, manual: box.manual === true,
-    polygon: Array.isArray(box.polygon) ? box.polygon.map(point => ({ x: Number(point.x), y: Number(point.y) })) : [],
-  }));
-  const list = $('#labelList');
-  list.replaceChildren();
-  if (!labelState.length) {
-    list.innerHTML = '<p class="empty-labels">OCR не нашёл текстовых областей. Можно продолжать со слоем линий.</p>';
-  } else {
-    labelState.forEach((label, index) => list.append(makeLabelRow(label, index)));
-  }
-  $('#labelCount').textContent = String(labelState.length);
-  $('#applyLabels').disabled = !selectedFile || !labelState.length;
-  drawSelectionCanvas();
-}
-
-async function applyLabelEdits() {
-  if (!selectedFile || !maskResult) return;
-  setBusy(true);
-  $('#applyLabels').disabled = true;
-  $('#resultTag').textContent = 'ПЕРЕСБОРКА ПОДПИСЕЙ…';
-  const form = new FormData();
-  form.append('image', selectedFile, selectedFile.name);
-  for (const [key, value] of Object.entries(currentSettings())) form.append(key === 'inkMode' ? 'mode' : key, String(value));
-  form.append('overrideBoxes', JSON.stringify(labelState));
-  const started = performance.now();
+$('analyzeBtn').addEventListener('click', async () => {
+  if (!selectedFile) return;
+  $('analyzeBtn').disabled = true; $('progress').classList.add('active'); $('analyzeBtn').textContent = 'Анализирую изображение…';
   try {
-    const response = await fetch('/api/masks', { method: 'POST', body: form });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.ok) throw new Error(result.error || `Ошибка пересборки (${response.status}).`);
-    result.elapsedMs = result.elapsedMs || (performance.now() - started);
-    renderResult(result);
-    notify('Маски пересобраны. Печатный текст добавлен только для отмеченных проверенных подписей.');
-  } catch (error) {
-    notify(error.message || 'Не удалось применить подписи.', true);
-  } finally {
-    setBusy(false);
-    $('#applyLabels').disabled = !labelState.length;
-  }
-}
-
-function renderResult(result) {
-  maskResult = result;
-  // Display uses antialiased supersampled previews; downloads remain exact binary masks.
-  textMaskImage.src = dataUrl(result.masks.textPreviewPngBase64 || result.masks.textPngBase64);
-  lineMaskImage.src = dataUrl(result.masks.linesPreviewPngBase64 || result.masks.linesPngBase64);
-  textMaskImage.classList.remove('hidden');
-  lineMaskImage.classList.remove('hidden');
-  textPlaceholder.classList.add('hidden');
-  linePlaceholder.classList.add('hidden');
-
-  if (result.masks.lineSvgBase64) {
-    vectorLinesImage.src = svgDataUrl(result.masks.lineSvgBase64);
-    vectorLinesImage.classList.remove('hidden');
-    vectorPlaceholder.classList.add('hidden');
-    $('#downloadVector').href = svgDataUrl(result.masks.lineSvgBase64);
-    $('#downloadVector').classList.remove('hidden');
-  } else {
-    vectorLinesImage.classList.add('hidden');
-    vectorPlaceholder.classList.remove('hidden');
-  }
-
-  if (result.masks.cleanSvgBase64) {
-    const cleanUrl = svgDataUrl(result.masks.cleanSvgBase64);
-    cleanDrawingImage.src = cleanUrl;
-    cleanDrawingImage.classList.remove('hidden');
-    $('#cleanPlaceholder').classList.add('hidden');
-    $('#downloadClean').href = cleanUrl;
-    $('#downloadClean').classList.remove('hidden');
-  } else {
-    cleanDrawingImage.classList.add('hidden');
-    $('#cleanPlaceholder').classList.remove('hidden');
-    $('#downloadClean').classList.add('hidden');
-  }
-  const cleanTextInfo = result.cleanText || {};
-  $('#cleanStats').textContent = `Печатных надписей: ${cleanTextInfo.renderedLabels ?? 0} · пропущено: ${cleanTextInfo.skippedLabels ?? 0} · шрифт: ${cleanTextInfo.fontFamily || 'Arial'}. Исправляй текст в списке ниже; повторная обработка OCR не выполняется.`;
-  renderLabelEditor(result.boxes || []);
-  // Expose the handwriting cleanup panel after each run so handwritten digits are not mistaken for finished typography.
-  $('#labelEditorDetails').open = labelState.length > 0;
-
-  const stats = result.stats || {};
-  $('#resultTag').textContent = result.warnings?.length ? 'ГОТОВО · ЕСТЬ ЗАМЕЧАНИЯ' : 'МАСКИ ГОТОВЫ';
-  $('#statSize').textContent = `${result.width} × ${result.height}`;
-  $('#statInk').textContent = Number(stats.inkPixels || 0).toLocaleString('ru-RU');
-  $('#statOcr').textContent = `${stats.ocrBoxes ?? 0} / ${stats.ocrRawWords ?? 0}`;
-  $('#statText').textContent = `${Number(stats.textPixels || 0).toLocaleString('ru-RU')} · ${stats.textCoveragePercent ?? 0}%`;
-  $('#statLines').textContent = `${Number(stats.linePixels || 0).toLocaleString('ru-RU')} · ${stats.lineCoveragePercent ?? 0}%`;
-  $('#statTime').textContent = `${((result.elapsedMs || 0) / 1000).toFixed(2)} с`;
-  const vector = result.vectorization || {};
-  $('#vectorStats').textContent = `Скелет: ${Number(vector.skeletonPixels || 0).toLocaleString('ru-RU')} px · путей: ${vector.tracedPaths ?? 0} · SVG-путей: ${vector.vectorPaths ?? 0} · коротких разрывов соединено: ${vector.gapBridgeCount ?? 0} (до ${vector.gapBridgeMaxPx ?? 0} px) · длина: ${vector.vectorLengthPx ?? 0} px`;
-
-  saveDownload($('#downloadText'), result.masks.textPngBase64);
-  saveDownload($('#downloadLines'), result.masks.linesPngBase64);
-  $('#downloadRow').classList.remove('hidden');
-  $('#downloadInk').href = dataUrl(result.masks.inkPngBase64);
-  $('#downloadOverlay').href = dataUrl(result.masks.overlayPngBase64);
-
-  const warningBox = $('#warnings');
-  warningBox.replaceChildren();
-  for (const warning of result.warnings || []) {
-    const item = document.createElement('p');
-    item.textContent = warning;
-    warningBox.append(item);
-  }
-  if (result.warnings?.length) warningBox.classList.remove('hidden');
-  else warningBox.classList.add('hidden');
-
-  const report = {
-    appVersion: '3.5.0', dimensions: { width: result.width, height: result.height },
-    settings: result.settings, mode: result.mode, ocr: result.ocr, stats,
-    warnings: result.warnings || [], recognizedTextBoxes: result.boxes || [],
-    vectorization: result.vectorization || {}, cleanText: result.cleanText || {},
-    labelsAfterEdit: labelState,
-    maskDefinition: {
-      text: 'Original ink pixels inside OCR word boxes after explicit pixel + proportional padding.',
-      lines: 'All other original ink pixels outside those OCR word boxes.',
-      note: 'Original 1x binary masks are unchanged. SVG uses conservative endpoint-to-endpoint micro-gap joining only when local directions align. OCR handwriting still requires review; clean typed labels are manual.',
-    },
-  };
-  $('#debugOutput').textContent = pretty(report);
-  $('#downloadReport').onclick = () => downloadText('two-mask-report.json', pretty(report), 'application/json;charset=utf-8');
-}
-
-function downloadText(filename, content, type = 'text/plain;charset=utf-8') {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-processButton.addEventListener('click', async () => {
-  if (!selectedFile) return notify('Сначала выбери фотографию.', true);
-  setBusy(true);
-  $('#resultTag').textContent = 'ОБРАБОТКА…';
-  const settings = currentSettings();
-  const form = new FormData();
-  form.append('image', selectedFile, selectedFile.name);
-  for (const [key, value] of Object.entries(settings)) form.append(key === 'inkMode' ? 'mode' : key, String(value));
-  const started = performance.now();
-  try {
-    const response = await fetch('/api/masks', { method: 'POST', body: form });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.ok) throw new Error(result.error || `Ошибка обработки (${response.status}).`);
-    result.elapsedMs = result.elapsedMs || (performance.now() - started);
-    renderResult(result);
-    const stats = result.stats || {};
-    notify(`Маски готовы. OCR: ${stats.ocrBoxes ?? 0} из ${stats.ocrRawWords ?? 0} кандидатов; текст ${stats.textCoveragePercent ?? 0}%; линии ${stats.lineCoveragePercent ?? 0}%.`);
-  } catch (error) {
-    $('#resultTag').textContent = 'ОШИБКА';
-    notify(error.message || 'Не удалось построить маски.', true);
-    $('#warnings').textContent = error.message || String(error);
-    $('#warnings').classList.remove('hidden');
-  } finally {
-    setBusy(false);
-  }
+    const fd = new FormData(); fd.append('image', selectedFile);
+    const res = await fetch('/api/analyze', {method:'POST', body:fd});
+    const data = await res.json(); if (!res.ok) throw new Error(data.details || data.error || 'Ошибка анализа');
+    graph = data; showAllSegments = false; connectMode=false; firstNode=null;
+    showResult();
+  } catch (e) { alert(`Не удалось выполнить анализ: ${e.message}`); }
+  finally { $('progress').classList.remove('active'); $('analyzeBtn').disabled = false; $('analyzeBtn').textContent = 'Найти линии и построить граф'; }
 });
 
-imageInput.addEventListener('change', event => setImage(event.target.files?.[0]));
-removeImageButton.addEventListener('click', removeImage);
-for (const eventName of ['dragenter', 'dragover']) dropzone.addEventListener(eventName, event => { event.preventDefault(); dropzone.classList.add('drag'); });
-for (const eventName of ['dragleave', 'drop']) dropzone.addEventListener(eventName, event => { event.preventDefault(); dropzone.classList.remove('drag'); });
-dropzone.addEventListener('drop', event => setImage(event.dataTransfer?.files?.[0]));
-
-for (const id of fields.filter(id => $(`#${id}`)?.type === 'range')) {
-  $(`#${id}`).addEventListener('input', () => {
-    updateSettingLabels();
-    document.querySelectorAll('[data-preset]').forEach(button => button.classList.remove('active'));
+function showResult() {
+  $('statsPanel').hidden = false; $('edgePanel').hidden = false; $('nodePanel').hidden = false; $('textPanel').hidden = false;
+  $('sourceImage').src = graph.sourceUrl; $('sourceStage').classList.remove('empty'); $('sourceStage').classList.add('loaded');
+  $('canvasMeta').textContent = `${graph.image.width} × ${graph.image.height} px · геометрия не обрезалась по OCR`;
+  $('statusline').textContent = graph.warnings.join(' ');
+  const st=graph.summary;
+  $('stats').innerHTML = stat(st.segment_candidates,'отрезков-кандидатов')+stat(st.nodes,'узлов')+stat(st.edges,'связей')+stat(st.crossings_to_review,'пересечений на проверку')+stat(st.ocr_annotations,'OCR-подписей')+stat(st.line_components,'компонентов линий')+stat(st.annotation_components,'текстовых компонентов')+stat(st.ambiguous_components,'неоднозначных компонентов');
+  $('edgeCount').textContent=graph.edges.length; $('nodeCount').textContent=graph.nodes.length;
+  renderOverlay(); renderClean(); renderEdgeList(); renderNodeList(); renderTextList(); renderJoinList();
+  for (const id of ['exportSvg','exportDxf','exportJson','exportPdf']) $(id).disabled=false;
+}
+function stat(n,label){return `<div class="stat"><strong>${escapeHtml(String(n))}</strong><span>${escapeHtml(label)}</span></div>`}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function edgeLength(e){const g=e.geometry||[];if(g.length<2)return 0;return Math.hypot(g[g.length-1][0]-g[0][0],g[g.length-1][1]-g[0][1]);}
+function shownEdges(){return graph.edges.filter(e=>e.visible!==false && (showAllSegments || (edgeLength(e)>=28 && e.component_role==='line_structure')));}
+function renderOverlay(){
+  if(!graph)return;
+  const w=graph.image.width,h=graph.image.height;
+  const visibleIds=new Set(shownEdges().map(e=>e.id));
+  const lines=graph.edges.map(e=>{
+    if(!visibleIds.has(e.id))return '';
+    const pts=e.geometry.map(p=>`${p[0]},${p[1]}`).join(' ');
+    const c=e.source==='manual'?'#cf4f43':(e.detector==='HOUGH'?'#19a36a':'#e38a36');
+    return `<polyline data-edge="${e.id}" points="${pts}" fill="none" stroke="${c}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>`;
+  }).join('');
+  const nodes=$('showNodes').checked ? graph.nodes.map(n=>`<g class="node" data-node="${n.id}"><circle cx="${n.x}" cy="${n.y}" r="${n.degree>=3?6:4}" fill="white" stroke="${nodeSelected(n.id)?'#db7627':'#c9443d'}" stroke-width="2.2"/><text x="${n.x+7}" y="${n.y-7}" font-size="10" fill="#20231f" stroke="white" stroke-width="3" paint-order="stroke">${n.id}</text></g>`).join('') : '';
+  const crossings=$('showCrossings').checked ? (graph.crossings||[]).map(x=>`<g><circle cx="${x.x}" cy="${x.y}" r="8" fill="none" stroke="#a044b4" stroke-width="2" stroke-dasharray="3 2"/><text x="${x.x+9}" y="${x.y-7}" font-size="10" fill="#8a3d9a">?</text></g>`).join('') : '';
+  const svg=$('overlay'); svg.setAttribute('viewBox',`0 0 ${w} ${h}`); svg.setAttribute('preserveAspectRatio','xMidYMid meet'); svg.innerHTML=lines+crossings+nodes;
+  svg.querySelectorAll('.node').forEach(g=>{
+    g.addEventListener('pointerdown', e=>startNodeAction(e,g.dataset.node));
+    g.addEventListener('click', e=>{e.stopPropagation(); if(connectMode) chooseNode(g.dataset.node); else selectNode(g.dataset.node);});
   });
 }
-document.querySelectorAll('[data-preset]').forEach(button => {
-  button.addEventListener('click', () => setSettings(presets[button.dataset.preset], button.dataset.preset));
-});
-document.querySelectorAll('.settings select').forEach(select => {
-  select.addEventListener('change', () => document.querySelectorAll('[data-preset]').forEach(button => button.classList.remove('active')));
-});
-$('#resetSettings').addEventListener('click', () => setSettings(defaults, 'balanced'));
-
-$('#applyLabels').addEventListener('click', applyLabelEdits);
-
-function setManualSelectMode(shape) {
-  if (shape === false || !selectedFile) {
-    manualSelectMode = false;
-    manualDragStart = null;
-    manualDragCurrent = null;
-    manualPolygonPoints = [];
-  } else {
-    manualSelectMode = true;
-    manualSelectionShape = shape === 'lasso' ? 'lasso' : 'rect';
-    manualDragStart = null;
-    manualDragCurrent = null;
-    manualPolygonPoints = [];
-  }
-  $('#sourceView').classList.toggle('selecting', manualSelectMode);
-  $('#toggleManualRegion').classList.toggle('button-primary', manualSelectMode && manualSelectionShape === 'rect');
-  $('#toggleLassoRegion').classList.toggle('button-primary', manualSelectMode && manualSelectionShape === 'lasso');
-  $('#toggleManualRegion').textContent = manualSelectMode && manualSelectionShape === 'rect' ? 'Завершить прямоугольник' : 'Выделить прямоугольником';
-  $('#toggleLassoRegion').textContent = manualSelectMode && manualSelectionShape === 'lasso' ? 'Завершить лассо' : 'Обвести текст лассо';
-  $('#selectionHint').textContent = !manualSelectMode
-    ? 'Прямоугольник — для крупных блоков. Лассо — обведи только буквы, чтобы не задеть близкие трубы.'
-    : manualSelectionShape === 'lasso'
-      ? 'Зажми кнопку и обведи рукописный текст по контуру. Лассо оставляет линии снаружи выделения.'
-      : 'Зажми кнопку и обведи прямоугольником текстовую область. Можно выбрать несколько участков подряд.';
-  drawSelectionCanvas();
+function nodeSelected(id){return connectMode && (firstNode===id);}
+function selectNode(id){$('selectMode').textContent=`Выбран узел ${id}`;document.querySelectorAll('#nodeList .rowitem').forEach(el=>el.classList.toggle('selected',el.dataset.node===id));}
+function startNodeAction(e,id){
+  if(connectMode)return;
+  if(e.button!==0)return;
+  draggingNode=id; $('overlay').setPointerCapture?.(e.pointerId); e.preventDefault();
 }
-
-function imagePointFromClient(clientX, clientY) {
-  if (!sourceImage.naturalWidth || !sourceImage.naturalHeight) return null;
-  const rect = sourceSelectCanvas.getBoundingClientRect();
-  const scale = Math.min(rect.width / sourceImage.naturalWidth, rect.height / sourceImage.naturalHeight);
-  const shownW = sourceImage.naturalWidth * scale;
-  const shownH = sourceImage.naturalHeight * scale;
-  const offsetX = (rect.width - shownW) / 2;
-  const offsetY = (rect.height - shownH) / 2;
-  const localX = clientX - rect.left;
-  const localY = clientY - rect.top;
-  if (localX < offsetX || localY < offsetY || localX > offsetX + shownW || localY > offsetY + shownH) return null;
-  return {
-    x: Math.max(0, Math.min(sourceImage.naturalWidth - 1, (localX - offsetX) / scale)),
-    y: Math.max(0, Math.min(sourceImage.naturalHeight - 1, (localY - offsetY) / scale)),
-    screenX: localX, screenY: localY,
-  };
-}
-
-function screenPointFromImage(point, rect) {
-  const scale = Math.min(rect.width / sourceImage.naturalWidth, rect.height / sourceImage.naturalHeight);
-  const offsetX = (rect.width - sourceImage.naturalWidth * scale) / 2;
-  const offsetY = (rect.height - sourceImage.naturalHeight * scale) / 2;
-  return { x: offsetX + point.x * scale, y: offsetY + point.y * scale };
-}
-
-function drawSelectionCanvas() {
-  const canvas = sourceSelectCanvas;
-  const rect = canvas.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const targetWidth = Math.round(rect.width * dpr);
-  const targetHeight = Math.round(rect.height * dpr);
-  if (canvas.width !== targetWidth) canvas.width = targetWidth;
-  if (canvas.height !== targetHeight) canvas.height = targetHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, rect.width, rect.height);
-
-  // Persistent overlays show exactly which handwriting regions will be removed.
-  labelState.forEach((label, index) => {
-    if (label.mask === false) return;
-    const raw = label.polygon?.length >= 3
-      ? label.polygon
-      : [
-          { x: label.x, y: label.y },
-          { x: label.x + label.width, y: label.y },
-          { x: label.x + label.width, y: label.y + label.height },
-          { x: label.x, y: label.y + label.height },
-        ];
-    const points = raw.map(point => screenPointFromImage(point, rect));
-    if (points.length < 3) return;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    points.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
-    ctx.closePath();
-    ctx.fillStyle = label.manual ? 'rgba(218,126,35,.20)' : 'rgba(44,129,104,.13)';
-    ctx.strokeStyle = label.manual ? '#d77a24' : '#32876f';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 3]);
-    ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
-    const center = screenPointFromImage({ x: label.x + 3, y: label.y + 12 }, rect);
-    ctx.fillStyle = label.manual ? '#9c5418' : '#236b55';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.fillText(String(index + 1), center.x, center.y);
-  });
-
-  if (!manualSelectMode || !manualDragStart || !manualDragCurrent) return;
-  ctx.fillStyle = 'rgba(215,122,36,.18)';
-  ctx.strokeStyle = '#d77a24';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([5, 3]);
-  if (manualSelectionShape === 'lasso') {
-    const points = [...manualPolygonPoints, manualDragCurrent];
-    if (points.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(points[0].screenX, points[0].screenY);
-    points.slice(1).forEach(point => ctx.lineTo(point.screenX, point.screenY));
-    if (points.length >= 3) ctx.closePath();
-    ctx.fill(); ctx.stroke();
-  } else {
-    const x = Math.min(manualDragStart.screenX, manualDragCurrent.screenX);
-    const y = Math.min(manualDragStart.screenY, manualDragCurrent.screenY);
-    const w = Math.abs(manualDragStart.screenX - manualDragCurrent.screenX);
-    const h = Math.abs(manualDragStart.screenY - manualDragCurrent.screenY);
-    ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
-  }
-  ctx.setLineDash([]);
-}
-
-function addManualRegion(region) {
-  labelState.push({
-    id: labelState.length, text: '', confidence: 100,
-    x: region.x, y: region.y, width: region.width, height: region.height,
-    polygon: region.polygon || [], rotation: 0, fontScale: 0.9,
-    mask: true, render: false, manual: true,
-  });
-  renderLabelEditor(labelState);
-  $('#labelEditorDetails').open = true;
-  drawSelectionCanvas();
-  notify('Область добавлена. Повтори лассо для следующей надписи или нажми «Завершить». Вне выделения трубные штрихи сохраняются.');
-}
-
-$('#toggleManualRegion').addEventListener('click', () => {
-  if (manualSelectMode && manualSelectionShape === 'rect') setManualSelectMode(false);
-  else setManualSelectMode('rect');
+$('overlay').addEventListener('pointermove',e=>{
+  if(!draggingNode||!graph)return;
+  const svg=$('overlay'),pt=svg.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;const p=pt.matrixTransform(svg.getScreenCTM().inverse());
+  moveNode(draggingNode,Math.max(0,Math.min(graph.image.width,p.x)),Math.max(0,Math.min(graph.image.height,p.y)));
 });
-$('#toggleLassoRegion').addEventListener('click', () => {
-  if (manualSelectMode && manualSelectionShape === 'lasso') setManualSelectMode(false);
-  else setManualSelectMode('lasso');
-});
-
-sourceSelectCanvas.addEventListener('pointerdown', event => {
-  if (!manualSelectMode) return;
-  const point = imagePointFromClient(event.clientX, event.clientY);
-  if (!point) return;
-  manualDragStart = point;
-  manualDragCurrent = point;
-  manualPolygonPoints = manualSelectionShape === 'lasso' ? [point] : [];
-  sourceSelectCanvas.setPointerCapture(event.pointerId);
-  drawSelectionCanvas();
-});
-sourceSelectCanvas.addEventListener('pointermove', event => {
-  if (!manualSelectMode || !manualDragStart) return;
-  const point = imagePointFromClient(event.clientX, event.clientY);
-  if (!point) return;
-  manualDragCurrent = point;
-  if (manualSelectionShape === 'lasso') {
-    const last = manualPolygonPoints[manualPolygonPoints.length - 1];
-    if (!last || Math.hypot(point.screenX - last.screenX, point.screenY - last.screenY) >= 2.5) {
-      if (manualPolygonPoints.length < 400) manualPolygonPoints.push(point);
+$('overlay').addEventListener('pointerup',()=>{draggingNode=null;});$('overlay').addEventListener('pointercancel',()=>{draggingNode=null;});
+function moveNode(id,x,y){
+  const n=graph.nodes.find(n=>n.id===id);if(!n)return;n.x=+x.toFixed(1);n.y=+y.toFixed(1);
+  for(const e of graph.edges){if(e.from===id&&e.geometry.length)e.geometry[0]=[n.x,n.y];if(e.to===id&&e.geometry.length)e.geometry[e.geometry.length-1]=[n.x,n.y];}
+  renderOverlay();renderClean();renderNodeList();
+}
+function renderEdgeList(){
+  $('edgeList').innerHTML=graph.edges.map(e=>`<label class="rowitem"><input type="checkbox" data-toggle-edge="${e.id}" ${e.visible===false?'':'checked'}><span class="id">${e.id}</span><span class="meta">${edgeLength(e).toFixed(0)} px · ${e.detector} · ${e.component_id||''}</span><span class="mini">${Math.round(e.confidence*100)}%</span></label>`).join('');
+  $('edgeList').querySelectorAll('[data-toggle-edge]').forEach(input=>input.addEventListener('change',()=>{const edge=graph.edges.find(x=>x.id===input.dataset.toggleEdge);edge.visible=input.checked;renderOverlay();renderClean();}));
+}
+function renderNodeList(){
+  const important=[...graph.nodes].filter(n=>n.degree!==2).sort((a,b)=>b.degree-a.degree).slice(0,100);
+  $('nodeList').innerHTML=important.map(n=>`<div class="rowitem" data-node="${n.id}"><span class="id">${n.id}</span><span class="meta">x ${n.x.toFixed(1)} · y ${n.y.toFixed(1)}</span><span class="mini">${n.degree} конц.</span></div>`).join('') || '<div class="hint">Нет выделенных узлов.</div>';
+  $('nodeList').querySelectorAll('[data-node]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.node)));
+}
+function addManualConnection(from,to){
+  const a=graph.nodes.find(n=>n.id===from),b=graph.nodes.find(n=>n.id===to);if(!a||!b||a.id===b.id)return;
+  const exists=graph.edges.some(e=>(e.from===a.id&&e.to===b.id)||(e.from===b.id&&e.to===a.id));
+  if(exists)return;
+  graph.edges.push({id:`E${Math.max(0,...graph.edges.map(e=>Number(e.id.slice(1))||0))+1}`,from:a.id,to:b.id,source:'manual',confidence:1,geometry:[[a.x,a.y],[b.x,b.y]],visible:true,review:false,detector:'MANUAL',suggested_role:'line_candidate'});
+  $('edgeCount').textContent=graph.edges.length;renderOverlay();renderClean();renderEdgeList();renderNodeList();renderJoinList();
+}
+function renderJoinList(){
+  const joins=(graph.joinCandidates||[]).slice(0,60);
+  $('joinList').innerHTML=joins.length?joins.map(j=>`<div class="rowitem"><span class="id">${j.id}</span><span class="meta">${j.from} ↔ ${j.to} · ${j.distance} px</span><button data-join="${j.id}">Соединить</button></div>`).join(''):'<div class="hint">Нет коротких соосных разрывов-кандидатов.</div>';
+  $('joinList').querySelectorAll('[data-join]').forEach(btn=>btn.addEventListener('click',()=>{const j=graph.joinCandidates.find(x=>x.id===btn.dataset.join);if(j){addManualConnection(j.from,j.to);graph.joinCandidates=graph.joinCandidates.filter(x=>x.id!==j.id);renderJoinList();}}));
+}
+function renderTextList(){
+  const ann=graph.annotations.filter(a=>a.source==='tesseract');
+  $('textList').innerHTML=ann.length?ann.map(a=>`<div class="rowitem"><input type="checkbox" data-verified="${a.id}" ${a.verified?'checked':''} title="Проверено"><span class="id">${a.id}</span><input type="text" data-text="${a.id}" value="${escapeHtml(a.text)}" aria-label="Текст ${a.id}"><span class="mini">${a.confidence}%</span></div>`).join(''):'<div class="hint">Tesseract не нашёл подписи с достаточной уверенностью. Геометрия от этого не меняется.</div>';
+  $('textList').querySelectorAll('[data-text]').forEach(input=>input.addEventListener('input',()=>{const a=graph.annotations.find(x=>x.id===input.dataset.text);a.text=input.value;renderClean();}));
+  $('textList').querySelectorAll('[data-verified]').forEach(input=>input.addEventListener('change',()=>{const a=graph.annotations.find(x=>x.id===input.dataset.verified);a.verified=input.checked;renderClean();}));
+}
+$('allEdges').addEventListener('click',()=>{showAllSegments=true;renderOverlay();renderClean();});
+$('longEdges').addEventListener('click',()=>{showAllSegments=false;renderOverlay();renderClean();});
+$('showNodes').addEventListener('change',()=>renderOverlay());
+$('showCrossings').addEventListener('change',()=>renderOverlay());
+$('connectMode').addEventListener('click',()=>{connectMode=!connectMode;firstNode=null;if(connectMode)$('showNodes').checked=true;$('connectHelp').hidden=!connectMode;$('connectMode').textContent=connectMode?'Отмена соединения':'＋ Соединить два выбранных узла';$('selectMode').textContent=connectMode?'Выбери два узла на схеме':'Режим: просмотр';renderOverlay();});
+function chooseNode(id){
+  if(!firstNode){firstNode=id;$('connectHelp').textContent=`Первый узел: ${id}. Теперь выбери второй узел.`;renderOverlay();return;}
+  if(firstNode===id)return;
+  const a=graph.nodes.find(n=>n.id===firstNode),b=graph.nodes.find(n=>n.id===id);
+  if(!a||!b)return;
+  addManualConnection(a.id,b.id);
+  connectMode=false;firstNode=null;$('connectHelp').hidden=true;$('connectMode').textContent='＋ Соединить два выбранных узла';$('selectMode').textContent='Добавлено ручное соединение';
+  renderOverlay();
+}
+function buildChains(edges){
+  const adj=new Map();
+  for(const e of edges){if(!adj.has(e.from))adj.set(e.from,[]);if(!adj.has(e.to))adj.set(e.to,[]);adj.get(e.from).push(e);adj.get(e.to).push(e);}
+  const visited=new Set(),chains=[];
+  function trace(startNode,firstEdge){
+    let node=startNode,edge=firstEdge,pts=[],ids=[];
+    while(edge&&!visited.has(edge.id)){
+      visited.add(edge.id);ids.push(edge.id);
+      let oriented=edge.from===node?edge.geometry:[...edge.geometry].reverse();
+      if(!pts.length)pts.push(...oriented);else pts.push(...oriented.slice(1));
+      const next=edge.from===node?edge.to:edge.from;
+      const candidates=(adj.get(next)||[]).filter(x=>!visited.has(x.id));
+      if((adj.get(next)||[]).length!==2||!candidates.length)break;
+      node=next;edge=candidates[0];
     }
+    if(pts.length>=2)chains.push({points:pts,edgeIds:ids});
   }
-  drawSelectionCanvas();
-});
-sourceSelectCanvas.addEventListener('pointerup', event => {
-  if (!manualSelectMode || !manualDragStart || !manualDragCurrent) return;
-  let region = null;
-  if (manualSelectionShape === 'lasso') {
-    const polygon = [...manualPolygonPoints, manualDragCurrent]
-      .filter((point, index, array) => index === 0 || Math.hypot(point.x - array[index - 1].x, point.y - array[index - 1].y) > 1.0)
-      .map(point => ({ x: Math.round(point.x), y: Math.round(point.y) }));
-    if (polygon.length >= 4) {
-      const xs = polygon.map(point => point.x), ys = polygon.map(point => point.y);
-      const x = Math.min(...xs), y = Math.min(...ys);
-      const width = Math.max(...xs) - x, height = Math.max(...ys) - y;
-      if (width >= 4 && height >= 4) region = { x, y, width, height, polygon };
-    }
-  } else {
-    const x = Math.floor(Math.min(manualDragStart.x, manualDragCurrent.x));
-    const y = Math.floor(Math.min(manualDragStart.y, manualDragCurrent.y));
-    const width = Math.ceil(Math.abs(manualDragStart.x - manualDragCurrent.x));
-    const height = Math.ceil(Math.abs(manualDragStart.y - manualDragCurrent.y));
-    if (width >= 4 && height >= 4) region = { x, y, width, height };
+  for(const [node,incident] of adj){
+    if(incident.length===2)continue;
+    for(const e of incident)if(!visited.has(e.id))trace(node,e);
   }
-  manualDragStart = null; manualDragCurrent = null; manualPolygonPoints = [];
-  drawSelectionCanvas();
-  if (!region) {
-    notify(manualSelectionShape === 'lasso' ? 'Лассо слишком маленькое. Обведи область чуть шире.' : 'Область слишком маленькая. Обведи надпись чуть крупнее.', true);
-    return;
-  }
-  addManualRegion(region);
-});
-sourceSelectCanvas.addEventListener('pointercancel', () => {
-  manualDragStart = null; manualDragCurrent = null; manualPolygonPoints = [];
-  drawSelectionCanvas();
-});
-window.addEventListener('resize', drawSelectionCanvas);
-
-async function checkHealth() {
-  const dot = $('#apiDot');
-  try {
-    const response = await fetch('/api/health');
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Health check error');
-    $('#versionChip').textContent = `v${data.appVersion || '—'}`;
-    dot.classList.add('good');
-    $('#apiStatus').textContent = 'Две маски + ручное лассо для удаления рукописи · локально';
-  } catch {
-    dot.classList.add('bad');
-    $('#apiStatus').textContent = 'Локальный обработчик недоступен';
-  }
+  for(const e of edges)if(!visited.has(e.id))trace(e.from,e);
+  return chains;
 }
+function buildSheetSvg(){
+  const w=graph.image.width,h=graph.image.height,edges=shownEdges();
+  const margin=75,PW=1200,PH=850,availH=PH-190,scale=Math.min((PW-2*margin)/w,availH/h),ox=(PW-w*scale)/2,oy=70+(availH-h*scale)/2;
+  let out=[`<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 ${PW} ${PH}">`,`<rect width="${PW}" height="${PH}" fill="white"/>`,`<rect x="22" y="22" width="1156" height="806" fill="none" stroke="#111" stroke-width="1.2"/>`,`<text x="40" y="49" font-family="Arial,sans-serif" font-size="15" font-weight="bold">СХЕМА ТРУБОПРОВОДА</text>`,`<text x="40" y="65" font-family="Arial,sans-serif" font-size="8" fill="#555">Предварительная векторная реконструкция · требуется проверка соединений</text>`,`<g transform="translate(${ox} ${oy}) scale(${scale})" fill="none" stroke="#111" stroke-width="${Math.max(.45,1.6/scale)}" stroke-linecap="round" stroke-linejoin="round">`];
+  for(const chain of buildChains(edges)){const p=chain.points.map(q=>`${q[0]},${q[1]}`).join(' ');out.push(`<polyline points="${p}"/>`);}
+  out.push('</g>');
+  // Approved text is printed as independent typography, never traced as glyph strokes.
+  for(const a of graph.annotations.filter(x=>x.verified&&x.text&&x.bbox)){const b=a.bbox;const x=ox+(b.x+b.w/2)*scale,y=oy+(b.y+b.h/2)*scale;out.push(`<text x="${x}" y="${y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#111">${escapeHtml(a.text)}</text>`);}
+  out.push('<path d="M22 760 H1178 M820 760 V828" fill="none" stroke="#111" stroke-width=".8"/>','<text x="40" y="782" font-family="Arial,sans-serif" font-size="9">ПРОВЕРИТЬ ВСЕ УЗЛЫ, ПЕРЕСЕЧЕНИЯ И РАЗМЕРЫ ПО ОРИГИНАЛУ</text>','<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.0.0</text>','</svg>');
+  return out.join('\n');
+}
+function renderClean(){if(!graph)return;$('cleanStage').innerHTML=buildSheetSvg();}
+function download(name,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);}
+function buildDxf(){let d=['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','0','ENDSEC','0','SECTION','2','ENTITIES'];for(const chain of buildChains(shownEdges())){const p=chain.points;if(!p||p.length<2)continue;d.push('0','LWPOLYLINE','8','PIPE_CANDIDATES','90',String(p.length),'70','0');for(const q of p)d.push('10',String(q[0]),'20',String(graph.image.height-q[1]));}for(const a of graph.annotations.filter(x=>x.verified&&x.text&&x.bbox)){const b=a.bbox;d.push('0','TEXT','8','VERIFIED_TEXT','10',String(b.x),'20',String(graph.image.height-b.y-b.h),'40','8','1',a.text);}d.push('0','ENDSEC','0','EOF');return d.join('\n')+'\n';}
+$('exportSvg').addEventListener('click',()=>download('reconstructed-scheme.svg',buildSheetSvg(),'image/svg+xml'));
+$('exportDxf').addEventListener('click',()=>download('reconstructed-scheme.dxf',buildDxf(),'application/dxf'));
+$('exportJson').addEventListener('click',()=>download('reconstruction-graph.json',JSON.stringify(graph,null,2),'application/json'));
 
-imageInput.value = '';
-setSettings(defaults, 'handSketch');
-checkHealth();
+$('exportPdf').addEventListener('click',()=>{
+  const popup=window.open('', '_blank');
+  if(!popup){alert('Разреши всплывающее окно для печати в PDF.');return;}
+  popup.document.open();
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Трубопроводная схема</title><style>@page{size:A3 landscape;margin:0}html,body{margin:0;padding:0;width:420mm;height:297mm}svg{display:block;width:420mm;height:297mm}</style></head><body>${buildSheetSvg()}<script>window.onload=()=>setTimeout(()=>window.print(),250)<\/script></body></html>`);
+  popup.document.close();
+});
