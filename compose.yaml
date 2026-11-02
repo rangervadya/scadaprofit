@@ -1,6 +1,6 @@
 services:
-  # Optional local Qwen service retained to preserve the existing model volume.
-  # Geometry detection does not depend on Ollama.
+  # Local vision service for handwriting OCR. Geometry detection remains
+  # available when Ollama or the selected model is unavailable.
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -41,6 +41,10 @@ services:
       HOST: "0.0.0.0"
       MASK_PYTHON: "/opt/venv/bin/python"
       DATA_DIR: "/tmp/cad-reconstruction-jobs"
+      OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
+      OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
+      QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b}"
+      QWEN_OCR_TIMEOUT: "85"
     security_opt:
       - no-new-privileges:true
 

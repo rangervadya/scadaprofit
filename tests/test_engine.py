@@ -1,7 +1,10 @@
 import sys
-import tempfile
 import unittest
+import json
+import os
+from unittest.mock import patch
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
@@ -39,7 +42,82 @@ class GraphTests(unittest.TestCase):
         annotations = [{"id": "T1", "bbox": {"x": 55, "y": 40, "w": 45, "h": 20}}]
         candidates = processor.extract_segments(gray, ink, annotations)
         self.assertTrue(candidates)
-        self.assertTrue(any(x["suggested_role"] == "text_or_dimension" for x in candidates))
+        self.assertTrue(any(x["ocr_overlap"] > 0 for x in candidates))
+        # OCR overlap is metadata and must not subtract the underlying geometry.
+        self.assertTrue(any(x["length"] > 100 for x in candidates))
+
+    def test_ocr_overlap_does_not_reclassify_long_trace(self):
+        segments = [
+            {"x1": 10.0, "y1": 20.0, "x2": 60.0, "y2": 20.0, "source": "LSD", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0},
+            {"x1": 60.0, "y1": 20.0, "x2": 110.0, "y2": 20.0, "source": "HOUGH", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0},
+        ]
+        _, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(len(edges), 2)
+        self.assertTrue(all(edge["component_role"] == "line_structure" for edge in edges))
+
+    def test_svg_and_dxf_keep_short_line_components_thin(self):
+        edges = [{"geometry": [[0, 0], [12, 0]], "component_role": "line_structure"}]
+        svg = processor.build_clean_svg(120, 120, edges, [])
+        dxf = processor.build_dxf(120, 120, edges, [])
+        self.assertIn("<polyline points=", svg)
+        self.assertIn('stroke-width="', svg)
+        self.assertIn("370\n13", dxf)
+
+    def test_short_collinear_continuation_is_kept_as_line_candidate(self):
+        segments = [
+            {"x1": 10.0, "y1": 20.0, "x2": 100.0, "y2": 20.0, "source": "LSD", "support": .95, "length": 90, "angle": 0, "ocr_overlap": 0},
+            {"x1": 105.0, "y1": 20.0, "x2": 120.0, "y2": 20.0, "source": "HOUGH", "support": .9, "length": 15, "angle": 0, "ocr_overlap": 0},
+        ]
+        _, edges, components = processor.endpoint_clusters(segments)
+        short_edge = min(edges, key=lambda edge: sum((edge["geometry"][1][i] - edge["geometry"][0][i]) ** 2 for i in (0, 1)))
+        self.assertEqual(short_edge["component_role"], "line_structure")
+        self.assertTrue(short_edge.get("continuation_candidate"))
+
+    def test_qwen_annotation_coordinates_are_scaled_and_confident_text_preselected(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / "source.png"
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (4000, 2000), 'white').save(image_path)
+            response_body = {
+                "message": {"content": json.dumps({"annotations": [
+                    {"text": "DN 50", "bbox": {"x": 100, "y": 80, "w": 60, "h": 20}, "confidence": 92},
+                    {"text": "?", "bbox": {"x": 300, "y": 100, "w": 20, "h": 18}, "confidence": 41},
+                ]})}
+            }
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "2000", "QWEN_OCR_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
+                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                annotations, status = processor._qwen_annotations(str(image_path), 4000, 2000)
+            self.assertTrue(status["available"])
+            self.assertEqual(annotations[0]["bbox"], {"x": 200, "y": 160, "w": 120, "h": 40})
+            self.assertTrue(annotations[0]["include"])
+            self.assertFalse(annotations[1]["include"])
+
+    def test_duplicate_segments_merge_but_separate_parallel_strokes_survive(self):
+        ink = np.zeros((120, 180), np.uint8)
+        cv2.line(ink, (10, 35), (160, 35), 255, 2)
+        cv2.line(ink, (10, 80), (160, 80), 255, 2)
+        dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
+        first = {"x1": 10., "y1": 34., "x2": 100., "y2": 34., "length": 90., "angle": 0., "source": "LSD", "support": .9, "ocr_overlap": 0}
+        repeat = {"x1": 20., "y1": 36., "x2": 150., "y2": 36., "length": 130., "angle": 0., "source": "HOUGH", "support": .8, "ocr_overlap": 0}
+        merged = processor._merge_aligned_duplicate(first, repeat, ink, dilated, continuity_gap=5)
+        self.assertIsNotNone(merged)
+        self.assertGreater(merged["length"], 130)
+        parallel = {"x1": 10., "y1": 80., "x2": 150., "y2": 80., "length": 140., "angle": 0., "source": "HOUGH", "support": .9, "ocr_overlap": 0}
+        self.assertIsNone(processor._merge_aligned_duplicate(first, parallel, ink, dilated, continuity_gap=5))
+
+        # A one-pixel white gap between close parallel marks is a real separation.
+        close_ink = np.zeros((60, 180), np.uint8)
+        cv2.line(close_ink, (10, 25), (160, 25), 255, 1)
+        cv2.line(close_ink, (10, 27), (160, 27), 255, 1)
+        close_dilated = cv2.dilate(close_ink, np.ones((3, 3), np.uint8), iterations=1)
+        close_first = {**first, 'y1': 25., 'y2': 25.}
+        close_parallel = {**parallel, 'y1': 27., 'y2': 27.}
+        self.assertIsNone(processor._merge_aligned_duplicate(
+            close_first, close_parallel, close_ink, close_dilated, continuity_gap=5))
 
     def test_svg_has_separate_verified_text(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
@@ -54,6 +132,7 @@ class GraphTests(unittest.TestCase):
         annotations = [{"verified": True, "text": "DN50", "bbox": {"x": 12, "y": 15, "w": 25, "h": 9}}]
         dxf = processor.build_dxf(120, 120, edges, annotations)
         self.assertIn("PIPE_CANDIDATES", dxf)
+        self.assertIn("370\n13", dxf)
         self.assertIn("VERIFIED_TEXT", dxf)
         self.assertIn("DN50", dxf)
 

@@ -65,8 +65,9 @@ const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, 
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.1.1', mode: 'cad-reconstruction-engine',
-  geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'advisory-only; never subtracts geometry', ollamaRequired: false }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.0', mode: 'cad-reconstruction-engine',
+  geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'Qwen3-VL via local Ollama + Tesseract fallback; never subtracts geometry',
+  qwenModel: process.env.QWEN_MODEL || 'qwen3-vl:4b', ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequired: false }));
 
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
@@ -109,6 +110,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.1.1: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.2.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OpenCV line candidates; OCR is a separate annotation channel.');
 });

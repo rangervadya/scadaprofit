@@ -177,7 +177,7 @@ function showResult() {
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
   $('nodeCount').textContent = graph.nodes.length.toLocaleString('ru-RU');
-  $('textCount').textContent = graph.annotations.filter(a => a.source === 'tesseract').length.toLocaleString('ru-RU');
+  $('textCount').textContent = graph.annotations.filter(a => ['qwen3-vl', 'tesseract'].includes(a.source)).length.toLocaleString('ru-RU');
   renderOverlay();
   renderClean();
   renderEdgeList();
@@ -211,7 +211,7 @@ function edgeLength(edge) {
 }
 function shownEdges() {
   return graph.edges.filter(edge => edge.visible !== false && (
-    edge.source === 'manual' || showAllSegments || (edgeLength(edge) >= 28 && edge.component_role === 'line_structure')
+    edge.source === 'manual' || showAllSegments || (edge.component_role === 'line_structure')
   ));
 }
 function lineColor(edge) {
@@ -224,7 +224,7 @@ function renderOverlay() {
   const lines = visible.map(edge => {
     const points = (edge.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     if (!points) return '';
-    return `<polyline data-edge="${escapeHtml(edge.id)}" points="${points}" fill="none" stroke="${lineColor(edge)}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".94"/>`;
+    return `<polyline data-edge="${escapeHtml(edge.id)}" points="${points}" fill="none" stroke="${lineColor(edge)}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" opacity=".94"/>`;
   }).join('');
   const nodes = $('showNodes').checked ? graph.nodes.map(node => `
     <g class="node" data-node="${escapeHtml(node.id)}">
@@ -373,20 +373,23 @@ function renderJoinList() {
   }));
 }
 function renderTextList() {
-  const annotations = graph.annotations.filter(item => item.source === 'tesseract');
+  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'tesseract'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
-    <div class="rowitem"><input type="checkbox" data-verified="${escapeHtml(annotation.id)}" ${annotation.verified ? 'checked' : ''} title="Проверено">
+    <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Добавить в чертёж" aria-label="Добавить ${escapeHtml(annotation.id)} в чертёж">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${annotation.confidence}%</span></div>`).join('') : '<div class="helper">OCR не нашёл подписи с достаточной уверенностью. На геометрию это не влияет.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Геометрия обрабатывается независимо от OCR.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
     renderClean();
   }));
-  $('textList').querySelectorAll('[data-verified]').forEach(input => input.addEventListener('change', () => {
-    const annotation = graph.annotations.find(item => item.id === input.dataset.verified);
-    if (annotation) annotation.verified = input.checked;
+  $('textList').querySelectorAll('[data-include-annotation]').forEach(input => input.addEventListener('change', () => {
+    const annotation = graph.annotations.find(item => item.id === input.dataset.includeAnnotation);
+    if (annotation) {
+      annotation.include = input.checked;
+      annotation.verified = input.checked;
+    }
     renderClean();
   }));
 }
@@ -444,7 +447,7 @@ function buildSheetSvg() {
     '<rect x="22" y="22" width="1156" height="806" fill="none" stroke="#111" stroke-width="1.2"/>',
     '<text x="40" y="49" font-family="Arial,sans-serif" font-size="15" font-weight="bold">СХЕМА ТРУБОПРОВОДА</text>',
     '<text x="40" y="65" font-family="Arial,sans-serif" font-size="8" fill="#555">Предварительная векторная реконструкция · соединения и размеры требуют проверки</text>',
-    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#111" stroke-width="${Math.max(.45, 1.6 / scale)}" stroke-linecap="round" stroke-linejoin="round">`
+    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#111" stroke-width="${Math.max(.22, .75 / scale)}" stroke-linecap="round" stroke-linejoin="round">`
   ];
   const chains = buildChains(edges);
   for (const chain of chains) {
@@ -452,7 +455,7 @@ function buildSheetSvg() {
     output.push(`<polyline points="${points}"/>`);
   }
   output.push('</g>');
-  for (const annotation of graph.annotations.filter(item => item.verified && item.text && item.bbox)) {
+  for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
     const x = offsetX + (box.x + box.w / 2) * scale;
     const y = offsetY + (box.y + box.h / 2) * scale;
@@ -461,7 +464,7 @@ function buildSheetSvg() {
   output.push(
     '<path d="M22 760 H1178 M820 760 V828" fill="none" stroke="#111" stroke-width=".8"/>',
     '<text x="40" y="782" font-family="Arial,sans-serif" font-size="9">ПРОВЕРИТЬ УЗЛЫ, ПЕРЕСЕЧЕНИЯ И РАЗМЕРЫ ПО ОРИГИНАЛУ</text>',
-    '<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.1.1</text>',
+    '<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.2.0</text>',
     '</svg>'
   );
   return output.join('\n');
@@ -490,10 +493,10 @@ function buildDxf() {
   const output = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','0','ENDSEC','0','SECTION','2','ENTITIES'];
   for (const chain of buildChains(shownEdges())) {
     if (chain.points.length < 2) continue;
-    output.push('0','LWPOLYLINE','8','PIPE_CANDIDATES','90',String(chain.points.length),'70','0');
+    output.push('0','LWPOLYLINE','8','PIPE_CANDIDATES','370','13','90',String(chain.points.length),'70','0');
     for (const point of chain.points) output.push('10',String(point[0]),'20',String(graph.image.height - point[1]));
   }
-  for (const annotation of graph.annotations.filter(item => item.verified && item.text && item.bbox)) {
+  for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
     output.push('0','TEXT','8','VERIFIED_TEXT','10',String(box.x),'20',String(graph.image.height - box.y - box.h),'40','8','1',annotation.text);
   }

@@ -1,14 +1,20 @@
-# Docker: Two Mask Lab 3.0.0
+# Docker deployment · CAD Reconstruction Engine 4.2.0
 
-The app image contains Node.js, Python venv, OpenCV headless, Pillow, pytesseract, and the Tesseract CLI with English/Russian trained data.
+The app image includes Node.js, Python, OpenCV, Pillow and Tesseract with English/Russian language data. The Compose stack also provides a local Ollama service for Qwen3-VL handwriting OCR.
 
-Build/recreate only the app service:
+On first setup, download the model into the persistent Ollama volume:
+
+```bash
+docker compose exec ollama ollama pull qwen3-vl:4b
+```
+
+Then build and recreate the app:
 
 ```bash
 docker compose build --no-cache app
 docker compose up -d --force-recreate app
 ```
 
-The `ollama` service definition and `ollama_data` named volume remain present for an existing installation, but `app` has no dependency on Ollama and does not issue model requests.
+For Ollama running directly on the host, include `compose.host-ollama.yaml`. If Ollama is unavailable, line extraction continues and Tesseract remains the OCR fallback.
 
-Never use `docker compose down -v` for an in-place upgrade.
+Never use `docker compose down -v` for an in-place upgrade: it may delete the named `ollama_data` model volume.

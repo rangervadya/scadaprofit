@@ -109,7 +109,7 @@ def main(vectors_path: Path, out_dir: Path):
     dxf.header['$INSUNITS'] = 4
     dxf.header['$MEASUREMENT'] = 1
     for name, colour, lineweight in [
-        ('SHEET', 7, 13), ('CENTERLINE_PRIMARY', 7, 25),
+        ('SHEET', 7, 13), ('CENTERLINE_PRIMARY', 7, 13),
         ('DETAIL_TRACE', 8, 9), ('ANNOTATION_TRACE', 9, 5), ('NOTES', 7, 13),
     ]:
         if name not in dxf.layers:
@@ -134,7 +134,7 @@ def main(vectors_path: Path, out_dir: Path):
         if len(points) < 2:
             continue
         svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
-        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#111111" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>')
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#111111" stroke-width="0.85" stroke-linecap="round" stroke-linejoin="round"/>')
         msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'CENTERLINE_PRIMARY'})
         primary_count += 1
 
@@ -145,7 +145,7 @@ def main(vectors_path: Path, out_dir: Path):
         if len(points) < 2:
             continue
         svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
-        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#555555" stroke-opacity="0.42" stroke-width="0.55" stroke-linecap="round" stroke-linejoin="round"/>')
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#555555" stroke-opacity="0.42" stroke-width="0.42" stroke-linecap="round" stroke-linejoin="round"/>')
         msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'DETAIL_TRACE'})
         detail_count += 1
 
@@ -158,7 +158,7 @@ def main(vectors_path: Path, out_dir: Path):
         if len(points) < 2:
             continue
         svg_points = ' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
-        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#999999" stroke-opacity="0.22" stroke-width="0.42" stroke-linecap="round" stroke-linejoin="round"/>')
+        svg.append(f'<polyline points="{svg_points}" fill="none" stroke="#999999" stroke-opacity="0.22" stroke-width="0.32" stroke-linecap="round" stroke-linejoin="round"/>')
         msp.add_lwpolyline([svg_to_mm(p) for p in points], dxfattribs={'layer': 'ANNOTATION_TRACE'})
         annotation_count += 1
 

@@ -1,13 +1,13 @@
-# Обновление до CAD Reconstruction Engine 4.1.1
+# Обновление до CAD Reconstruction Engine 4.2.0
 
 Проект рассчитан на обновление существующей установки в `/opt/scadaprofit` на Ubuntu. Команды не удаляют именованный том Ollama и не перезаписывают `.env`.
 
 ## 1. Передача архива с Mac
 
-Скачай `cad-reconstruction-engine-4.1.1.zip` в `~/Downloads`, затем выполни на Mac:
+Скачай `cad-reconstruction-engine-4.2.0.zip` в `~/Downloads`, затем выполни на Mac:
 
 ```bash
-scp ~/Downloads/cad-reconstruction-engine-4.1.1.zip \
+scp ~/Downloads/cad-reconstruction-engine-4.2.0.zip \
   tech@192.168.1.99:/home/tech/
 ```
 
@@ -22,13 +22,13 @@ cd /opt/scadaprofit
 tar -czf /root/scadaprofit-backup-$(date +%F-%H%M).tar.gz .
 
 # Распаковать в отдельный временный каталог
-rm -rf /tmp/cad-reconstruction-4.1.1
-mkdir -p /tmp/cad-reconstruction-4.1.1
-unzip -oq /home/tech/cad-reconstruction-engine-4.1.1.zip \
-  -d /tmp/cad-reconstruction-4.1.1
+rm -rf /tmp/cad-reconstruction-4.2.0
+mkdir -p /tmp/cad-reconstruction-4.2.0
+unzip -oq /home/tech/cad-reconstruction-engine-4.2.0.zip \
+  -d /tmp/cad-reconstruction-4.2.0
 
 # Скопировать файлы новой версии в действующий проект
-cp -a /tmp/cad-reconstruction-4.1.1/cad-reconstruction-engine-4.1.1/. \
+cp -a /tmp/cad-reconstruction-4.2.0/cad-reconstruction-engine-4.2.0/. \
   /opt/scadaprofit/
 
 cd /opt/scadaprofit
@@ -38,7 +38,17 @@ docker compose build --no-cache app
 docker compose up -d --force-recreate app
 ```
 
-**Не выполняй `docker compose down -v`.** Это может удалить именованный том с локальными моделями Ollama. Контейнер Ollama перезапускать не требуется.
+**Не выполняй `docker compose down -v`.** Это может удалить именованный том с локальными моделями Ollama.
+
+После обновления проверь наличие модели Qwen3-VL:
+
+```bash
+docker compose exec ollama ollama list
+# Если qwen3-vl:4b ещё не установлена:
+docker compose exec ollama ollama pull qwen3-vl:4b
+```
+
+При использовании Ollama на хосте команда `ollama list` выполняется на самом хосте, а Compose нужно запускать с `-f compose.yaml -f compose.host-ollama.yaml`.
 
 ## 3. Проверка
 
@@ -49,7 +59,7 @@ curl -sI http://127.0.0.1:3001/styles.css
 curl -sI http://127.0.0.1:3001/app.js
 ```
 
-Ожидаемая версия — `4.1.1`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
+Ожидаемая версия — `4.2.0`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
 
 Затем открой `http://192.168.1.99:3001` и обнови страницу сочетанием `Ctrl+Shift+R`.
 
@@ -59,9 +69,10 @@ curl -sI http://127.0.0.1:3001/app.js
 2. Проверь миниатюру и имя файла.
 3. Нажми «Найти линии и построить граф».
 4. Посмотри наложение кандидатов на оригинал и сводку.
-5. Включи «Узлы» и «Пересечения», проверь сомнительные места.
-6. Удали шумные кандидаты или подтверди соединения в левой панели.
-7. Экспортируй SVG, DXF или JSON. Для PDF используй печать браузера.
+5. В панели «Рукописные подписи» проверь распознавание Qwen, поправь текст и сними галочку у подписей, которые не нужно переносить в чертёж.
+6. Включи «Узлы» и «Пересечения», проверь сомнительные места.
+7. Удали шумные кандидаты или подтверди соединения в левой панели.
+8. Экспортируй SVG, DXF или JSON. Для PDF используй печать браузера.
 
 ## Если анализ не запускается
 

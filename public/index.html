@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.1</title>
+  <title>CAD Reconstruction Engine · 4.2.0</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.1.1">
-  <script src="/app.js?v=4.1.1" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.2.0">
+  <script src="/app.js?v=4.2.0" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.1.1</b></div>
+      <div class="version-pill">ENGINE <b>4.2.0</b></div>
     </div>
   </header>
 
@@ -65,7 +65,7 @@
           <div class="progress-wrap" id="progressWrap" hidden>
             <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
             <div class="progress-track"><span></span></div>
-            <div class="progress-foot">OpenCV · LSD / Hough · OCR отдельно</div>
+            <div class="progress-foot">OpenCV · LSD / Hough · Qwen3-VL / OCR</div>
           </div>
           <div class="inline-alert" id="inlineError" role="alert" hidden></div>
           <div class="privacy-note"><span>⌁</span><span>Фотография обрабатывается локально на твоём сервере. Внешние API не используются.</span></div>
@@ -96,8 +96,8 @@
         </details>
 
         <details class="card inspector-card" id="textPanel" hidden>
-          <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Подписи OCR</h2></div><span class="count-pill" id="textCount">0</span></summary>
-          <p class="helper">OCR предлагает прочтение, но не подтверждает его. Отметь подпись проверенной, чтобы добавить её в SVG/DXF.</p>
+          <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Рукописные подписи</h2></div><span class="count-pill" id="textCount">0</span></summary>
+          <p class="helper">Qwen3-VL распознаёт рукописные обозначения через локальный Ollama; Tesseract используется как дополнительный OCR. Исправь текст и оставь галочку «В чертёж» только у нужных подписей.</p>
           <div class="scrolllist" id="textList"></div>
         </details>
       </aside>
@@ -137,6 +137,6 @@
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.1.1</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.0</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>
