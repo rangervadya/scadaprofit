@@ -164,9 +164,10 @@ function showResult() {
   $('sourceImage').src = `${graph.sourceUrl}?v=${Date.now()}`;
   $('canvasMeta').textContent = `${graph.image.width} × ${graph.image.height} px · исходная геометрия сохранена`;
   $('previewMeta').textContent = 'Анализ завершён · можно редактировать';
-  const traceState = graph.semanticTrace?.available && (graph.semanticRoutes || []).length
+  const trace = graph.semanticTrace || {};
+  const traceState = (graph.semanticRoutes || []).length
     ? `Семантические трассы Qwen: ${graph.semanticRoutes.length}. `
-    : 'Нет подтверждённых трасс Qwen: основной лист оставлен пустым, пиксельные кандидаты доступны только для проверки. ';
+    : `Семантические трассы не получены. ${trace.error || 'Причина не указана.'} ${trace.hint || ''} `;
   $('statusline').textContent = traceState + graph.warnings.join(' ');
   const summary = graph.summary || {};
   const stats = [
@@ -228,7 +229,7 @@ function lineColor(edge) {
 function renderOverlay() {
   if (!graph) return;
   const visible = shownEdges();
-  const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes) ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence || 0) >= 60) : [];
+  const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes) ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35) : [];
   const lines = semanticRoutes.length ? semanticRoutes.map(route => {
     const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#087d70" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" opacity=".96"/>` : '';
@@ -521,7 +522,7 @@ function cleanCadPoints(sourcePoints) {
 }
 function cleanCadChains() {
   const semanticRoutes = Array.isArray(graph?.semanticRoutes) ? graph.semanticRoutes
-    .filter(route => route.include !== false && Number(route.confidence || 0) >= 60 && Array.isArray(route.points) && route.points.length >= 2) : [];
+    .filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35 && Array.isArray(route.points) && route.points.length >= 2) : [];
   if (Array.isArray(graph?.semanticRoutes)) {
     const semantic = semanticRoutes.map(route => ({
       points: cleanCadPoints(route.points), edgeIds: [], routeId: route.id, confidence: route.confidence
@@ -575,8 +576,12 @@ function buildSheetSvg() {
   }
   output.push('</g>');
   if (Array.isArray(graph.semanticRoutes) && !chains.length) {
-    output.push('<text x="600" y="410" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>');
-    output.push('<text x="600" y="432" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#6b747a">Проверьте Ollama / Qwen3-VL. Пиксельные кандидаты сохранены отдельно для проверки.</text>');
+    const trace = graph.semanticTrace || {};
+    const message = svgEscape(trace.error || 'Причина не указана. Проверьте Ollama и модель.');
+    const hint = svgEscape(trace.hint || 'Пиксельные кандидаты сохранены отдельно для проверки.');
+    output.push('<text x="600" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>');
+    output.push(`<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">${message.slice(0, 150)}</text>`);
+    output.push(`<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">${hint.slice(0, 150)}</text>`);
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
@@ -725,7 +730,17 @@ window.addEventListener('unhandledrejection', event => {
   setAlert(`Ошибка операции: ${event.reason?.message || event.reason || 'неизвестная ошибка'}`);
 });
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
-  $('serverState').textContent = health.ok ? 'Сервер готов' : 'Сервер недоступен';
+  const ollama = health.ollama || {};
+  if (!ollama.reachable) {
+    $('serverState').textContent = 'Ollama недоступна';
+    $('serverState').title = ollama.error || 'Проверьте контейнер Ollama';
+  } else if (!ollama.modelInstalled) {
+    $('serverState').textContent = `Не загружена ${health.qwenModel || 'Qwen'}`;
+    $('serverState').title = ollama.hint || 'Выполните ollama pull для указанной модели';
+  } else {
+    $('serverState').textContent = 'Qwen готов';
+    $('serverState').title = `Ollama доступна · ${health.qwenModel}`;
+  }
 }).catch(() => {
   $('serverState').textContent = 'Проверить сервер';
 });

@@ -47,9 +47,12 @@ services:
       QWEN_OCR_TIMEOUT: "40"
       QWEN_OCR_TILE_GRID: "2"
       QWEN_OCR_UPSCALE: "2.0"
-      QWEN_PIPE_TRACE_TIMEOUT: "150"
+      QWEN_PIPE_TRACE_TIMEOUT: "240"
       QWEN_PIPE_MAX_IMAGE_EDGE: "2048"
-      QWEN_PIPE_MIN_CONFIDENCE: "68"
+      QWEN_PIPE_MIN_CONFIDENCE: "35"
+    depends_on:
+      ollama:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
 

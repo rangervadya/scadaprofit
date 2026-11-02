@@ -228,6 +228,76 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(len(routes), 1)
             self.assertEqual(routes[0]['points'], [[200.0, 160.0], [800.0, 160.0]])
 
+
+    def test_qwen_route_without_confidence_is_not_silently_discarded(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response_body = {"message": {"content": json.dumps({"routes": [
+                {"id": "P1", "points": [[100, 100], [800, 100], [800, 600]]}
+            ]})}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertEqual(len(routes), 1)
+            self.assertEqual(routes[0]['confidence'], 60)
+            self.assertTrue(routes[0]['confidence_assumed'])
+            self.assertTrue(status['available'])
+
+    def test_qwen_accepts_simple_coordinate_array_as_single_route(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response_body = {"message": {"content": json.dumps({"routes": [[100, 100], [800, 100]]})}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertEqual(len(routes), 1)
+            self.assertEqual(routes[0]['points'], [[100.0, 100.0], [800.0, 100.0]])
+
+    def test_empty_qwen_routes_produce_actionable_diagnostic(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response_body = {"message": {"content": json.dumps({"routes": []})}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertEqual(routes, [])
+            self.assertTrue(status['available'])
+            self.assertIn('пустой список', status['error'])
+            self.assertTrue(status['hint'])
+
+
+    def test_missing_ollama_model_error_includes_pull_command(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            with patch.dict(os.environ, {"QWEN_PIPE_TRACE_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat",
+                "QWEN_MODEL": "qwen3-vl:4b"}, clear=False), \
+                 patch('processor.urllib.request.urlopen', side_effect=RuntimeError("Ollama HTTP 404: model 'qwen3-vl:4b' not found")):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertEqual(routes, [])
+            self.assertFalse(status['available'])
+            self.assertIn('не найдена', status['error'])
+            self.assertIn('ollama pull qwen3-vl:4b', status['hint'])
+
     def test_semantic_route_overrides_pixel_candidate_lines_in_clean_sheet(self):
         noisy_edges = [
             {"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [20, 90]], "cad_include": True},

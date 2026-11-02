@@ -1,17 +1,17 @@
-## Что изменилось в 4.2.3
+## Что изменилось в 4.2.4
 
 Основной лист строится по семантическим осевым маршрутам, которые выделяет Qwen3-VL, а не по всем пиксельным отрезкам LSD/Hough. OCR анализирует четыре увеличенных перекрывающихся фрагмента. Если Qwen не вернул маршруты, интерфейс предупреждает, что доступна только черновая геометрическая трассировка. Кандидаты OpenCV сохраняются отдельно на замороженном DXF-слое `DETAIL_REVIEW`.
 
-# Обновление до CAD Reconstruction Engine 4.2.3
+# Обновление до CAD Reconstruction Engine 4.2.4
 
 Проект рассчитан на обновление существующей установки в `/opt/scadaprofit` на Ubuntu. Команды не удаляют именованный том Ollama и не перезаписывают `.env`.
 
 ## 1. Передача архива с Mac
 
-Скачай `cad-reconstruction-engine-4.2.3.zip` в `~/Downloads`, затем выполни на Mac:
+Скачай `cad-reconstruction-engine-4.2.4.zip` в `~/Downloads`, затем выполни на Mac:
 
 ```bash
-scp ~/Downloads/cad-reconstruction-engine-4.2.3.zip \
+scp ~/Downloads/cad-reconstruction-engine-4.2.4.zip \
   tech@192.168.1.99:/home/tech/
 ```
 
@@ -26,13 +26,13 @@ cd /opt/scadaprofit
 tar -czf /root/scadaprofit-backup-$(date +%F-%H%M).tar.gz .
 
 # Распаковать в отдельный временный каталог
-rm -rf /tmp/cad-reconstruction-4.2.3
-mkdir -p /tmp/cad-reconstruction-4.2.3
-unzip -oq /home/tech/cad-reconstruction-engine-4.2.3.zip \
-  -d /tmp/cad-reconstruction-4.2.3
+rm -rf /tmp/cad-reconstruction-4.2.4
+mkdir -p /tmp/cad-reconstruction-4.2.4
+unzip -oq /home/tech/cad-reconstruction-engine-4.2.4.zip \
+  -d /tmp/cad-reconstruction-4.2.4
 
 # Скопировать файлы новой версии в действующий проект
-cp -a /tmp/cad-reconstruction-4.2.3/cad-reconstruction-engine-4.2.3/. \
+cp -a /tmp/cad-reconstruction-4.2.4/cad-reconstruction-engine-4.2.4/. \
   /opt/scadaprofit/
 
 cd /opt/scadaprofit
@@ -59,11 +59,12 @@ docker compose exec ollama ollama pull qwen3-vl:4b
 ```bash
 docker compose exec app node -p "require('./package.json').version"
 curl -s http://127.0.0.1:3001/api/health | python3 -m json.tool
+# В JSON должны быть ollama.reachable=true и ollama.modelInstalled=true
 curl -sI http://127.0.0.1:3001/styles.css
 curl -sI http://127.0.0.1:3001/app.js
 ```
 
-Ожидаемая версия — `4.2.3`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
+Ожидаемая версия — `4.2.4`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
 
 Затем открой `http://192.168.1.99:3001` и обнови страницу сочетанием `Ctrl+Shift+R`.
 

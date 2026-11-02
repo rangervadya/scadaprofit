@@ -14,6 +14,7 @@ import re
 import sys
 import base64
 import urllib.request
+import urllib.error
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -105,9 +106,20 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
         headers={'Content-Type': 'application/json'}, method='POST'
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = json.loads(response.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as error:
+        try:
+            detail = error.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            detail = ''
+        raise RuntimeError(f'Ollama HTTP {error.code}: {detail or error.reason}') from error
+    if body.get('error'):
+        raise RuntimeError(str(body['error']))
     content = (body.get('message') or {}).get('content', '')
+    if not content:
+        raise ValueError('Ollama вернула пустое message.content; проверьте совместимость модели и /api/chat.')
     return _parse_json_object(content), resize_scale, rgb.size
 
 
@@ -273,60 +285,104 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         return [], {'available': False, 'model': model, 'annotations': 0, 'tiles': 0, 'error': reason[:220]}
 
 
+def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
+    """Return a user-facing diagnosis and a concrete corrective action."""
+    message = str(error).strip() or error.__class__.__name__
+    lower = message.lower()
+    if 'urlopen error' in lower or 'connection refused' in lower or 'name or service not known' in lower or 'temporary failure in name resolution' in lower:
+        return (
+            f"Не удаётся подключиться к Ollama: {message[:180]}",
+            "Проверьте, что контейнер Ollama запущен и адрес OLLAMA_CHAT_URL доступен из контейнера приложения."
+        )
+    if '404' in lower or 'not found' in lower or 'model' in lower and ('pull' in lower or 'missing' in lower):
+        return (
+            f"Модель {model} не найдена в Ollama: {message[:180]}",
+            f"Выполните: docker compose exec ollama ollama pull {model} — затем перезапустите app."
+        )
+    if 'timed out' in lower or 'timeout' in lower or 'time-out' in lower:
+        return (
+            f"Qwen не успел обработать изображение: {message[:180]}",
+            "Увеличьте QWEN_PIPE_TRACE_TIMEOUT до 300–480 секунд или используйте более производительную GPU."
+        )
+    if 'json' in lower or 'routes' in lower or 'полилини' in lower:
+        return (
+            f"Ollama ответила, но формат ответа Qwen не удалось разобрать: {message[:180]}",
+            "Проверьте версию Ollama и тег QWEN_MODEL; в диагностике graph.json сохранена причина ответа."
+        )
+    return (f"Ошибка Qwen/Ollama: {message[:200]}", "Проверьте Ollama, доступность модели и журнал контейнера ollama.")
+
+
 def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Ask the vision model for semantic pipe centre-lines, not pixel-stroke traces."""
+    """Ask the vision model for pipe centre-lines; tolerate common JSON variants."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
+    raw_count = 0
+    rejected_low_confidence = 0
+    rejected_invalid = 0
     try:
         max_edge = max(1280, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '2048')))
-        timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '150')))
+        timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         with Image.open(image_path) as source:
             rgb = ImageOps.exif_transpose(source).convert('RGB')
         route_input_scale = min(1.0, max_edge / max(rgb.size))
         route_input_width = max(1, round(rgb.width * route_input_scale))
         route_input_height = max(1, round(rgb.height * route_input_scale))
         prompt = (
-            'Ты инженер-проектировщик трубопроводных схем и CAD-векторизатор. '
-            'Твоя задача — НЕ трассировать все тёмные пиксели и НЕ копировать рукописный рисунок. '
-            'Определи только реальные осевые линии трубопроводов (process pipes) и их ветви. '
-            'Игнорируй рукописные цифры, размеры, буквы, подписи, выноски, стрелки, засечки, '
-            'штриховку, символы клапанов/фитингов, декоративные метки и границы листа. '
-            'Не превращай текст, цифры, символы и арматуру в линии труб. '
-            'Для каждой реальной трубы верни полилинию по ЦЕНТРУ трубы: точки только на концах, '
-            'реальных углах поворота и местах ответвлений. Не добавляй точки на каждом пикселе. '
-            'Соседние сегменты одной непрерывной трубы должны быть одной полилинией. '
-            'Ветвь должна начинаться точно в существующем узле присоединения. '
-            'Сохраняй диагональные и ортогональные участки, но убирай дрожание руки и мелкие зигзаги. '
-            'Если рядом есть число (например 1500), верни его в annotations как текстовый bbox, '
-            'а не как часть маршрута. Не выдумывай невидимые соединения и трубы. '
-            'Если элемент неоднозначен, пропусти его вместо догадки. '
-            f'Координаты точек — пиксели изображения {route_input_width}x{route_input_height} после масштабирования. '
-            'начало координат слева сверху. confidence 0..100. '
-            'Ответ только JSON по схеме: {"routes":[{"id":"P1","points":[[100,120],[300,120],[300,280]],"confidence":88}], '
-            '"annotations":[{"text":"1500","bbox":{"x":120,"y":130,"w":36,"h":14},"confidence":80}]}. '
-            'Если реальных труб распознать нельзя, routes должен быть пустым массивом.'
+            'Ты инженер, который переводит РУКОПИСНУЮ СХЕМУ ТРУБОПРОВОДА в CAD. '
+            'Нужно найти только осевые линии самих труб, НЕ все нарисованные штрихи. '
+            'Труба — это длинная связная трасса, обычно проходящая через последовательность поворотов. '
+            'Игнорируй числа, размеры, буквенные подписи, стрелки, выноски, короткие засечки, '
+            'обозначения клапанов, фитингов и пересекающиеся штрихи символов. '
+            'Для каждой видимой трубы верни одну полилинию: начало, реальные углы поворотов, '
+            'точки разветвления и конец. Не ставь точки на каждом пикселе. '
+            'Не соединяй линии только потому, что они близки. Не выдумывай скрытые участки. '
+            'Если участок неясен, всё равно верни распознанную длинную часть отдельным маршрутом. '
+            'Координаты — пиксели текущего изображения, размер которого '
+            f'{route_input_width}x{route_input_height}; (0,0) — левый верхний угол. '
+            'Верни JSON с ключом routes. Каждый маршрут может быть объектом '
+            '{"id":"P1","points":[[x1,y1],[x2,y2]],"confidence":75} '
+            'или просто массивом точек [[x1,y1],[x2,y2]]. '
+            'confidence не обязателен; если не можешь оценить, не указывай его. '
+            'Не возвращай пустой routes, если на изображении явно есть длинные линии труб. '
+            'Не включай текст или арматуру в маршруты. Пример ответа: '
+            '{"routes":[{"id":"P1","points":[[100,120],[300,120],[300,280]],"confidence":75}],"annotations":[]}. '
+            'Никакого Markdown и пояснений вне JSON.'
         )
         parsed, resize_scale, sent_size = _qwen_call(
             rgb, prompt, url=url, model=model, timeout=timeout, max_edge=max_edge
         )
-        raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('polylines', [])))
+        raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', [])))))
         if not isinstance(raw_routes, list):
-            raise ValueError('Qwen pipe trace не вернул массив routes.')
+            # Some vision responses use a single polyline directly as `routes`.
+            if isinstance(raw_routes, dict):
+                raw_routes = list(raw_routes.values())
+            else:
+                raise ValueError('Qwen вернул JSON, но поле routes имеет неверный тип.')
+        # Also accept a top-level simple array of coordinate pairs as one route.
+        if raw_routes and all((isinstance(point, (list, tuple)) and len(point) >= 2 and
+                               all(isinstance(v, (int, float)) for v in point[:2])) or
+                              (isinstance(point, dict) and 'x' in point and 'y' in point) for point in raw_routes):
+            raw_routes = [{'id': 'P1', 'points': raw_routes}]
+        raw_count = len(raw_routes)
         result: list[dict[str, Any]] = []
+        min_confidence = float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '35'))
         for raw in raw_routes:
+            if isinstance(raw, list):
+                raw = {'points': raw}
             if not isinstance(raw, dict):
+                rejected_invalid += 1
                 continue
-            points_raw = raw.get('points') or raw.get('vertices') or raw.get('polyline')
+            points_raw = raw.get('points') or raw.get('vertices') or raw.get('polyline') or raw.get('coordinates')
             if not isinstance(points_raw, list) or len(points_raw) < 2:
+                rejected_invalid += 1
                 continue
+            confidence_was_supplied = 'confidence' in raw or 'score' in raw
             try:
-                confidence = float(raw.get('confidence', raw.get('score', 0)))
+                confidence = float(raw.get('confidence', raw.get('score', 60 if not confidence_was_supplied else 0)))
             except (TypeError, ValueError):
-                confidence = 0.0
+                confidence = 60.0 if not confidence_was_supplied else 0.0
             if 0 <= confidence <= 1:
                 confidence *= 100
-            if confidence < float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '68')):
-                continue
             points: list[list[float]] = []
             for point in points_raw[:160]:
                 if isinstance(point, dict):
@@ -341,27 +397,52 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                         continue
                 else:
                     continue
+                if not math.isfinite(px) or not math.isfinite(py):
+                    continue
                 px = max(0.0, min(float(original_width - 1), px / resize_scale))
                 py = max(0.0, min(float(original_height - 1), py / resize_scale))
                 if not points or math.dist(points[-1], [px, py]) >= 3.0:
                     points.append([round(px, 1), round(py, 1)])
             if len(points) < 2:
+                rejected_invalid += 1
                 continue
             route_length = sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1))
             if route_length < max(12.0, min(original_width, original_height) * 0.015):
+                rejected_invalid += 1
+                continue
+            if confidence < min_confidence:
+                rejected_low_confidence += 1
                 continue
             result.append({
                 'id': str(raw.get('id') or f'P{len(result) + 1}')[:24],
                 'points': points, 'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                'confidence_assumed': not confidence_was_supplied,
+                'needs_review': confidence < 60,
                 'source': 'qwen3-vl-semantic', 'include': True,
             })
-        return result, {
-            'available': True, 'model': model, 'routes': len(result),
-            'error': None, 'image_size': {'width': sent_size[0], 'height': sent_size[1]},
+        status = {
+            'available': True, 'model': model, 'routes': len(result), 'raw_routes': raw_count,
+            'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
+            'error': None, 'hint': None, 'image_size': {'width': sent_size[0], 'height': sent_size[1]},
         }
+        if not result:
+            if raw_count == 0:
+                status['error'] = 'Модель ответила, но вернула пустой список маршрутов. Для Qwen3-VL:4b это может означать, что вся схема слишком сложная для одного прохода.'
+                status['hint'] = 'Проверьте наличие модели и запустите повторный анализ более чёткого изображения или отдельных фрагментов схемы.'
+            elif rejected_low_confidence:
+                status['error'] = f'Qwen вернул {raw_count} маршрут(а), но все они ниже порога уверенности {min_confidence:g}%.'
+                status['hint'] = 'Порог снижен до 35%; проверьте координаты и качество исходного изображения.'
+            else:
+                status['error'] = f'Qwen вернул {raw_count} элементов, но ни один не прошёл проверку координат или длины.'
+                status['hint'] = 'Проверьте JSON и формат координат в graph.json → semanticTrace.'
+        return result, status
     except Exception as error:
-        reason = str(error).strip() or error.__class__.__name__
-        return [], {'available': False, 'model': model, 'routes': 0, 'error': reason[:220]}
+        message, hint = _semantic_error_hint(error, model)
+        return [], {
+            'available': False, 'model': model, 'routes': 0, 'raw_routes': raw_count,
+            'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
+            'error': message[:260], 'hint': hint[:260],
+        }
 
 def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
     ax, ay, aw, ah = (float(a.get(k, 0)) for k in ('x', 'y', 'w', 'h'))
@@ -1195,7 +1276,7 @@ def _semantic_route_chains(semantic_routes: list[dict[str, Any]] | None) -> list
             confidence = float(route.get('confidence', 0))
         except (TypeError, ValueError):
             continue
-        if confidence < 60:
+        if confidence < 35:
             continue
         raw_points = route.get('points')
         if not isinstance(raw_points, list) or len(raw_points) < 2:
@@ -1217,7 +1298,7 @@ def _semantic_route_chains(semantic_routes: list[dict[str, Any]] | None) -> list
     return result
 
 
-def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None) -> str:
+def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None, semantic_status: dict[str, Any] | None = None) -> str:
     """Create a clean A3 CAD sheet: uniform linework and editable OCR text."""
     pagew, pageh = 1200, 850
     scale, tx, ty = _sheet_layout(width, height)
@@ -1244,8 +1325,11 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
     if semantic_routes is not None and not clean_chains:
-        out.append('<text x="600" y="410" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>')
-        out.append('<text x="600" y="432" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#6b747a">Проверьте Ollama / Qwen3-VL. Пиксельные кандидаты сохранены отдельно для проверки.</text>')
+        out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>')
+        detail = (semantic_status or {}).get('error') or 'См. журнал анализа и проверьте Ollama / Qwen3-VL.'
+        hint = (semantic_status or {}).get('hint') or 'Пиксельные кандидаты сохранены отдельно для проверки.'
+        out.append(f'<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(detail)[:150])}</text>')
+        out.append(f'<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(hint)[:150])}</text>')
 
     # OCR output is rendered as typography with an opaque paper-colour mask;
     # the handwritten glyph traces have already been filtered from geometry.
@@ -1399,7 +1483,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
             cv2.circle(overlay,(int(n['x']),int(n['y'])),4,(0,0,255),-1,cv2.LINE_AA)
     overlay_path=str(Path(out_dir)/'overlay.png'); cv2.imwrite(overlay_path,overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
-    svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes)
+    svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
     Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes),encoding='utf-8')
     # Open-end gap candidates are suggestions only; no geometry is connected automatically.
@@ -1454,7 +1538,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
     if not route_status.get('available') or not semantic_routes:
-        graph['warnings'].append('Семантическая трассировка труб Qwen не дала подтверждённых маршрутов. Основной слой PIPE_MAIN оставлен пустым; пиксельные кандидаты сохранены только на замороженном слое DETAIL_REVIEW. Проверьте Ollama/Qwen и подтвердите маршруты вручную.')
+        graph['warnings'].append('Семантическая трассировка труб Qwen не дала подтверждённых маршрутов. Основной слой PIPE_MAIN оставлен пустым; пиксельные кандидаты сохранены только на замороженном слое DETAIL_REVIEW. Причина: ' + str(route_status.get('error') or 'неизвестна') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     return graph
 

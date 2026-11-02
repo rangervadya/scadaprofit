@@ -65,10 +65,32 @@ const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, 
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.3', mode: 'cad-reconstruction-engine',
-  geometry: 'Qwen3-VL semantic pipe centre-lines; OpenCV LSD/Hough are review-only candidates',
-  ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract supplementary OCR',
-  qwenModel: process.env.QWEN_MODEL || 'qwen3-vl:4b', ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequiredForCleanCad: true, ollamaRequired: false }));
+app.get('/api/health', async (_req, res) => {
+  const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b';
+  const tagsUrl = process.env.OLLAMA_TAGS_URL || (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
+  let ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
+  try {
+    const response = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
+    if (!response.ok) throw new Error(`Ollama API вернула HTTP ${response.status}`);
+    const data = await response.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    const names = models.map(item => String(item.name || item.model || '')).filter(Boolean);
+    ollama.reachable = true;
+    ollama.models = names;
+    ollama.modelInstalled = names.some(name => name === qwenModel || name === `${qwenModel}:latest` || name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''));
+    if (!ollama.modelInstalled) {
+      ollama.error = `Модель ${qwenModel} не найдена. Установлены: ${names.join(', ') || 'нет моделей'}.`;
+      ollama.hint = `Выполните: docker compose exec ollama ollama pull ${qwenModel}`;
+    }
+  } catch (error) {
+    ollama.error = String(error?.message || error).slice(0, 240);
+    ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
+  }
+  res.json({ ok: true, version: '4.2.4', mode: 'cad-reconstruction-engine',
+    geometry: 'Qwen3-VL semantic pipe centre-lines; OpenCV LSD/Hough are review-only candidates',
+    ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract supplementary OCR',
+    qwenModel, ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequiredForCleanCad: true, ollamaRequired: false, ollama });
+});
 
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
@@ -83,7 +105,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     await fs.copyFile(req.file.path, sourcePath);
     await fs.rm(req.file.path, { force: true });
     const { stdout, stderr } = await execFileAsync(PYTHON, [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
-      { timeout: 360_000, maxBuffer: 16 * 1024 * 1024 });
+      { timeout: 900_000, maxBuffer: 16 * 1024 * 1024 });
     if (stderr?.trim()) console.log(`[ENGINE ${id.slice(0,8)}] ${stderr.trim().slice(-1200)}`);
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     graph.jobId = id;
@@ -111,6 +133,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.2.3: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.2.4: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: Qwen semantic routes for clean CAD; OpenCV candidates for review.');
 });
