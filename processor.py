@@ -106,9 +106,12 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'обозначения диаметров (Ø, DN, Ду), маркировки, числовые размеры и единицы измерения. '
             'Не описывай линии, не придумывай текст и не восстанавливай нечитаемые символы по догадке. '
             'Для каждого уверенно читаемого отдельного фрагмента верни text, bbox и confidence от 0 до 100. '
+            'Это именно OCR: верни буквенно-цифровую надпись как текстовую строку, не описывай и не обводи её штрихи. '
+            'Не включай в bbox трубы, линии-выноски, стрелки, рамки и соседние графические элементы. '
             f'Размер переданного изображения: {rgb.width}x{rgb.height} пикселей. '
             'bbox должен содержать x, y, w, h в пикселях этого изображения, начало координат слева сверху. '
-            'Рамка должна охватывать только сам текст, не соседние трубы. '
+            'Рамка должна плотно охватывать только чернила символов, с небольшим запасом не более 2 пикселей. '
+            'Сквозная линия трубы, проходящая рядом с текстом или под ним, не является частью текста. '
             'Если текст нельзя прочитать уверенно, не включай его. '
             'Ответь только JSON вида {"annotations":[{"text":"DN 50",'
             '"bbox":{"x":10,"y":20,"w":50,"h":18},"confidence":90}]}.'
@@ -165,7 +168,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 continue
             # A high-confidence model reading is preselected for CAD export;
             # the user can still edit it or uncheck it in the annotation panel.
-            accepted = confidence >= 68
+            accepted = confidence >= 65 and bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφ]', text))
             result.append({
                 'id': f'Q{len(result) + 1}', 'text': text,
                 'confidence': round(max(0.0, min(100.0, confidence)), 1),
@@ -216,10 +219,11 @@ def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, A
             # Prefer the vision model when two OCR engines refer to the same mark.
             if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in qwen_items):
                 continue
+            accepted = confidence >= 68 and bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφ]', text))
             tesseract_items.append({
                 'id': f'T{len(tesseract_items) + 1}', 'text': text,
                 'confidence': round(confidence, 1), 'bbox': box,
-                'verified': False, 'include': False, 'source': 'tesseract'
+                'verified': accepted, 'include': accepted, 'source': 'tesseract'
             })
     except Exception as error:
         tesseract_error = str(error)[:180]
@@ -370,6 +374,68 @@ def _merge_aligned_duplicate(a: dict[str, Any], b: dict[str, Any], ink: np.ndarr
     return merged
 
 
+def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[str, Any],
+                             ink_dilated: np.ndarray) -> bool:
+    """Identify glyph strokes inside a confirmed OCR box, but keep a pipe crossing it."""
+    x, y, bw, bh = (float(box.get(key, 0)) for key in ('x', 'y', 'w', 'h'))
+    if bw <= 0 or bh <= 0:
+        return False
+    pad = max(2.0, min(8.0, min(bw, bh) * 0.10))
+    left, top, right, bottom = x - pad, y - pad, x + bw + pad, y + bh + pad
+    x1, y1, x2, y2 = map(float, seg)
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length < 1:
+        return False
+
+    samples = np.linspace(0.0, 1.0, max(9, min(51, int(length / 2.0) + 1)))
+    inside = []
+    for t in samples:
+        px, py = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+        inside.append(left <= px <= right and top <= py <= bottom)
+    coverage = float(np.mean(inside))
+    endpoints_inside = (
+        left <= x1 <= right and top <= y1 <= bottom and
+        left <= x2 <= right and top <= y2 <= bottom
+    )
+    if not endpoints_inside and coverage < 0.88:
+        return False
+
+    # A real pipe running underneath a text label normally continues on both
+    # sides of its tight OCR box. Check for that continuation in the original
+    # ink, instead of blindly deleting every stroke inside the rectangle.
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length
+    corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
+    projections = [(cx - x1) * ux + (cy - y1) * uy for cx, cy in corners]
+    lo, hi = min(projections), max(projections)
+    h, w = ink_dilated.shape[:2]
+
+    def side_support(sign: float) -> float:
+        distances = np.linspace(2.0, max(7.0, min(18.0, math.hypot(bw, bh) * 0.35)), 7)
+        hits = 0
+        for distance in distances:
+            along = (lo - distance) if sign < 0 else (hi + distance)
+            px, py = x1 + ux * along, y1 + uy * along
+            ix, iy = int(round(px)), int(round(py))
+            if 0 <= ix < w and 0 <= iy < h and ink_dilated[iy, ix] > 0:
+                hits += 1
+        return hits / len(distances)
+
+    if side_support(-1.0) >= 0.43 and side_support(1.0) >= 0.43:
+        return False
+    return coverage >= 0.72
+
+
+def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    boxes = []
+    for item in annotations or []:
+        if not (item.get('verified') or item.get('include')):
+            continue
+        box = item.get('bbox')
+        if isinstance(box, dict) and all(key in box for key in ('x', 'y', 'w', 'h')):
+            boxes.append(box)
+    return boxes
+
+
 def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     h, w = gray.shape[:2]
     min_dim = min(w, h)
@@ -407,8 +473,14 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
     # placement without erasing a genuine narrow gap between separate strokes.
     ink_dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
     boxes = [a.get('bbox') for a in (annotations or []) if a.get('bbox')]
+    text_boxes = _confirmed_text_boxes(annotations)
     candidates: list[dict[str, Any]] = []
     for x1, y1, x2, y2, source, length in raw:
+        # Confidently recognized characters become editable CAD TEXT entities,
+        # not duplicate polylines. Long lines continuing through the OCR box
+        # remain geometry and are not deleted.
+        if any(_segment_inside_text_box((x1, y1, x2, y2), box, ink_dilated) for box in text_boxes):
+            continue
         support = _sample_line_support(ink_dilated, x1, y1, x2, y2)
         if support < 0.20:
             continue
@@ -616,52 +688,250 @@ def detect_crossings(segments: list[dict[str,Any]], max_crossings=250):
     return crossings
 
 
-def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема') -> str:
-    # Technical sheet with uniform line widths. Coordinates remain in image space
-    # in the graph JSON; SVG uses a viewBox and fit-to-page transform.
-    margin=70; pagew=1200; pageh=850
-    scale=min((pagew-2*margin)/max(width,1),(pageh-2*margin-100)/max(height,1))
-    tx=(pagew-width*scale)/2; ty=65+(pageh-130-height*scale)/2
-    out=[f'<svg xmlns="http://www.w3.org/2000/svg" width="{pagew}mm" height="{pageh}mm" viewBox="0 0 {pagew} {pageh}">',
-         '<rect width="1200" height="850" fill="white"/>','<rect x="24" y="24" width="1152" height="802" fill="none" stroke="#111" stroke-width="1.2"/>',
-         '<g transform="translate(%.3f %.3f) scale(%.6f)" fill="none" stroke="#111" stroke-width="%.3f" stroke-linecap="round" stroke-linejoin="round">'%(tx,ty,scale,max(0.7/scale,0.25))]
-    for e in edges:
-        geo=e.get('geometry') or []
-        if e.get('component_role') != 'line_structure' or len(geo)<2:
+def _cad_edge_chains(edges: list[dict[str, Any]]) -> list[list[list[float]]]:
+    """Join degree-two graph edges into clean editable CAD polylines."""
+    selected = []
+    for index, source in enumerate(edges):
+        if source.get('component_role') != 'line_structure' or len(source.get('geometry') or []) < 2:
             continue
-        pts=' '.join(f'{float(p[0]):.2f},{float(p[1]):.2f}' for p in geo)
+        edge = dict(source)
+        edge.setdefault('id', f'__edge_{index}')
+        edge.setdefault('from', f'__node_{index}_a')
+        edge.setdefault('to', f'__node_{index}_b')
+        selected.append(edge)
+    adjacency: dict[str, list[dict[str, Any]]] = {}
+    for edge in selected:
+        adjacency.setdefault(edge['from'], []).append(edge)
+        adjacency.setdefault(edge['to'], []).append(edge)
+    visited: set[str] = set()
+    chains: list[list[list[float]]] = []
+
+    def trace(start_node: str, first_edge: dict[str, Any]) -> None:
+        node = start_node
+        edge = first_edge
+        points: list[list[float]] = []
+        while edge and edge['id'] not in visited:
+            visited.add(edge['id'])
+            geometry = edge['geometry']
+            oriented = geometry if edge['from'] == node else list(reversed(geometry))
+            if not points:
+                points.extend([[float(point[0]), float(point[1])] for point in oriented])
+            else:
+                points.extend([[float(point[0]), float(point[1])] for point in oriented[1:]])
+            next_node = edge['to'] if edge['from'] == node else edge['from']
+            candidates = [item for item in adjacency.get(next_node, []) if item['id'] not in visited]
+            if len(adjacency.get(next_node, [])) != 2 or not candidates:
+                break
+            node, edge = next_node, candidates[0]
+        cleaned = _clean_cad_points(points)
+        if len(cleaned) >= 2:
+            chains.append(cleaned)
+
+    for node, incident in adjacency.items():
+        if len(incident) == 2:
+            continue
+        for edge in incident:
+            if edge['id'] not in visited:
+                trace(node, edge)
+    for edge in selected:
+        if edge['id'] not in visited:
+            trace(edge['from'], edge)
+    return chains
+
+
+def _clean_cad_points(points: list[list[float]]) -> list[list[float]]:
+    """Remove detector jitter and square only corners already close to orthogonal."""
+    unique: list[list[float]] = []
+    for point in points:
+        item = [float(point[0]), float(point[1])]
+        if not unique or math.dist(unique[-1], item) > 0.8:
+            unique.append(item)
+    if len(unique) < 3:
+        return [[round(x, 1), round(y, 1)] for x, y in unique]
+
+    def axis_kind(a: list[float], b: list[float]) -> str:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length < 8:
+            return ''
+        tolerance = max(1.0, length * 0.035)
+        if abs(dy) <= tolerance:
+            return 'H'
+        if abs(dx) <= tolerance:
+            return 'V'
+        return ''
+
+    for _ in range(2):
+        for index in range(1, len(unique) - 1):
+            incoming = axis_kind(unique[index - 1], unique[index])
+            outgoing = axis_kind(unique[index], unique[index + 1])
+            if incoming == 'H' and outgoing == 'V':
+                unique[index] = [unique[index + 1][0], unique[index - 1][1]]
+            elif incoming == 'V' and outgoing == 'H':
+                unique[index] = [unique[index - 1][0], unique[index + 1][1]]
+            elif incoming == 'H' and outgoing == 'H':
+                unique[index][1] = (unique[index - 1][1] + unique[index + 1][1]) / 2.0
+            elif incoming == 'V' and outgoing == 'V':
+                unique[index][0] = (unique[index - 1][0] + unique[index + 1][0]) / 2.0
+
+    simplified = [unique[0]]
+    for index in range(1, len(unique) - 1):
+        a, b, c = simplified[-1], unique[index], unique[index + 1]
+        ab = (b[0] - a[0], b[1] - a[1])
+        bc = (c[0] - b[0], c[1] - b[1])
+        la, lb = math.hypot(*ab), math.hypot(*bc)
+        cross = abs(ab[0] * bc[1] - ab[1] * bc[0])
+        dot = ab[0] * bc[0] + ab[1] * bc[1]
+        if not (la > 1 and lb > 1 and dot > 0 and cross / (la * lb) < 0.035):
+            simplified.append(b)
+    simplified.append(unique[-1])
+    return [[round(x, 1), round(y, 1)] for x, y in simplified]
+
+
+def _sheet_layout(width: int, height: int) -> tuple[float, float, float]:
+    pagew, pageh = 1200.0, 850.0
+    draw_x, draw_y, draw_w, draw_h = 36.0, 88.0, 1128.0, 652.0
+    scale = min(draw_w / max(width, 1), draw_h / max(height, 1))
+    tx = draw_x + (draw_w - width * scale) / 2.0
+    ty = draw_y + (draw_h - height * scale) / 2.0
+    return scale, tx, ty
+
+
+def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема') -> str:
+    """Create a clean A3 CAD sheet: uniform linework and editable OCR text."""
+    pagew, pageh = 1200, 850
+    scale, tx, ty = _sheet_layout(width, height)
+    line_width = max(0.18, 0.62 / max(scale, 0.001))
+    out=[
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {pagew} {pageh}">',
+        '<rect width="1200" height="850" fill="#fff"/>',
+        '<g fill="none" stroke="#15191d" stroke-width="1.0">',
+        '<rect x="24" y="24" width="1152" height="802"/>',
+        '<path d="M 36 78 H 1164 M 36 88 H 1164 M 36 740 H 1164 M 24 760 H 1176 M 830 760 V 826"/>',
+        '<rect x="36" y="88" width="1128" height="652" stroke="#aeb5bb" stroke-width="0.55"/>',
+        '<rect x="1010" y="32" width="154" height="34" stroke-width="0.65"/>',
+        '<path d="M 1010 49 H 1164" stroke-width="0.55"/>',
+        '</g>',
+        f'<text x="40" y="52" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#15191d">{xml_escape(title.upper())}</text>',
+        '<text x="40" y="68" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ · ИСХОДНЫЙ МАСШТАБ НЕ КАЛИБРОВАН</text>',
+        '<text x="1022" y="44" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ФОРМАТ</text>',
+        '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
+        f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})" fill="none" stroke="#15191d" stroke-width="{line_width:.4f}" stroke-linecap="round" stroke-linejoin="round">'
+    ]
+    for chain in _cad_edge_chains(edges):
+        pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
-    # OCR annotations are separate and editable: only print when verified.
-    for a in annotations:
-        if not (a.get('include', a.get('verified', False)) and a.get('verified', False)) or not a.get('text'): continue
-        b=a.get('bbox',{}); x=tx+(b.get('x',0)+b.get('w',0)/2)*scale; y=ty+(b.get('y',0)+b.get('h',0)/2)*scale
-        out.append(f'<text x="{x:.2f}" y="{y:.2f}" font-family="Arial,sans-serif" font-size="8" text-anchor="middle" fill="#111">{xml_escape(a["text"])}</text>')
-    out += [f'<text x="38" y="48" font-family="Arial,sans-serif" font-size="14" font-weight="bold">{xml_escape(title)}</text>',
-            '<path d="M 24 760 H 1176 M 830 760 V 826" fill="none" stroke="#111" stroke-width="0.8"/>',
-            '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8">СХЕМА ВЕКТОРИЗОВАНА ИЗ РУКОПИСНОГО ЭСКИЗА — ТРЕБУЕТ ПРОВЕРКИ ТОПОЛОГИИ И РАЗМЕРОВ</text>',
-            '<text x="845" y="783" font-family="Arial,sans-serif" font-size="8">CAD RECONSTRUCTION ENGINE</text>', '</svg>']
-    return '\n'.join(out)
 
+    # OCR output is rendered as typography with an opaque paper-colour mask;
+    # the handwritten glyph traces have already been filtered from geometry.
+    for annotation in annotations:
+        if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
+            continue
+        box=annotation.get('bbox') or {}
+        x=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
+        y=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
+        label=str(annotation['text'])
+        label_width=max(24.0, min(190.0, len(label)*4.8+8.0))
+        out.append(f'<rect x="{x-label_width/2:.2f}" y="{y-8.4:.2f}" width="{label_width:.2f}" height="13.2" fill="#fff" stroke="none"/>')
+        out.append(f'<text x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="8" text-anchor="middle" fill="#15191d">{xml_escape(label)}</text>')
+
+    out += [
+        '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
+        '<text x="40" y="801" font-family="Arial,sans-serif" font-size="7" fill="#505960">Надписи OCR преобразованы в редактируемый текст. Геометрия показана отдельными CAD-полилиниями.</text>',
+        '<text x="40" y="816" font-family="Arial,sans-serif" font-size="7" fill="#505960">Проверьте узлы, пересечения и размеры по оригиналу перед изготовлением или монтажом.</text>',
+        '<text x="850" y="783" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ТИП ДОКУМЕНТА</text>',
+        '<text x="850" y="801" font-family="Arial,sans-serif" font-size="9" font-weight="bold" fill="#15191d">СХЕМА ТРУБОПРОВОДА</text>',
+        '<text x="850" y="816" font-family="Arial,sans-serif" font-size="7" fill="#505960">МАСШТАБ: НЕ ОПРЕДЕЛЁН · СТАТУС: ПРОВЕРИТЬ</text>',
+        '</svg>'
+    ]
+    return '\n'.join(out)
 
 def xml_escape(s:str)->str:
     return str(s).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
 
 
 def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict]) -> str:
-    d=['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','0','ENDSEC','0','SECTION','2','ENTITIES']
-    for e in edges:
-        geo=e.get('geometry') or []
-        if e.get('component_role') != 'line_structure' or len(geo)<2: continue
-        d += ['0','LWPOLYLINE','8','PIPE_CANDIDATES','370','13','90',str(len(geo)),'70','0']
-        for x,y in geo: d += ['10',f'{x:.3f}','20',f'{height-y:.3f}']
-    for a in annotations:
-        if not (a.get('include', a.get('verified', False)) and a.get('verified', False)) or not a.get('text'): continue
-        b=a.get('bbox',{}); x=b.get('x',0); y=height-(b.get('y',0)+b.get('h',0))
-        d += ['0','TEXT','8','VERIFIED_TEXT','10',str(x),'20',str(y),'40','8','1',str(a['text'])]
+    """Export the same A3 sheet layout to AutoCAD-compatible millimetre units."""
+    pagew, pageh = 1200.0, 850.0
+    scale, tx, ty = _sheet_layout(width, height)
+
+    def page_to_mm(point):
+        x, y = point
+        return (x * 420.0 / pagew, (pageh - y) * 297.0 / pageh)
+
+    def dxf_text(layer, text, x, y, height_mm):
+        value = re.sub(r'[\r\n\x00]+', ' ', str(text or '')).strip()[:240]
+        if not value:
+            return []
+        return ['0','TEXT','100','AcDbEntity','8',layer,'100','AcDbText',
+                '10',f'{x:.3f}','20',f'{y:.3f}','30','0',
+                '40',f'{height_mm:.3f}','1',value]
+
+    def dxf_polyline(layer, points, closed=False, lineweight=13):
+        if len(points) < 2:
+            return []
+        out=['0','LWPOLYLINE','100','AcDbEntity','8',layer,'100','AcDbPolyline',
+             '370',str(lineweight),'90',str(len(points)),'70','1' if closed else '0']
+        for point in points:
+            x,y=page_to_mm(point)
+            out += ['10',f'{x:.3f}','20',f'{y:.3f}']
+        return out
+
+    d=['0','SECTION','2','HEADER','9','$ACADVER','1','AC1021',
+       '9','$INSUNITS','70','4','0','ENDSEC',
+       '0','SECTION','2','TABLES',
+       '0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
+       '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
+       '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
+       '0','ENDTAB',
+       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','4']
+    for handle, (name, colour, lineweight) in enumerate([
+        ('SHEET',7,13),('PIPE_CANDIDATES',7,13),('VERIFIED_TEXT',7,13),('NOTES',8,9)
+    ], start=16):
+        d += ['0','LAYER','5',format(handle,'X'),'330','2','100','AcDbSymbolTableRecord',
+              '100','AcDbLayerTableRecord','2',name,'70','0','62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
+    d += ['0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES']
+
+    # A3 frame, title rules and simple technical title block.
+    d += dxf_polyline('SHEET',[(24,24),(1176,24),(1176,826),(24,826)],True)
+    d += dxf_polyline('SHEET',[(36,78),(1164,78)])
+    d += dxf_polyline('SHEET',[(36,88),(1164,88)])
+    d += dxf_polyline('SHEET',[(36,740),(1164,740)])
+    d += dxf_polyline('SHEET',[(24,760),(1176,760)])
+    d += dxf_polyline('SHEET',[(830,760),(830,826)])
+    d += dxf_polyline('SHEET',[(36,88),(1164,88),(1164,740),(36,740)],True,9)
+    d += dxf_polyline('SHEET',[(1010,32),(1164,32),(1164,66),(1010,66)],True,9)
+    d += dxf_polyline('SHEET',[(1010,49),(1164,49)],False,9)
+
+    for chain in _cad_edge_chains(edges):
+        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
+        d += dxf_polyline('PIPE_CANDIDATES',page_points,False,13)
+
+    for annotation in annotations:
+        if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
+            continue
+        box=annotation.get('bbox') or {}
+        px=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
+        py=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
+        x,y=page_to_mm((px,py))
+        text=str(annotation['text'])
+        # TEXT is centre-aligned in the sheet; standard 3 mm drafting height.
+        x -= min(70.0, len(text)*1.65)
+        d += dxf_text('VERIFIED_TEXT',text,x,y,3.0)
+
+    d += dxf_text('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',page_to_mm((40,52))[0],page_to_mm((40,52))[1],5.6)
+    d += dxf_text('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',page_to_mm((40,68))[0],page_to_mm((40,68))[1],2.6)
+    d += dxf_text('NOTES','ФОРМАТ',page_to_mm((1022,44))[0],page_to_mm((1022,44))[1],2.4)
+    d += dxf_text('NOTES','A3 - ЛИСТ 1/1',page_to_mm((1022,61))[0],page_to_mm((1022,61))[1],3.3)
+    d += dxf_text('NOTES','ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ',page_to_mm((40,783))[0],page_to_mm((40,783))[1],2.8)
+    d += dxf_text('NOTES','OCR LABELS EXPORTED AS EDITABLE CAD TEXT; PIPE GEOMETRY IS ON A SEPARATE LAYER.',page_to_mm((40,801))[0],page_to_mm((40,801))[1],2.2)
+    d += dxf_text('NOTES','VERIFY CONNECTIONS AND DIMENSIONS AGAINST THE ORIGINAL BEFORE CONSTRUCTION.',page_to_mm((40,816))[0],page_to_mm((40,816))[1],2.2)
+    d += dxf_text('NOTES','ТИП ДОКУМЕНТА',page_to_mm((850,783))[0],page_to_mm((850,783))[1],2.3)
+    d += dxf_text('NOTES','СХЕМА ТРУБОПРОВОДА',page_to_mm((850,801))[0],page_to_mm((850,801))[1],3.0)
+    d += dxf_text('NOTES','МАСШТАБ: НЕ ОПРЕДЕЛЁН - СТАТУС: ПРОВЕРИТЬ',page_to_mm((850,816))[0],page_to_mm((850,816))[1],2.1)
     d += ['0','ENDSEC','0','EOF']
     return '\n'.join(d)+'\n'
-
 
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     Path(out_dir).mkdir(parents=True,exist_ok=True)
@@ -671,7 +941,8 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     annotations, ocr_status = ocr_annotations(input_path, gray)
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
-    # OCR-overlap and component role are metadata only. No candidate is removed.
+    # OCR overlap remains metadata for graph classification. Confirmed glyph
+    # strokes were already filtered in extract_segments; continuous pipe lines survive.
     for edge in edges:
         edge['visible'] = True
     crossings=detect_crossings(segments)
@@ -720,7 +991,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,
-           "rules":{"ocr_does_not_erase_geometry":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5},
+           "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
@@ -735,7 +1006,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
            "warnings":["Линии являются кандидатами детектора, а не подтверждёнными трубами.",
                        "Пересечения не объединяются автоматически.",
-                       "OCR не исключает геометрию: линии под текстовыми рамками остаются кандидатами.",
+                       "Уверенно распознанные символы экспортируются как CAD TEXT, а не как линии; сквозные трассы сохраняются.",
                        "Проверьте размеры и подписи перед использованием чертежа."]}
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')

@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.2.0</title>
+  <title>CAD Reconstruction Engine · 4.2.1</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.2.0">
-  <script src="/app.js?v=4.2.0" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.2.1">
+  <script src="/app.js?v=4.2.1" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.2.0</b></div>
+      <div class="version-pill">ENGINE <b>4.2.1</b></div>
     </div>
   </header>
 
@@ -97,7 +97,7 @@
 
         <details class="card inspector-card" id="textPanel" hidden>
           <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Рукописные подписи</h2></div><span class="count-pill" id="textCount">0</span></summary>
-          <p class="helper">Qwen3-VL распознаёт рукописные обозначения через локальный Ollama; Tesseract используется как дополнительный OCR. Исправь текст и оставь галочку «В чертёж» только у нужных подписей.</p>
+          <p class="helper">Распознанные надписи заменяются обычным редактируемым CAD-текстом: штрихи букв не дублируются линиями. Сквозные линии труб под текстом сохраняются. Исправь подпись и сними галочку, чтобы убрать её с листа.</p>
           <div class="scrolllist" id="textList"></div>
         </details>
       </aside>
@@ -133,10 +133,10 @@
           <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Детектор находит кандидаты линий, а не гарантированно распознаёт трубы. Проверь окончания, пересечения, размеры и подписи перед использованием.</p></div></div>
         </section>
 
-        <section class="bottom-note"><span class="note-icon">i</span><span>OCR работает независимо от геометрии и никогда не вырезает пиксели труб. Все автоматические соединения и неоднозначные пересечения требуют подтверждения.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
+        <section class="bottom-note"><span class="note-icon">i</span><span>Подтверждённые OCR-надписи выводятся отдельным CAD-текстом, а штрихи букв исключаются из геометрии. Продолжения линий через область подписи сохраняются. Соединения и неоднозначные пересечения требуют проверки.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.0</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.1</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>

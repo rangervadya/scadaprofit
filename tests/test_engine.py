@@ -34,7 +34,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(crossings), 1)
         self.assertEqual(crossings[0]["status"], "needs_review")
 
-    def test_ocr_box_only_tags_segment_does_not_remove_it(self):
+    def test_unconfirmed_ocr_box_keeps_underlying_line_candidate(self):
         gray = np.full((100, 160), 255, np.uint8)
         ink = np.zeros((100, 160), np.uint8)
         cv2.line(gray, (15, 50), (145, 50), 35, 2, cv2.LINE_AA)
@@ -54,6 +54,44 @@ class GraphTests(unittest.TestCase):
         _, edges, components = processor.endpoint_clusters(segments)
         self.assertEqual(len(edges), 2)
         self.assertTrue(all(edge["component_role"] == "line_structure" for edge in edges))
+
+    def test_confirmed_ocr_text_strokes_are_removed_but_pipe_through_box_survives(self):
+        gray = np.full((100, 160), 255, np.uint8)
+        ink = np.zeros((100, 160), np.uint8)
+        # Continuous pipe crossing the label area.
+        cv2.line(gray, (10, 50), (150, 50), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (10, 50), (150, 50), 255, 2, cv2.LINE_AA)
+        # A vertical glyph stroke, fully contained by the OCR box.
+        cv2.line(gray, (70, 42), (70, 58), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (70, 42), (70, 58), 255, 2, cv2.LINE_AA)
+        annotations = [{"id": "A1", "text": "DN 50", "bbox": {"x": 55, "y": 38, "w": 40, "h": 24},
+                        "verified": True, "include": True, "source": "qwen3-vl"}]
+        candidates = processor.extract_segments(gray, ink, annotations)
+        self.assertTrue(any(item['length'] > 100 for item in candidates), 'pipe must pass through OCR box')
+        self.assertFalse(any(abs(item['x1'] - 70) < 5 and abs(item['x2'] - 70) < 5 and item['length'] < 30 for item in candidates),
+                         'glyph stroke must not be exported as a pipe')
+
+    def test_unconfirmed_ocr_box_does_not_remove_geometry(self):
+        gray = np.full((80, 120), 255, np.uint8)
+        ink = np.zeros((80, 120), np.uint8)
+        cv2.line(gray, (20, 40), (100, 40), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (20, 40), (100, 40), 255, 2, cv2.LINE_AA)
+        annotations = [{"bbox": {"x": 35, "y": 28, "w": 45, "h": 24}, "verified": False, "include": False}]
+        candidates = processor.extract_segments(gray, ink, annotations)
+        self.assertTrue(any(item['length'] > 70 for item in candidates))
+
+    def test_cad_export_joins_edges_and_squares_nearly_orthogonal_corner(self):
+        edges = [
+            {"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [50, 10.8]], "component_role": "line_structure"},
+            {"id": "E2", "from": "N2", "to": "N3", "geometry": [[50, 10.8], [50.7, 60]], "component_role": "line_structure"},
+        ]
+        chains = processor._cad_edge_chains(edges)
+        self.assertEqual(len(chains), 1)
+        self.assertEqual(len(chains[0]), 3)
+        self.assertAlmostEqual(chains[0][1][0], 50.7, delta=0.1)
+        self.assertAlmostEqual(chains[0][1][1], 10.0, delta=0.1)
+        svg = processor.build_clean_svg(100, 100, edges, [])
+        self.assertEqual(svg.count('<polyline points='), 1)
 
     def test_svg_and_dxf_keep_short_line_components_thin(self):
         edges = [{"geometry": [[0, 0], [12, 0]], "component_role": "line_structure"}]
@@ -125,7 +163,8 @@ class GraphTests(unittest.TestCase):
         svg = processor.build_clean_svg(120, 120, edges, annotations)
         self.assertIn("<polyline", svg)
         self.assertIn("DN 50", svg)
-        self.assertIn("stroke=\"#111\"", svg)
+        self.assertIn("fill=\"#fff\"", svg)
+        self.assertIn("stroke=\"#15191d\"", svg)
 
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
@@ -135,6 +174,8 @@ class GraphTests(unittest.TestCase):
         self.assertIn("370\n13", dxf)
         self.assertIn("VERIFIED_TEXT", dxf)
         self.assertIn("DN50", dxf)
+        self.assertIn("9\n$INSUNITS\n70\n4", dxf)
+        self.assertIn("100\nAcDbPolyline", dxf)
 
 
 if __name__ == "__main__":

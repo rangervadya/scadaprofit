@@ -1,6 +1,6 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "private": true,
   "description": "Polished offline engineering sketch reconstruction workspace",
   "type": "module",

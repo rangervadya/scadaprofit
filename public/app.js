@@ -375,10 +375,10 @@ function renderJoinList() {
 function renderTextList() {
   const annotations = graph.annotations.filter(item => ['qwen3-vl', 'tesseract'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
-    <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Добавить в чертёж" aria-label="Добавить ${escapeHtml(annotation.id)} в чертёж">
+    <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Заменить рукописную надпись CAD-текстом" aria-label="Заменить рукописную надпись ${escapeHtml(annotation.id)} CAD-текстом">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Геометрия обрабатывается независимо от OCR.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
@@ -430,26 +430,88 @@ function buildChains(edges) {
   for (const edge of edges) if (!visited.has(edge.id)) trace(edge.from, edge);
   return chains;
 }
+function nearAxis(a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const length = Math.hypot(dx, dy);
+  if (length < 8) return '';
+  const tolerance = Math.max(1.0, length * 0.035);
+  if (Math.abs(dy) <= tolerance) return 'H';
+  if (Math.abs(dx) <= tolerance) return 'V';
+  return '';
+}
+function cleanCadPoints(sourcePoints) {
+  const points = sourcePoints.map(point => [Number(point[0]), Number(point[1])]);
+  const unique = points.filter((point, index) => !index || Math.hypot(point[0] - points[index - 1][0], point[1] - points[index - 1][1]) > 0.8);
+  if (unique.length < 3) return unique.map(point => point.map(value => Number(value.toFixed(1))));
+
+  // Regularize only corners that are already almost horizontal/vertical.
+  // Deliberately leave genuinely diagonal branches untouched.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i < unique.length - 1; i++) {
+      const incoming = nearAxis(unique[i - 1], unique[i]);
+      const outgoing = nearAxis(unique[i], unique[i + 1]);
+      if (incoming === 'H' && outgoing === 'V') {
+        unique[i][0] = unique[i + 1][0];
+        unique[i][1] = unique[i - 1][1];
+      } else if (incoming === 'V' && outgoing === 'H') {
+        unique[i][0] = unique[i - 1][0];
+        unique[i][1] = unique[i + 1][1];
+      } else if (incoming === 'H' && outgoing === 'H') {
+        unique[i][1] = (unique[i - 1][1] + unique[i + 1][1]) / 2;
+      } else if (incoming === 'V' && outgoing === 'V') {
+        unique[i][0] = (unique[i - 1][0] + unique[i + 1][0]) / 2;
+      }
+    }
+  }
+
+  // Remove detector vertices that merely split one straight stroke.
+  const simplified = [unique[0]];
+  for (let i = 1; i < unique.length - 1; i++) {
+    const a = simplified[simplified.length - 1], b = unique[i], c = unique[i + 1];
+    const ab = [b[0] - a[0], b[1] - a[1]], bc = [c[0] - b[0], c[1] - b[1]];
+    const la = Math.hypot(...ab), lb = Math.hypot(...bc);
+    const cross = Math.abs(ab[0] * bc[1] - ab[1] * bc[0]);
+    const dot = ab[0] * bc[0] + ab[1] * bc[1];
+    const sameStraightStroke = la > 1 && lb > 1 && dot > 0 && cross / (la * lb) < 0.035;
+    if (!sameStraightStroke) simplified.push(b);
+  }
+  simplified.push(unique.at(-1));
+  return simplified.map(point => point.map(value => Number(value.toFixed(1))));
+}
+function cleanCadChains() {
+  return buildChains(shownEdges()).map(chain => ({
+    ...chain, points: cleanCadPoints(chain.points)
+  })).filter(chain => chain.points.length >= 2);
+}
+
 function svgEscape(value) {
   return escapeHtml(value);
 }
 function buildSheetSvg() {
   const width = graph.image.width;
   const height = graph.image.height;
-  const edges = shownEdges();
-  const pageWidth = 1200, pageHeight = 850, margin = 70, availableHeight = pageHeight - 190;
-  const scale = Math.min((pageWidth - margin * 2) / width, availableHeight / height);
-  const offsetX = (pageWidth - width * scale) / 2;
-  const offsetY = 70 + (availableHeight - height * scale) / 2;
+  const pageWidth = 1200, pageHeight = 850;
+  const drawX = 36, drawY = 88, drawW = 1128, drawH = 652;
+  const scale = Math.min(drawW / Math.max(1, width), drawH / Math.max(1, height));
+  const offsetX = drawX + (drawW - width * scale) / 2;
+  const offsetY = drawY + (drawH - height * scale) / 2;
+  const chains = cleanCadChains();
   const output = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 ${pageWidth} ${pageHeight}">`,
-    `<rect width="${pageWidth}" height="${pageHeight}" fill="#fff"/>`,
-    '<rect x="22" y="22" width="1156" height="806" fill="none" stroke="#111" stroke-width="1.2"/>',
-    '<text x="40" y="49" font-family="Arial,sans-serif" font-size="15" font-weight="bold">СХЕМА ТРУБОПРОВОДА</text>',
-    '<text x="40" y="65" font-family="Arial,sans-serif" font-size="8" fill="#555">Предварительная векторная реконструкция · соединения и размеры требуют проверки</text>',
-    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#111" stroke-width="${Math.max(.22, .75 / scale)}" stroke-linecap="round" stroke-linejoin="round">`
+    '<rect width="1200" height="850" fill="#fff"/>',
+    '<g fill="none" stroke="#15191d" stroke-width="1">',
+    '<rect x="24" y="24" width="1152" height="802"/>',
+    '<path d="M36 78 H1164 M36 88 H1164 M36 740 H1164 M24 760 H1176 M830 760 V826"/>',
+    '<rect x="36" y="88" width="1128" height="652" stroke="#aeb5bb" stroke-width=".55"/>',
+    '<rect x="1010" y="32" width="154" height="34" stroke-width=".65"/>',
+    '<path d="M1010 49 H1164" stroke-width=".55"/>',
+    '</g>',
+    '<text x="40" y="52" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#15191d">ТРУБОПРОВОДНАЯ СХЕМА</text>',
+    '<text x="40" y="68" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ · ИСХОДНЫЙ МАСШТАБ НЕ КАЛИБРОВАН</text>',
+    '<text x="1022" y="44" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ФОРМАТ</text>',
+    '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
+    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#15191d" stroke-width="${Math.max(.18, .62 / Math.max(scale, .001))}" stroke-linecap="round" stroke-linejoin="round">`
   ];
-  const chains = buildChains(edges);
   for (const chain of chains) {
     const points = chain.points.map(point => `${point[0]},${point[1]}`).join(' ');
     output.push(`<polyline points="${points}"/>`);
@@ -459,20 +521,27 @@ function buildSheetSvg() {
     const box = annotation.bbox;
     const x = offsetX + (box.x + box.w / 2) * scale;
     const y = offsetY + (box.y + box.h / 2) * scale;
-    output.push(`<text x="${x}" y="${y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#111">${svgEscape(annotation.text)}</text>`);
+    const labelWidth = Math.max(24, Math.min(190, String(annotation.text).length * 4.8 + 8));
+    output.push(`<rect x="${x - labelWidth / 2}" y="${y - 8.4}" width="${labelWidth}" height="13.2" fill="#fff" stroke="none"/>`);
+    output.push(`<text x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" fill="#15191d">${svgEscape(annotation.text)}</text>`);
   }
   output.push(
-    '<path d="M22 760 H1178 M820 760 V828" fill="none" stroke="#111" stroke-width=".8"/>',
-    '<text x="40" y="782" font-family="Arial,sans-serif" font-size="9">ПРОВЕРИТЬ УЗЛЫ, ПЕРЕСЕЧЕНИЯ И РАЗМЕРЫ ПО ОРИГИНАЛУ</text>',
-    '<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.2.0</text>',
+    '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
+    '<text x="40" y="801" font-family="Arial,sans-serif" font-size="7" fill="#505960">Надписи OCR преобразованы в редактируемый текст. Геометрия показана отдельными CAD-полилиниями.</text>',
+    '<text x="40" y="816" font-family="Arial,sans-serif" font-size="7" fill="#505960">Проверьте узлы, пересечения и размеры по оригиналу перед изготовлением или монтажом.</text>',
+    '<text x="850" y="783" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ТИП ДОКУМЕНТА</text>',
+    '<text x="850" y="801" font-family="Arial,sans-serif" font-size="9" font-weight="bold" fill="#15191d">СХЕМА ТРУБОПРОВОДА</text>',
+    '<text x="850" y="816" font-family="Arial,sans-serif" font-size="7" fill="#505960">МАСШТАБ: НЕ ОПРЕДЕЛЁН · СТАТУС: ПРОВЕРИТЬ</text>',
     '</svg>'
   );
   return output.join('\n');
 }
+
 function renderClean() {
   if (!graph) return;
   const visible = shownEdges();
-  if (!visible.length) {
+  const hasIncludedText = graph.annotations.some(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox);
+  if (!visible.length && !hasIncludedText) {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Нет выбранных линий</b><span>Включи «Показать все» или отметь кандидаты в списке слева.</span></div>';
     return;
   }
@@ -490,18 +559,80 @@ function downloadFile(name, content, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 function buildDxf() {
-  const output = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','0','ENDSEC','0','SECTION','2','ENTITIES'];
-  for (const chain of buildChains(shownEdges())) {
-    if (chain.points.length < 2) continue;
-    output.push('0','LWPOLYLINE','8','PIPE_CANDIDATES','370','13','90',String(chain.points.length),'70','0');
-    for (const point of chain.points) output.push('10',String(point[0]),'20',String(graph.image.height - point[1]));
+  const pageWidth = 1200, pageHeight = 850;
+  const drawX = 36, drawY = 88, drawW = 1128, drawH = 652;
+  const scale = Math.min(drawW / Math.max(1, graph.image.width), drawH / Math.max(1, graph.image.height));
+  const offsetX = drawX + (drawW - graph.image.width * scale) / 2;
+  const offsetY = drawY + (drawH - graph.image.height * scale) / 2;
+  const output = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1021','9','$INSUNITS','70','4','0','ENDSEC',
+    '0','SECTION','2','TABLES','0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
+    '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
+    '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0','0','ENDTAB',
+    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','4'];
+  let layerHandle = 16;
+  for (const [name, color, lineweight] of [['SHEET',7,13],['PIPE_CANDIDATES',7,13],['VERIFIED_TEXT',7,13],['NOTES',8,9]]) {
+    output.push('0','LAYER','5',layerHandle.toString(16).toUpperCase(),'330','2',
+      '100','AcDbSymbolTableRecord','100','AcDbLayerTableRecord',
+      '2',name,'70','0','62',String(color),'6','CONTINUOUS','370',String(lineweight));
+    layerHandle++;
+  }
+  output.push('0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES');
+  const pageToMm = (point) => [point[0] * 420 / pageWidth, (pageHeight - point[1]) * 297 / pageHeight];
+  const addPolyline = (layer, points, closed = false, lineweight = 13) => {
+    if (points.length < 2) return;
+    output.push('0','LWPOLYLINE','100','AcDbEntity','8',layer,'100','AcDbPolyline',
+      '370',String(lineweight),'90',String(points.length),'70',closed ? '1' : '0');
+    for (const point of points) {
+      const [x, y] = pageToMm(point);
+      output.push('10',x.toFixed(3),'20',y.toFixed(3));
+    }
+  };
+  const addText = (layer, value, pagePoint, textHeight) => {
+    const text = String(value || '').replace(/[\r\n\0]+/g, ' ').slice(0, 240);
+    if (!text) return;
+    const [x, y] = pageToMm(pagePoint);
+    output.push('0','TEXT','100','AcDbEntity','8',layer,'100','AcDbText',
+      '10',x.toFixed(3),'20',y.toFixed(3),'30','0','40',String(textHeight),'1',text);
+  };
+
+  addPolyline('SHEET',[[24,24],[1176,24],[1176,826],[24,826]],true);
+  addPolyline('SHEET',[[36,78],[1164,78]]);
+  addPolyline('SHEET',[[36,88],[1164,88]]);
+  addPolyline('SHEET',[[36,740],[1164,740]]);
+  addPolyline('SHEET',[[24,760],[1176,760]]);
+  addPolyline('SHEET',[[830,760],[830,826]]);
+  addPolyline('SHEET',[[36,88],[1164,88],[1164,740],[36,740]],true,9);
+  addPolyline('SHEET',[[1010,32],[1164,32],[1164,66],[1010,66]],true,9);
+  addPolyline('SHEET',[[1010,49],[1164,49]],false,9);
+
+  for (const chain of cleanCadChains()) {
+    const points = chain.points.map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
+    addPolyline('PIPE_CANDIDATES',points,false,13);
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
-    output.push('0','TEXT','8','VERIFIED_TEXT','10',String(box.x),'20',String(graph.image.height - box.y - box.h),'40','8','1',annotation.text);
+    const x = offsetX + (box.x + box.w / 2) * scale;
+    const y = offsetY + (box.y + box.h / 2) * scale;
+    const widthMm = Math.min(70, String(annotation.text).length * 1.65);
+    addText('VERIFIED_TEXT',annotation.text,pageToPagePointCentered(x,y,widthMm,scale),3.0);
   }
+  addText('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',[40,52],5.6);
+  addText('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',[40,68],2.6);
+  addText('NOTES','ФОРМАТ',[1022,44],2.4);
+  addText('NOTES','A3 - ЛИСТ 1/1',[1022,61],3.3);
+  addText('NOTES','ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ',[40,783],2.8);
+  addText('NOTES','OCR LABELS EXPORTED AS EDITABLE CAD TEXT; PIPE GEOMETRY IS ON A SEPARATE LAYER.',[40,801],2.2);
+  addText('NOTES','VERIFY CONNECTIONS AND DIMENSIONS AGAINST THE ORIGINAL BEFORE CONSTRUCTION.',[40,816],2.2);
+  addText('NOTES','ТИП ДОКУМЕНТА',[850,783],2.3);
+  addText('NOTES','СХЕМА ТРУБОПРОВОДА',[850,801],3.0);
+  addText('NOTES','МАСШТАБ: НЕ ОПРЕДЕЛЁН - СТАТУС: ПРОВЕРИТЬ',[850,816],2.1);
   output.push('0','ENDSEC','0','EOF');
   return output.join('\n') + '\n';
+}
+function pageToPagePointCentered(x, y, widthMm) {
+  // Shift the left-aligned DXF TEXT insertion point so the label sits near its box centre.
+  const pageWidthPerMm = 1200 / 420;
+  return [x - (widthMm * pageWidthPerMm / 2), y];
 }
 $('exportSvg').addEventListener('click', () => downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml'));
 $('exportDxf').addEventListener('click', () => downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf'));
