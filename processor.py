@@ -84,102 +84,284 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     raise ValueError('Модель не вернула JSON-объект с annotations.')
 
 
+def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
+               max_edge: int) -> tuple[dict[str, Any], float, tuple[int, int]]:
+    """Run one bounded local Ollama vision request and return its resize transform."""
+    src_w, src_h = rgb.size
+    resize_scale = min(1.0, max_edge / max(src_w, src_h))
+    if resize_scale < 1.0:
+        rgb = rgb.resize((max(1, round(src_w * resize_scale)), max(1, round(src_h * resize_scale))), Image.Resampling.LANCZOS)
+    image_buffer = BytesIO()
+    rgb.save(image_buffer, format='JPEG', quality=93, optimize=True)
+    encoded = base64.b64encode(image_buffer.getvalue()).decode('ascii')
+    payload = {
+        'model': model,
+        'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
+        'stream': False,
+        'format': 'json',
+        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': 4096},
+    }
+    request = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        headers={'Content-Type': 'application/json'}, method='POST'
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    content = (body.get('message') or {}).get('content', '')
+    return _parse_json_object(content), resize_scale, rgb.size
+
+
 def _qwen_annotations(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Read handwritten labels with a local Ollama vision model; never alter geometry."""
+    """OCR handwriting in overlapping enlarged tiles; keep low-confidence boxes as geometry masks."""
+    url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
+    model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
+    calls_ok = 0
+    errors: list[str] = []
+    try:
+        max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
+        timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '40')))
+        upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
+        with Image.open(image_path) as source:
+            original = ImageOps.exif_transpose(source).convert('RGB')
+        prompt_template = (
+            'Ты профессиональный OCR-модуль для рукописной инженерной схемы трубопровода. '
+            'Найди КАЖДУЮ видимую буквенно-цифровую подпись: отдельные цифры, группы цифр, '
+            'длины и диаметры, DN/Ду/Ø, обозначения, единицы измерения и короткие рукописные слова. '
+            'Сначала читай чернила как текст, не как линии чертежа. Не пропускай маленькие надписи. '
+            'Не включай трубы, линии-выноски, стрелки, наконечники, символы арматуры и рамки. '
+            'Один bbox должен охватывать один цельный текстовый фрагмент, не соседние элементы. '
+            'Не придумывай неразборчивые символы: верни наиболее вероятное буквальное чтение и низкую confidence, '
+            'если есть сомнение. Для совсем нечитаемого отдельного фрагмента можно вернуть text="?". '
+            'Координаты bbox — пиксели текущего переданного фрагмента, начало в левом верхнем углу. '
+            'Верни только JSON: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
+            'Размер текущего фрагмента: {width}x{height} px.'
+        )
+        # Two-by-two crops enlarge handwritten numbers without losing the page context
+        # entirely. A 12% overlap prevents labels on tile borders from being clipped.
+        grid = max(1, min(3, int(os.getenv('QWEN_OCR_TILE_GRID', '2'))))
+        if original_width < 720 or original_height < 520:
+            grid = 1
+        tile_w = max(1, int(round(original_width / grid)))
+        tile_h = max(1, int(round(original_height / grid)))
+        overlap = 0.12
+        xs = sorted(set([0] + [max(0, original_width - tile_w)] if grid == 2 else [round(i * (original_width - tile_w) / max(1, grid - 1)) for i in range(grid)]))
+        ys = sorted(set([0] + [max(0, original_height - tile_h)] if grid == 2 else [round(i * (original_height - tile_h) / max(1, grid - 1)) for i in range(grid)]))
+        # Expand adjacent crops slightly around their seam; clamp at image edges.
+        pad_x, pad_y = int(tile_w * overlap / 2), int(tile_h * overlap / 2)
+        regions = []
+        for y0 in ys:
+            for x0 in xs:
+                left = max(0, x0 - (pad_x if x0 else 0))
+                top = max(0, y0 - (pad_y if y0 else 0))
+                right = min(original_width, x0 + tile_w + (pad_x if x0 + tile_w < original_width else 0))
+                bottom = min(original_height, y0 + tile_h + (pad_y if y0 + tile_h < original_height else 0))
+                region = (left, top, right, bottom)
+                if region not in regions:
+                    regions.append(region)
+
+        items: list[dict[str, Any]] = []
+        tile_errors = []
+        for tile_index, (left, top, right, bottom) in enumerate(regions, 1):
+            crop = original.crop((left, top, right, bottom))
+            # Actually magnify each crop so small handwritten figures reach the
+            # vision model at a readable pixel height; respect the VRAM edge cap.
+            requested_crop_scale = min(upscale, max_edge / max(crop.size))
+            crop_scale = requested_crop_scale if requested_crop_scale > 1.001 else 1.0
+            if crop_scale > 1.001:
+                crop = crop.resize((max(1, round(crop.width * crop_scale)), max(1, round(crop.height * crop_scale))), Image.Resampling.LANCZOS)
+            sent_scale = min(1.0, max_edge / max(crop.size))
+            prompt_width = max(1, round(crop.width * sent_scale))
+            prompt_height = max(1, round(crop.height * sent_scale))
+            prompt = prompt_template.replace('{width}', str(prompt_width)).replace('{height}', str(prompt_height))
+            try:
+                parsed, resize_scale, sent_size = _qwen_call(
+                    crop, prompt, url=url, model=model, timeout=timeout,
+                    max_edge=max_edge
+                )
+                coordinate_scale = crop_scale * resize_scale
+                calls_ok += 1
+                raw_items = parsed.get('annotations', [])
+                if not isinstance(raw_items, list):
+                    continue
+                for raw in raw_items:
+                    if not isinstance(raw, dict):
+                        continue
+                    text = re.sub(r'\s+', ' ', str(raw.get('text', ''))).strip()
+                    bbox = raw.get('bbox') or raw.get('box') or raw.get('bbox_2d')
+                    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                        x1, y1, x2, y2 = map(float, bbox)
+                        box = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                    elif isinstance(bbox, dict):
+                        try:
+                            box = {key: float(bbox[key]) for key in ('x', 'y', 'w', 'h')}
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                    else:
+                        continue
+                    try:
+                        confidence = float(raw.get('confidence', raw.get('score', 0)))
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    if 0 <= confidence <= 1:
+                        confidence *= 100
+                    x = int(round(left + box['x'] / coordinate_scale))
+                    y = int(round(top + box['y'] / coordinate_scale))
+                    bw = int(round(box['w'] / coordinate_scale))
+                    bh = int(round(box['h'] / coordinate_scale))
+                    x = max(0, min(original_width - 1, x))
+                    y = max(0, min(original_height - 1, y))
+                    bw = max(0, min(original_width - x, bw))
+                    bh = max(0, min(original_height - y, bh))
+                    if not text or bw < 2 or bh < 2:
+                        continue
+                    has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+                    if not has_alnum and text != '?':
+                        continue
+                    accepted = confidence >= 65 and has_alnum
+                    # Even a not-yet-approved reading marks a text-shaped region so
+                    # its strokes cannot silently become pipe geometry.
+                    geometry_exclude = confidence >= 32 and has_alnum
+                    items.append({
+                        'id': f'Q{len(items) + 1}', 'text': text,
+                        'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                        'bbox': {'x': x, 'y': y, 'w': bw, 'h': bh},
+                        'verified': accepted, 'include': accepted,
+                        'geometry_exclude': geometry_exclude,
+                        'source': 'qwen3-vl', 'tile': tile_index,
+                    })
+            except Exception as error:
+                tile_errors.append(str(error).strip()[:150] or error.__class__.__name__)
+
+        # Deduplicate boxes repeated in the overlapping tile seams.
+        items.sort(key=lambda item: item['confidence'], reverse=True)
+        deduped: list[dict[str, Any]] = []
+        for item in items:
+            box = item['bbox']
+            duplicate_index = None
+            for index, existing in enumerate(deduped):
+                other = existing['bbox']
+                ix = max(0, min(box['x'] + box['w'], other['x'] + other['w']) - max(box['x'], other['x']))
+                iy = max(0, min(box['y'] + box['h'], other['y'] + other['h']) - max(box['y'], other['y']))
+                inter = ix * iy
+                smaller = min(box['w'] * box['h'], other['w'] * other['h'])
+                if smaller > 0 and inter / smaller >= 0.42:
+                    duplicate_index = index
+                    break
+            if duplicate_index is None:
+                deduped.append(item)
+            else:
+                # Keep the higher-confidence spelling and union the text-region box.
+                old = deduped[duplicate_index]
+                ob = old['bbox']
+                left2, top2 = min(ob['x'], box['x']), min(ob['y'], box['y'])
+                right2 = max(ob['x'] + ob['w'], box['x'] + box['w'])
+                bottom2 = max(ob['y'] + ob['h'], box['y'] + box['h'])
+                old['bbox'] = {'x': left2, 'y': top2, 'w': right2 - left2, 'h': bottom2 - top2}
+                old['geometry_exclude'] = old.get('geometry_exclude') or item.get('geometry_exclude')
+        for index, item in enumerate(deduped, 1):
+            item['id'] = f'Q{index}'
+            item.pop('tile', None)
+        if calls_ok == 0:
+            raise RuntimeError(tile_errors[0] if tile_errors else 'Qwen не вернул OCR-разметку.')
+        return deduped, {
+            'available': True, 'model': model, 'annotations': len(deduped),
+            'tiles': len(regions), 'successful_tiles': calls_ok,
+            'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else None),
+        }
+    except Exception as error:
+        reason = str(error).strip() or error.__class__.__name__
+        return [], {'available': False, 'model': model, 'annotations': 0, 'tiles': 0, 'error': reason[:220]}
+
+
+def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Ask the vision model for semantic pipe centre-lines, not pixel-stroke traces."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
     try:
-        max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '2304')))
-        timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '85')))
+        max_edge = max(1280, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '2048')))
+        timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '150')))
         with Image.open(image_path) as source:
             rgb = ImageOps.exif_transpose(source).convert('RGB')
-        src_w, src_h = rgb.size
-        resize_scale = min(1.0, max_edge / max(src_w, src_h))
-        if resize_scale < 1.0:
-            rgb = rgb.resize((max(1, round(src_w * resize_scale)), max(1, round(src_h * resize_scale))), Image.Resampling.LANCZOS)
-        image_buffer = BytesIO()
-        rgb.save(image_buffer, format='JPEG', quality=91, optimize=True)
-        encoded = base64.b64encode(image_buffer.getvalue()).decode('ascii')
+        route_input_scale = min(1.0, max_edge / max(rgb.size))
+        route_input_width = max(1, round(rgb.width * route_input_scale))
+        route_input_height = max(1, round(rgb.height * route_input_scale))
         prompt = (
-            'Ты модуль OCR для рукописного инженерного чертежа трубопровода. '
-            'Распознавай ТОЛЬКО текстовые подписи, рукописные буквы и цифры, '
-            'обозначения диаметров (Ø, DN, Ду), маркировки, числовые размеры и единицы измерения. '
-            'Не описывай линии, не придумывай текст и не восстанавливай нечитаемые символы по догадке. '
-            'Для каждого уверенно читаемого отдельного фрагмента верни text, bbox и confidence от 0 до 100. '
-            'Это именно OCR: верни буквенно-цифровую надпись как текстовую строку, не описывай и не обводи её штрихи. '
-            'Не включай в bbox трубы, линии-выноски, стрелки, рамки и соседние графические элементы. '
-            f'Размер переданного изображения: {rgb.width}x{rgb.height} пикселей. '
-            'bbox должен содержать x, y, w, h в пикселях этого изображения, начало координат слева сверху. '
-            'Рамка должна плотно охватывать только чернила символов, с небольшим запасом не более 2 пикселей. '
-            'Сквозная линия трубы, проходящая рядом с текстом или под ним, не является частью текста. '
-            'Если текст нельзя прочитать уверенно, не включай его. '
-            'Ответь только JSON вида {"annotations":[{"text":"DN 50",'
-            '"bbox":{"x":10,"y":20,"w":50,"h":18},"confidence":90}]}.'
+            'Ты инженер-проектировщик трубопроводных схем и CAD-векторизатор. '
+            'Твоя задача — НЕ трассировать все тёмные пиксели и НЕ копировать рукописный рисунок. '
+            'Определи только реальные осевые линии трубопроводов (process pipes) и их ветви. '
+            'Игнорируй рукописные цифры, размеры, буквы, подписи, выноски, стрелки, засечки, '
+            'штриховку, символы клапанов/фитингов, декоративные метки и границы листа. '
+            'Не превращай текст, цифры, символы и арматуру в линии труб. '
+            'Для каждой реальной трубы верни полилинию по ЦЕНТРУ трубы: точки только на концах, '
+            'реальных углах поворота и местах ответвлений. Не добавляй точки на каждом пикселе. '
+            'Соседние сегменты одной непрерывной трубы должны быть одной полилинией. '
+            'Ветвь должна начинаться точно в существующем узле присоединения. '
+            'Сохраняй диагональные и ортогональные участки, но убирай дрожание руки и мелкие зигзаги. '
+            'Если рядом есть число (например 1500), верни его в annotations как текстовый bbox, '
+            'а не как часть маршрута. Не выдумывай невидимые соединения и трубы. '
+            'Если элемент неоднозначен, пропусти его вместо догадки. '
+            f'Координаты точек — пиксели изображения {route_input_width}x{route_input_height} после масштабирования. '
+            'начало координат слева сверху. confidence 0..100. '
+            'Ответ только JSON по схеме: {"routes":[{"id":"P1","points":[[100,120],[300,120],[300,280]],"confidence":88}], '
+            '"annotations":[{"text":"1500","bbox":{"x":120,"y":130,"w":36,"h":14},"confidence":80}]}. '
+            'Если реальных труб распознать нельзя, routes должен быть пустым массивом.'
         )
-        payload = {
-            'model': model,
-            'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
-            'stream': False,
-            'format': 'json',
-            'options': {'temperature': 0, 'num_ctx': 8192},
-        }
-        request = urllib.request.Request(
-            url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}, method='POST'
+        parsed, resize_scale, sent_size = _qwen_call(
+            rgb, prompt, url=url, model=model, timeout=timeout, max_edge=max_edge
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode('utf-8'))
-        content = (body.get('message') or {}).get('content', '')
-        parsed = _parse_json_object(content)
-        raw_items = parsed.get('annotations', [])
-        if not isinstance(raw_items, list):
-            raise ValueError('Поле annotations от Qwen должно быть массивом.')
-
+        raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('polylines', [])))
+        if not isinstance(raw_routes, list):
+            raise ValueError('Qwen pipe trace не вернул массив routes.')
         result: list[dict[str, Any]] = []
-        for raw in raw_items:
+        for raw in raw_routes:
             if not isinstance(raw, dict):
                 continue
-            text = re.sub(r'\s+', ' ', str(raw.get('text', ''))).strip()
-            bbox = raw.get('bbox') or raw.get('box') or raw.get('bbox_2d')
-            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-                x1, y1, x2, y2 = map(float, bbox)
-                box = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-            elif isinstance(bbox, dict):
-                try:
-                    box = {key: float(bbox[key]) for key in ('x', 'y', 'w', 'h')}
-                except (KeyError, TypeError, ValueError):
-                    continue
-            else:
+            points_raw = raw.get('points') or raw.get('vertices') or raw.get('polyline')
+            if not isinstance(points_raw, list) or len(points_raw) < 2:
                 continue
             try:
                 confidence = float(raw.get('confidence', raw.get('score', 0)))
             except (TypeError, ValueError):
                 confidence = 0.0
-            # Qwen's coordinates refer to the resized image supplied to Ollama.
-            x = int(round(box['x'] / resize_scale))
-            y = int(round(box['y'] / resize_scale))
-            bw = int(round(box['w'] / resize_scale))
-            bh = int(round(box['h'] / resize_scale))
-            x = max(0, min(original_width - 1, x))
-            y = max(0, min(original_height - 1, y))
-            bw = max(0, min(original_width - x, bw))
-            bh = max(0, min(original_height - y, bh))
-            if not text or bw < 2 or bh < 2:
+            if 0 <= confidence <= 1:
+                confidence *= 100
+            if confidence < float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '68')):
                 continue
-            # A high-confidence model reading is preselected for CAD export;
-            # the user can still edit it or uncheck it in the annotation panel.
-            accepted = confidence >= 65 and bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφ]', text))
+            points: list[list[float]] = []
+            for point in points_raw[:160]:
+                if isinstance(point, dict):
+                    try:
+                        px, py = float(point.get('x')), float(point.get('y'))
+                    except (TypeError, ValueError):
+                        continue
+                elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                    try:
+                        px, py = float(point[0]), float(point[1])
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    continue
+                px = max(0.0, min(float(original_width - 1), px / resize_scale))
+                py = max(0.0, min(float(original_height - 1), py / resize_scale))
+                if not points or math.dist(points[-1], [px, py]) >= 3.0:
+                    points.append([round(px, 1), round(py, 1)])
+            if len(points) < 2:
+                continue
+            route_length = sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1))
+            if route_length < max(12.0, min(original_width, original_height) * 0.015):
+                continue
             result.append({
-                'id': f'Q{len(result) + 1}', 'text': text,
-                'confidence': round(max(0.0, min(100.0, confidence)), 1),
-                'bbox': {'x': x, 'y': y, 'w': bw, 'h': bh},
-                'verified': accepted, 'include': accepted, 'source': 'qwen3-vl'
+                'id': str(raw.get('id') or f'P{len(result) + 1}')[:24],
+                'points': points, 'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                'source': 'qwen3-vl-semantic', 'include': True,
             })
-        return result, {'available': True, 'model': model, 'annotations': len(result), 'error': None}
+        return result, {
+            'available': True, 'model': model, 'routes': len(result),
+            'error': None, 'image_size': {'width': sent_size[0], 'height': sent_size[1]},
+        }
     except Exception as error:
         reason = str(error).strip() or error.__class__.__name__
-        return [], {'available': False, 'model': model, 'annotations': 0, 'error': reason[:220]}
-
+        return [], {'available': False, 'model': model, 'routes': 0, 'error': reason[:220]}
 
 def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
     ax, ay, aw, ah = (float(a.get(k, 0)) for k in ('x', 'y', 'w', 'h'))
@@ -219,11 +401,13 @@ def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, A
             # Prefer the vision model when two OCR engines refer to the same mark.
             if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in qwen_items):
                 continue
-            accepted = confidence >= 68 and bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφ]', text))
+            has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+            accepted = confidence >= 68 and has_alnum
             tesseract_items.append({
                 'id': f'T{len(tesseract_items) + 1}', 'text': text,
                 'confidence': round(confidence, 1), 'bbox': box,
-                'verified': accepted, 'include': accepted, 'source': 'tesseract'
+                'verified': accepted, 'include': accepted,
+                'geometry_exclude': confidence >= 32 and has_alnum, 'source': 'tesseract'
             })
     except Exception as error:
         tesseract_error = str(error)[:180]
@@ -424,7 +608,7 @@ def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[s
 def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     boxes = []
     for item in annotations or []:
-        if not (item.get('verified') or item.get('include')):
+        if not (item.get('geometry_exclude') or item.get('verified') or item.get('include')):
             continue
         box = item.get('bbox')
         if isinstance(box, dict) and all(key in box for key in ('x', 'y', 'w', 'h')):
@@ -966,7 +1150,7 @@ def _clean_cad_points(points: list[list[float]]) -> list[list[float]]:
 
     # Ramer-Douglas-Peucker: remove small hand-drawn / detector zig-zags while
     # preserving actual corners and branches. Tolerance is in source pixels.
-    tolerance = max(1.15, min(1200.0, 850.0) * 0.002)
+    tolerance = max(2.4, min(1200.0, 850.0) * 0.006)
 
     def distance_to_segment(point, start, end):
         dx, dy = end[0] - start[0], end[1] - start[1]
@@ -1001,7 +1185,39 @@ def _sheet_layout(width: int, height: int) -> tuple[float, float, float]:
     return scale, tx, ty
 
 
-def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема') -> str:
+def _semantic_route_chains(semantic_routes: list[dict[str, Any]] | None) -> list[list[list[float]]]:
+    """Validate semantic centre-lines before they are used as primary CAD geometry."""
+    result: list[list[list[float]]] = []
+    for route in semantic_routes or []:
+        if not isinstance(route, dict) or not route.get('include', True):
+            continue
+        try:
+            confidence = float(route.get('confidence', 0))
+        except (TypeError, ValueError):
+            continue
+        if confidence < 60:
+            continue
+        raw_points = route.get('points')
+        if not isinstance(raw_points, list) or len(raw_points) < 2:
+            continue
+        points: list[list[float]] = []
+        for raw in raw_points[:160]:
+            if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+                continue
+            try:
+                point = [float(raw[0]), float(raw[1])]
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in point):
+                continue
+            if not points or math.dist(points[-1], point) >= 2.0:
+                points.append(point)
+        if len(points) >= 2 and sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1)) >= 12:
+            result.append(_clean_cad_points(points))
+    return result
+
+
+def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None) -> str:
     """Create a clean A3 CAD sheet: uniform linework and editable OCR text."""
     pagew, pageh = 1200, 850
     scale, tx, ty = _sheet_layout(width, height)
@@ -1022,10 +1238,14 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
         f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})" fill="none" stroke="#15191d" stroke-width="{line_width:.4f}" stroke-linecap="round" stroke-linejoin="round">'
     ]
-    for chain in _cad_edge_chains(edges):
+    clean_chains = _semantic_route_chains(semantic_routes) if semantic_routes is not None else _cad_edge_chains(edges)
+    for chain in clean_chains:
         pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
+    if semantic_routes is not None and not clean_chains:
+        out.append('<text x="600" y="410" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>')
+        out.append('<text x="600" y="432" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#6b747a">Проверьте Ollama / Qwen3-VL. Пиксельные кандидаты сохранены отдельно для проверки.</text>')
 
     # OCR output is rendered as typography with an opaque paper-colour mask;
     # the handwritten glyph traces have already been filtered from geometry.
@@ -1055,7 +1275,7 @@ def xml_escape(s:str)->str:
     return str(s).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
 
 
-def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict]) -> str:
+def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], semantic_routes: list[dict[str, Any]] | None = None) -> str:
     """Export the same A3 sheet layout to AutoCAD-compatible millimetre units."""
     pagew, pageh = 1200.0, 850.0
     scale, tx, ty = _sheet_layout(width, height)
@@ -1108,13 +1328,16 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict]) -> s
     d += dxf_polyline('SHEET',[(1010,32),(1164,32),(1164,66),(1010,66)],True,9)
     d += dxf_polyline('SHEET',[(1010,49),(1164,49)],False,9)
 
-    for chain in _cad_edge_chains(edges):
+    clean_chains = _semantic_route_chains(semantic_routes) if semantic_routes is not None else _cad_edge_chains(edges)
+    for chain in clean_chains:
         page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
         d += dxf_polyline('PIPE_MAIN',page_points,False,13)
 
-    # Preserve everything omitted from the clean preview on a frozen review layer.
+    # Preserve raw OpenCV candidates on a frozen review layer. When semantic
+    # tracing is active (including an empty result), no detector edge is silently
+    # promoted to a main pipe; all candidates stay available for inspection.
     for edge in edges:
-        if edge.get('cad_include', edge.get('component_role') == 'line_structure'):
+        if semantic_routes is None and edge.get('cad_include', edge.get('component_role') == 'line_structure'):
             continue
         geometry = edge.get('geometry') or []
         if len(geometry) >= 2:
@@ -1152,6 +1375,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     gray,prep=normalize_document(bgr)
     ink=make_ink_mask(bgr,gray)
     annotations, ocr_status = ocr_annotations(input_path, gray)
+    semantic_routes, route_status = _qwen_semantic_routes(input_path, w, h)
+    # Geometry detector remains a review channel only; a semantic route result,
+    # when available, is the sole source for the clean primary CAD sheet.
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
@@ -1173,9 +1399,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
             cv2.circle(overlay,(int(n['x']),int(n['y'])),4,(0,0,255),-1,cv2.LINE_AA)
     overlay_path=str(Path(out_dir)/'overlay.png'); cv2.imwrite(overlay_path,overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
-    svg=build_clean_svg(w,h,edges,annotations)
+    svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
-    Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations),encoding='utf-8')
+    Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes),encoding='utf-8')
     # Open-end gap candidates are suggestions only; no geometry is connected automatically.
     node_map = {n['id']: n for n in nodes}
     edge_at = {}
@@ -1204,11 +1430,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                 if len(joins)>=200: break
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
-           "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,
+           "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"semanticTrace":route_status,
            "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
-                    "clean_export_uses_coherent_routes":True,"short_symbol_stubs_go_to_review_layer":True},
+                    "clean_export_uses_semantic_pipe_routes":True,"pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
+                      "semantic_routes":len(semantic_routes),
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
                       "text_overlap_edges":sum(1 for e in edges if e.get('suggested_role')=='text_or_dimension'),
@@ -1220,12 +1447,14 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
-           "warnings":["Чистый лист показывает связные маршруты; короткие штрихи символов оставлены в кандидатах для ручной проверки.",
+           "warnings":["Основной слой PIPE_MAIN строится по семантическим маршрутам Qwen; сырые LSD/Hough-отрезки вынесены на замороженный DETAIL_REVIEW.",
                        "Пересечения не объединяются автоматически.",
-                       "Уверенно распознанные символы экспортируются как CAD TEXT, а не как линии; сквозные трассы сохраняются.",
-                       "Проверьте размеры и подписи перед использованием чертежа."]}
+                       "Распознанные подписи экспортируются как редактируемый CAD TEXT; текстовые области исключаются из линейных кандидатов.",
+                       "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
+    if not route_status.get('available') or not semantic_routes:
+        graph['warnings'].append('Семантическая трассировка труб Qwen не дала подтверждённых маршрутов. Основной слой PIPE_MAIN оставлен пустым; пиксельные кандидаты сохранены только на замороженном слое DETAIL_REVIEW. Проверьте Ollama/Qwen и подтвердите маршруты вручную.')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     return graph
 

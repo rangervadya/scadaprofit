@@ -161,13 +161,99 @@ class GraphTests(unittest.TestCase):
                 def __enter__(self): return self
                 def __exit__(self, *_args): return False
                 def read(self): return json.dumps(response_body).encode('utf-8')
-            with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "2000", "QWEN_OCR_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
+            with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "2000", "QWEN_OCR_TILE_GRID": "1", "QWEN_OCR_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
                 annotations, status = processor._qwen_annotations(str(image_path), 4000, 2000)
             self.assertTrue(status["available"])
             self.assertEqual(annotations[0]["bbox"], {"x": 200, "y": 160, "w": 120, "h": 40})
             self.assertTrue(annotations[0]["include"])
             self.assertFalse(annotations[1]["include"])
+
+
+    def test_low_confidence_ocr_box_can_mask_glyphs_without_cutting_a_pipe(self):
+        gray = np.full((100, 160), 255, np.uint8)
+        ink = np.zeros((100, 160), np.uint8)
+        cv2.line(gray, (10, 50), (150, 50), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (10, 50), (150, 50), 255, 2, cv2.LINE_AA)
+        cv2.line(gray, (70, 42), (70, 58), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (70, 42), (70, 58), 255, 2, cv2.LINE_AA)
+        annotations = [{"text": "5?", "bbox": {"x": 55, "y": 38, "w": 40, "h": 24},
+                        "confidence": 44, "verified": False, "include": False,
+                        "geometry_exclude": True}]
+        candidates = processor.extract_segments(gray, ink, annotations)
+        self.assertTrue(any(item['length'] > 100 for item in candidates))
+        self.assertFalse(any(abs(item['x1'] - 70) < 5 and abs(item['x2'] - 70) < 5 for item in candidates))
+
+    def test_qwen_tiled_ocr_upsamples_small_handwriting_and_maps_coordinates(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response_body = {"message": {"content": json.dumps({"annotations": [
+                {"text": "1500", "bbox": {"x": 100, "y": 80, "w": 60, "h": 20}, "confidence": 91}
+            ]})}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "1200", "QWEN_OCR_TILE_GRID": "2",
+                "QWEN_OCR_UPSCALE": "2", "QWEN_OCR_TIMEOUT": "20",
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
+                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as request_mock:
+                annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
+            self.assertTrue(status['available'])
+            self.assertEqual(status['successful_tiles'], 4)
+            self.assertGreaterEqual(request_mock.call_count, 4)
+            self.assertEqual(annotations[0]['bbox'], {"x": 50, "y": 40, "w": 30, "h": 10})
+            self.assertTrue(annotations[0]['geometry_exclude'])
+
+    def test_qwen_semantic_pipe_routes_scale_to_original_image(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (4000, 2000), 'white').save(image_path)
+            response_body = {"message": {"content": json.dumps({"routes": [
+                {"id": "P1", "points": [[100, 80], [400, 80]], "confidence": 92},
+                {"id": "P2", "points": [[100, 100], [120, 110]], "confidence": 30}
+            ]})}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
+                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 4000, 2000)
+            self.assertTrue(status['available'])
+            self.assertEqual(len(routes), 1)
+            self.assertEqual(routes[0]['points'], [[200.0, 160.0], [800.0, 160.0]])
+
+    def test_semantic_route_overrides_pixel_candidate_lines_in_clean_sheet(self):
+        noisy_edges = [
+            {"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [20, 90]], "cad_include": True},
+            {"id": "E2", "from": "N2", "to": "N3", "geometry": [[20, 90], [110, 100]], "cad_include": True},
+        ]
+        routes = [{"id": "P1", "points": [[10, 10], [100, 10], [100, 100]], "confidence": 90, "include": True}]
+        svg = processor.build_clean_svg(120, 120, noisy_edges, [], semantic_routes=routes)
+        self.assertEqual(svg.count('<polyline points='), 1)
+        self.assertIn('10.00,10.00 100.00,10.00 100.00,100.00', svg)
+        dxf = processor.build_dxf(120, 120, noisy_edges, [], semantic_routes=routes)
+        self.assertIn('PIPE_MAIN', dxf)
+        self.assertIn('8\nPIPE_MAIN\n100\nAcDbPolyline', dxf)
+
+
+    def test_empty_semantic_trace_does_not_promote_raw_detector_segments_to_pipe_main(self):
+        edges = [{"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [110, 10]],
+                  "cad_include": True, "component_role": "line_structure"}]
+        svg = processor.build_clean_svg(120, 120, edges, [], semantic_routes=[])
+        self.assertEqual(svg.count('<polyline points='), 0)
+        self.assertIn('СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ', svg)
+        dxf = processor.build_dxf(120, 120, edges, [], semantic_routes=[])
+        # The candidate remains editable but belongs only to the frozen review layer.
+        self.assertIn('DETAIL_REVIEW\n70\n1', dxf)
+        self.assertIn('8\nDETAIL_REVIEW\n100\nAcDbPolyline', dxf)
+        pipe_section = dxf.split('8\nPIPE_MAIN\n100\nAcDbPolyline')
+        self.assertEqual(len(pipe_section), 1)
 
     def test_lsd_and_hough_edges_of_one_thick_stroke_collapse_to_one_candidate(self):
         image = np.full((180, 260, 3), 255, np.uint8)

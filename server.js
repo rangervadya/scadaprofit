@@ -65,9 +65,10 @@ const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, 
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.2', mode: 'cad-reconstruction-engine',
-  geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'Qwen3-VL/Tesseract editable text; confirmed glyph strokes filtered, continuous pipe lines preserved',
-  qwenModel: process.env.QWEN_MODEL || 'qwen3-vl:4b', ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequired: false }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.3', mode: 'cad-reconstruction-engine',
+  geometry: 'Qwen3-VL semantic pipe centre-lines; OpenCV LSD/Hough are review-only candidates',
+  ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract supplementary OCR',
+  qwenModel: process.env.QWEN_MODEL || 'qwen3-vl:4b', ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequiredForCleanCad: true, ollamaRequired: false }));
 
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
@@ -82,7 +83,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     await fs.copyFile(req.file.path, sourcePath);
     await fs.rm(req.file.path, { force: true });
     const { stdout, stderr } = await execFileAsync(PYTHON, [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
-      { timeout: 120_000, maxBuffer: 12 * 1024 * 1024 });
+      { timeout: 360_000, maxBuffer: 16 * 1024 * 1024 });
     if (stderr?.trim()) console.log(`[ENGINE ${id.slice(0,8)}] ${stderr.trim().slice(-1200)}`);
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     graph.jobId = id;
@@ -110,6 +111,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.2.2: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
-  console.log('Geometry: OpenCV line candidates; OCR is a separate annotation channel.');
+  console.log(`CAD Reconstruction Engine 4.2.3: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log('Geometry: Qwen semantic routes for clean CAD; OpenCV candidates for review.');
 });

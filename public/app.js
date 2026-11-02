@@ -80,7 +80,7 @@ function setFile(file) {
   $('textPanel').hidden = true;
   $('sourceEmpty').hidden = false;
   $('imageFrame').hidden = true;
-  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Фото загружено — схема ещё не построена</b><span>Нажми «Найти линии и построить граф».</span></div>';
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Фото загружено — схема ещё не построена</b><span>Нажми «Распознать трубы и надписи».</span></div>';
   $('canvasMeta').textContent = `${file.name} · ${formatBytes(file.size)}`;
   $('previewMeta').textContent = `${formatBytes(file.size)} · готов к обработке`;
   setState('ФОТО ЗАГРУЖЕНО');
@@ -112,7 +112,7 @@ analyzeBtn.addEventListener('click', async () => {
   setAlert('');
   analyzeBtn.disabled = true;
   $('progressWrap').hidden = false;
-  $('progressLabel').textContent = 'Нормализация фотографии и поиск линий…';
+  $('progressLabel').textContent = 'Qwen: распознавание подписей и осевых трасс труб…';
   $('progressPercent').textContent = 'В РАБОТЕ';
   analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Анализирую изображение…';
   setState('АНАЛИЗ ИЗОБРАЖЕНИЯ', 'busy');
@@ -146,7 +146,7 @@ analyzeBtn.addEventListener('click', async () => {
   } finally {
     $('progressWrap').hidden = true;
     analyzeBtn.disabled = !selectedFile;
-    analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Найти линии и построить граф';
+    analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Распознать трубы и надписи';
   }
 });
 
@@ -164,7 +164,10 @@ function showResult() {
   $('sourceImage').src = `${graph.sourceUrl}?v=${Date.now()}`;
   $('canvasMeta').textContent = `${graph.image.width} × ${graph.image.height} px · исходная геометрия сохранена`;
   $('previewMeta').textContent = 'Анализ завершён · можно редактировать';
-  $('statusline').textContent = graph.warnings.join(' ');
+  const traceState = graph.semanticTrace?.available && (graph.semanticRoutes || []).length
+    ? `Семантические трассы Qwen: ${graph.semanticRoutes.length}. `
+    : 'Нет подтверждённых трасс Qwen: основной лист оставлен пустым, пиксельные кандидаты доступны только для проверки. ';
+  $('statusline').textContent = traceState + graph.warnings.join(' ');
   const summary = graph.summary || {};
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],
@@ -172,7 +175,7 @@ function showResult() {
     [summary.edges ?? graph.edges.length, 'связей'],
     [summary.crossings_to_review ?? graph.crossings.length, 'пересечений на проверку'],
     [summary.ocr_annotations ?? graph.annotations.length, 'OCR-подписей'],
-    [summary.cad_primary_edges ?? graph.edges.filter(edge => edge.cad_include).length, 'отрезков в чистой схеме']
+    [summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0, 'семантических трасс труб']
   ];
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
@@ -225,7 +228,11 @@ function lineColor(edge) {
 function renderOverlay() {
   if (!graph) return;
   const visible = shownEdges();
-  const lines = visible.map(edge => {
+  const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes) ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence || 0) >= 60) : [];
+  const lines = semanticRoutes.length ? semanticRoutes.map(route => {
+    const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
+    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#087d70" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" opacity=".96"/>` : '';
+  }).join('') : visible.map(edge => {
     const points = (edge.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     if (!points) return '';
     return `<polyline data-edge="${escapeHtml(edge.id)}" points="${points}" fill="none" stroke="${lineColor(edge)}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" opacity=".94"/>`;
@@ -513,6 +520,22 @@ function cleanCadPoints(sourcePoints) {
   return rdp(simplified).map(point => point.map(value => Number(value.toFixed(1))));
 }
 function cleanCadChains() {
+  const semanticRoutes = Array.isArray(graph?.semanticRoutes) ? graph.semanticRoutes
+    .filter(route => route.include !== false && Number(route.confidence || 0) >= 60 && Array.isArray(route.points) && route.points.length >= 2) : [];
+  if (Array.isArray(graph?.semanticRoutes)) {
+    const semantic = semanticRoutes.map(route => ({
+      points: cleanCadPoints(route.points), edgeIds: [], routeId: route.id, confidence: route.confidence
+    })).filter(route => route.points.length >= 2);
+    // Only explicit user selections may promote an OpenCV candidate into the
+    // primary sheet. Merely showing all candidates is a diagnostic overlay.
+    const selectedCandidates = buildChains(graph.edges.filter(edge =>
+      edge.source !== 'manual' && edge.user_include === true && edge.visible !== false
+    )).map(chain => ({ ...chain, points: cleanCadPoints(chain.points) }));
+    // Keep user-created connections visible/editable alongside semantic routes.
+    const manual = buildChains(graph.edges.filter(edge => edge.source === 'manual' && edge.visible !== false))
+      .map(chain => ({ ...chain, points: cleanCadPoints(chain.points) }));
+    return [...semantic, ...selectedCandidates, ...manual];
+  }
   return buildChains(shownEdges()).map(chain => ({
     ...chain, points: cleanCadPoints(chain.points)
   })).filter(chain => chain.points.length >= 2);
@@ -551,6 +574,10 @@ function buildSheetSvg() {
     output.push(`<polyline points="${points}"/>`);
   }
   output.push('</g>');
+  if (Array.isArray(graph.semanticRoutes) && !chains.length) {
+    output.push('<text x="600" y="410" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>');
+    output.push('<text x="600" y="432" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#6b747a">Проверьте Ollama / Qwen3-VL. Пиксельные кандидаты сохранены отдельно для проверки.</text>');
+  }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
     const x = offsetX + (box.x + box.w / 2) * scale;
@@ -575,7 +602,7 @@ function renderClean() {
   if (!graph) return;
   const visible = shownEdges();
   const hasIncludedText = graph.annotations.some(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox);
-  if (!visible.length && !hasIncludedText) {
+  if (!visible.length && !(graph.semanticRoutes || []).length && !hasIncludedText) {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Нет выбранных линий</b><span>Включи «Показать все» или отметь кандидаты в списке слева.</span></div>';
     return;
   }
@@ -643,12 +670,15 @@ function buildDxf() {
     const points = chain.points.map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
     addPolyline('PIPE_MAIN',points,false,13);
   }
-  // Keep suppressed detector fragments available, but frozen by default in AutoCAD.
-  if (!showAllSegments) {
-    for (const edge of graph.edges.filter(item => item.source !== 'manual' && item.cad_include !== true && item.user_include !== true)) {
-      const points = (edge.geometry || []).map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
-      addPolyline('DETAIL_REVIEW',points,false,9);
-    }
+  // Pixel detector output is always review-only when semantic routing exists;
+  // the 'show all' toggle must never promote these fragments into PIPE_MAIN.
+  const reviewEdges = graph.edges.filter(item => item.source !== 'manual' && (
+    (Array.isArray(graph.semanticRoutes) && item.user_include !== true) ||
+    (!Array.isArray(graph.semanticRoutes) && (showAllSegments || (item.cad_include !== true && item.user_include !== true)))
+  ));
+  for (const edge of reviewEdges) {
+    const points = (edge.geometry || []).map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
+    addPolyline('DETAIL_REVIEW',points,false,9);
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;

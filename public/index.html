@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.2.2</title>
+  <title>CAD Reconstruction Engine · 4.2.3</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.2.2">
-  <script src="/app.js?v=4.2.2" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.2.3">
+  <script src="/app.js?v=4.2.3" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.2.2</b></div>
+      <div class="version-pill">ENGINE <b>4.2.3</b></div>
     </div>
   </header>
 
@@ -30,7 +30,7 @@
       <div>
         <div class="eyebrow">РУКОПИСНЫЙ ЭСКИЗ → ВЕКТОРНАЯ ОСНОВА</div>
         <h1>Из эскиза — в техническую схему</h1>
-        <p class="intro-copy">Находим геометрические линии, строим граф узлов и готовим чистый векторный лист. Неоднозначные соединения остаются на проверку.</p>
+        <p class="intro-copy">Qwen3-VL отдельно восстанавливает осевые маршруты труб и читает рукописные размеры. OpenCV сохраняет исходные штрихи как кандидаты для проверки, а не подменяет ими трубопроводы.</p>
       </div>
       <div class="workflow" aria-label="Этапы обработки">
         <div class="flow-step active"><span>01</span><b>Фото</b></div><div class="flow-line"></div>
@@ -60,12 +60,12 @@
             <button class="icon-button" id="clearFile" type="button" aria-label="Убрать фотографию" title="Убрать фотографию">×</button>
           </div>
           <button class="primary-button" id="analyzeBtn" type="button" disabled>
-            <span class="button-icon">✳</span><span>Найти линии и построить граф</span><span class="button-arrow">→</span>
+            <span class="button-icon">✳</span><span>Распознать трубы и надписи</span><span class="button-arrow">→</span>
           </button>
           <div class="progress-wrap" id="progressWrap" hidden>
             <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
             <div class="progress-track"><span></span></div>
-            <div class="progress-foot">OpenCV · LSD / Hough · Qwen3-VL / OCR</div>
+            <div class="progress-foot">Qwen3-VL · маршруты труб · OCR по фрагментам</div>
           </div>
           <div class="inline-alert" id="inlineError" role="alert" hidden></div>
           <div class="privacy-note"><span>⌁</span><span>Фотография обрабатывается локально на твоём сервере. Внешние API не используются.</span></div>
@@ -79,7 +79,7 @@
 
         <details class="card inspector-card" id="edgePanel" hidden open>
           <summary class="details-heading"><div><div class="step-label"><span>03A</span> ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count-pill" id="edgeCount">0</span></summary>
-          <p class="helper">В чистый лист автоматически попадают связные трассы и длинные ветви. Короткие штрихи символов остаются в кандидатах и замороженном слое DETAIL_REVIEW DXF; их можно включить вручную.</p>
+          <p class="helper">Основной лист строится только из семантических маршрутов Qwen. Пиксельные отрезки, стрелки, штрихи символов и спорные детали сохраняются отдельно на замороженном слое DETAIL_REVIEW DXF.</p>
           <div class="list-tools"><input id="edgeSearch" type="search" placeholder="Найти E12 или HOUGH…" aria-label="Поиск линии"><button class="tiny-button" id="allEdges" type="button">Все</button><button class="tiny-button" id="longEdges" type="button">Основные</button></div>
           <div class="scrolllist" id="edgeList"></div>
           <button class="load-more" id="edgeMore" type="button" hidden>Показать ещё</button>
@@ -97,7 +97,7 @@
 
         <details class="card inspector-card" id="textPanel" hidden>
           <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Рукописные подписи</h2></div><span class="count-pill" id="textCount">0</span></summary>
-          <p class="helper">Распознанные надписи заменяются обычным редактируемым CAD-текстом: штрихи букв не дублируются линиями. Сквозные линии труб под текстом сохраняются. Исправь подпись и сними галочку, чтобы убрать её с листа.</p>
+          <p class="helper">Qwen читает подписи на увеличенных фрагментах листа. Распознанный текст экспортируется отдельными редактируемыми CAD TEXT; его штрихи не должны становиться трубами. Проверь цифры, поправь текст и сними галочку, чтобы убрать подпись с листа.</p>
           <div class="scrolllist" id="textList"></div>
         </details>
       </aside>
@@ -121,7 +121,7 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Чистый лист строится из выбранных геометрических кандидатов и проверенных надписей.</p></div>
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Чистый лист строится из распознанных осевых маршрутов труб и проверенных текстовых обозначений; пиксельные кандидаты в него не подмешиваются.</p></div>
             <div class="export-actions">
               <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
               <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
@@ -130,13 +130,13 @@
             </div>
           </div>
           <div class="clean-stage" id="cleanStage"><div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M14 75H54V48H95V26H145M54 48L79 73H125"/><circle cx="54" cy="48" r="5"/><circle cx="95" cy="26" r="5"/><circle cx="79" cy="73" r="5"/></svg></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div></div>
-          <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Детектор находит кандидаты линий, а не гарантированно распознаёт трубы. Проверь окончания, пересечения, размеры и подписи перед использованием.</p></div></div>
+          <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
         </section>
 
-        <section class="bottom-note"><span class="note-icon">i</span><span>Подтверждённые OCR-надписи выводятся отдельным CAD-текстом, а штрихи букв исключаются из геометрии. Продолжения линий через область подписи сохраняются. Соединения и неоднозначные пересечения требуют проверки.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
+        <section class="bottom-note"><span class="note-icon">i</span><span>Qwen3-VL строит семантические осевые маршруты труб и распознаёт текст на увеличенных фрагментах. Геометрические кандидаты OpenCV хранятся отдельно. Если Qwen не вернул маршруты, лист явно помечается как черновик, а не готовая CAD-схема.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.2</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.3</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>
