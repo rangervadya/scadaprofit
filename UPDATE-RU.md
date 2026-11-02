@@ -1,13 +1,13 @@
-# Обновление до CAD Reconstruction Engine 4.1.0
+# Обновление до CAD Reconstruction Engine 4.1.1
 
 Проект рассчитан на обновление существующей установки в `/opt/scadaprofit` на Ubuntu. Команды не удаляют именованный том Ollama и не перезаписывают `.env`.
 
 ## 1. Передача архива с Mac
 
-Скачай `cad-reconstruction-engine-4.1.zip` в `~/Downloads`, затем выполни на Mac:
+Скачай `cad-reconstruction-engine-4.1.1.zip` в `~/Downloads`, затем выполни на Mac:
 
 ```bash
-scp ~/Downloads/cad-reconstruction-engine-4.1.zip \
+scp ~/Downloads/cad-reconstruction-engine-4.1.1.zip \
   tech@192.168.1.99:/home/tech/
 ```
 
@@ -22,13 +22,13 @@ cd /opt/scadaprofit
 tar -czf /root/scadaprofit-backup-$(date +%F-%H%M).tar.gz .
 
 # Распаковать в отдельный временный каталог
-rm -rf /tmp/cad-reconstruction-4.1
-mkdir -p /tmp/cad-reconstruction-4.1
-unzip -oq /home/tech/cad-reconstruction-engine-4.1.zip \
-  -d /tmp/cad-reconstruction-4.1
+rm -rf /tmp/cad-reconstruction-4.1.1
+mkdir -p /tmp/cad-reconstruction-4.1.1
+unzip -oq /home/tech/cad-reconstruction-engine-4.1.1.zip \
+  -d /tmp/cad-reconstruction-4.1.1
 
 # Скопировать файлы новой версии в действующий проект
-cp -a /tmp/cad-reconstruction-4.1/cad-reconstruction-engine-4.1/. \
+cp -a /tmp/cad-reconstruction-4.1.1/cad-reconstruction-engine-4.1.1/. \
   /opt/scadaprofit/
 
 cd /opt/scadaprofit
@@ -49,7 +49,7 @@ curl -sI http://127.0.0.1:3001/styles.css
 curl -sI http://127.0.0.1:3001/app.js
 ```
 
-Ожидаемая версия — `4.1.0`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
+Ожидаемая версия — `4.1.1`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
 
 Затем открой `http://192.168.1.99:3001` и обнови страницу сочетанием `Ctrl+Shift+R`.
 
@@ -71,3 +71,16 @@ curl -s http://127.0.0.1:3001/api/health
 ```
 
 Ошибки загрузки и анализа также показываются в интерфейсе под кнопкой запуска.
+
+
+## Проверка проблемы HTTPS/CSP
+
+После перезапуска выполни:
+
+```bash
+curl -sI http://127.0.0.1:3001/ | grep -i content-security-policy
+curl -sI http://127.0.0.1:3001/styles.css | head -1
+curl -sI http://127.0.0.1:3001/app.js | head -1
+```
+
+В `Content-Security-Policy` не должно быть `upgrade-insecure-requests`. Запросы к CSS и JS должны идти по HTTP и возвращать `200 OK`. В браузере открой `http://192.168.1.99:3001`, затем сделай `Ctrl+Shift+R`.

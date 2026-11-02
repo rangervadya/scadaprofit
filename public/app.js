@@ -461,7 +461,7 @@ function buildSheetSvg() {
   output.push(
     '<path d="M22 760 H1178 M820 760 V828" fill="none" stroke="#111" stroke-width=".8"/>',
     '<text x="40" y="782" font-family="Arial,sans-serif" font-size="9">ПРОВЕРИТЬ УЗЛЫ, ПЕРЕСЕЧЕНИЯ И РАЗМЕРЫ ПО ОРИГИНАЛУ</text>',
-    '<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.1.0</text>',
+    '<text x="838" y="782" font-family="Arial,sans-serif" font-size="9">CAD RECONSTRUCTION ENGINE 4.1.1</text>',
     '</svg>'
   );
   return output.join('\n');
