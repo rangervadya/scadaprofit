@@ -65,7 +65,7 @@ const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, 
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.1', mode: 'cad-reconstruction-engine',
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.2.2', mode: 'cad-reconstruction-engine',
   geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'Qwen3-VL/Tesseract editable text; confirmed glyph strokes filtered, continuous pipe lines preserved',
   qwenModel: process.env.QWEN_MODEL || 'qwen3-vl:4b', ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequired: false }));
 
@@ -110,6 +110,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.2.1: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.2.2: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OpenCV line candidates; OCR is a separate annotation channel.');
 });

@@ -25,6 +25,41 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(edges[0]["to"], edges[1]["from"])
         self.assertEqual(edges[0]["geometry"][-1], edges[1]["geometry"][0])
 
+    def test_clean_cad_keeps_route_and_suppresses_short_symbol_stubs(self):
+        segments = [
+            {"x1": 10.0, "y1": 50.0, "x2": 50.0, "y2": 50.0, "source": "LSD", "support": .95, "length": 40, "angle": 0},
+            {"x1": 50.0, "y1": 50.0, "x2": 100.0, "y2": 50.0, "source": "LSD", "support": .95, "length": 50, "angle": 0},
+            # A short valve / hand-mark stroke attached to the main route.
+            {"x1": 50.0, "y1": 50.0, "x2": 50.0, "y2": 36.0, "source": "HOUGH", "support": .85, "length": 14, "angle": 90},
+        ]
+        nodes, edges, _ = processor.endpoint_clusters(segments)
+        stats = processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertEqual(stats["cad_primary_edges"], 2)
+        main = [edge for edge in edges if edge["cad_include"]]
+        review = [edge for edge in edges if not edge["cad_include"]]
+        self.assertEqual(len(main), 2)
+        self.assertEqual(len(review), 1)
+        self.assertEqual(review[0]["cad_reason"], "short-symbol-stub")
+        self.assertTrue(all(edge["cad_reason"] == "collinear-continuation" for edge in main))
+
+    def test_short_collinear_continuation_survives_clean_selection(self):
+        segments = [
+            {"x1": 10.0, "y1": 20.0, "x2": 100.0, "y2": 20.0, "source": "LSD", "support": .95, "length": 90, "angle": 0},
+            {"x1": 105.0, "y1": 20.0, "x2": 120.0, "y2": 20.0, "source": "HOUGH", "support": .9, "length": 15, "angle": 0},
+        ]
+        nodes, edges, _ = processor.endpoint_clusters(segments)
+        processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertTrue(all(edge["cad_include"] for edge in edges))
+
+    def test_isolated_short_mark_is_not_in_clean_sheet(self):
+        segments = [
+            {"x1": 20.0, "y1": 20.0, "x2": 55.0, "y2": 20.0, "source": "LSD", "support": .9, "length": 35, "angle": 0},
+        ]
+        nodes, edges, _ = processor.endpoint_clusters(segments)
+        processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertFalse(edges[0]["cad_include"])
+        self.assertEqual(edges[0]["cad_reason"], "isolated-mark")
+
     def test_crossing_is_not_auto_joined(self):
         segments = [
             {"x1": 10.0, "y1": 50.0, "x2": 90.0, "y2": 50.0, "source": "LSD", "support": .8, "length": 80, "angle": 0},
@@ -134,6 +169,15 @@ class GraphTests(unittest.TestCase):
             self.assertTrue(annotations[0]["include"])
             self.assertFalse(annotations[1]["include"])
 
+    def test_lsd_and_hough_edges_of_one_thick_stroke_collapse_to_one_candidate(self):
+        image = np.full((180, 260, 3), 255, np.uint8)
+        cv2.line(image, (20, 90), (240, 90), (20, 20, 20), 2, cv2.LINE_AA)
+        gray, _ = processor.normalize_document(image)
+        ink = processor.make_ink_mask(image, gray)
+        candidates = processor.extract_segments(gray, ink, [])
+        self.assertEqual(len(candidates), 1)
+        self.assertGreater(candidates[0]['length'], 200)
+
     def test_duplicate_segments_merge_but_separate_parallel_strokes_survive(self):
         ink = np.zeros((120, 180), np.uint8)
         cv2.line(ink, (10, 35), (160, 35), 255, 2)
@@ -166,11 +210,22 @@ class GraphTests(unittest.TestCase):
         self.assertIn("fill=\"#fff\"", svg)
         self.assertIn("stroke=\"#15191d\"", svg)
 
+    def test_dxf_keeps_removed_marks_on_frozen_review_layer(self):
+        edges = [
+            {"id": "E1", "from": "N1", "to": "N2", "geometry": [[0, 0], [100, 0]], "component_role": "line_structure", "cad_include": True},
+            {"id": "E2", "from": "N2", "to": "N3", "geometry": [[100, 0], [100, 12]], "component_role": "line_structure", "cad_include": False},
+        ]
+        dxf = processor.build_dxf(120, 120, edges, [])
+        self.assertIn("PIPE_MAIN", dxf)
+        self.assertIn("DETAIL_REVIEW", dxf)
+        # DXF layer flag 1 means frozen by default.
+        self.assertIn("DETAIL_REVIEW\n70\n1", dxf)
+
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
         annotations = [{"verified": True, "text": "DN50", "bbox": {"x": 12, "y": 15, "w": 25, "h": 9}}]
         dxf = processor.build_dxf(120, 120, edges, annotations)
-        self.assertIn("PIPE_CANDIDATES", dxf)
+        self.assertIn("PIPE_MAIN", dxf)
         self.assertIn("370\n13", dxf)
         self.assertIn("VERIFIED_TEXT", dxf)
         self.assertIn("DN50", dxf)

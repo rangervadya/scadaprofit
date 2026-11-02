@@ -1,13 +1,17 @@
-# Обновление до CAD Reconstruction Engine 4.2.1
+## Что изменилось в 4.2.2
+
+В чистом листе теперь показываются непрерывные маршруты, а не все штрихи связного компонента. Короткие боковые элементы (штрихи символов, стрелки, риски и фрагменты рукописных пометок) остаются в графе, но не загромождают основной чертёж. В DXF они сохранены на замороженном слое `DETAIL_REVIEW`, а основные маршруты помещены на `PIPE_MAIN`. Короткие соосные продолжения остаются, если проходят через узел по одной трассе.
+
+# Обновление до CAD Reconstruction Engine 4.2.2
 
 Проект рассчитан на обновление существующей установки в `/opt/scadaprofit` на Ubuntu. Команды не удаляют именованный том Ollama и не перезаписывают `.env`.
 
 ## 1. Передача архива с Mac
 
-Скачай `cad-reconstruction-engine-4.2.1.zip` в `~/Downloads`, затем выполни на Mac:
+Скачай `cad-reconstruction-engine-4.2.2.zip` в `~/Downloads`, затем выполни на Mac:
 
 ```bash
-scp ~/Downloads/cad-reconstruction-engine-4.2.1.zip \
+scp ~/Downloads/cad-reconstruction-engine-4.2.2.zip \
   tech@192.168.1.99:/home/tech/
 ```
 
@@ -22,13 +26,13 @@ cd /opt/scadaprofit
 tar -czf /root/scadaprofit-backup-$(date +%F-%H%M).tar.gz .
 
 # Распаковать в отдельный временный каталог
-rm -rf /tmp/cad-reconstruction-4.2.1
-mkdir -p /tmp/cad-reconstruction-4.2.1
-unzip -oq /home/tech/cad-reconstruction-engine-4.2.1.zip \
-  -d /tmp/cad-reconstruction-4.2.1
+rm -rf /tmp/cad-reconstruction-4.2.2
+mkdir -p /tmp/cad-reconstruction-4.2.2
+unzip -oq /home/tech/cad-reconstruction-engine-4.2.2.zip \
+  -d /tmp/cad-reconstruction-4.2.2
 
 # Скопировать файлы новой версии в действующий проект
-cp -a /tmp/cad-reconstruction-4.2.1/cad-reconstruction-engine-4.2.1/. \
+cp -a /tmp/cad-reconstruction-4.2.2/cad-reconstruction-engine-4.2.2/. \
   /opt/scadaprofit/
 
 cd /opt/scadaprofit
@@ -59,7 +63,7 @@ curl -sI http://127.0.0.1:3001/styles.css
 curl -sI http://127.0.0.1:3001/app.js
 ```
 
-Ожидаемая версия — `4.2.1`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
+Ожидаемая версия — `4.2.2`; статические файлы должны отвечать `200 OK` и иметь `Cache-Control: no-store`.
 
 Затем открой `http://192.168.1.99:3001` и обнови страницу сочетанием `Ctrl+Shift+R`.
 

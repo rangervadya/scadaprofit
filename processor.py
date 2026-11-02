@@ -284,18 +284,14 @@ def _same_ink_band(a: dict[str, Any], b: dict[str, Any], ink: np.ndarray,
         xs = np.clip(np.rint(ax + ux * along + nx * cross).astype(int), 0, w - 1)
         ys = np.clip(np.rint(ay + uy * along + ny * cross).astype(int), 0, h - 1)
         occupied = ink[ys, xs] > 0
-        # Allow one antialiasing/threshold pixel at a detected stroke edge, but
-        # a white gap between two distinct parallel marks breaks the match.
-        longest_blank = 0
-        current_blank = 0
-        for hit in occupied:
-            if hit:
-                current_blank = 0
-            else:
-                current_blank += 1
-                longest_blank = max(longest_blank, current_blank)
-        if longest_blank == 0:
-            valid_sections += 1
+        # Detectors may sit one pixel outside either edge of the same thick
+        # stroke. Ignore only those outer blanks; any blank *between* ink runs
+        # is a real separation and protects two nearby parallel lines.
+        hits = np.flatnonzero(occupied)
+        if hits.size:
+            first, last = int(hits[0]), int(hits[-1])
+            if not np.any(~occupied[first:last + 1]):
+                valid_sections += 1
     return valid_sections / max(1, len(samples)) >= 0.78
 
 
@@ -664,6 +660,188 @@ def endpoint_clusters(segments: list[dict[str,Any]], radius: float = 4.5):
     return nodes,edges,component_summaries
 
 
+
+def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                             min_dimension: int) -> dict[str, int]:
+    """Select coherent route paths for the clean CAD sheet.
+
+    The detector graph deliberately keeps every reviewable segment.  The clean
+    export, however, must not turn every valve mark, arrow, letter stroke or
+    dimension tick into a pipe.  We therefore classify maximal paths between
+    graph junctions/terminals, rather than promoting an entire connected
+    component because one edge in it is long.
+
+    A short path is retained when it is a near-collinear continuation through a
+    junction.  Short terminal stubs at junctions and isolated marks are left on
+    the review layer.  No endpoints are moved and no junctions are auto-joined.
+    """
+    adjacency: dict[str, list[int]] = {}
+    node_by_id = {str(node.get('id')): node for node in nodes}
+    for index, edge in enumerate(edges):
+        a, b = str(edge.get('from', '')), str(edge.get('to', ''))
+        if not a or not b or a == b:
+            edge['cad_include'] = False
+            edge['cad_reason'] = 'invalid-edge'
+            continue
+        adjacency.setdefault(a, []).append(index)
+        adjacency.setdefault(b, []).append(index)
+
+    component_sizes: dict[str, int] = {}
+    for edge in edges:
+        cid = str(edge.get('component_id') or '')
+        component_sizes[cid] = component_sizes.get(cid, 0) + 1
+
+    min_path = max(20.0, float(min_dimension) * 0.028)
+    junction_stub = max(min_path, float(min_dimension) * 0.045)
+    isolated_min = max(42.0, float(min_dimension) * 0.065)
+    cycle_min = max(46.0, float(min_dimension) * 0.060)
+    visited: set[int] = set()
+    paths: list[dict[str, Any]] = []
+
+    def other_node(edge_index: int, node_id: str) -> str:
+        edge = edges[edge_index]
+        return str(edge.get('to') if str(edge.get('from')) == node_id else edge.get('from'))
+
+    def edge_length(edge: dict[str, Any]) -> float:
+        geometry = edge.get('geometry') or []
+        if len(geometry) < 2:
+            return 0.0
+        return sum(math.dist(geometry[i], geometry[i + 1]) for i in range(len(geometry) - 1))
+
+    def trace(start_node: str, first_index: int) -> dict[str, Any]:
+        current = start_node
+        edge_index = first_index
+        path_edges: list[int] = []
+        total = 0.0
+        closed = False
+        terminal = start_node
+        while edge_index not in visited:
+            visited.add(edge_index)
+            edge = edges[edge_index]
+            path_edges.append(edge_index)
+            total += edge_length(edge)
+            nxt = other_node(edge_index, current)
+            terminal = nxt
+            if nxt == start_node:
+                closed = True
+                break
+            incident = adjacency.get(nxt, [])
+            if len(incident) != 2:
+                break
+            next_options = [idx for idx in incident if idx not in visited]
+            if not next_options:
+                break
+            current, edge_index = nxt, next_options[0]
+        return {
+            'edges': path_edges, 'start': start_node, 'end': terminal,
+            'length': total, 'closed': closed,
+        }
+
+    # Begin at terminals and junctions.  Degree-two nodes are transparent and
+    # therefore do not break a route into detector-sized fragments.
+    for node_id, incident in adjacency.items():
+        if len(incident) == 2:
+            continue
+        for edge_index in incident:
+            if edge_index not in visited:
+                paths.append(trace(node_id, edge_index))
+
+    # Remaining all-degree-two components are closed loops.
+    for edge_index, edge in enumerate(edges):
+        if edge_index not in visited:
+            paths.append(trace(str(edge.get('from')), edge_index))
+
+    def outward_vector(node_id: str, edge_index: int) -> tuple[float, float] | None:
+        edge = edges[edge_index]
+        geometry = edge.get('geometry') or []
+        if len(geometry) < 2:
+            return None
+        if str(edge.get('from')) == node_id:
+            a, b = geometry[0], geometry[1]
+        else:
+            a, b = geometry[-1], geometry[-2]
+        vector = (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+        length = math.hypot(*vector)
+        return (vector[0] / length, vector[1] / length) if length > 1e-6 else None
+
+    def has_opposite_continuation(path: dict[str, Any], node_id: str, path_edge: int) -> bool:
+        """Does a short path continue nearly straight through this junction?"""
+        current = outward_vector(node_id, path_edge)
+        if current is None:
+            return False
+        for candidate_index in adjacency.get(node_id, []):
+            if candidate_index == path_edge:
+                continue
+            candidate = outward_vector(node_id, candidate_index)
+            if candidate is None:
+                continue
+            # Vectors both point out from the junction; opposite means a
+            # straight-through route (within about 27 degrees).
+            if current[0] * candidate[0] + current[1] * candidate[1] <= -0.89:
+                return True
+        return False
+
+    for path in paths:
+        path_edges = path['edges']
+        if not path_edges:
+            continue
+        start, end = path['start'], path['end']
+        start_degree = len(adjacency.get(start, []))
+        end_degree = len(adjacency.get(end, []))
+        total = float(path['length'])
+        is_cycle = bool(path['closed'] or start == end)
+        component_ids = {str(edges[index].get('component_id') or '') for index in path_edges}
+        component_size = max((component_sizes.get(cid, 0) for cid in component_ids), default=len(path_edges))
+        single_edge_isolated = len(path_edges) == 1 and component_size == 1 and start_degree == 1 and end_degree == 1
+
+        continuation = False
+        if start_degree >= 3:
+            continuation = continuation or has_opposite_continuation(path, start, path_edges[0])
+        if end_degree >= 3:
+            continuation = continuation or has_opposite_continuation(path, end, path_edges[-1])
+
+        if is_cycle:
+            keep = total >= cycle_min
+            reason = 'closed-route' if keep else 'short-closed-mark'
+        elif single_edge_isolated:
+            keep = total >= isolated_min
+            reason = 'long-isolated-stroke' if keep else 'isolated-mark'
+        elif (start_degree >= 3 and end_degree == 1) or (end_degree >= 3 and start_degree == 1):
+            keep = total >= junction_stub or (continuation and total >= min_path)
+            reason = 'branch-route' if keep else 'short-symbol-stub'
+        else:
+            keep = total >= min_path
+            reason = 'coherent-route' if keep else 'short-fragment'
+
+        if continuation and total >= min_path:
+            keep = True
+            reason = 'collinear-continuation'
+
+        # The earlier endpoint heuristic can explicitly identify a short
+        # detached, coaxial continuation across a small scan gap. Preserve it.
+        if any(edges[index].get('continuation_candidate') for index in path_edges) and total >= 8.0:
+            keep = True
+            reason = 'collinear-continuation'
+
+        for index in path_edges:
+            edges[index]['cad_include'] = bool(keep)
+            edges[index]['cad_reason'] = reason
+
+    # Defensive default for malformed/disconnected records.
+    for edge in edges:
+        edge.setdefault('cad_include', False)
+        edge.setdefault('cad_reason', 'unclassified')
+
+    selected = sum(1 for edge in edges if edge.get('cad_include'))
+    return {
+        'cad_primary_edges': selected,
+        'cad_review_edges': len(edges) - selected,
+        'cad_primary_paths': sum(1 for path in paths if path['edges'] and all(edges[i].get('cad_include') for i in path['edges'])),
+        'cad_min_path_px': int(round(min_path)),
+        'cad_min_junction_branch_px': int(round(junction_stub)),
+    }
+
+
 def detect_crossings(segments: list[dict[str,Any]], max_crossings=250):
     crossings=[]
     def cross(a,b):
@@ -692,7 +870,7 @@ def _cad_edge_chains(edges: list[dict[str, Any]]) -> list[list[list[float]]]:
     """Join degree-two graph edges into clean editable CAD polylines."""
     selected = []
     for index, source in enumerate(edges):
-        if source.get('component_role') != 'line_structure' or len(source.get('geometry') or []) < 2:
+        if not source.get('cad_include', source.get('component_role') == 'line_structure') or len(source.get('geometry') or []) < 2:
             continue
         edge = dict(source)
         edge.setdefault('id', f'__edge_{index}')
@@ -785,7 +963,33 @@ def _clean_cad_points(points: list[list[float]]) -> list[list[float]]:
         if not (la > 1 and lb > 1 and dot > 0 and cross / (la * lb) < 0.035):
             simplified.append(b)
     simplified.append(unique[-1])
-    return [[round(x, 1), round(y, 1)] for x, y in simplified]
+
+    # Ramer-Douglas-Peucker: remove small hand-drawn / detector zig-zags while
+    # preserving actual corners and branches. Tolerance is in source pixels.
+    tolerance = max(1.15, min(1200.0, 850.0) * 0.002)
+
+    def distance_to_segment(point, start, end):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length_sq = dx * dx + dy * dy
+        if length_sq < 1e-9:
+            return math.dist(point, start)
+        t = max(0.0, min(1.0, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq))
+        projection = (start[0] + t * dx, start[1] + t * dy)
+        return math.dist(point, projection)
+
+    def rdp(values):
+        if len(values) <= 2:
+            return values
+        max_distance, split = 0.0, 0
+        for index in range(1, len(values) - 1):
+            distance = distance_to_segment(values[index], values[0], values[-1])
+            if distance > max_distance:
+                max_distance, split = distance, index
+        if max_distance <= tolerance:
+            return [values[0], values[-1]]
+        return rdp(values[:split + 1])[:-1] + rdp(values[split:])
+
+    return [[round(x, 1), round(y, 1)] for x, y in rdp(simplified)]
 
 
 def _sheet_layout(width: int, height: int) -> tuple[float, float, float]:
@@ -885,12 +1089,12 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict]) -> s
        '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
        '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
        '0','ENDTAB',
-       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','4']
-    for handle, (name, colour, lineweight) in enumerate([
-        ('SHEET',7,13),('PIPE_CANDIDATES',7,13),('VERIFIED_TEXT',7,13),('NOTES',8,9)
-    ], start=16):
+       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','5']
+    for handle, (name, colour, lineweight, flags) in enumerate([
+        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('VERIFIED_TEXT',7,13,0),('NOTES',8,9,0)
+    ], start=32):
         d += ['0','LAYER','5',format(handle,'X'),'330','2','100','AcDbSymbolTableRecord',
-              '100','AcDbLayerTableRecord','2',name,'70','0','62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
+              '100','AcDbLayerTableRecord','2',name,'70',str(flags),'62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
     d += ['0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES']
 
     # A3 frame, title rules and simple technical title block.
@@ -906,7 +1110,16 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict]) -> s
 
     for chain in _cad_edge_chains(edges):
         page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
-        d += dxf_polyline('PIPE_CANDIDATES',page_points,False,13)
+        d += dxf_polyline('PIPE_MAIN',page_points,False,13)
+
+    # Preserve everything omitted from the clean preview on a frozen review layer.
+    for edge in edges:
+        if edge.get('cad_include', edge.get('component_role') == 'line_structure'):
+            continue
+        geometry = edge.get('geometry') or []
+        if len(geometry) >= 2:
+            page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in geometry]
+            d += dxf_polyline('DETAIL_REVIEW',page_points,False,9)
 
     for annotation in annotations:
         if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
@@ -941,6 +1154,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     annotations, ocr_status = ocr_annotations(input_path, gray)
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
+    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
     # OCR overlap remains metadata for graph classification. Confirmed glyph
     # strokes were already filtered in extract_segments; continuous pipe lines survive.
     for edge in edges:
@@ -991,7 +1205,8 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,
-           "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5},
+           "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
+                    "clean_export_uses_coherent_routes":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
@@ -1000,11 +1215,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "geometry_candidates_preserved":len(segments),
                       "open_end_join_candidates":len(joins),
                       "components":len(components),
+                      **cad_selection,
                       "line_components":sum(1 for c in components if c['role']=='line_structure'),
                       "annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
-           "warnings":["Линии являются кандидатами детектора, а не подтверждёнными трубами.",
+           "warnings":["Чистый лист показывает связные маршруты; короткие штрихи символов оставлены в кандидатах для ручной проверки.",
                        "Пересечения не объединяются автоматически.",
                        "Уверенно распознанные символы экспортируются как CAD TEXT, а не как линии; сквозные трассы сохраняются.",
                        "Проверьте размеры и подписи перед использованием чертежа."]}

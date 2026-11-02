@@ -172,7 +172,7 @@ function showResult() {
     [summary.edges ?? graph.edges.length, 'связей'],
     [summary.crossings_to_review ?? graph.crossings.length, 'пересечений на проверку'],
     [summary.ocr_annotations ?? graph.annotations.length, 'OCR-подписей'],
-    [summary.line_components ?? 0, 'линейных компонентов']
+    [summary.cad_primary_edges ?? graph.edges.filter(edge => edge.cad_include).length, 'отрезков в чистой схеме']
   ];
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
@@ -210,9 +210,13 @@ function edgeLength(edge) {
   return Math.hypot(points.at(-1)[0] - points[0][0], points.at(-1)[1] - points[0][1]);
 }
 function shownEdges() {
-  return graph.edges.filter(edge => edge.visible !== false && (
-    edge.source === 'manual' || showAllSegments || (edge.component_role === 'line_structure')
-  ));
+  return graph.edges.filter(edge => {
+    if (edge.source === 'manual') return edge.visible !== false;
+    if (edge.visible === false) return false;
+    const primary = edge.user_include === true || edge.cad_include === true ||
+      (edge.cad_include === undefined && edge.component_role === 'line_structure');
+    return showAllSegments || primary;
+  });
 }
 function lineColor(edge) {
   if (edge.source === 'manual') return '#ca5f54';
@@ -286,25 +290,35 @@ function renderEdgeList() {
   const query = ($('edgeSearch').value || '').trim().toLowerCase();
   const filtered = graph.edges.filter(edge => !query || [edge.id, edge.detector, edge.component_id, edge.from, edge.to].some(value => String(value || '').toLowerCase().includes(query)));
   const visiblePage = filtered.slice(0, edgePage * EDGE_PAGE_SIZE);
-  $('edgeList').innerHTML = visiblePage.map(edge => `
-    <label class="rowitem"><input type="checkbox" data-toggle-edge="${escapeHtml(edge.id)}" ${edge.visible === false ? '' : 'checked'}>
+  $('edgeList').innerHTML = visiblePage.map(edge => {
+    const primary = edge.source === 'manual' || edge.user_include === true || edge.cad_include === true ||
+      (edge.cad_include === undefined && edge.component_role === 'line_structure');
+    const checked = edge.visible !== false && (showAllSegments || primary);
+    const role = edge.source === 'manual' ? 'ручная' : (primary ? 'основная' : (edge.cad_reason || 'деталь'));
+    return `
+    <label class="rowitem"><input type="checkbox" data-toggle-edge="${escapeHtml(edge.id)}" ${checked ? 'checked' : ''}>
       <span class="id">${escapeHtml(edge.id)}</span>
-      <span class="meta">${edgeLength(edge).toFixed(0)} px · ${escapeHtml(edge.detector || 'MANUAL')} · ${escapeHtml(edge.component_id || '')}</span>
+      <span class="meta">${edgeLength(edge).toFixed(0)} px · ${escapeHtml(edge.detector || 'MANUAL')} · ${escapeHtml(role)}</span>
       <span class="mini">${Math.round((edge.confidence || 0) * 100)}%</span>
-    </label>`).join('') || '<div class="helper">По этому запросу линий не найдено.</div>';
+    </label>`;
+  }).join('') || '<div class="helper">По этому запросу линий не найдено.</div>';
   $('edgeMore').hidden = visiblePage.length >= filtered.length;
   $('edgeMore').textContent = `Показать ещё (${Math.min(EDGE_PAGE_SIZE, filtered.length - visiblePage.length)})`;
   $('edgeList').querySelectorAll('[data-toggle-edge]').forEach(input => input.addEventListener('change', () => {
     const edge = graph.edges.find(item => item.id === input.dataset.toggleEdge);
-    if (edge) edge.visible = input.checked;
+    if (edge) {
+      edge.visible = input.checked;
+      if (input.checked && edge.cad_include === false) edge.user_include = true;
+      if (!input.checked) edge.user_include = false;
+    }
     renderOverlay();
     renderClean();
   }));
 }
 $('edgeSearch').addEventListener('input', () => { edgePage = 1; renderEdgeList(); });
 $('edgeMore').addEventListener('click', () => { edgePage++; renderEdgeList(); });
-$('allEdges').addEventListener('click', () => { showAllSegments = true; renderOverlay(); renderClean(); });
-$('longEdges').addEventListener('click', () => { showAllSegments = false; renderOverlay(); renderClean(); });
+$('allEdges').addEventListener('click', () => { showAllSegments = true; renderOverlay(); renderClean(); renderEdgeList(); });
+$('longEdges').addEventListener('click', () => { showAllSegments = false; renderOverlay(); renderClean(); renderEdgeList(); });
 $('showNodes').addEventListener('change', renderOverlay);
 $('showCrossings').addEventListener('change', renderOverlay);
 
@@ -476,7 +490,27 @@ function cleanCadPoints(sourcePoints) {
     if (!sameStraightStroke) simplified.push(b);
   }
   simplified.push(unique.at(-1));
-  return simplified.map(point => point.map(value => Number(value.toFixed(1))));
+
+  // Remove hand-drawn detector jitter while preserving real elbows and branches.
+  const tolerance = Math.max(1.15, Math.min(graph?.image?.width || 1200, graph?.image?.height || 850) * 0.002);
+  const distanceToSegment = (point, a, b) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const length2 = dx * dx + dy * dy;
+    if (length2 < 1e-9) return Math.hypot(point[0] - a[0], point[1] - a[1]);
+    const t = Math.max(0, Math.min(1, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2));
+    return Math.hypot(point[0] - (a[0] + t * dx), point[1] - (a[1] + t * dy));
+  };
+  const rdp = (list) => {
+    if (list.length <= 2) return list;
+    let maxDistance = 0, split = 0;
+    for (let i = 1; i < list.length - 1; i++) {
+      const distance = distanceToSegment(list[i], list[0], list.at(-1));
+      if (distance > maxDistance) { maxDistance = distance; split = i; }
+    }
+    if (maxDistance <= tolerance) return [list[0], list.at(-1)];
+    return [...rdp(list.slice(0, split + 1)).slice(0, -1), ...rdp(list.slice(split))];
+  };
+  return rdp(simplified).map(point => point.map(value => Number(value.toFixed(1))));
 }
 function cleanCadChains() {
   return buildChains(shownEdges()).map(chain => ({
@@ -568,12 +602,12 @@ function buildDxf() {
     '0','SECTION','2','TABLES','0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
     '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
     '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0','0','ENDTAB',
-    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','4'];
-  let layerHandle = 16;
-  for (const [name, color, lineweight] of [['SHEET',7,13],['PIPE_CANDIDATES',7,13],['VERIFIED_TEXT',7,13],['NOTES',8,9]]) {
+    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','5'];
+  let layerHandle = 32;
+  for (const [name, color, lineweight, flags] of [['SHEET',7,13,0],['PIPE_MAIN',7,13,0],['DETAIL_REVIEW',8,9,1],['VERIFIED_TEXT',7,13,0],['NOTES',8,9,0]]) {
     output.push('0','LAYER','5',layerHandle.toString(16).toUpperCase(),'330','2',
       '100','AcDbSymbolTableRecord','100','AcDbLayerTableRecord',
-      '2',name,'70','0','62',String(color),'6','CONTINUOUS','370',String(lineweight));
+      '2',name,'70',String(flags),'62',String(color),'6','CONTINUOUS','370',String(lineweight));
     layerHandle++;
   }
   output.push('0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES');
@@ -607,7 +641,14 @@ function buildDxf() {
 
   for (const chain of cleanCadChains()) {
     const points = chain.points.map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
-    addPolyline('PIPE_CANDIDATES',points,false,13);
+    addPolyline('PIPE_MAIN',points,false,13);
+  }
+  // Keep suppressed detector fragments available, but frozen by default in AutoCAD.
+  if (!showAllSegments) {
+    for (const edge of graph.edges.filter(item => item.source !== 'manual' && item.cad_include !== true && item.user_include !== true)) {
+      const points = (edge.geometry || []).map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
+      addPolyline('DETAIL_REVIEW',points,false,9);
+    }
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;

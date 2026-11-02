@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.2.1</title>
+  <title>CAD Reconstruction Engine · 4.2.2</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.2.1">
-  <script src="/app.js?v=4.2.1" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.2.2">
+  <script src="/app.js?v=4.2.2" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.2.1</b></div>
+      <div class="version-pill">ENGINE <b>4.2.2</b></div>
     </div>
   </header>
 
@@ -79,7 +79,7 @@
 
         <details class="card inspector-card" id="edgePanel" hidden open>
           <summary class="details-heading"><div><div class="step-label"><span>03A</span> ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count-pill" id="edgeCount">0</span></summary>
-          <p class="helper">Отметь линии, которые нужно оставить в чертеже. Режим «Основные» скрывает короткие и неоднозначные фрагменты, но не удаляет их из графа.</p>
+          <p class="helper">В чистый лист автоматически попадают связные трассы и длинные ветви. Короткие штрихи символов остаются в кандидатах и замороженном слое DETAIL_REVIEW DXF; их можно включить вручную.</p>
           <div class="list-tools"><input id="edgeSearch" type="search" placeholder="Найти E12 или HOUGH…" aria-label="Поиск линии"><button class="tiny-button" id="allEdges" type="button">Все</button><button class="tiny-button" id="longEdges" type="button">Основные</button></div>
           <div class="scrolllist" id="edgeList"></div>
           <button class="load-more" id="edgeMore" type="button" hidden>Показать ещё</button>
@@ -121,7 +121,7 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Новый технический чертёж</h2><p class="canvas-description">Чистый лист строится из выбранных геометрических кандидатов и проверенных надписей.</p></div>
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Чистый лист строится из выбранных геометрических кандидатов и проверенных надписей.</p></div>
             <div class="export-actions">
               <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
               <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
@@ -137,6 +137,6 @@
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.1</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.2</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>
