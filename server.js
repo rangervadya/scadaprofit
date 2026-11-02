@@ -28,13 +28,23 @@ app.use(helmet({ contentSecurityPolicy: { directives: {
 } }, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: '15mb' }));
 app.use(rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }));
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: 0,
+  setHeaders(res, filePath) {
+    if (/\.(html|css|js)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store, max-age=0');
+  }
+}));
 app.use('/jobs', express.static(DATA, { maxAge: '1h', dotfiles: 'deny', index: false }));
 
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => cb(null, /^image\/(jpeg|png|webp|tiff)$/.test(file.mimetype)) });
+  fileFilter: (_req, file, cb) => {
+    const extOk = /\.(jpe?g|png|webp|tiff?)$/i.test(file.originalname || '');
+    const mimeOk = /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
+    cb(null, extOk || mimeOk);
+  }
+});
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.0.0', mode: 'cad-reconstruction-engine',
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: '4.1.0', mode: 'cad-reconstruction-engine',
   geometry: 'OpenCV LSD + Hough candidate graph', ocr: 'advisory-only; never subtracts geometry', ollamaRequired: false }));
 
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
@@ -69,12 +79,15 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
   }
 });
 
-app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'), { headers: { 'Cache-Control': 'no-store, max-age=0' } }));
+app.use('/api', (_req, res) => res.status(404).json({ error: 'API-маршрут не найден.' }));
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: err?.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 18 МБ.' : 'Ошибка запроса.', details: err.message });
+  const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+  const message = err?.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 18 МБ.' : err?.code === 'LIMIT_UNEXPECTED_FILE' ? 'Можно загрузить только один файл за раз.' : 'Ошибка запроса.';
+  res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.0.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.1.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OpenCV line candidates; OCR is a separate annotation channel.');
 });

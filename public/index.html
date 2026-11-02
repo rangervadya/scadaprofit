@@ -1,72 +1,142 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f5f5f1">
-  <title>CAD Reconstruction Engine</title>
-  <link rel="stylesheet" href="/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101d27">
+  <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
+  <title>CAD Reconstruction Engine · 4.1</title>
+  <link rel="preconnect" href="/" crossorigin>
+  <link rel="stylesheet" href="/styles.css?v=4.1.0">
+  <script src="/app.js?v=4.1.0" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brandmark">CR</div>
-    <div><div class="brand">CAD RECONSTRUCTION ENGINE</div><div class="subbrand">Распознавание инженерных схем · локальная обработка</div></div>
-    <div class="version">ENGINE 4.0.0</div>
+    <div class="brand-lockup">
+      <div class="brandmark"><span>CR</span><i></i></div>
+      <div class="brand-copy">
+        <div class="brand-name">CAD <span>RECONSTRUCTION</span></div>
+        <div class="brand-caption">ENGINEERING DRAWING WORKSPACE</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
+      <div class="version-pill">ENGINE <b>4.1.0</b></div>
+    </div>
   </header>
-  <main class="layout">
-    <aside class="leftcol">
-      <section class="panel upload-panel">
-        <div class="eyebrow">ШАГ 01</div><h1>Исходный эскиз</h1>
-        <label class="dropzone" id="dropzone">
-          <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/tiff">
-          <span class="upload-icon">↑</span><strong id="fileName">Выбери фотографию или перетащи сюда</strong>
-          <small>JPG · PNG · WEBP · TIFF · до 18 МБ</small>
-        </label>
-        <button class="primary" id="analyzeBtn" disabled>Найти линии и построить граф</button>
-        <div class="progress" id="progress"><div></div></div>
-        <p class="hint">Геометрия извлекается отдельно от OCR. Текстовые области не вырезают линии труб.</p>
-      </section>
-      <section class="panel" id="statsPanel" hidden>
-        <div class="eyebrow">ШАГ 02</div><h2>Диагностика</h2>
-        <div class="stats" id="stats"></div>
-        <div class="statusline" id="statusline"></div>
-      </section>
-      <section class="panel" id="edgePanel" hidden>
-        <div class="sectionhead"><div><div class="eyebrow">ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count" id="edgeCount">0</span></div>
-        <p class="hint">Система нашла отрезки-кандидаты. Сними галочку с мусорного фрагмента. Связи не придумываются автоматически.</p>
-        <div class="toolbar"><button class="small" id="allEdges">Показать все</button><button class="small" id="longEdges">Только основные</button></div>
-        <div class="scrolllist" id="edgeList"></div>
-      </section>
-      <section class="panel" id="nodePanel" hidden>
-        <div class="sectionhead"><div><div class="eyebrow">ТОПОЛОГИЯ</div><h2>Узлы и соединения</h2></div><span class="count" id="nodeCount">0</span></div>
-        <p class="hint">Перетаскивай узлы на схеме. Для соединения выбери два узла и нажми кнопку ниже. Пересечения не соединяются автоматически.</p>
-        <button class="secondary" id="connectMode">＋ Соединить два выбранных узла</button>
-        <div id="connectHelp" class="hint" hidden>Выбери первый, затем второй узел на схеме. Нажми «Отмена», чтобы выйти.</div>
-        <div class="scrolllist compact" id="nodeList"></div>
-        <div class="subhead">Короткие разрывы (предложения, не автосоединения)</div>
-        <div class="scrolllist compact" id="joinList"></div>
-      </section>
-      <section class="panel" id="textPanel" hidden>
-        <div class="eyebrow">АННОТАЦИИ</div><h2>Подписи OCR</h2>
-        <p class="hint">OCR только предлагает текст. Отметь «Проверено», чтобы включить исправленную подпись в чистый чертёж.</p>
-        <div class="scrolllist" id="textList"></div>
-      </section>
-    </aside>
 
-    <section class="rightcol">
-      <section class="panel canvas-panel">
-        <div class="sectionhead"><div><div class="eyebrow">ШАГ 03</div><h2>Геометрия поверх оригинала</h2></div><div class="legend"><span><i class="dot orange"></i> LSD</span><span><i class="dot green"></i> Hough</span><span><i class="dot red"></i> узел</span></div></div>
-        <div class="viewtools"><label><input type="checkbox" id="showNodes"> Показать все узлы для редактирования</label><label><input type="checkbox" id="showCrossings" checked> Показать сомнительные пересечения</label></div>
-        <div class="image-stage empty" id="sourceStage"><div class="emptymsg">Загрузи эскиз и нажми «Найти линии»</div><img id="sourceImage" alt="Исходная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg></div>
-        <div class="canvas-foot"><span id="canvasMeta">Оригинал и найденные отрезки будут показаны здесь.</span><span id="selectMode">Режим: просмотр</span></div>
-      </section>
-      <section class="panel clean-panel">
-        <div class="sectionhead"><div><div class="eyebrow">ШАГ 04</div><h2>Новый технический чертёж</h2></div><div class="exports"><button class="small" id="exportSvg" disabled>SVG</button><button class="small" id="exportDxf" disabled>DXF</button><button class="small" id="exportJson" disabled>JSON</button><button class="small" id="exportPdf" disabled>PDF / печать</button></div></div>
-        <div class="clean-stage" id="cleanStage"><div class="emptymsg">После анализа здесь появится чистый векторный лист.</div></div>
-        <div class="review-note"><strong>Статус: требуется проверка.</strong> Линии-кандидаты не равны подтверждённой трубопроводной схеме. Проверь пересечения, окончания и размеры перед использованием.</div>
-      </section>
+  <main class="app-shell">
+    <section class="intro-row">
+      <div>
+        <div class="eyebrow">РУКОПИСНЫЙ ЭСКИЗ → ВЕКТОРНАЯ ОСНОВА</div>
+        <h1>Из эскиза — в техническую схему</h1>
+        <p class="intro-copy">Находим геометрические линии, строим граф узлов и готовим чистый векторный лист. Неоднозначные соединения остаются на проверку.</p>
+      </div>
+      <div class="workflow" aria-label="Этапы обработки">
+        <div class="flow-step active"><span>01</span><b>Фото</b></div><div class="flow-line"></div>
+        <div class="flow-step"><span>02</span><b>Геометрия</b></div><div class="flow-line"></div>
+        <div class="flow-step"><span>03</span><b>Проверка</b></div><div class="flow-line"></div>
+        <div class="flow-step"><span>04</span><b>Экспорт</b></div>
+      </div>
     </section>
+
+    <div class="workspace-grid">
+      <aside class="sidebar">
+        <section class="card upload-card">
+          <div class="card-heading">
+            <div><div class="step-label"><span>01</span> ИСХОДНЫЕ ДАННЫЕ</div><h2>Загрузить эскиз</h2></div>
+            <span class="soft-tag">JPG · PNG · WEBP</span>
+          </div>
+          <label class="dropzone" id="dropzone" for="fileInput">
+            <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff">
+            <span class="drop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15.5v3A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-3"/></svg></span>
+            <strong id="fileName">Перетащи фото сюда</strong>
+            <span class="drop-sub">или <u>выбери файл на компьютере</u></span>
+            <span class="drop-limit">До 18 МБ · JPG, PNG, WEBP, TIFF</span>
+          </label>
+          <div class="file-preview" id="filePreview" hidden>
+            <div class="file-thumb"><img id="previewThumb" alt="Предпросмотр загруженного эскиза"><span id="previewFallback">IMG</span></div>
+            <div class="file-info"><b id="previewName">—</b><span id="previewMeta">Ожидает обработки</span></div>
+            <button class="icon-button" id="clearFile" type="button" aria-label="Убрать фотографию" title="Убрать фотографию">×</button>
+          </div>
+          <button class="primary-button" id="analyzeBtn" type="button" disabled>
+            <span class="button-icon">✳</span><span>Найти линии и построить граф</span><span class="button-arrow">→</span>
+          </button>
+          <div class="progress-wrap" id="progressWrap" hidden>
+            <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
+            <div class="progress-track"><span></span></div>
+            <div class="progress-foot">OpenCV · LSD / Hough · OCR отдельно</div>
+          </div>
+          <div class="inline-alert" id="inlineError" role="alert" hidden></div>
+          <div class="privacy-note"><span>⌁</span><span>Фотография обрабатывается локально на твоём сервере. Внешние API не используются.</span></div>
+        </section>
+
+        <section class="card stats-card" id="statsPanel" hidden>
+          <div class="card-heading compact-heading"><div><div class="step-label"><span>02</span> РЕЗУЛЬТАТ АНАЛИЗА</div><h2>Сводка геометрии</h2></div><span class="review-badge">Нужна проверка</span></div>
+          <div class="stats-grid" id="stats"></div>
+          <p class="statusline" id="statusline"></p>
+        </section>
+
+        <details class="card inspector-card" id="edgePanel" hidden open>
+          <summary class="details-heading"><div><div class="step-label"><span>03A</span> ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count-pill" id="edgeCount">0</span></summary>
+          <p class="helper">Отметь линии, которые нужно оставить в чертеже. Режим «Основные» скрывает короткие и неоднозначные фрагменты, но не удаляет их из графа.</p>
+          <div class="list-tools"><input id="edgeSearch" type="search" placeholder="Найти E12 или HOUGH…" aria-label="Поиск линии"><button class="tiny-button" id="allEdges" type="button">Все</button><button class="tiny-button" id="longEdges" type="button">Основные</button></div>
+          <div class="scrolllist" id="edgeList"></div>
+          <button class="load-more" id="edgeMore" type="button" hidden>Показать ещё</button>
+        </details>
+
+        <details class="card inspector-card" id="nodePanel" hidden>
+          <summary class="details-heading"><div><div class="step-label"><span>03B</span> ТОПОЛОГИЯ</div><h2>Узлы и соединения</h2></div><span class="count-pill" id="nodeCount">0</span></summary>
+          <p class="helper">Включи узлы на схеме, чтобы перетаскивать их. Ручное соединение не означает, что пересечение было соединено изначально.</p>
+          <button class="secondary-button" id="connectMode" type="button">＋ Соединить два узла</button>
+          <div id="connectHelp" class="connect-help" hidden>Выбери первый узел, затем второй. Нажми «Отмена», чтобы выйти.</div>
+          <div class="scrolllist compact-list" id="nodeList"></div>
+          <div class="subheading">Возможные разрывы</div>
+          <div class="scrolllist compact-list" id="joinList"></div>
+        </details>
+
+        <details class="card inspector-card" id="textPanel" hidden>
+          <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Подписи OCR</h2></div><span class="count-pill" id="textCount">0</span></summary>
+          <p class="helper">OCR предлагает прочтение, но не подтверждает его. Отметь подпись проверенной, чтобы добавить её в SVG/DXF.</p>
+          <div class="scrolllist" id="textList"></div>
+        </details>
+      </aside>
+
+      <section class="main-column">
+        <section class="card canvas-card">
+          <div class="canvas-header">
+            <div><div class="step-label"><span>02</span> РАСПОЗНАВАНИЕ</div><h2>Геометрия поверх оригинала</h2><p class="canvas-description">Сравни исходный эскиз с найденными отрезками и узлами.</p></div>
+            <div class="canvas-tools">
+              <label class="check-control"><input type="checkbox" id="showNodes"><span class="check-ui"></span>Узлы</label>
+              <label class="check-control"><input type="checkbox" id="showCrossings" checked><span class="check-ui"></span>Пересечения</label>
+            </div>
+          </div>
+          <div class="legend-row"><span><i class="legend-dot lsd"></i>LSD</span><span><i class="legend-dot hough"></i>Hough</span><span><i class="legend-dot manual"></i>Ручные связи</span><span><i class="legend-dot node"></i>Узел на проверку</span><span class="mode-label" id="selectMode">Режим: просмотр</span></div>
+          <div class="image-stage" id="sourceStage">
+            <div class="stage-empty" id="sourceEmpty"><div class="empty-art"><span>01</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M12 74H48L67 54H101L124 30H148M48 74V88M101 54V17"/><circle cx="48" cy="74" r="4"/><circle cx="101" cy="54" r="4"/><circle cx="124" cy="30" r="4"/></svg></div><b>Здесь появится исходная схема</b><span>Загрузи фотографию слева, чтобы начать анализ.</span></div>
+            <div class="image-frame" id="imageFrame" hidden><img id="sourceImage" alt="Исходная инженерная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-label="Наложение найденной геометрии"></svg></div>
+          </div>
+          <div class="canvas-footer"><span id="canvasMeta">Ожидает изображения</span><span class="live-status"><i></i><span id="analysisState">ГОТОВ К РАБОТЕ</span></span></div>
+        </section>
+
+        <section class="card output-card">
+          <div class="output-header">
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Новый технический чертёж</h2><p class="canvas-description">Чистый лист строится из выбранных геометрических кандидатов и проверенных надписей.</p></div>
+            <div class="export-actions">
+              <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
+              <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
+              <button class="export-button" id="exportJson" type="button" disabled><b>JSON</b><span>Граф</span></button>
+              <button class="export-button" id="exportPdf" type="button" disabled><b>PDF</b><span>Печать</span></button>
+            </div>
+          </div>
+          <div class="clean-stage" id="cleanStage"><div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M14 75H54V48H95V26H145M54 48L79 73H125"/><circle cx="54" cy="48" r="5"/><circle cx="95" cy="26" r="5"/><circle cx="79" cy="73" r="5"/></svg></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div></div>
+          <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Детектор находит кандидаты линий, а не гарантированно распознаёт трубы. Проверь окончания, пересечения, размеры и подписи перед использованием.</p></div></div>
+        </section>
+
+        <section class="bottom-note"><span class="note-icon">i</span><span>OCR работает независимо от геометрии и никогда не вырезает пиксели труб. Все автоматические соединения и неоднозначные пересечения требуют подтверждения.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
+      </section>
+    </div>
   </main>
-  <footer>CAD Reconstruction Engine 4.0.0 · Offline-first · Геометрия не вырезается по OCR-боксам</footer>
-  <script src="/app.js" defer></script>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.1.0</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>
