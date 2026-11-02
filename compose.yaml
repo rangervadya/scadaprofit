@@ -44,7 +44,7 @@ services:
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b}"
-      QWEN_OCR_TIMEOUT: "40"
+      QWEN_OCR_TIMEOUT: "180"
       QWEN_OCR_TILE_GRID: "2"
       QWEN_OCR_UPSCALE: "2.0"
       QWEN_PIPE_TRACE_TIMEOUT: "240"
