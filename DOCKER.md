@@ -1,4 +1,4 @@
-# Docker deployment · CAD Reconstruction Engine 4.2.4
+# Docker deployment · CAD Reconstruction Engine 4.2.5
 
 The app image includes Node.js, Python, OpenCV, Pillow and Tesseract with English/Russian language data. The Compose stack also provides a local Ollama service for Qwen3-VL handwriting OCR and semantic pipe centre-line tracing. The clean CAD sheet relies on the semantic route response; pixel-level OpenCV detections remain review candidates.
 

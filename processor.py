@@ -86,7 +86,7 @@ def _parse_json_object(content: str) -> dict[str, Any]:
 
 
 def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
-               max_edge: int) -> tuple[dict[str, Any], float, tuple[int, int]]:
+               max_edge: int, num_predict: int = 1536) -> tuple[dict[str, Any], float, tuple[int, int]]:
     """Run one bounded local Ollama vision request and return its resize transform."""
     src_w, src_h = rgb.size
     resize_scale = min(1.0, max_edge / max(src_w, src_h))
@@ -100,7 +100,7 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
         'stream': False,
         'format': 'json',
-        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': 4096},
+        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': max(128, min(4096, int(num_predict)))},
     }
     request = urllib.request.Request(
         url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
@@ -131,7 +131,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
     errors: list[str] = []
     try:
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
-        timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '40')))
+        timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
+        max_output_tokens = max(256, min(2048, int(os.getenv('QWEN_OCR_MAX_TOKENS', '1024'))))
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
@@ -146,6 +147,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'если есть сомнение. Для совсем нечитаемого отдельного фрагмента можно вернуть text="?". '
             'Координаты bbox — пиксели текущего переданного фрагмента, начало в левом верхнем углу. '
             'Верни только JSON: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
+            'Не добавляй пояснений, описаний схемы или повторов. Не более 24 отдельных текстовых фрагментов на один кадр. '
             'Размер текущего фрагмента: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
@@ -188,7 +190,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             try:
                 parsed, resize_scale, sent_size = _qwen_call(
                     crop, prompt, url=url, model=model, timeout=timeout,
-                    max_edge=max_edge
+                    max_edge=max_edge, num_predict=max_output_tokens
                 )
                 coordinate_scale = crop_scale * resize_scale
                 calls_ok += 1
@@ -322,6 +324,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
     try:
         max_edge = max(1280, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '2048')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
+        max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1536'))))
         with Image.open(image_path) as source:
             rgb = ImageOps.exif_transpose(source).convert('RGB')
         route_input_scale = min(1.0, max_edge / max(rgb.size))
@@ -346,10 +349,12 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
             'Не возвращай пустой routes, если на изображении явно есть длинные линии труб. '
             'Не включай текст или арматуру в маршруты. Пример ответа: '
             '{"routes":[{"id":"P1","points":[[100,120],[300,120],[300,280]],"confidence":75}],"annotations":[]}. '
+            'Ограничь ответ только нужными данными: максимум 24 маршрута и максимум 32 точки на маршрут. '
             'Никакого Markdown и пояснений вне JSON.'
         )
         parsed, resize_scale, sent_size = _qwen_call(
-            rgb, prompt, url=url, model=model, timeout=timeout, max_edge=max_edge
+            rgb, prompt, url=url, model=model, timeout=timeout, max_edge=max_edge,
+            num_predict=max_output_tokens
         )
         raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', [])))))
         if not isinstance(raw_routes, list):

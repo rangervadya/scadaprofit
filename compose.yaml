@@ -45,9 +45,11 @@ services:
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b}"
       QWEN_OCR_TIMEOUT: "180"
+      QWEN_OCR_MAX_TOKENS: "1024"
       QWEN_OCR_TILE_GRID: "2"
       QWEN_OCR_UPSCALE: "2.0"
       QWEN_PIPE_TRACE_TIMEOUT: "240"
+      QWEN_PIPE_MAX_TOKENS: "1536"
       QWEN_PIPE_MAX_IMAGE_EDGE: "2048"
       QWEN_PIPE_MIN_CONFIDENCE: "35"
     depends_on:

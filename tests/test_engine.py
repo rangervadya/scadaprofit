@@ -389,5 +389,49 @@ class GraphTests(unittest.TestCase):
         self.assertIn("100\nAcDbPolyline", dxf)
 
 
+    def test_ocr_uses_separate_output_token_budget(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            with patch.dict(os.environ, {
+                'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_MAX_TOKENS': '700',
+                'QWEN_OCR_TIMEOUT': '180', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+                'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
+                annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
+            self.assertTrue(status['available'])
+            self.assertEqual(call.call_args.kwargs['num_predict'], 700)
+
+    def test_semantic_routes_use_separate_output_token_budget(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response = {'routes': [{'id': 'P1', 'points': [[100, 100], [900, 100]], 'confidence': 80}]}
+            with patch.dict(os.environ, {
+                'QWEN_PIPE_MAX_TOKENS': '1200', 'QWEN_PIPE_TRACE_TIMEOUT': '240',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', return_value=(response, 1.0, (1000, 800))) as call:
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertTrue(status['available'])
+            self.assertEqual(len(routes), 1)
+            self.assertEqual(call.call_args.kwargs['num_predict'], 1200)
+
+    def test_qwen_call_serializes_requested_num_predict(self):
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self):
+                return json.dumps({'message': {'content': '{"ok":true}'}}).encode('utf-8')
+        from PIL import Image as PILImage
+        image = PILImage.new('RGB', (32, 24), 'white')
+        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+            processor._qwen_call(image, 'return json', url='http://ollama.test/api/chat',
+                                  model='qwen3-vl:4b-instruct', timeout=10, max_edge=64, num_predict=777)
+        payload = json.loads(mocked.call_args.args[0].data.decode('utf-8'))
+        self.assertEqual(payload['options']['num_predict'], 777)
+
+
 if __name__ == "__main__":
     unittest.main()
