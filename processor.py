@@ -264,14 +264,17 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'Ты читаешь рукописную инженерную схему. Это задача OCR, не трассировки линий. '
             'Внимательно перечисли все читаемые надписи в ЭТОМ фрагменте, включая отдельные цифры, '
             'числа, DN, Ду, Ø, диаметры, размеры, буквенные коды и единицы. Не пропускай короткие метки. '
-            'Не переписывай трубы, стрелки и графические символы. Один bbox — одна надпись или одна группа цифр, '
+            'Не переписывай трубы, стрелки и графические символы. Отмечай ВСЕ видимые рукописные текстовые области, '
+            'даже если слово или цифры невозможно прочитать: в таком случае верни text="?" и bbox всей надписи. '
+            'Не пропускай неразборчивые рукописные пометки. Один bbox — одна надпись или одна группа цифр, '
             'которая написана слитно. Не объединяй разнесённые подписи. Если чтение сомнительно, укажи '
             'наиболее вероятный буквальный текст и низкую confidence; не придумывай символы. '
+            'Границы bbox должны охватывать все штрихи надписи, включая длинные связные рукописные штрихи. '
             'Координаты bbox — пиксели отправленного изображения, x/y — левый верхний угол, w/h — ширина/высота. '
             'Верни объект annotations как массив, даже если найден только один текст. '
             'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
             'Пример формы: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
-            'Максимум 48 надписей на фрагмент. Размер изображения: {width}x{height} px.'
+            'Максимум 48 текстовых областей на фрагмент. Размер изображения: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
@@ -363,7 +366,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     accepted = confidence >= 65 and has_alnum
                     # Even a not-yet-approved reading marks a text-shaped region so
                     # its strokes cannot silently become pipe geometry.
-                    geometry_exclude = confidence >= 32 and has_alnum
+                    geometry_exclude = confidence >= 25 and (has_alnum or text in {'?', '??', 'неразборчиво'})
                     items.append({
                         'id': f'Q{len(items) + 1}', 'text': text,
                         'confidence': round(max(0.0, min(100.0, confidence)), 1),
@@ -683,7 +686,7 @@ def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, A
                 'id': f'T{len(tesseract_items) + 1}', 'text': text,
                 'confidence': round(confidence, 1), 'bbox': box,
                 'verified': accepted, 'include': accepted,
-                'geometry_exclude': confidence >= 32 and has_alnum, 'source': 'tesseract'
+                'geometry_exclude': confidence >= 20 and has_alnum, 'source': 'tesseract'
             })
     except Exception as error:
         tesseract_error = str(error)[:180]
@@ -836,8 +839,12 @@ def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[s
     x, y, bw, bh = (float(box.get(key, 0)) for key in ('x', 'y', 'w', 'h'))
     if bw <= 0 or bh <= 0:
         return False
-    pad = max(2.0, min(8.0, min(bw, bh) * 0.10))
-    left, top, right, bottom = x - pad, y - pad, x + bw + pad, y + bh + pad
+    # Handwritten strokes often extend a little beyond the tight OCR rectangle.
+    # Expand proportionally in each direction, but cap the expansion so nearby
+    # parallel pipes are not swallowed by a large word box.
+    pad_x = max(3.0, min(12.0, bw * 0.06))
+    pad_y = max(3.0, min(10.0, bh * 0.24))
+    left, top, right, bottom = x - pad_x, y - pad_y, x + bw + pad_x, y + bh + pad_y
     x1, y1, x2, y2 = map(float, seg)
     length = math.hypot(x2 - x1, y2 - y1)
     if length < 1:
@@ -853,7 +860,7 @@ def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[s
         left <= x1 <= right and top <= y1 <= bottom and
         left <= x2 <= right and top <= y2 <= bottom
     )
-    if not endpoints_inside and coverage < 0.88:
+    if not endpoints_inside and coverage < 0.72:
         return False
 
     # A real pipe running underneath a text label normally continues on both
@@ -882,6 +889,12 @@ def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[s
 
 
 def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Return OCR-detected text regions used to keep glyph strokes out of pipe geometry.
+
+    A region may be geometrically classified as text even when its spelling is
+    unverified. Illegible handwriting must not become a CAD pipe merely because
+    OCR cannot confidently transcribe it.
+    """
     boxes = []
     for item in annotations or []:
         if not (item.get('geometry_exclude') or item.get('verified') or item.get('include')):
@@ -1723,7 +1736,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"semanticTrace":route_status,
-           "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
+           "rules":{"confirmed_ocr_strokes_become_text":True,"illegible_ocr_regions_mask_geometry":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
                     "clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_review_only_until_geometry_validation":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
@@ -1732,6 +1745,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "cad_primary_chains":len(_cad_edge_chains(edges)),
                       "primary_geometry_source":"opencv-selected-graph",
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
+                      "geometry_excluded_text_regions":len(_confirmed_text_boxes(annotations)),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
                       "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
                       "qwen_verified_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl' and a.get('verified')]),

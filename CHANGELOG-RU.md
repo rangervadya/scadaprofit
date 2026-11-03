@@ -1,3 +1,9 @@
+## 4.2.9
+- OCR prompt asks for bounding boxes of illegible handwritten text (`?`) so its strokes are not exported as pipe geometry.
+- Low-confidence OCR regions can be used for geometry exclusion without being exported as verified CAD TEXT.
+- Expanded OCR boxes and relaxed segment coverage test, while preserving continuous pipe strokes crossing a text region when ink support continues on both sides.
+- Added `geometry_excluded_text_regions` diagnostic count.
+
 ## 4.2.8
 
 - Исправлена логика клиентского SVG/DXF: наличие массива Qwen `semanticRoutes` больше не отключает OpenCV-рёбра с `cad_include=true` в основном слое.

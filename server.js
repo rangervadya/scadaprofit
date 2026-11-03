@@ -86,7 +86,7 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.2.8', mode: 'cad-reconstruction-engine',
+  res.json({ ok: true, version: '4.2.9', mode: 'cad-reconstruction-engine',
     geometry: 'Selected OpenCV graph paths form PIPE_MAIN; Qwen semantic traces are separate QWEN_REVIEW suggestions',
     ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract supplementary OCR',
     qwenModel,
@@ -150,6 +150,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.2.8: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.2.9: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: selected OpenCV graph paths for PIPE_MAIN; Qwen routes are review-only.');
 });

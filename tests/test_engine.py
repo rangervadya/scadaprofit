@@ -154,7 +154,7 @@ class GraphTests(unittest.TestCase):
             response_body = {
                 "message": {"content": json.dumps({"annotations": [
                     {"text": "DN 50", "bbox": {"x": 100, "y": 80, "w": 60, "h": 20}, "confidence": 92},
-                    {"text": "?", "bbox": {"x": 300, "y": 100, "w": 20, "h": 18}, "confidence": 41},
+                    {"text": "?", "bbox": {"x": 300, "y": 100, "w": 20, "h": 18}, "confidence": 29},
                 ]})}
             }
             class FakeResponse:
@@ -168,7 +168,15 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(annotations[0]["bbox"], {"x": 200, "y": 160, "w": 120, "h": 40})
             self.assertTrue(annotations[0]["include"])
             self.assertFalse(annotations[1]["include"])
+            self.assertTrue(annotations[1]["geometry_exclude"],
+                            "an illegible handwritten region must mask glyph strokes even when not text-verified")
 
+    def test_expanded_text_box_masks_a_handwritten_stroke_with_loose_endpoints(self):
+        ink = np.zeros((100, 160), np.uint8)
+        cv2.line(ink, (52, 50), (98, 50), 255, 2, cv2.LINE_AA)
+        dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
+        box = {"x": 55, "y": 40, "w": 40, "h": 20}
+        self.assertTrue(processor._segment_inside_text_box((52, 50, 98, 50), box, dilated))
 
     def test_low_confidence_ocr_box_can_mask_glyphs_without_cutting_a_pipe(self):
         gray = np.full((100, 160), 255, np.uint8)
