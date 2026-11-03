@@ -89,7 +89,7 @@ OCR_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
         'annotations': {
-            'type': 'array', 'maxItems': 24,
+            'type': 'array', 'maxItems': 48,
             'items': {
                 'type': 'object',
                 'properties': {
@@ -115,7 +115,7 @@ PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
         'routes': {
-            'type': 'array', 'maxItems': 24,
+            'type': 'array', 'maxItems': 48,
             'items': {
                 'type': 'object',
                 'properties': {
@@ -271,7 +271,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'Верни объект annotations как массив, даже если найден только один текст. '
             'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
             'Пример формы: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
-            'Максимум 24 надписи на фрагмент. Размер изображения: {width}x{height} px.'
+            'Максимум 48 надписей на фрагмент. Размер изображения: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
@@ -323,6 +323,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 raw_items, annotation_key = _annotation_items_from_response(parsed)
                 call_diagnostics['annotation_key'] = annotation_key
                 call_diagnostics['raw_annotations'] = len(raw_items)
+                call_diagnostics['possibly_capped_at_schema_limit'] = len(raw_items) >= 48
                 accepted_before = len(items)
                 for raw in raw_items:
                     if not isinstance(raw, dict):
@@ -505,7 +506,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'действительно нет ни одного длинного линейного участка трубы. '
                     f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху. '
                     'Каждый элемент routes — ОДИН прямой отрезок, points содержит ровно две точки [[x1,y1],[x2,y2]]. '
-                    'Верни массив routes, а не одну общую полилинию. Максимум 24 отрезка. '
+                    'Верни массив routes, а не одну общую полилинию. Максимум 48 отрезков. '
                     'Пример: {"routes":[{"id":"S1","points":[[20,80],[320,80]],"confidence":70}]}. '
                     'Верни только JSON без текста и без объяснений.'
                 )
@@ -530,10 +531,11 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                         raw_routes = [{'id': 'P1', 'points': raw_routes}]
                     raw_count += len(raw_routes)
                     diag['raw_routes'] = len(raw_routes)
+                    diag['possibly_capped_at_schema_limit'] = len(raw_routes) >= 48
                     accepted_before = len(result)
                     coordinate_scale = crop_scale * resize_scale
                     core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
-                    for raw_index, raw in enumerate(raw_routes[:24], 1):
+                    for raw_index, raw in enumerate(raw_routes[:48], 1):
                         if isinstance(raw, list):
                             raw = {'points': raw}
                         if not isinstance(raw, dict):
@@ -1512,15 +1514,19 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
         f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})" fill="none" stroke="#15191d" stroke-width="{line_width:.4f}" stroke-linecap="round" stroke-linejoin="round">'
     ]
-    clean_chains = _semantic_route_chains(semantic_routes) if semantic_routes is not None else _cad_edge_chains(edges)
+    # The primary drawing must not depend on a vision model's incomplete or
+    # geometrically degenerate route list. Use the detector graph after its
+    # topology/length/symbol-stub selection. Qwen suggestions remain available
+    # in graph.json and on the frozen QWEN_REVIEW DXF layer.
+    clean_chains = _cad_edge_chains(edges)
     for chain in clean_chains:
         pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
-    if semantic_routes is not None and not clean_chains:
-        out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>')
-        detail = (semantic_status or {}).get('error') or 'См. журнал анализа и проверьте Ollama / Qwen3-VL.'
-        hint = (semantic_status or {}).get('hint') or 'Пиксельные кандидаты сохранены отдельно для проверки.'
+    if not clean_chains:
+        out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ</text>')
+        detail = (semantic_status or {}).get('error') or 'Проверьте исходное изображение и параметры выделения геометрии.'
+        hint = (semantic_status or {}).get('hint') or 'Результаты Qwen сохранены отдельно для проверки.'
         out.append(f'<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(detail)[:150])}</text>')
         out.append(f'<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(hint)[:150])}</text>')
 
@@ -1586,9 +1592,9 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
        '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
        '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
        '0','ENDTAB',
-       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','5']
+       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','6']
     for handle, (name, colour, lineweight, flags) in enumerate([
-        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('VERIFIED_TEXT',7,13,0),('NOTES',8,9,0)
+        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('QWEN_REVIEW',30,9,1),('VERIFIED_TEXT',7,13,0),('NOTES',8,9,0)
     ], start=32):
         d += ['0','LAYER','5',format(handle,'X'),'330','2','100','AcDbSymbolTableRecord',
               '100','AcDbLayerTableRecord','2',name,'70',str(flags),'62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
@@ -1605,21 +1611,29 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     d += dxf_polyline('SHEET',[(1010,32),(1164,32),(1164,66),(1010,66)],True,9)
     d += dxf_polyline('SHEET',[(1010,49),(1164,49)],False,9)
 
-    clean_chains = _semantic_route_chains(semantic_routes) if semantic_routes is not None else _cad_edge_chains(edges)
+    # Primary CAD geometry comes from the selected OpenCV topology graph. This
+    # selection already suppresses short symbol strokes and retains coherent
+    # line paths; Qwen is deliberately not allowed to replace it wholesale.
+    clean_chains = _cad_edge_chains(edges)
     for chain in clean_chains:
         page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
         d += dxf_polyline('PIPE_MAIN',page_points,False,13)
 
-    # Preserve raw OpenCV candidates on a frozen review layer. When semantic
-    # tracing is active (including an empty result), no detector edge is silently
-    # promoted to a main pipe; all candidates stay available for inspection.
+    # Keep rejected/ambiguous detector fragments on a frozen layer.
     for edge in edges:
-        if semantic_routes is None and edge.get('cad_include', edge.get('component_role') == 'line_structure'):
+        if edge.get('cad_include', edge.get('component_role') == 'line_structure'):
             continue
         geometry = edge.get('geometry') or []
         if len(geometry) >= 2:
             page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in geometry]
             d += dxf_polyline('DETAIL_REVIEW',page_points,False,9)
+
+    # Semantic traces from Qwen are useful diagnostics, but are not trusted as
+    # primary geometry until their coordinates and coverage are validated.
+    # They are therefore preserved on a separate frozen layer.
+    for chain in _semantic_route_chains(semantic_routes):
+        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
+        d += dxf_polyline('QWEN_REVIEW',page_points,False,9)
 
     for annotation in annotations:
         if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
@@ -1653,8 +1667,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     ink=make_ink_mask(bgr,gray)
     annotations, ocr_status = ocr_annotations(input_path, gray)
     semantic_routes, route_status = _qwen_semantic_routes(input_path, w, h)
-    # Geometry detector remains a review channel only; a semantic route result,
-    # when available, is the sole source for the clean primary CAD sheet.
+    # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
+    # traces are retained as independent review suggestions and cannot erase
+    # detector geometry when the vision model returns a sparse/degenerate list.
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
@@ -1709,10 +1724,13 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"semanticTrace":route_status,
            "rules":{"confirmed_ocr_strokes_become_text":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
-                    "clean_export_uses_semantic_pipe_routes":True,"pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
+                    "clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_review_only_until_geometry_validation":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
+                      "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
+                      "cad_primary_chains":len(_cad_edge_chains(edges)),
+                      "primary_geometry_source":"opencv-selected-graph",
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
                       "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
@@ -1728,14 +1746,17 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
-           "warnings":["Основной слой PIPE_MAIN строится по семантическим маршрутам Qwen; сырые LSD/Hough-отрезки вынесены на замороженный DETAIL_REVIEW.",
+           "warnings":["Основной слой PIPE_MAIN строится по отобранным и объединённым CAD-путям графа OpenCV; Qwen-маршруты сохранены отдельно на замороженном слое QWEN_REVIEW.",
+                       "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
                        "Пересечения не объединяются автоматически.",
                        "Распознанные подписи экспортируются как редактируемый CAD TEXT; текстовые области исключаются из линейных кандидатов.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
     if not route_status.get('available') or not semantic_routes:
-        graph['warnings'].append('Семантическая трассировка труб Qwen не дала подтверждённых маршрутов. Основной слой PIPE_MAIN оставлен пустым; пиксельные кандидаты сохранены только на замороженном слое DETAIL_REVIEW. Причина: ' + str(route_status.get('error') or 'неизвестна') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
+        graph['warnings'].append('Qwen не предоставила семантические маршруты для дополнительной проверки. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
+    if not _cad_edge_chains(edges):
+        graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     return graph
 
