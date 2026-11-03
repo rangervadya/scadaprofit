@@ -58,7 +58,49 @@ class GraphTests(unittest.TestCase):
         nodes, edges, _ = processor.endpoint_clusters(segments)
         processor.select_primary_cad_edges(nodes, edges, 900)
         self.assertFalse(edges[0]["cad_include"])
-        self.assertEqual(edges[0]["cad_reason"], "isolated-mark")
+        self.assertEqual(edges[0]["cad_reason"], "isolated-stroke-review")
+
+    def test_long_isolated_stroke_is_review_only_not_pipe_main(self):
+        # A long dimension line / arrow shaft / handwriting flourish can be
+        # geometrically indistinguishable from a pipe when it has no topology.
+        segments = [
+            {"x1": 20.0, "y1": 40.0, "x2": 210.0, "y2": 40.0,
+             "source": "LSD", "support": .96, "length": 190.0, "angle": 0}
+        ]
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        stats = processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertFalse(edges[0]["cad_include"])
+        self.assertEqual(edges[0]["cad_reason"], "isolated-stroke-review")
+        self.assertEqual(stats["cad_primary_edges"], 0)
+        self.assertEqual(stats["cad_selection_reasons"]["isolated-stroke-review"], 1)
+
+    def test_connected_ocr_overlapping_handwriting_component_is_not_pipe(self):
+        # A compact connected chain of handwritten strokes should be classified
+        # as text/annotation even though its total length looks substantial.
+        segments = [
+            {"x1": 20.0, "y1": 40.0, "x2": 42.0, "y2": 20.0, "source": "LSD", "support": .9, "length": 29.7, "angle": -42, "ocr_overlap": .8},
+            {"x1": 42.0, "y1": 20.0, "x2": 58.0, "y2": 43.0, "source": "LSD", "support": .9, "length": 28.0, "angle": 55, "ocr_overlap": .8},
+            {"x1": 58.0, "y1": 43.0, "x2": 78.0, "y2": 19.0, "source": "LSD", "support": .9, "length": 31.2, "angle": -50, "ocr_overlap": .8},
+            {"x1": 78.0, "y1": 19.0, "x2": 96.0, "y2": 42.0, "source": "LSD", "support": .9, "length": 29.2, "angle": 52, "ocr_overlap": .8},
+        ]
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(len(components), 1)
+        self.assertEqual(components[0]["role"], "text_or_annotation")
+        processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertFalse(any(edge["cad_include"] for edge in edges))
+
+    def test_multi_edge_pipe_route_remains_primary(self):
+        # A connected pipe with a real elbow is retained; only isolated strokes
+        # and text-like components are denied automatic promotion.
+        segments = [
+            {"x1": 20.0, "y1": 100.0, "x2": 100.0, "y2": 100.0, "source": "LSD", "support": .95, "length": 80.0, "angle": 0},
+            {"x1": 100.0, "y1": 100.0, "x2": 100.0, "y2": 180.0, "source": "LSD", "support": .95, "length": 80.0, "angle": 90},
+            {"x1": 100.0, "y1": 180.0, "x2": 190.0, "y2": 180.0, "source": "LSD", "support": .95, "length": 90.0, "angle": 0},
+        ]
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(components[0]["role"], "line_structure")
+        stats = processor.select_primary_cad_edges(nodes, edges, 900)
+        self.assertEqual(stats["cad_primary_edges"], 3)
 
     def test_crossing_is_not_auto_joined(self):
         segments = [
@@ -83,8 +125,8 @@ class GraphTests(unittest.TestCase):
 
     def test_ocr_overlap_does_not_reclassify_long_trace(self):
         segments = [
-            {"x1": 10.0, "y1": 20.0, "x2": 60.0, "y2": 20.0, "source": "LSD", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0},
-            {"x1": 60.0, "y1": 20.0, "x2": 110.0, "y2": 20.0, "source": "HOUGH", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0},
+            {"x1": 10.0, "y1": 20.0, "x2": 60.0, "y2": 20.0, "source": "LSD", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0, "text_crossing": True},
+            {"x1": 60.0, "y1": 20.0, "x2": 110.0, "y2": 20.0, "source": "HOUGH", "support": .9, "length": 50, "angle": 0, "ocr_overlap": 1.0, "text_crossing": True},
         ]
         _, edges, components = processor.endpoint_clusters(segments)
         self.assertEqual(len(edges), 2)
@@ -170,6 +212,33 @@ class GraphTests(unittest.TestCase):
             self.assertFalse(annotations[1]["include"])
             self.assertTrue(annotations[1]["geometry_exclude"],
                             "an illegible handwritten region must mask glyph strokes even when not text-verified")
+
+    def test_pipe_through_multiple_adjacent_ocr_boxes_is_preserved(self):
+        gray = np.full((100, 240), 255, np.uint8)
+        ink = np.zeros((100, 240), np.uint8)
+        cv2.line(gray, (10, 55), (230, 55), 25, 2, cv2.LINE_AA)
+        cv2.line(ink, (10, 55), (230, 55), 255, 2, cv2.LINE_AA)
+        annotations = [
+            {"source": "qwen3-vl", "text": "1500", "bbox": {"x": 52, "y": 40, "w": 42, "h": 24}},
+            {"source": "tesseract", "text": "DN50", "bbox": {"x": 112, "y": 40, "w": 46, "h": 24}},
+        ]
+        candidates = processor.extract_segments(gray, ink, annotations)
+        self.assertTrue(any(item['length'] > 180 and item['text_crossing'] for item in candidates))
+
+    def test_union_of_adjacent_ocr_boxes_masks_word_strokes(self):
+        gray = np.full((110, 220), 255, np.uint8)
+        ink = np.zeros((110, 220), np.uint8)
+        # A zig-zag handwritten word covered by two adjacent OCR boxes.
+        pts = [(55, 52), (72, 31), (89, 54), (106, 30), (124, 53), (145, 32)]
+        for a, b in zip(pts, pts[1:]):
+            cv2.line(gray, a, b, 25, 2, cv2.LINE_AA)
+            cv2.line(ink, a, b, 255, 2, cv2.LINE_AA)
+        annotations = [
+            {"source": "qwen3-vl", "text": "AB", "bbox": {"x": 50, "y": 25, "w": 48, "h": 34}},
+            {"source": "tesseract", "text": "CD", "bbox": {"x": 96, "y": 24, "w": 54, "h": 35}},
+        ]
+        candidates = processor.extract_segments(gray, ink, annotations)
+        self.assertFalse(any(item.get("ocr_overlap", 0) >= 0.08 for item in candidates))
 
     def test_expanded_text_box_masks_a_handwritten_stroke_with_loose_endpoints(self):
         ink = np.zeros((100, 160), np.uint8)
@@ -441,6 +510,45 @@ class GraphTests(unittest.TestCase):
         # DXF layer flag 1 means frozen by default.
         self.assertIn("DETAIL_REVIEW\n70\n1", dxf)
 
+    def test_analyze_writes_text_mask_and_keeps_only_connected_pipe_as_primary(self):
+        with TemporaryDirectory() as temp:
+            source = Path(temp) / 'source.png'
+            out_dir = Path(temp) / 'job'
+            out_dir.mkdir()
+            image = np.full((906, 1280, 3), 255, np.uint8)
+            # A connected pipe with two elbows.
+            cv2.line(image, (100, 220), (450, 220), (35, 45, 60), 3, cv2.LINE_AA)
+            cv2.line(image, (450, 220), (450, 430), (35, 45, 60), 3, cv2.LINE_AA)
+            cv2.line(image, (450, 430), (850, 430), (35, 45, 60), 3, cv2.LINE_AA)
+            # A label box masks its characters from geometry.
+            cv2.putText(image, 'DN 50', (230, 190), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (30, 50, 70), 2, cv2.LINE_AA)
+            # An isolated long dimension/arrow stroke must stay review-only.
+            cv2.line(image, (900, 100), (1180, 100), (35, 45, 60), 2, cv2.LINE_AA)
+            cv2.imwrite(str(source), image)
+            annotations = [{
+                'id': 'Q1', 'source': 'qwen3-vl', 'text': 'DN 50',
+                'bbox': {'x': 225, 'y': 160, 'w': 110, 'h': 38},
+                'confidence': 95, 'verified': True, 'include': True,
+                'geometry_exclude': True,
+            }]
+            with patch.object(processor, 'ocr_annotations', return_value=(annotations, {
+                    'qwen': {'available': True, 'annotations': 1},
+                    'tesseract': {'annotations': 0}})),                  patch.object(processor, '_qwen_semantic_routes', return_value=([], {
+                    'available': True, 'routes': 0, 'raw_routes': 0,
+                    'successful_tiles': 4, 'tiles': 4, 'error': 'empty in test'})):
+                graph = processor.analyze(str(source), str(out_dir))
+            self.assertEqual(graph['summary']['cad_primary_edges'], 3)
+            self.assertEqual(graph['summary']['isolated_strokes_kept_for_review'], 1)
+            self.assertEqual(graph['summary']['text_regions_used_for_geometry_mask'], 1)
+            for filename in ('primary-overlay.png', 'text-region-mask.png',
+                             'ink-without-text-boxes.png', 'ink-inside-text-boxes.png'):
+                self.assertTrue((out_dir / filename).exists(), filename)
+            self.assertTrue((out_dir / 'drawing.dxf').exists())
+            dxf = (out_dir / 'drawing.dxf').read_text(encoding='utf-8')
+            self.assertIn('PIPE_MAIN', dxf)
+            self.assertIn('DETAIL_REVIEW', dxf)
+
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
         annotations = [{"verified": True, "text": "DN50", "bbox": {"x": 12, "y": 15, "w": 25, "h": 9}}]
@@ -512,7 +620,7 @@ class GraphTests(unittest.TestCase):
                 ocr_kwargs = call.call_args.kwargs
                 self.assertEqual(ocr_kwargs['num_predict'], 2048)
                 self.assertEqual(ocr_kwargs['format_schema']['required'], ['annotations'])
-                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 48)
+                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 64)
 
             with patch.dict(os.environ, {
                 'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',

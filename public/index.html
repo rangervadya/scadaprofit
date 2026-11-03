@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.2.9</title>
+  <title>CAD Reconstruction Engine · 4.3.0</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.2.9">
-  <script src="/app.js?v=4.2.9" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.0">
+  <script src="/app.js?v=4.3.0" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.2.9</b></div>
+      <div class="version-pill">ENGINE <b>4.3.0</b></div>
     </div>
   </header>
 
@@ -30,7 +30,7 @@
       <div>
         <div class="eyebrow">РУКОПИСНЫЙ ЭСКИЗ → ВЕКТОРНАЯ ОСНОВА</div>
         <h1>Из эскиза — в техническую схему</h1>
-        <p class="intro-copy">Qwen3-VL отдельно восстанавливает осевые маршруты труб и читает рукописные размеры. OpenCV сохраняет исходные штрихи как кандидаты для проверки, а не подменяет ими трубопроводы.</p>
+        <p class="intro-copy">OCR сначала отмечает области рукописных подписей, чтобы их штрихи не попадали в трубопроводную геометрию. OpenCV собирает связные маршруты с проверкой топологии; Qwen даёт независимые подсказки, а неоднозначные линии остаются на проверке.</p>
       </div>
       <div class="workflow" aria-label="Этапы обработки">
         <div class="flow-step active"><span>01</span><b>Фото</b></div><div class="flow-line"></div>
@@ -65,7 +65,7 @@
           <div class="progress-wrap" id="progressWrap" hidden>
             <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
             <div class="progress-track"><span></span></div>
-            <div class="progress-foot">Qwen3-VL · маршруты труб · OCR по фрагментам</div>
+            <div class="progress-foot">OCR-маска · геометрия OpenCV · семантическая проверка Qwen</div>
           </div>
           <div class="inline-alert" id="inlineError" role="alert" hidden></div>
           <div class="privacy-note"><span>⌁</span><span>Фотография обрабатывается локально на твоём сервере. Внешние API не используются.</span></div>
@@ -117,11 +117,12 @@
             <div class="image-frame" id="imageFrame" hidden><img id="sourceImage" alt="Исходная инженерная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-label="Наложение найденной геометрии"></svg></div>
           </div>
           <div class="canvas-footer"><span id="canvasMeta">Ожидает изображения</span><span class="live-status"><i></i><span id="analysisState">ГОТОВ К РАБОТЕ</span></span></div>
+          <div class="diagnostic-links" id="diagnosticLinks" hidden></div>
         </section>
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Основной лист строится из отобранных и объединённых геометрических путей OpenCV и проверенных текстовых обозначений. Qwen используется как дополнительный источник проверки, а не как единственный источник труб.</p></div>
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Основной слой содержит связные маршруты OpenCV после исключения OCR-областей и проверки топологии. Одиночные длинные штрихи и неоднозначные группы не выдаются автоматически за трубы.</p></div>
             <div class="export-actions">
               <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
               <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
@@ -133,10 +134,10 @@
           <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
         </section>
 
-        <section class="bottom-note"><span class="note-icon">i</span><span>OpenCV формирует основные геометрические пути после отбора и топологической сборки. Qwen предлагает дополнительные семантические маршруты на отдельном замороженном слое QWEN_REVIEW; остальные кандидаты доступны в DETAIL_REVIEW. Подписи OCR экспортируются как редактируемый CAD TEXT.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
+        <section class="bottom-note"><span class="note-icon">i</span><span>OCR-области исключаются из линейных кандидатов даже при неуверенном чтении. В PIPE_MAIN попадают только связные маршруты с геометрическими признаками труб; одиночные штрихи, неоднозначные группы и подсказки Qwen сохранены отдельно для проверки. Подтверждённые подписи экспортируются как редактируемый CAD TEXT.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.9</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.0</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>

@@ -89,7 +89,7 @@ OCR_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
         'annotations': {
-            'type': 'array', 'maxItems': 48,
+            'type': 'array', 'maxItems': 64,
             'items': {
                 'type': 'object',
                 'properties': {
@@ -256,7 +256,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
     try:
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
         timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
-        max_output_tokens = max(512, min(2048, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
+        max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
@@ -274,7 +274,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'Верни объект annotations как массив, даже если найден только один текст. '
             'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
             'Пример формы: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
-            'Максимум 48 текстовых областей на фрагмент. Размер изображения: {width}x{height} px.'
+            'Максимум 64 текстовые области на фрагмент. Размер изображения: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
@@ -326,7 +326,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 raw_items, annotation_key = _annotation_items_from_response(parsed)
                 call_diagnostics['annotation_key'] = annotation_key
                 call_diagnostics['raw_annotations'] = len(raw_items)
-                call_diagnostics['possibly_capped_at_schema_limit'] = len(raw_items) >= 48
+                call_diagnostics['possibly_capped_at_schema_limit'] = len(raw_items) >= 64
                 accepted_before = len(items)
                 for raw in raw_items:
                     if not isinstance(raw, dict):
@@ -828,90 +828,192 @@ def _merge_aligned_duplicate(a: dict[str, Any], b: dict[str, Any], ink: np.ndarr
         'source': preferred.get('source', 'LSD'),
         'detectors': sorted(set((a.get('detectors') or [a.get('source')]) + (b.get('detectors') or [b.get('source')]))),
         'ocr_overlap': max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))),
-        'suggested_role': 'text_or_dimension' if max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))) >= 0.30 else 'line_candidate',
+        'suggested_role': 'text_or_dimension' if max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))) >= 0.16 and not (a.get('text_crossing') or b.get('text_crossing')) else 'line_candidate',
+        'text_crossing': bool(a.get('text_crossing') or b.get('text_crossing')),
     })
     return merged
 
 
-def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[str, Any],
-                             ink_dilated: np.ndarray) -> bool:
-    """Identify glyph strokes inside a confirmed OCR box, but keep a pipe crossing it."""
+def _expanded_text_box(box: dict[str, Any]) -> tuple[float, float, float, float]:
+    """Expand OCR boxes enough to cover handwriting ascenders, descenders and tails."""
+    x, y, bw, bh = (float(box.get(key, 0)) for key in ('x', 'y', 'w', 'h'))
+    pad_x = max(3.0, min(22.0, bw * 0.20))
+    pad_y = max(3.0, min(18.0, bh * 0.50))
+    return x - pad_x, y - pad_y, x + bw + pad_x, y + bh + pad_y
+
+
+def _segment_text_box_metrics(seg: tuple[float, float, float, float], box: dict[str, Any],
+                              ink_dilated: np.ndarray) -> tuple[float, bool]:
+    """Measure segment overlap with a padded text box and detect a real through-line.
+
+    A route crossing a label is preserved only when the source ink continues
+    collinearly on both sides. A glyph/letter stroke that merely protrudes from
+    an OCR box normally has support on one side only and is rejected.
+    """
     x, y, bw, bh = (float(box.get(key, 0)) for key in ('x', 'y', 'w', 'h'))
     if bw <= 0 or bh <= 0:
-        return False
-    # Handwritten strokes often extend a little beyond the tight OCR rectangle.
-    # Expand proportionally in each direction, but cap the expansion so nearby
-    # parallel pipes are not swallowed by a large word box.
-    pad_x = max(3.0, min(12.0, bw * 0.06))
-    pad_y = max(3.0, min(10.0, bh * 0.24))
-    left, top, right, bottom = x - pad_x, y - pad_y, x + bw + pad_x, y + bh + pad_y
+        return 0.0, False
+    left, top, right, bottom = _expanded_text_box(box)
     x1, y1, x2, y2 = map(float, seg)
     length = math.hypot(x2 - x1, y2 - y1)
     if length < 1:
-        return False
+        return 0.0, False
 
-    samples = np.linspace(0.0, 1.0, max(9, min(51, int(length / 2.0) + 1)))
-    inside = []
-    for t in samples:
-        px, py = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
-        inside.append(left <= px <= right and top <= py <= bottom)
+    count = max(11, min(121, int(length / 1.5) + 1))
+    ts = np.linspace(0.0, 1.0, count)
+    xs = x1 + (x2 - x1) * ts
+    ys = y1 + (y2 - y1) * ts
+    inside = (xs >= left) & (xs <= right) & (ys >= top) & (ys <= bottom)
     coverage = float(np.mean(inside))
-    endpoints_inside = (
-        left <= x1 <= right and top <= y1 <= bottom and
-        left <= x2 <= right and top <= y2 <= bottom
-    )
-    if not endpoints_inside and coverage < 0.72:
-        return False
+    if coverage < 0.10:
+        return coverage, False
 
-    # A real pipe running underneath a text label normally continues on both
-    # sides of its tight OCR box. Check for that continuation in the original
-    # ink, instead of blindly deleting every stroke inside the rectangle.
     ux, uy = (x2 - x1) / length, (y2 - y1) / length
     corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
     projections = [(cx - x1) * ux + (cy - y1) * uy for cx, cy in corners]
     lo, hi = min(projections), max(projections)
     h, w = ink_dilated.shape[:2]
+    distances = np.linspace(2.0, max(7.0, min(20.0, math.hypot(bw, bh) * 0.32)), 9)
 
     def side_support(sign: float) -> float:
-        distances = np.linspace(2.0, max(7.0, min(18.0, math.hypot(bw, bh) * 0.35)), 7)
         hits = 0
         for distance in distances:
             along = (lo - distance) if sign < 0 else (hi + distance)
             px, py = x1 + ux * along, y1 + uy * along
             ix, iy = int(round(px)), int(round(py))
-            if 0 <= ix < w and 0 <= iy < h and ink_dilated[iy, ix] > 0:
-                hits += 1
+            supported = False
+            # A compact 3x3 neighbourhood tolerates pen width without picking
+            # up unrelated neighbouring handwriting strokes.
+            for oy in range(-1, 2):
+                for ox in range(-1, 2):
+                    qx, qy = ix + ox, iy + oy
+                    if 0 <= qx < w and 0 <= qy < h and ink_dilated[qy, qx] > 0:
+                        supported = True
+                        break
+                if supported:
+                    break
+            hits += int(supported)
         return hits / len(distances)
 
-    if side_support(-1.0) >= 0.43 and side_support(1.0) >= 0.43:
-        return False
-    return coverage >= 0.72
+    left_support = side_support(-1.0)
+    right_support = side_support(1.0)
+    through = (
+        length >= max(42.0, math.hypot(bw, bh) * 1.45)
+        and coverage >= 0.16
+        and left_support >= 0.66
+        and right_support >= 0.66
+    )
+    return coverage, through
+
+
+def _segment_text_mask_metrics(seg: tuple[float, float, float, float], text_mask: np.ndarray,
+                               ink_dilated: np.ndarray) -> tuple[float, bool]:
+    """Measure overlap with the union of all OCR regions and detect a true through-line.
+
+    This catches a handwritten word split into several OCR boxes. A candidate
+    crossing the masked union is retained only when source ink is visible on
+    both sides of the complete masked span; a glyph stroke normally has no such
+    bilateral continuation.
+    """
+    x1, y1, x2, y2 = map(float, seg)
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length < 1 or text_mask.size == 0:
+        return 0.0, False
+    count = max(11, min(401, int(length / 1.25) + 1))
+    ts = np.linspace(0.0, 1.0, count)
+    xs = np.clip(np.rint(x1 + (x2 - x1) * ts).astype(int), 0, text_mask.shape[1] - 1)
+    ys = np.clip(np.rint(y1 + (y2 - y1) * ts).astype(int), 0, text_mask.shape[0] - 1)
+    inside = text_mask[ys, xs] > 0
+    coverage = float(np.mean(inside))
+    if coverage < 0.08:
+        return coverage, False
+    indices = np.flatnonzero(inside)
+    if not len(indices):
+        return coverage, False
+    first_s = float(ts[indices[0]] * length)
+    last_s = float(ts[indices[-1]] * length)
+    masked_span = max(0.0, last_s - first_s)
+    if first_s < 3.0 or (length - last_s) < 3.0 or length < max(36.0, masked_span + 12.0):
+        return coverage, False
+
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length
+    h, w = ink_dilated.shape[:2]
+    distances = np.linspace(1.0, min(8.0, max(3.0, masked_span * 0.12)), 7)
+
+    def support_at_boundary(boundary_s: float, sign: float) -> float:
+        hits = 0
+        for distance in distances:
+            along = boundary_s + sign * distance
+            px, py = x1 + ux * along, y1 + uy * along
+            ix, iy = int(round(px)), int(round(py))
+            supported = False
+            for oy in range(-1, 2):
+                for ox in range(-1, 2):
+                    qx, qy = ix + ox, iy + oy
+                    if 0 <= qx < w and 0 <= qy < h and ink_dilated[qy, qx] > 0:
+                        supported = True
+                        break
+                if supported:
+                    break
+            hits += int(supported)
+        return hits / len(distances)
+
+    left_support = support_at_boundary(first_s, -1.0)
+    right_support = support_at_boundary(last_s, 1.0)
+    through = left_support >= 0.67 and right_support >= 0.67
+    return coverage, through
+
+
+def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[str, Any],
+                             ink_dilated: np.ndarray) -> bool:
+    """True for a text stroke; false for a pipe demonstrably continuing through text."""
+    coverage, through = _segment_text_box_metrics(seg, box, ink_dilated)
+    return coverage >= 0.16 and not through
 
 
 def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Return OCR-detected text regions used to keep glyph strokes out of pipe geometry.
+    """Collect OCR boxes as *candidate text masks*, regardless of spelling confidence.
 
-    A region may be geometrically classified as text even when its spelling is
-    unverified. Illegible handwriting must not become a CAD pipe merely because
-    OCR cannot confidently transcribe it.
+    Confidence controls whether a label is exported as CAD TEXT, not whether the
+    handwritten strokes are allowed to become pipe geometry. A low-confidence
+    OCR box still masks its glyphs; a verified straight line may pass through it.
     """
     boxes = []
     for item in annotations or []:
-        if not (item.get('geometry_exclude') or item.get('verified') or item.get('include')):
-            continue
         box = item.get('bbox')
+        source = str(item.get('source') or '')
+        is_ocr_record = source in {'qwen3-vl', 'tesseract'}
+        # In this pipeline the annotations list itself is OCR-owned; older
+        # serialized jobs may omit the source field, so a valid bbox is enough.
+        if not (is_ocr_record or item.get('geometry_exclude') or item.get('verified') or item.get('include') or isinstance(box, dict)):
+            continue
         if isinstance(box, dict) and all(key in box for key in ('x', 'y', 'w', 'h')):
-            boxes.append(box)
+            if float(box.get('w', 0) or 0) >= 2 and float(box.get('h', 0) or 0) >= 2:
+                boxes.append(box)
     return boxes
 
+
+def _text_region_mask(shape: tuple[int, int], annotations: list[dict[str, Any]] | None) -> np.ndarray:
+    """Raster mask of expanded OCR regions; retained as an inspectable diagnostic."""
+    height, width = shape
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for box in _confirmed_text_boxes(annotations):
+        left, top, right, bottom = _expanded_text_box(box)
+        x1 = max(0, int(math.floor(left)))
+        y1 = max(0, int(math.floor(top)))
+        x2 = min(width - 1, int(math.ceil(right)))
+        y2 = min(height - 1, int(math.ceil(bottom)))
+        if x2 >= x1 and y2 >= y1:
+            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+    return mask
 
 def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     h, w = gray.shape[:2]
     min_dim = min(w, h)
-    # Keep shorter continuations as candidates; the former 18-24 px cutoff
-    # discarded visible pipe fragments at corners and beside handwritten labels.
-    min_lsd_len = max(10.0, min_dim * 0.010)
-    min_hough_len = max(12, int(min_dim * 0.012))
+    # A slightly higher minimum prevents tiny letter fragments and dimension
+    # ticks from dominating the line graph; long pipe continuations remain.
+    min_lsd_len = max(13.0, min_dim * 0.014)
+    min_hough_len = max(14, int(min_dim * 0.015))
     continuity_gap = max(4.0, min_dim * 0.004)
 
     lsd_img = cv2.GaussianBlur(gray, (3, 3), 0.65)
@@ -927,9 +1029,9 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
 
     hp = cv2.HoughLinesP(
         ink, 1, np.pi / 180,
-        threshold=max(14, int(min_dim * 0.018)),
+        threshold=max(16, int(min_dim * 0.020)),
         minLineLength=min_hough_len,
-        maxLineGap=max(4, int(min_dim * 0.008)),
+        maxLineGap=max(4, int(min_dim * 0.007)),
     )
     if hp is not None:
         for row in hp.reshape(-1, 4):
@@ -938,36 +1040,32 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
             if length >= min_hough_len:
                 raw.append((x1, y1, x2, y2, 'HOUGH', length))
 
-    # A one-pixel dilation makes support sampling tolerant of sub-pixel LSD
-    # placement without erasing a genuine narrow gap between separate strokes.
     ink_dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
-    boxes = [a.get('bbox') for a in (annotations or []) if a.get('bbox')]
-    text_boxes = _confirmed_text_boxes(annotations)
+    text_mask = _text_region_mask((h, w), annotations)
     candidates: list[dict[str, Any]] = []
     for x1, y1, x2, y2, source, length in raw:
-        # Confidently recognized characters become editable CAD TEXT entities,
-        # not duplicate polylines. Long lines continuing through the OCR box
-        # remain geometry and are not deleted.
-        if any(_segment_inside_text_box((x1, y1, x2, y2), box, ink_dilated) for box in text_boxes):
+        seg = (x1, y1, x2, y2)
+        overlap, through_text = _segment_text_mask_metrics(seg, text_mask, ink_dilated)
+        # The union mask catches words split across several OCR boxes while
+        # avoiding repeated per-box raster scans for every detected segment.
+        # Text/dimension strokes that intersect OCR regions are review-only.
+        # Preserve only a line with clear source-ink continuation on both sides.
+        if overlap >= 0.08 and not through_text:
             continue
+
         support = _sample_line_support(ink_dilated, x1, y1, x2, y2)
-        if support < 0.20:
+        if support < 0.24:
             continue
-        overlap = 0.0
-        for t in np.linspace(0.1, 0.9, 9):
-            px = x1 + (x2 - x1) * t
-            py = y1 + (y2 - y1) * t
-            if any(b['x'] <= px <= b['x'] + b['w'] and b['y'] <= py <= b['y'] + b['h'] for b in boxes):
-                overlap += 1 / 9
         candidates.append({
             'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'source': source,
-            'length': length, 'support': support, 'angle': angle_deg((x1, y1, x2, y2)),
-            'ocr_overlap': round(overlap, 2),
-            'suggested_role': 'text_or_dimension' if overlap >= 0.30 else 'line_candidate',
+            'length': length, 'support': support, 'angle': angle_deg(seg),
+            'ocr_overlap': round(overlap, 3),
+            'text_crossing': bool(through_text),
+            'suggested_role': 'text_or_dimension' if overlap >= 0.16 and not through_text else 'line_candidate',
         })
 
-    # Merge true LSD/Hough repeats by angle, centre-line offset, overlap and
-    # continuity. Separate nearby parallel strokes are retained as independent lines.
+    # Merge duplicate detections from LSD/Hough, but do not merge parallel
+    # neighbour strokes that can represent separate pipe borders.
     candidates.sort(key=lambda item: (item['support'], item['length'], item['source'] == 'LSD'), reverse=True)
     kept: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -983,111 +1081,305 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
     kept.sort(key=lambda item: item['length'], reverse=True)
     return kept[:2400]
 
+def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
+    """Build a route graph, snap close ends and bridge only strict collinear gaps.
 
-def endpoint_clusters(segments: list[dict[str,Any]], radius: float = 4.5):
-    endpoints=[]
-    for i,s in enumerate(segments):
-        endpoints.append((i,0,s['x1'],s['y1']))
-        endpoints.append((i,1,s['x2'],s['y2']))
-    parent=list(range(len(endpoints)))
-    def find(a):
-        while parent[a]!=a:
-            parent[a]=parent[parent[a]]; a=parent[a]
-        return a
-    def union(a,b):
-        ra,rb=find(a),find(b)
-        if ra!=rb: parent[rb]=ra
-    # Spatial buckets avoid O(n^2) across a noisy page.
-    cell=max(1,int(radius))
-    buckets={}
-    for idx,(_,_,x,y) in enumerate(endpoints):
-        key=(int(x//cell),int(y//cell))
-        for bx in range(key[0]-1,key[0]+2):
-          for by in range(key[1]-1,key[1]+2):
-            for j in buckets.get((bx,by),[]):
-              _,_,xx,yy=endpoints[j]
-              if math.hypot(x-xx,y-yy)<=radius: union(idx,j)
-        buckets.setdefault(key,[]).append(idx)
-    groups={}
-    for i,ep in enumerate(endpoints): groups.setdefault(find(i),[]).append(ep)
-    nodes=[]; ep_to_node={}
-    for gi,items in enumerate(groups.values()):
-        x=float(np.mean([e[2] for e in items])); y=float(np.mean([e[3] for e in items]))
-        nid=f"N{gi+1}"
-        nodes.append({"id":nid,"x":round(x,2),"y":round(y,2),"degree":len(items),"review":len(items)==1})
-        for ep in items:
-            ep_to_node[(ep[0],ep[1])]=nid
-    edges=[]
-    node_by_id = {n['id']: n for n in nodes}
-    for i,s in enumerate(segments):
-        a=ep_to_node[(i,0)]; b=ep_to_node[(i,1)]
-        if a==b: continue
-        snapped = [[node_by_id[a]['x'], node_by_id[a]['y']], [node_by_id[b]['x'], node_by_id[b]['y']]]
-        raw_geometry = [[round(s['x1'],2),round(s['y1'],2)],[round(s['x2'],2),round(s['y2'],2)]]
-        edges.append({"id":f"E{len(edges)+1}","from":a,"to":b,
-                      "source":"candidate","confidence":round(min(0.99,0.45+0.45*s['support']+min(s['length']/800,0.12)),2),
-                      "geometry":snapped,"raw_geometry":raw_geometry,
-                      "review":True,"detector":s['source'],"source_segment_index":i,
-                      "ocr_overlap":s.get('ocr_overlap',0.0),
-                      "suggested_role":s.get('suggested_role','line_candidate')})
-    # Group connected candidate segments. Long, dense components dominated by OCR
-    # boxes are marked as annotation clusters, not silently deleted.
-    adjacency = {}
-    for idx,e in enumerate(edges):
-        adjacency.setdefault(e['from'],[]).append(idx)
-        adjacency.setdefault(e['to'],[]).append(idx)
-    seen=set(); component_summaries=[]
+    Intersections in the middle of strokes are never unioned. A small gap is
+    joined only when both endpoints are open, their tangents oppose each other,
+    the offset is tiny, and neither stroke is OCR/text-like.
+    """
+    endpoints = []
+    for index, segment in enumerate(segments):
+        endpoints.append((index, 0, float(segment['x1']), float(segment['y1'])))
+        endpoints.append((index, 1, float(segment['x2']), float(segment['y2'])))
+
+    parent = list(range(len(endpoints)))
+    rank = [0] * len(endpoints)
+
+    def find(value):
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return False
+        if rank[ra] < rank[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        if rank[ra] == rank[rb]:
+            rank[ra] += 1
+        return True
+
+    # First join genuinely touching/near-touching endpoints (legacy tolerance).
+    cell = max(1, int(radius))
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index, (_seg_index, _side, x, y) in enumerate(endpoints):
+        key = (int(x // cell), int(y // cell))
+        for bx in range(key[0] - 1, key[0] + 2):
+            for by in range(key[1] - 1, key[1] + 2):
+                for other in buckets.get((bx, by), []):
+                    _si, _ss, ox, oy = endpoints[other]
+                    if math.hypot(x - ox, y - oy) <= radius:
+                        union(index, other)
+        buckets.setdefault(key, []).append(index)
+
+    # Then join tiny broken line ends only if there is strong collinear evidence.
+    gap_radius = max(radius + 1.0, min(12.0, radius * 2.5))
+    gap_cell = max(1, int(math.ceil(gap_radius)))
+    gap_buckets: dict[tuple[int, int], list[int]] = {}
+    auto_gap_pairs: list[tuple[int, int]] = []
+
+    def inward_vector(endpoint_index: int) -> np.ndarray | None:
+        seg_index, side, _x, _y = endpoints[endpoint_index]
+        seg = segments[seg_index]
+        if seg.get('text_crossing') or float(seg.get('ocr_overlap', 0.0)) >= 0.12:
+            return None
+        a = np.array([float(seg['x1']), float(seg['y1'])], dtype=float)
+        b = np.array([float(seg['x2']), float(seg['y2'])], dtype=float)
+        vector = (b - a) if side == 0 else (a - b)
+        norm = float(np.linalg.norm(vector))
+        if norm < 8.0:
+            return None
+        return vector / norm
+
+    for index, (_seg_index, _side, x, y) in enumerate(endpoints):
+        key = (int(x // gap_cell), int(y // gap_cell))
+        va = inward_vector(index)
+        if va is not None:
+            for bx in range(key[0] - 1, key[0] + 2):
+                for by in range(key[1] - 1, key[1] + 2):
+                    for other in gap_buckets.get((bx, by), []):
+                        other_seg, _other_side, ox, oy = endpoints[other]
+                        seg_index = endpoints[index][0]
+                        if other_seg == seg_index or find(index) == find(other):
+                            continue
+                        distance = math.hypot(x - ox, y - oy)
+                        if distance <= radius or distance > gap_radius:
+                            continue
+                        vb = inward_vector(other)
+                        if vb is None:
+                            continue
+                        dot = float(np.dot(va, vb))
+                        gap = np.array([ox - x, oy - y], dtype=float)
+                        gap_norm = float(np.linalg.norm(gap))
+                        if gap_norm < 1e-6:
+                            continue
+                        gap_unit = gap / gap_norm
+                        # Inward tangents must point away from the gap in
+                        # opposite directions, and the gap must lie on-axis.
+                        cross_a = abs(float(va[0] * gap_unit[1] - va[1] * gap_unit[0]))
+                        if dot <= -0.965 and float(np.dot(va, gap_unit)) <= -0.92 and cross_a <= 0.22:
+                            if union(index, other):
+                                auto_gap_pairs.append((index, other))
+        gap_buckets.setdefault(key, []).append(index)
+
+    auto_joined_endpoint_ids = {value for pair in auto_gap_pairs for value in pair}
+    groups: dict[int, list[tuple[int, int, float, float]]] = {}
+    for index, endpoint in enumerate(endpoints):
+        groups.setdefault(find(index), []).append(endpoint)
+
+    nodes = []
+    endpoint_to_node = {}
+    root_auto = {find(value) for value in auto_joined_endpoint_ids}
+    for group_index, (root, items) in enumerate(groups.items()):
+        x = float(np.mean([item[2] for item in items]))
+        y = float(np.mean([item[3] for item in items]))
+        node_id = f'N{group_index + 1}'
+        nodes.append({
+            'id': node_id, 'x': round(x, 2), 'y': round(y, 2),
+            'degree': len(items), 'review': len(items) == 1,
+            'auto_joined_collinear': root in root_auto,
+        })
+        for item in items:
+            endpoint_to_node[(item[0], item[1])] = node_id
+
+    edges = []
+    node_by_id = {node['id']: node for node in nodes}
+    for index, segment in enumerate(segments):
+        node_a = endpoint_to_node[(index, 0)]
+        node_b = endpoint_to_node[(index, 1)]
+        if node_a == node_b:
+            continue
+        snapped = [
+            [node_by_id[node_a]['x'], node_by_id[node_a]['y']],
+            [node_by_id[node_b]['x'], node_by_id[node_b]['y']],
+        ]
+        raw_geometry = [
+            [round(float(segment['x1']), 2), round(float(segment['y1']), 2)],
+            [round(float(segment['x2']), 2), round(float(segment['y2']), 2)],
+        ]
+        auto_join = bool(node_by_id[node_a]['auto_joined_collinear'] or node_by_id[node_b]['auto_joined_collinear'])
+        edges.append({
+            'id': f'E{len(edges) + 1}', 'from': node_a, 'to': node_b,
+            'source': 'candidate',
+            'confidence': round(min(0.99, 0.45 + 0.45 * float(segment.get('support', 0.0)) + min(float(segment.get('length', 0.0)) / 800, 0.12)), 2),
+            'geometry': snapped, 'raw_geometry': raw_geometry,
+            'review': True, 'detector': segment.get('source', 'LSD'),
+            'source_segment_index': index,
+            'ocr_overlap': float(segment.get('ocr_overlap', 0.0)),
+            'text_crossing': bool(segment.get('text_crossing', False)),
+            'suggested_role': segment.get('suggested_role', 'line_candidate'),
+            'auto_joined_gap': auto_join,
+            'continuation_candidate': auto_join,
+        })
+
+    adjacency: dict[str, list[int]] = {}
+    for index, edge in enumerate(edges):
+        adjacency.setdefault(edge['from'], []).append(index)
+        adjacency.setdefault(edge['to'], []).append(index)
+
+    seen: set[int] = set()
+    component_summaries = []
     for seed in range(len(edges)):
-        if seed in seen: continue
-        stack=[seed]; indices=[]; node_ids=set()
+        if seed in seen:
+            continue
+        stack = [seed]
+        indices = []
+        node_ids = set()
         while stack:
-            idx=stack.pop()
-            if idx in seen: continue
-            seen.add(idx); indices.append(idx)
-            e=edges[idx]
-            for nid in (e['from'],e['to']):
-                node_ids.add(nid)
-                stack.extend(j for j in adjacency.get(nid,[]) if j not in seen)
-        comp_edges=[edges[i] for i in indices]
-        pts=[p for e in comp_edges for p in e['geometry']]
-        xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
-        dx=max(xs)-min(xs) if xs else 0; dy=max(ys)-min(ys) if ys else 0
-        extent=max(dx,dy); total=sum(math.dist(*e['geometry']) for e in comp_edges)
-        overlap_len=sum(math.dist(*e['geometry'])*float(e.get('ocr_overlap',0)) for e in comp_edges)
-        overlap_ratio=overlap_len/max(total,1)
+            edge_index = stack.pop()
+            if edge_index in seen:
+                continue
+            seen.add(edge_index)
+            indices.append(edge_index)
+            edge = edges[edge_index]
+            for node_id in (edge['from'], edge['to']):
+                node_ids.add(node_id)
+                stack.extend(item for item in adjacency.get(node_id, []) if item not in seen)
+
+        comp_edges = [edges[index] for index in indices]
+        points = [point for edge in comp_edges for point in edge['geometry']]
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        dx = max(xs) - min(xs) if xs else 0.0
+        dy = max(ys) - min(ys) if ys else 0.0
+        extent = max(dx, dy)
+        total = sum(math.dist(*edge['geometry']) for edge in comp_edges)
         edge_lengths = [math.dist(*edge['geometry']) for edge in comp_edges]
         longest = max(edge_lengths, default=0.0)
+        average_length = float(np.mean(edge_lengths)) if edge_lengths else 0.0
         elongation = max(dx, dy) / max(1.0, min(dx, dy))
-        # OCR overlap is descriptive only. A long, connected geometric component
-        # remains a line candidate even when Tesseract/Qwen put a text box over it.
-        if extent >= 42 and total >= 42 and (longest >= 28 or elongation >= 2.2):
-            role='line_structure'
-        elif len(comp_edges)>=3 and extent>=45 and overlap_ratio>=0.28 and total>=55:
-            role='text_or_annotation'
-        else:
-            role='ambiguous'
-        cid=f"C{len(component_summaries)+1}"
-        for e in comp_edges: e['component_id']=cid; e['component_role']=role
-        component_summaries.append({"id":cid,"role":role,"edge_count":len(comp_edges),
-                                    "total_length":round(total,1),"bbox":{"x":round(min(xs),1) if xs else 0,"y":round(min(ys),1) if ys else 0,"w":round(dx,1),"h":round(dy,1)},
-                                    "ocr_overlap_ratio":round(overlap_ratio,2)})
+        edge_density = total / max(extent, 1.0)
+        max_degree = max((len(adjacency.get(node_id, [])) for node_id in node_ids), default=0)
+        branch_nodes = sum(1 for node_id in node_ids if len(adjacency.get(node_id, [])) >= 3)
+        sharp_turns = 0
+        for node_id in node_ids:
+            incident = adjacency.get(node_id, [])
+            if len(incident) != 2:
+                continue
+            vectors = []
+            node = node_by_id[node_id]
+            for edge_index in incident:
+                geometry = edges[edge_index]['geometry']
+                other = geometry[1] if edges[edge_index]['from'] == node_id else geometry[0]
+                vector = np.array([other[0] - node['x'], other[1] - node['y']], dtype=float)
+                norm = float(np.linalg.norm(vector))
+                if norm > 1e-6:
+                    vectors.append(vector / norm)
+            if len(vectors) == 2:
+                dot = max(-1.0, min(1.0, float(np.dot(vectors[0], vectors[1]))))
+                # A straight continuation has opposite outward vectors (dot~-1).
+                if dot > -0.82:
+                    sharp_turns += 1
+        turn_density = sharp_turns * 100.0 / max(total, 1.0)
+        short_edge_ratio = sum(1 for length in edge_lengths if length < 18.0) / max(len(edge_lengths), 1)
+        # A proven straight-through segment is not treated as OCR clutter. Any
+        # unexplained overlap remains a text/annotation warning.
+        overlap_weight = sum(
+            edge_lengths[index] * float(edge.get('ocr_overlap', 0.0))
+            for index, edge in enumerate(comp_edges) if not edge.get('text_crossing')
+        )
+        unexplained_ocr_overlap = overlap_weight / max(total, 1.0)
+        text_crossing_length = sum(
+            edge_lengths[index] for index, edge in enumerate(comp_edges) if edge.get('text_crossing')
+        )
+        text_crossing_ratio = text_crossing_length / max(total, 1.0)
 
-    # Keep short, detached pipe continuations when they point directly toward an
-    # open end of an already coherent line component. They remain separate edges;
-    # this does not auto-connect or move either endpoint.
+        # Text can sometimes form long, connected strokes. Use graph shape and
+        # text-box overlap together; bounding-box elongation alone is not proof
+        # that a component is a pipe.
+        text_crossing_suspect = (
+            text_crossing_ratio >= 0.42
+            and (turn_density >= 1.2 or edge_density >= 1.65 or max_degree >= 3)
+        )
+        coherent_route = (
+            len(comp_edges) >= 2 and extent >= 65.0 and total >= 78.0
+            and average_length >= 18.0 and max_degree <= 4
+            and edge_density <= 3.25 and turn_density <= 3.2
+            and unexplained_ocr_overlap < 0.16
+            and not text_crossing_suspect
+        )
+        branch_route = (
+            len(comp_edges) >= 3 and branch_nodes >= 1 and total >= 95.0
+            and average_length >= 14.0 and max_degree <= 4
+            and edge_density <= 3.60 and turn_density <= 3.6
+            and unexplained_ocr_overlap < 0.12
+            and not text_crossing_suspect
+        )
+        text_like = (
+            unexplained_ocr_overlap >= 0.16
+            or (text_crossing_suspect and not branch_route)
+            or (
+                len(comp_edges) >= 3 and average_length < 15.0
+                and short_edge_ratio >= 0.55 and turn_density >= 1.5
+            )
+        )
+        dense_symbol_cluster = (
+            len(comp_edges) >= 4 and average_length < 20.0
+            and edge_density >= 1.85
+            and (max_degree >= 4 or turn_density >= 2.0)
+        )
+
+        if text_like:
+            role = 'text_or_annotation'
+        elif dense_symbol_cluster:
+            # Keep dense handwritten/symbol groups out of the clean pipe layer.
+            role = 'ambiguous'
+        elif coherent_route or branch_route:
+            role = 'line_structure'
+        else:
+            role = 'ambiguous'
+
+        component_id = f'C{len(component_summaries) + 1}'
+        for edge in comp_edges:
+            edge['component_id'] = component_id
+            edge['component_role'] = role
+        component_summaries.append({
+            'id': component_id, 'role': role, 'edge_count': len(comp_edges),
+            'total_length': round(total, 1),
+            'bbox': {'x': round(min(xs), 1) if xs else 0, 'y': round(min(ys), 1) if ys else 0,
+                     'w': round(dx, 1), 'h': round(dy, 1)},
+            'ocr_overlap_ratio': round(unexplained_ocr_overlap, 3),
+            'text_crossing_ratio': round(text_crossing_ratio, 3),
+            'average_edge_length': round(average_length, 1),
+            'max_node_degree': max_degree, 'branch_nodes': branch_nodes,
+            'edge_density': round(edge_density, 2), 'turn_density': round(turn_density, 2),
+            'elongation': round(elongation, 2),
+            'coherent_route': coherent_route, 'branch_route': branch_route,
+            'text_crossing_suspect': text_crossing_suspect,
+        })
+
+    # Promote only small, non-text, coaxial fragments that point into a robust
+    # primary component. This is deliberately stricter than the old 28 px rule.
     line_open_ends = []
     for edge in edges:
         if edge.get('component_role') != 'line_structure':
             continue
-        geo = edge.get('geometry') or []
-        if len(geo) < 2:
+        geometry = edge.get('geometry') or []
+        if len(geometry) < 2:
             continue
-        for node_id, endpoint, inner in ((edge['from'], geo[0], geo[-1]), (edge['to'], geo[-1], geo[0])):
+        for node_id, endpoint, inner in (
+            (edge['from'], geometry[0], geometry[-1]),
+            (edge['to'], geometry[-1], geometry[0]),
+        ):
             node = node_by_id.get(node_id)
             if not node or node.get('degree') != 1:
                 continue
             vector = np.array([inner[0] - endpoint[0], inner[1] - endpoint[1]], dtype=float)
-            norm = np.linalg.norm(vector)
+            norm = float(np.linalg.norm(vector))
             if norm > 1:
                 line_open_ends.append((np.array(endpoint, dtype=float), vector / norm))
 
@@ -1099,24 +1391,26 @@ def endpoint_clusters(segments: list[dict[str,Any]], radius: float = 4.5):
         summary = summary_by_id.get(component_id)
         if not summary or summary.get('role') != 'ambiguous' or len(comp_edges) > 2:
             continue
+        if any(float(edge.get('ocr_overlap', 0.0)) >= 0.12 or edge.get('text_crossing') for edge in comp_edges):
+            continue
         promoted = False
         for edge in comp_edges:
-            geo = edge.get('geometry') or []
-            if len(geo) < 2 or not 8 <= math.dist(*geo) <= 42 or edge.get('ocr_overlap', 0) >= 0.30:
+            geometry = edge.get('geometry') or []
+            if len(geometry) < 2 or not 8 <= math.dist(*geometry) <= 36:
                 continue
-            for endpoint, inner in ((geo[0], geo[-1]), (geo[-1], geo[0])):
-                node_id = edge['from'] if endpoint == geo[0] else edge['to']
+            for endpoint, inner in ((geometry[0], geometry[-1]), (geometry[-1], geometry[0])):
+                node_id = edge['from'] if endpoint == geometry[0] else edge['to']
                 node = node_by_id.get(node_id)
                 if not node or node.get('degree') != 1:
                     continue
                 vector = np.array([inner[0] - endpoint[0], inner[1] - endpoint[1]], dtype=float)
-                norm = np.linalg.norm(vector)
+                norm = float(np.linalg.norm(vector))
                 if norm < 1:
                     continue
                 vector /= norm
                 for line_endpoint, line_vector in line_open_ends:
                     distance = float(np.linalg.norm(np.array(endpoint, dtype=float) - line_endpoint))
-                    if distance <= 10.0 and float(np.dot(vector, line_vector)) <= -0.90:
+                    if distance <= 12.0 and float(np.dot(vector, line_vector)) <= -0.965:
                         promoted = True
                         break
                 if promoted:
@@ -1130,9 +1424,7 @@ def endpoint_clusters(segments: list[dict[str,Any]], radius: float = 4.5):
             summary['role'] = 'line_structure'
             summary['continuation_candidate'] = True
 
-    return nodes,edges,component_summaries
-
-
+    return nodes, edges, component_summaries
 
 def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
                              min_dimension: int) -> dict[str, int]:
@@ -1166,7 +1458,6 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
 
     min_path = max(20.0, float(min_dimension) * 0.028)
     junction_stub = max(min_path, float(min_dimension) * 0.045)
-    isolated_min = max(42.0, float(min_dimension) * 0.065)
     cycle_min = max(46.0, float(min_dimension) * 0.060)
     visited: set[int] = set()
     paths: list[dict[str, Any]] = []
@@ -1266,6 +1557,9 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
         component_ids = {str(edges[index].get('component_id') or '') for index in path_edges}
         component_size = max((component_sizes.get(cid, 0) for cid in component_ids), default=len(path_edges))
         single_edge_isolated = len(path_edges) == 1 and component_size == 1 and start_degree == 1 and end_degree == 1
+        path_roles = {str(edges[index].get('component_role') or 'line_structure') for index in path_edges}
+        has_text_role = 'text_or_annotation' in path_roles
+        has_ambiguous_role = 'ambiguous' in path_roles
 
         continuation = False
         if start_degree >= 3:
@@ -1273,12 +1567,21 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
         if end_degree >= 3:
             continuation = continuation or has_opposite_continuation(path, end, path_edges[-1])
 
-        if is_cycle:
+        if has_text_role:
+            keep = False
+            reason = 'text-or-annotation'
+        elif has_ambiguous_role and not single_edge_isolated:
+            keep = False
+            reason = 'ambiguous-component'
+        elif is_cycle:
             keep = total >= cycle_min
             reason = 'closed-route' if keep else 'short-closed-mark'
         elif single_edge_isolated:
-            keep = total >= isolated_min
-            reason = 'long-isolated-stroke' if keep else 'isolated-mark'
+            # A solitary long stroke is indistinguishable from a dimension line,
+            # arrow shaft or handwritten flourish without topology evidence.
+            # Preserve it for review rather than manufacturing a pipe.
+            keep = False
+            reason = 'isolated-stroke-review'
         elif (start_degree >= 3 and end_degree == 1) or (end_degree >= 3 and start_degree == 1):
             keep = total >= junction_stub or (continuation and total >= min_path)
             reason = 'branch-route' if keep else 'short-symbol-stub'
@@ -1286,13 +1589,13 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
             keep = total >= min_path
             reason = 'coherent-route' if keep else 'short-fragment'
 
-        if continuation and total >= min_path:
+        if continuation and total >= min_path and not (has_text_role or has_ambiguous_role):
             keep = True
             reason = 'collinear-continuation'
 
         # The earlier endpoint heuristic can explicitly identify a short
         # detached, coaxial continuation across a small scan gap. Preserve it.
-        if any(edges[index].get('continuation_candidate') for index in path_edges) and total >= 8.0:
+        if any(edges[index].get('continuation_candidate') for index in path_edges) and total >= 8.0 and not (has_text_role or has_ambiguous_role):
             keep = True
             reason = 'collinear-continuation'
 
@@ -1306,10 +1609,15 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
         edge.setdefault('cad_reason', 'unclassified')
 
     selected = sum(1 for edge in edges if edge.get('cad_include'))
+    reason_counts: dict[str, int] = {}
+    for edge in edges:
+        reason = str(edge.get('cad_reason', 'unclassified'))
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
     return {
         'cad_primary_edges': selected,
         'cad_review_edges': len(edges) - selected,
         'cad_primary_paths': sum(1 for path in paths if path['edges'] and all(edges[i].get('cad_include') for i in path['edges'])),
+        'cad_selection_reasons': reason_counts,
         'cad_min_path_px': int(round(min_path)),
         'cad_min_junction_branch_px': int(round(junction_stub)),
     }
@@ -1686,23 +1994,40 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
-    # OCR overlap remains metadata for graph classification. Confirmed glyph
-    # strokes were already filtered in extract_segments; continuous pipe lines survive.
+    # OCR overlap is now a real exclusion signal, not merely a note. Confirmed
+    # continuous routes crossing a text box are retained by the two-sided ink test.
     for edge in edges:
         edge['visible'] = True
     crossings=detect_crossings(segments)
-    # A white canvas preview with candidate line segments in red/amber.
+    text_mask = _text_region_mask(gray.shape[:2], annotations)
+    ink_in_text_regions = cv2.bitwise_and(ink, text_mask)
+    geometry_ink = cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
+
+    # The candidate overlay remains available for audit; the primary overlay
+    # makes it immediately visible what will actually enter PIPE_MAIN.
     overlay=bgr.copy()
-    for i,s in enumerate(segments):
-        if s.get('ocr_overlap', 0) >= 0.45:
-            col=(155,155,155)
+    primary_overlay=bgr.copy()
+    for segment in segments:
+        col=(155,155,155) if segment.get('ocr_overlap', 0) >= 0.16 else ((30,130,240) if segment['source']=='LSD' else (40,180,80))
+        cv2.line(overlay,(int(segment['x1']),int(segment['y1'])),(int(segment['x2']),int(segment['y2'])),col,2,cv2.LINE_AA)
+    edge_by_index = {int(edge.get('source_segment_index', -1)): edge for edge in edges}
+    for segment_index, segment in enumerate(segments):
+        edge = edge_by_index.get(segment_index)
+        if edge and edge.get('cad_include'):
+            color=(40,190,95)
+            thickness=3
         else:
-            col=(30,130,240) if s['source']=='LSD' else (40,180,80)
-        cv2.line(overlay,(int(s['x1']),int(s['y1'])),(int(s['x2']),int(s['y2'])),col,2,cv2.LINE_AA)
-    for n in nodes:
-        if n['degree'] >= 3:
-            cv2.circle(overlay,(int(n['x']),int(n['y'])),4,(0,0,255),-1,cv2.LINE_AA)
+            color=(150,150,150)
+            thickness=1
+        cv2.line(primary_overlay,(int(segment['x1']),int(segment['y1'])),(int(segment['x2']),int(segment['y2'])),color,thickness,cv2.LINE_AA)
+    for node in nodes:
+        if node['degree'] >= 3:
+            cv2.circle(overlay,(int(node['x']),int(node['y'])),4,(0,0,255),-1,cv2.LINE_AA)
     overlay_path=str(Path(out_dir)/'overlay.png'); cv2.imwrite(overlay_path,overlay)
+    cv2.imwrite(str(Path(out_dir)/'primary-overlay.png'), primary_overlay)
+    cv2.imwrite(str(Path(out_dir)/'text-region-mask.png'), text_mask)
+    cv2.imwrite(str(Path(out_dir)/'ink-without-text-boxes.png'), geometry_ink)
+    cv2.imwrite(str(Path(out_dir)/'ink-inside-text-boxes.png'), ink_in_text_regions)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
@@ -1734,10 +2059,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                 joins.append({"id":f"J{len(joins)+1}","from":a['id'],"to":b['id'],"distance":round(dist,1),"status":"needs_review","message":"Почти соосные окончания — подтвердить вручную"})
                 if len(joins)>=200: break
         if len(joins)>=200: break
-    graph={"schema":"cad-reconstruction-graph/1.1","status":"needs_review","image":{"width":w,"height":h},
+    graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"semanticTrace":route_status,
-           "rules":{"confirmed_ocr_strokes_become_text":True,"illegible_ocr_regions_mask_geometry":True,"continuous_lines_through_text_are_preserved":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,
-                    "clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_review_only_until_geometry_validation":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
+           "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":11.25,
+                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_review_only_until_geometry_validation":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
@@ -1752,6 +2077,16 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "tesseract_verified_annotations":len([a for a in annotations if a.get('source')=='tesseract' and a.get('verified')]),
                       "review_annotations":len([a for a in annotations if not a.get('verified') and a.get('text')]),
                       "text_overlap_edges":sum(1 for e in edges if e.get('suggested_role')=='text_or_dimension'),
+                      "text_regions_used_for_geometry_mask":len(_confirmed_text_boxes(annotations)),
+                      "ink_pixels_inside_text_regions":int(np.count_nonzero(ink_in_text_regions)),
+                      "auto_joined_collinear_gaps":len({(edge['from'], edge['to']) for edge in edges if edge.get('auto_joined_gap')}),
+                      "text_or_annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
+                      "review_only_ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
+                      "primary_edge_count_by_detector":{
+                          name:sum(1 for e in edges if e.get('cad_include') and e.get('detector')==name)
+                          for name in ('LSD','HOUGH')
+                      },
+                      "isolated_strokes_kept_for_review":sum(1 for e in edges if e.get('cad_reason')=='isolated-stroke-review'),
                       "geometry_candidates_preserved":len(segments),
                       "open_end_join_candidates":len(joins),
                       "components":len(components),
@@ -1760,10 +2095,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
-           "warnings":["Основной слой PIPE_MAIN строится по отобранным и объединённым CAD-путям графа OpenCV; Qwen-маршруты сохранены отдельно на замороженном слое QWEN_REVIEW.",
+           "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
+                       "Qwen-маршруты сохранены отдельно на замороженном слое QWEN_REVIEW и не заменяют геометрию графа.",
                        "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
-                       "Пересечения не объединяются автоматически.",
-                       "Распознанные подписи экспортируются как редактируемый CAD TEXT; текстовые области исключаются из линейных кандидатов.",
+                       "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",
+                       "OCR-рамки участвуют в маске геометрии даже при низкой уверенности текста; непрерывная труба через рамку сохраняется при подтверждении с обеих сторон.",
+                       "Распознанные подтверждённые подписи экспортируются как редактируемый CAD TEXT.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
@@ -1771,6 +2108,8 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         graph['warnings'].append('Qwen не предоставила семантические маршруты для дополнительной проверки. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
     if not _cad_edge_chains(edges):
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
+    if len(segments) >= 80 and cad_selection.get('cad_primary_edges', 0) < max(8, int(len(segments) * 0.08)):
+        graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     return graph
 

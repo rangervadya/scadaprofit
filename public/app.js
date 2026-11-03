@@ -163,12 +163,23 @@ function showResult() {
   };
   $('sourceImage').src = `${graph.sourceUrl}?v=${Date.now()}`;
   $('canvasMeta').textContent = `${graph.image.width} × ${graph.image.height} px · исходная геометрия сохранена`;
+  const diagnostics = $('diagnosticLinks');
+  if (diagnostics) {
+    const links = [
+      graph.primaryOverlayUrl ? `<a href="${escapeHtml(graph.primaryOverlayUrl)}" target="_blank" rel="noreferrer">Отбор PIPE_MAIN</a>` : '',
+      graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
+      graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : ''
+    ].filter(Boolean);
+    diagnostics.innerHTML = links.join('<span>·</span>');
+    diagnostics.hidden = !links.length;
+  }
   $('previewMeta').textContent = 'Анализ завершён · можно редактировать';
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
   const primaryPathCount = Number(summary.cad_primary_chains ?? summary.cad_primary_paths ?? 0);
-  const traceState = `Основных CAD-путей OpenCV: ${primaryPathCount}. Маршрутов Qwen для отдельной проверки: ${qwenRouteCount}. `;
+  const isolatedReview = Number(summary.isolated_strokes_kept_for_review || 0);
+  const traceState = `Основных связных CAD-путей: ${primaryPathCount}. Маршрутов Qwen для отдельной проверки: ${qwenRouteCount}. Изолированных штрихов оставлено на проверку: ${isolatedReview}. `;
   $('statusline').textContent = traceState + graph.warnings.join(' ');
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],
