@@ -86,7 +86,7 @@ def _parse_json_object(content: str) -> dict[str, Any]:
 
 
 def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
-               max_edge: int, num_predict: int = 1536) -> tuple[dict[str, Any], float, tuple[int, int]]:
+               max_edge: int, num_predict: int = 1536, diagnostics: dict[str, Any] | None = None) -> tuple[dict[str, Any], float, tuple[int, int]]:
     """Run one bounded local Ollama vision request and return its resize transform."""
     src_w, src_h = rgb.size
     resize_scale = min(1.0, max_edge / max(src_w, src_h))
@@ -120,7 +120,77 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
     content = (body.get('message') or {}).get('content', '')
     if not content:
         raise ValueError('Ollama вернула пустое message.content; проверьте совместимость модели и /api/chat.')
-    return _parse_json_object(content), resize_scale, rgb.size
+    parsed = _parse_json_object(content)
+    if diagnostics is not None:
+        diagnostics.update({
+            'done': body.get('done'),
+            'done_reason': body.get('done_reason'),
+            'eval_count': body.get('eval_count'),
+            'prompt_eval_count': body.get('prompt_eval_count'),
+            'response_chars': len(content),
+            'json_keys': sorted(str(key) for key in parsed.keys()),
+            'annotations_key_count': next((len(parsed[key]) for key in ('annotations', 'texts', 'text_regions', 'labels', 'objects', 'items') if isinstance(parsed.get(key), list)), None),
+            'routes_key_count': next((len(parsed[key]) for key in ('routes', 'pipes', 'pipe_routes', 'polylines', 'paths', 'traces') if isinstance(parsed.get(key), list)), None),
+        })
+    return parsed, resize_scale, rgb.size
+
+
+
+def _annotation_items_from_response(parsed: dict[str, Any]) -> tuple[list[Any], str | None]:
+    """Accept common OCR JSON key variants while keeping the parser deterministic."""
+    for key in ('annotations', 'texts', 'text_regions', 'labels', 'objects', 'items'):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            return value, key
+    if isinstance(parsed.get('text'), str) and any(key in parsed for key in ('bbox', 'box', 'bbox_2d')):
+        return [parsed], 'single_object'
+    return [], None
+
+
+def _clip_segment_to_rect(a: list[float], b: list[float], rect: tuple[float, float, float, float]) -> tuple[list[float], list[float]] | None:
+    """Liang-Barsky clipping; rect is (left, top, right, bottom)."""
+    x0, y0, x1, y1 = map(float, (a[0], a[1], b[0], b[1]))
+    left, top, right, bottom = rect
+    dx, dy = x1 - x0, y1 - y0
+    u0, u1 = 0.0, 1.0
+    for p, q in ((-dx, x0 - left), (dx, right - x0), (-dy, y0 - top), (dy, bottom - y0)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        r = q / p
+        if p < 0:
+            u0 = max(u0, r)
+        else:
+            u1 = min(u1, r)
+        if u0 > u1:
+            return None
+    return ([round(x0 + u0 * dx, 1), round(y0 + u0 * dy, 1)],
+            [round(x0 + u1 * dx, 1), round(y0 + u1 * dy, 1)])
+
+
+def _clip_polyline_to_rect(points: list[list[float]], rect: tuple[float, float, float, float]) -> list[list[list[float]]]:
+    """Clip a polyline into visible fragments inside one non-overlap tile core."""
+    fragments: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    for index in range(len(points) - 1):
+        clipped = _clip_segment_to_rect(points[index], points[index + 1], rect)
+        if clipped is None:
+            if len(current) >= 2:
+                fragments.append(current)
+            current = []
+            continue
+        first, last = clipped
+        if current and math.dist(current[-1], first) <= 1.5:
+            if math.dist(current[-1], last) > 0.5:
+                current.append(last)
+        else:
+            if len(current) >= 2:
+                fragments.append(current)
+            current = [first, last]
+    if len(current) >= 2:
+        fragments.append(current)
+    return fragments
 
 
 def _qwen_annotations(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -137,18 +207,16 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
         prompt_template = (
-            'Ты профессиональный OCR-модуль для рукописной инженерной схемы трубопровода. '
-            'Найди КАЖДУЮ видимую буквенно-цифровую подпись: отдельные цифры, группы цифр, '
-            'длины и диаметры, DN/Ду/Ø, обозначения, единицы измерения и короткие рукописные слова. '
-            'Сначала читай чернила как текст, не как линии чертежа. Не пропускай маленькие надписи. '
-            'Не включай трубы, линии-выноски, стрелки, наконечники, символы арматуры и рамки. '
-            'Один bbox должен охватывать один цельный текстовый фрагмент, не соседние элементы. '
-            'Не придумывай неразборчивые символы: верни наиболее вероятное буквальное чтение и низкую confidence, '
-            'если есть сомнение. Для совсем нечитаемого отдельного фрагмента можно вернуть text="?". '
-            'Координаты bbox — пиксели текущего переданного фрагмента, начало в левом верхнем углу. '
+            'Ты OCR-оператор рукописной инженерной схемы. Твоя задача — только переписать чернила как текст, '
+            'а не классифицировать их как геометрию. Просмотри фрагмент слева направо и сверху вниз. '
+            'Найди ВСЕ видимые записи: одиночные цифры, группы цифр, размеры, диаметры DN/Ду/Ø, буквы, '
+            'обозначения и единицы измерения. Не пропускай отдельные цифры и короткие пометки. '
+            'Не включай трубы, размерные линии, выноски, стрелки, наконечники, рамки и символы арматуры. '
+            'Один bbox должен охватывать один цельный текстовый фрагмент. Если символ неясен, '
+            'верни наиболее вероятное буквальное чтение и низкую confidence; не выдумывай текст. '
+            'Координаты bbox — пиксели текущего фрагмента, начало в левом верхнем углу. '
             'Верни только JSON: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
-            'Не добавляй пояснений, описаний схемы или повторов. Не более 24 отдельных текстовых фрагментов на один кадр. '
-            'Размер текущего фрагмента: {width}x{height} px.'
+            'Максимум 20 текстовых фрагментов на один кадр. Размер фрагмента: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
@@ -175,6 +243,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
 
         items: list[dict[str, Any]] = []
         tile_errors = []
+        tile_diagnostics: list[dict[str, Any]] = []
         for tile_index, (left, top, right, bottom) in enumerate(regions, 1):
             crop = original.crop((left, top, right, bottom))
             # Actually magnify each crop so small handwritten figures reach the
@@ -187,21 +256,24 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             prompt_width = max(1, round(crop.width * sent_scale))
             prompt_height = max(1, round(crop.height * sent_scale))
             prompt = prompt_template.replace('{width}', str(prompt_width)).replace('{height}', str(prompt_height))
+            call_diagnostics: dict[str, Any] = {'tile': tile_index, 'crop_size': list(crop.size)}
             try:
                 parsed, resize_scale, sent_size = _qwen_call(
                     crop, prompt, url=url, model=model, timeout=timeout,
-                    max_edge=max_edge, num_predict=max_output_tokens
+                    max_edge=max_edge, num_predict=max_output_tokens, diagnostics=call_diagnostics
                 )
                 coordinate_scale = crop_scale * resize_scale
                 calls_ok += 1
-                raw_items = parsed.get('annotations', [])
-                if not isinstance(raw_items, list):
-                    continue
+                raw_items, annotation_key = _annotation_items_from_response(parsed)
+                call_diagnostics['annotation_key'] = annotation_key
+                call_diagnostics['raw_annotations'] = len(raw_items)
+                accepted_before = len(items)
                 for raw in raw_items:
                     if not isinstance(raw, dict):
                         continue
-                    text = re.sub(r'\s+', ' ', str(raw.get('text', ''))).strip()
-                    bbox = raw.get('bbox') or raw.get('box') or raw.get('bbox_2d')
+                    text_value = raw.get('text', raw.get('value', raw.get('label', raw.get('content', ''))))
+                    text = re.sub(r'\s+', ' ', str(text_value)).strip()
+                    bbox = raw.get('bbox') or raw.get('box') or raw.get('bbox_2d') or raw.get('box_2d')
                     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
                         x1, y1, x2, y2 = map(float, bbox)
                         box = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
@@ -243,8 +315,13 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                         'geometry_exclude': geometry_exclude,
                         'source': 'qwen3-vl', 'tile': tile_index,
                     })
+                call_diagnostics['accepted_annotations'] = len(items) - accepted_before
+                tile_diagnostics.append(call_diagnostics)
             except Exception as error:
-                tile_errors.append(str(error).strip()[:150] or error.__class__.__name__)
+                message = str(error).strip()[:150] or error.__class__.__name__
+                tile_errors.append(message)
+                call_diagnostics['error'] = message
+                tile_diagnostics.append(call_diagnostics)
 
         # Deduplicate boxes repeated in the overlapping tile seams.
         items.sort(key=lambda item: item['confidence'], reverse=True)
@@ -280,7 +357,11 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         return deduped, {
             'available': True, 'model': model, 'annotations': len(deduped),
             'tiles': len(regions), 'successful_tiles': calls_ok,
-            'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else None),
+            'tiles_with_annotations': sum(1 for item in tile_diagnostics if item.get('accepted_annotations', 0) > 0),
+            'tile_diagnostics': tile_diagnostics,
+            'recognized_anything': bool(deduped),
+            'empty_result': calls_ok > 0 and not deduped,
+            'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else ('Все плитки обработаны, но Qwen не вернула распознанных надписей.' if calls_ok > 0 and not deduped else None)),
         }
     except Exception as error:
         reason = str(error).strip() or error.__class__.__name__
@@ -315,137 +396,179 @@ def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
 
 
 def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Ask the vision model for pipe centre-lines; tolerate common JSON variants."""
+    """Trace pipe centre-lines tile-by-tile so a small model does not need to parse a full sheet at once."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
-    raw_count = 0
-    rejected_low_confidence = 0
-    rejected_invalid = 0
+    raw_count = rejected_low_confidence = rejected_invalid = 0
+    tile_diagnostics: list[dict[str, Any]] = []
     try:
-        max_edge = max(1280, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '2048')))
+        max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1536'))))
+        grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '1'))))
+        upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
+        overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
         with Image.open(image_path) as source:
-            rgb = ImageOps.exif_transpose(source).convert('RGB')
-        route_input_scale = min(1.0, max_edge / max(rgb.size))
-        route_input_width = max(1, round(rgb.width * route_input_scale))
-        route_input_height = max(1, round(rgb.height * route_input_scale))
-        prompt = (
-            'Ты инженер, который переводит РУКОПИСНУЮ СХЕМУ ТРУБОПРОВОДА в CAD. '
-            'Нужно найти только осевые линии самих труб, НЕ все нарисованные штрихи. '
-            'Труба — это длинная связная трасса, обычно проходящая через последовательность поворотов. '
-            'Игнорируй числа, размеры, буквенные подписи, стрелки, выноски, короткие засечки, '
-            'обозначения клапанов, фитингов и пересекающиеся штрихи символов. '
-            'Для каждой видимой трубы верни одну полилинию: начало, реальные углы поворотов, '
-            'точки разветвления и конец. Не ставь точки на каждом пикселе. '
-            'Не соединяй линии только потому, что они близки. Не выдумывай скрытые участки. '
-            'Если участок неясен, всё равно верни распознанную длинную часть отдельным маршрутом. '
-            'Координаты — пиксели текущего изображения, размер которого '
-            f'{route_input_width}x{route_input_height}; (0,0) — левый верхний угол. '
-            'Верни JSON с ключом routes. Каждый маршрут может быть объектом '
-            '{"id":"P1","points":[[x1,y1],[x2,y2]],"confidence":75} '
-            'или просто массивом точек [[x1,y1],[x2,y2]]. '
-            'confidence не обязателен; если не можешь оценить, не указывай его. '
-            'Не возвращай пустой routes, если на изображении явно есть длинные линии труб. '
-            'Не включай текст или арматуру в маршруты. Пример ответа: '
-            '{"routes":[{"id":"P1","points":[[100,120],[300,120],[300,280]],"confidence":75}],"annotations":[]}. '
-            'Ограничь ответ только нужными данными: максимум 24 маршрута и максимум 32 точки на маршрут. '
-            'Никакого Markdown и пояснений вне JSON.'
-        )
-        parsed, resize_scale, sent_size = _qwen_call(
-            rgb, prompt, url=url, model=model, timeout=timeout, max_edge=max_edge,
-            num_predict=max_output_tokens
-        )
-        raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', [])))))
-        if not isinstance(raw_routes, list):
-            # Some vision responses use a single polyline directly as `routes`.
-            if isinstance(raw_routes, dict):
-                raw_routes = list(raw_routes.values())
-            else:
-                raise ValueError('Qwen вернул JSON, но поле routes имеет неверный тип.')
-        # Also accept a top-level simple array of coordinate pairs as one route.
-        if raw_routes and all((isinstance(point, (list, tuple)) and len(point) >= 2 and
-                               all(isinstance(v, (int, float)) for v in point[:2])) or
-                              (isinstance(point, dict) and 'x' in point and 'y' in point) for point in raw_routes):
-            raw_routes = [{'id': 'P1', 'points': raw_routes}]
-        raw_count = len(raw_routes)
-        result: list[dict[str, Any]] = []
+            original = ImageOps.exif_transpose(source).convert('RGB')
+        original_width, original_height = original.size
+        if original_width < 640 or original_height < 480:
+            grid = 1
         min_confidence = float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '35'))
-        for raw in raw_routes:
-            if isinstance(raw, list):
-                raw = {'points': raw}
-            if not isinstance(raw, dict):
-                rejected_invalid += 1
-                continue
-            points_raw = raw.get('points') or raw.get('vertices') or raw.get('polyline') or raw.get('coordinates')
-            if not isinstance(points_raw, list) or len(points_raw) < 2:
-                rejected_invalid += 1
-                continue
-            confidence_was_supplied = 'confidence' in raw or 'score' in raw
-            try:
-                confidence = float(raw.get('confidence', raw.get('score', 60 if not confidence_was_supplied else 0)))
-            except (TypeError, ValueError):
-                confidence = 60.0 if not confidence_was_supplied else 0.0
-            if 0 <= confidence <= 1:
-                confidence *= 100
-            points: list[list[float]] = []
-            for point in points_raw[:160]:
-                if isinstance(point, dict):
-                    try:
-                        px, py = float(point.get('x')), float(point.get('y'))
-                    except (TypeError, ValueError):
-                        continue
-                elif isinstance(point, (list, tuple)) and len(point) >= 2:
-                    try:
-                        px, py = float(point[0]), float(point[1])
-                    except (TypeError, ValueError):
-                        continue
-                else:
-                    continue
-                if not math.isfinite(px) or not math.isfinite(py):
-                    continue
-                px = max(0.0, min(float(original_width - 1), px / resize_scale))
-                py = max(0.0, min(float(original_height - 1), py / resize_scale))
-                if not points or math.dist(points[-1], [px, py]) >= 3.0:
-                    points.append([round(px, 1), round(py, 1)])
-            if len(points) < 2:
-                rejected_invalid += 1
-                continue
-            route_length = sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1))
-            if route_length < max(12.0, min(original_width, original_height) * 0.015):
-                rejected_invalid += 1
-                continue
-            if confidence < min_confidence:
-                rejected_low_confidence += 1
-                continue
-            result.append({
-                'id': str(raw.get('id') or f'P{len(result) + 1}')[:24],
-                'points': points, 'confidence': round(max(0.0, min(100.0, confidence)), 1),
-                'confidence_assumed': not confidence_was_supplied,
-                'needs_review': confidence < 60,
-                'source': 'qwen3-vl-semantic', 'include': True,
-            })
+        result: list[dict[str, Any]] = []
+        for row in range(grid):
+            core_top = round(row * original_height / grid)
+            core_bottom = round((row + 1) * original_height / grid)
+            for col in range(grid):
+                core_left = round(col * original_width / grid)
+                core_right = round((col + 1) * original_width / grid)
+                core_w, core_h = core_right - core_left, core_bottom - core_top
+                pad_x, pad_y = round(core_w * overlap / 2), round(core_h * overlap / 2)
+                left, top = max(0, core_left - pad_x), max(0, core_top - pad_y)
+                right, bottom = min(original_width, core_right + pad_x), min(original_height, core_bottom + pad_y)
+                crop = original.crop((left, top, right, bottom))
+                requested_scale = min(upscale, max_edge / max(crop.size))
+                crop_scale = requested_scale if requested_scale > 1.001 else 1.0
+                if crop_scale > 1.001:
+                    crop = crop.resize((max(1, round(crop.width * crop_scale)), max(1, round(crop.height * crop_scale))), Image.Resampling.LANCZOS)
+                sent_scale = min(1.0, max_edge / max(crop.size))
+                sent_width, sent_height = max(1, round(crop.width * sent_scale)), max(1, round(crop.height * sent_scale))
+                tile_index = row * grid + col + 1
+                prompt = (
+                    'Ты восстанавливаешь инженерную схему трубопровода для CAD. Анализируй ТОЛЬКО этот фрагмент. '
+                    'Найди видимые осевые линии труб: длинные прямые участки, повороты и ответвления. '
+                    'Для каждого видимого участка верни отдельную полилинию от конца до конца; если линия уходит за край фрагмента, '
+                    'доведи её до края изображения. Не требуется описывать всю систему целиком. '
+                    'Игнорируй цифры, буквы, размеры, стрелки, выноски, штрихи букв, рамки и короткие символы арматуры. '
+                    'Не соединяй две линии только по близости и не придумывай скрытые участки. '
+                    'При сомнении верни видимую часть линии с confidence 40–60, а не пустой список. '
+                    f'Координаты — пиксели фрагмента {sent_width}x{sent_height}; начало (0,0) слева сверху. '
+                    'Верни только JSON: {"routes":[{"id":"P1","points":[[20,80],[320,80],[320,240]],"confidence":70}]}. '
+                    'Максимум 12 маршрутов и 16 точек на маршрут. Если труб действительно нет, верни {"routes":[]}. '
+                    'Не добавляй пояснений.'
+                )
+                diag: dict[str, Any] = {
+                    'tile': tile_index, 'row': row + 1, 'column': col + 1,
+                    'core': {'x': core_left, 'y': core_top, 'w': core_w, 'h': core_h},
+                    'crop': {'x': left, 'y': top, 'w': right - left, 'h': bottom - top},
+                }
+                try:
+                    parsed, resize_scale, sent_size = _qwen_call(
+                        crop, prompt, url=url, model=model, timeout=timeout,
+                        max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag
+                    )
+                    raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('pipe_routes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', []))))))
+                    if not isinstance(raw_routes, list):
+                        if isinstance(raw_routes, dict):
+                            raw_routes = list(raw_routes.values())
+                        else:
+                            raise ValueError('Qwen вернул JSON, но поле routes имеет неверный тип.')
+                    if raw_routes and all((isinstance(pt, (list, tuple)) and len(pt) >= 2 and all(isinstance(v, (int, float)) for v in pt[:2])) or (isinstance(pt, dict) and 'x' in pt and 'y' in pt) for pt in raw_routes):
+                        raw_routes = [{'id': 'P1', 'points': raw_routes}]
+                    raw_count += len(raw_routes)
+                    diag['raw_routes'] = len(raw_routes)
+                    accepted_before = len(result)
+                    coordinate_scale = crop_scale * resize_scale
+                    core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
+                    for raw_index, raw in enumerate(raw_routes[:12], 1):
+                        if isinstance(raw, list):
+                            raw = {'points': raw}
+                        if not isinstance(raw, dict):
+                            rejected_invalid += 1
+                            continue
+                        points_raw = raw.get('points') or raw.get('vertices') or raw.get('polyline') or raw.get('coordinates')
+                        if not isinstance(points_raw, list) or len(points_raw) < 2:
+                            rejected_invalid += 1
+                            continue
+                        confidence_supplied = 'confidence' in raw or 'score' in raw
+                        try:
+                            confidence = float(raw.get('confidence', raw.get('score', 60 if not confidence_supplied else 0)))
+                        except (TypeError, ValueError):
+                            confidence = 60.0 if not confidence_supplied else 0.0
+                        if 0 <= confidence <= 1:
+                            confidence *= 100
+                        mapped: list[list[float]] = []
+                        for pt in points_raw[:64]:
+                            try:
+                                if isinstance(pt, dict):
+                                    px, py = float(pt.get('x')), float(pt.get('y'))
+                                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                                    px, py = float(pt[0]), float(pt[1])
+                                else:
+                                    continue
+                            except (TypeError, ValueError):
+                                continue
+                            if not math.isfinite(px) or not math.isfinite(py):
+                                continue
+                            gx, gy = left + px / coordinate_scale, top + py / coordinate_scale
+                            gx = max(0.0, min(float(original_width - 1), gx))
+                            gy = max(0.0, min(float(original_height - 1), gy))
+                            if not mapped or math.dist(mapped[-1], [gx, gy]) >= 2.0:
+                                mapped.append([gx, gy])
+                        if len(mapped) < 2:
+                            rejected_invalid += 1
+                            continue
+                        # The model sees overlap for context; export only this tile's non-overlap core.
+                        fragments = _clip_polyline_to_rect(mapped, core_rect)
+                        if not fragments:
+                            rejected_invalid += 1
+                            continue
+                        if confidence < min_confidence:
+                            rejected_low_confidence += 1
+                            continue
+                        for fragment_no, points in enumerate(fragments, 1):
+                            length = sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1))
+                            if len(points) < 2 or length < max(12.0, min(original_width, original_height) * 0.01):
+                                rejected_invalid += 1
+                                continue
+                            result.append({
+                                'id': f'T{tile_index}-{str(raw.get("id") or raw_index)[:16]}-{fragment_no}',
+                                'points': [[round(p[0], 1), round(p[1], 1)] for p in points],
+                                'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                                'confidence_assumed': not confidence_supplied,
+                                'needs_review': confidence < 60,
+                                'source': 'qwen3-vl-semantic-tiled', 'tile': tile_index, 'include': True,
+                            })
+                    diag['accepted_routes'] = len(result) - accepted_before
+                    diag['tile_status'] = 'ok'
+                except Exception as error:
+                    diag['tile_status'] = 'error'
+                    diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
+                tile_diagnostics.append(diag)
+
+        successful_tiles = sum(1 for item in tile_diagnostics if item.get('tile_status') == 'ok')
         status = {
-            'available': True, 'model': model, 'routes': len(result), 'raw_routes': raw_count,
+            'available': successful_tiles > 0, 'model': model,
+            'routes': len(result), 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
-            'error': None, 'hint': None, 'image_size': {'width': sent_size[0], 'height': sent_size[1]},
+            'tiles': len(tile_diagnostics), 'successful_tiles': successful_tiles,
+            'tile_diagnostics': tile_diagnostics,
+            'error': None, 'hint': None,
+            'image_size': {'width': original_width, 'height': original_height},
+            'strategy': 'overlapping semantic tiles clipped to non-overlapping cores',
         }
         if not result:
-            if raw_count == 0:
-                status['error'] = 'Модель ответила, но вернула пустой список маршрутов. Для Qwen3-VL:4b это может означать, что вся схема слишком сложная для одного прохода.'
-                status['hint'] = 'Проверьте наличие модели и запустите повторный анализ более чёткого изображения или отдельных фрагментов схемы.'
+            if successful_tiles == 0 and tile_diagnostics:
+                first_error = next((item.get('error') for item in tile_diagnostics if item.get('error')), 'Не удалось получить ответ от Ollama.')
+                message, hint = _semantic_error_hint(RuntimeError(first_error), model)
+                status['error'] = message[:260]
+                status['hint'] = hint[:260]
+            elif raw_count == 0 and successful_tiles:
+                status['error'] = f'Qwen успешно обработала {successful_tiles}/{len(tile_diagnostics)} фрагментов, но вернула пустой список маршрутов.'
+                status['hint'] = 'Проверьте tile_diagnostics: JSON-ключи, число токенов и маршруты каждого фрагмента. Если все tiles пусты, модель не увидела осевые линии.'
             elif rejected_low_confidence:
-                status['error'] = f'Qwen вернул {raw_count} маршрут(а), но все они ниже порога уверенности {min_confidence:g}%.'
-                status['hint'] = 'Порог снижен до 35%; проверьте координаты и качество исходного изображения.'
+                status['error'] = f'Qwen вернул маршруты, но все ниже порога уверенности {min_confidence:g}%.'
+                status['hint'] = 'Проверьте координаты и confidence каждого фрагмента.'
             else:
-                status['error'] = f'Qwen вернул {raw_count} элементов, но ни один не прошёл проверку координат или длины.'
-                status['hint'] = 'Проверьте JSON и формат координат в graph.json → semanticTrace.'
+                status['error'] = f'Qwen вернул {raw_count} элементов, но они не прошли проверку координат, границ фрагмента или длины.'
+                status['hint'] = 'Откройте semanticTrace.tile_diagnostics и проверьте координаты каждого фрагмента.'
         return result, status
     except Exception as error:
         message, hint = _semantic_error_hint(error, model)
         return [], {
             'available': False, 'model': model, 'routes': 0, 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
+            'tiles': len(tile_diagnostics), 'successful_tiles': sum(1 for item in tile_diagnostics if item.get('tile_status') == 'ok'),
+            'tile_diagnostics': tile_diagnostics,
             'error': message[:260], 'hint': hint[:260],
         }
 
@@ -1527,6 +1650,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "semantic_routes":len(semantic_routes),
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
+                      "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
+                      "qwen_verified_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl' and a.get('verified')]),
+                      "tesseract_verified_annotations":len([a for a in annotations if a.get('source')=='tesseract' and a.get('verified')]),
+                      "review_annotations":len([a for a in annotations if not a.get('verified') and a.get('text')]),
                       "text_overlap_edges":sum(1 for e in edges if e.get('suggested_role')=='text_or_dimension'),
                       "geometry_candidates_preserved":len(segments),
                       "open_end_join_candidates":len(joins),

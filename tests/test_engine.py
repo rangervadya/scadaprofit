@@ -207,6 +207,58 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(annotations[0]['bbox'], {"x": 50, "y": 40, "w": 30, "h": 10})
             self.assertTrue(annotations[0]['geometry_exclude'])
 
+    def test_semantic_routes_are_requested_per_overlapping_tile_and_clipped_to_core(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            calls = []
+            def fake_qwen_call(image, prompt, **kwargs):
+                calls.append((image.size, prompt))
+                return ({'routes': [{'id': 'R', 'points': [[0, 100], [600, 100]], 'confidence': 80}]}, 1.0, image.size)
+            with patch.dict(os.environ, {
+                'QWEN_PIPE_TILE_GRID': '2', 'QWEN_PIPE_UPSCALE': '1.0',
+                'QWEN_PIPE_TILE_OVERLAP': '0.14', 'QWEN_PIPE_MAX_IMAGE_EDGE': '2000',
+                'QWEN_PIPE_TRACE_TIMEOUT': '30', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+                'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', side_effect=fake_qwen_call):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(status['tiles'], 4)
+            self.assertEqual(status['successful_tiles'], 4)
+            self.assertEqual(len(routes), 4)
+            # Tile 1 owns x=0..500; tile 2 owns x=500..1000; crop overlap is not double-exported.
+            top_left = next(route for route in routes if route['tile'] == 1)
+            top_right = next(route for route in routes if route['tile'] == 2)
+            self.assertEqual(top_left['points'], [[0.0, 100.0], [500.0, 100.0]])
+            self.assertEqual(top_right['points'], [[500.0, 100.0], [999.0, 100.0]])
+            self.assertEqual(status['strategy'], 'overlapping semantic tiles clipped to non-overlapping cores')
+
+    def test_qwen_empty_ocr_reports_tile_diagnostics(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            response_body = {'message': {'content': json.dumps({'annotations': []})},
+                             'done': True, 'done_reason': 'stop', 'eval_count': 22, 'prompt_eval_count': 1500}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self): return json.dumps(response_body).encode('utf-8')
+            with patch.dict(os.environ, {'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_UPSCALE': '1',
+                'QWEN_MAX_IMAGE_EDGE': '1200', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+                'QWEN_MODEL': 'qwen3-vl:4b-instruct'}, clear=False), \
+                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
+            self.assertEqual(annotations, [])
+            self.assertTrue(status['available'])
+            self.assertTrue(status['empty_result'])
+            tile = status['tile_diagnostics'][0]
+            self.assertEqual(tile['done_reason'], 'stop')
+            self.assertEqual(tile['eval_count'], 22)
+            self.assertEqual(tile['json_keys'], ['annotations'])
+            self.assertEqual(tile['raw_annotations'], 0)
+
     def test_qwen_semantic_pipe_routes_scale_to_original_image(self):
         with TemporaryDirectory() as temp:
             image_path = Path(temp) / 'source.png'
