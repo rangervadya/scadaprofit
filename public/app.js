@@ -165,18 +165,18 @@ function showResult() {
   $('canvasMeta').textContent = `${graph.image.width} × ${graph.image.height} px · исходная геометрия сохранена`;
   $('previewMeta').textContent = 'Анализ завершён · можно редактировать';
   const trace = graph.semanticTrace || {};
-  const traceState = (graph.semanticRoutes || []).length
-    ? `Семантические трассы Qwen: ${graph.semanticRoutes.length}. `
-    : `Семантические трассы не получены. ${trace.error || 'Причина не указана.'} ${trace.hint || ''} `;
-  $('statusline').textContent = traceState + graph.warnings.join(' ');
   const summary = graph.summary || {};
+  const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
+  const primaryPathCount = Number(summary.cad_primary_chains ?? summary.cad_primary_paths ?? 0);
+  const traceState = `Основных CAD-путей OpenCV: ${primaryPathCount}. Маршрутов Qwen для отдельной проверки: ${qwenRouteCount}. `;
+  $('statusline').textContent = traceState + graph.warnings.join(' ');
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],
     [summary.nodes ?? graph.nodes.length, 'узлов графа'],
     [summary.edges ?? graph.edges.length, 'связей'],
     [summary.crossings_to_review ?? graph.crossings.length, 'пересечений на проверку'],
     [summary.ocr_annotations ?? graph.annotations.length, 'OCR-подписей'],
-    [summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0, 'семантических трасс труб']
+    [primaryPathCount, 'основных CAD-путей']
   ];
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
@@ -213,14 +213,14 @@ function edgeLength(edge) {
   if (points.length < 2) return 0;
   return Math.hypot(points.at(-1)[0] - points[0][0], points.at(-1)[1] - points[0][1]);
 }
+function isPrimaryCadEdge(edge) {
+  if (!edge || edge.visible === false) return false;
+  if (edge.source === 'manual') return true;
+  return edge.user_include === true || edge.cad_include === true ||
+    (edge.cad_include === undefined && edge.component_role === 'line_structure');
+}
 function shownEdges() {
-  return graph.edges.filter(edge => {
-    if (edge.source === 'manual') return edge.visible !== false;
-    if (edge.visible === false) return false;
-    const primary = edge.user_include === true || edge.cad_include === true ||
-      (edge.cad_include === undefined && edge.component_role === 'line_structure');
-    return showAllSegments || primary;
-  });
+  return graph.edges.filter(edge => edge.visible !== false && (showAllSegments || isPrimaryCadEdge(edge)));
 }
 function lineColor(edge) {
   if (edge.source === 'manual') return '#ca5f54';
@@ -229,15 +229,21 @@ function lineColor(edge) {
 function renderOverlay() {
   if (!graph) return;
   const visible = shownEdges();
-  const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes) ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35) : [];
-  const lines = semanticRoutes.length ? semanticRoutes.map(route => {
-    const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
-    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#087d70" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" opacity=".96"/>` : '';
-  }).join('') : visible.map(edge => {
+  // Detector-selected CAD paths are the primary overlay. Qwen suggestions are
+  // shown separately as dashed violet review traces; they never replace or
+  // suppress the selected OpenCV geometry.
+  const detectorLines = visible.map(edge => {
     const points = (edge.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     if (!points) return '';
-    return `<polyline data-edge="${escapeHtml(edge.id)}" points="${points}" fill="none" stroke="${lineColor(edge)}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" opacity=".94"/>`;
+    return `<polyline data-edge="${escapeHtml(edge.id)}" points="${points}" fill="none" stroke="${lineColor(edge)}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" opacity=".94"/>`;
   }).join('');
+  const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes)
+    ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35) : [];
+  const qwenReviewLines = semanticRoutes.map(route => {
+    const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
+    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#8b62a3" stroke-width="2.4" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" opacity=".66"/>` : '';
+  }).join('');
+  const lines = detectorLines + qwenReviewLines;
   const nodes = $('showNodes').checked ? graph.nodes.map(node => `
     <g class="node" data-node="${escapeHtml(node.id)}">
       <circle cx="${node.x}" cy="${node.y}" r="${node.degree >= 3 ? 6.2 : 4.4}" fill="#fff" stroke="${nodeSelected(node.id) ? '#e58c48' : '#ca5f54'}" stroke-width="2.1"/>
@@ -521,23 +527,11 @@ function cleanCadPoints(sourcePoints) {
   return rdp(simplified).map(point => point.map(value => Number(value.toFixed(1))));
 }
 function cleanCadChains() {
-  const semanticRoutes = Array.isArray(graph?.semanticRoutes) ? graph.semanticRoutes
-    .filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35 && Array.isArray(route.points) && route.points.length >= 2) : [];
-  if (Array.isArray(graph?.semanticRoutes)) {
-    const semantic = semanticRoutes.map(route => ({
-      points: cleanCadPoints(route.points), edgeIds: [], routeId: route.id, confidence: route.confidence
-    })).filter(route => route.points.length >= 2);
-    // Only explicit user selections may promote an OpenCV candidate into the
-    // primary sheet. Merely showing all candidates is a diagnostic overlay.
-    const selectedCandidates = buildChains(graph.edges.filter(edge =>
-      edge.source !== 'manual' && edge.user_include === true && edge.visible !== false
-    )).map(chain => ({ ...chain, points: cleanCadPoints(chain.points) }));
-    // Keep user-created connections visible/editable alongside semantic routes.
-    const manual = buildChains(graph.edges.filter(edge => edge.source === 'manual' && edge.visible !== false))
-      .map(chain => ({ ...chain, points: cleanCadPoints(chain.points) }));
-    return [...semantic, ...selectedCandidates, ...manual];
-  }
-  return buildChains(shownEdges()).map(chain => ({
+  // The server's cad_include flag is the default geometric selection. Do not
+  // make the presence of Qwen routes switch the whole sheet to Qwen-only mode.
+  // Explicit user inclusions and manual connections are also retained.
+  const primaryEdges = graph.edges.filter(isPrimaryCadEdge);
+  return buildChains(primaryEdges).map(chain => ({
     ...chain, points: cleanCadPoints(chain.points)
   })).filter(chain => chain.points.length >= 2);
 }
@@ -575,13 +569,9 @@ function buildSheetSvg() {
     output.push(`<polyline points="${points}"/>`);
   }
   output.push('</g>');
-  if (Array.isArray(graph.semanticRoutes) && !chains.length) {
-    const trace = graph.semanticTrace || {};
-    const message = svgEscape(trace.error || 'Причина не указана. Проверьте Ollama и модель.');
-    const hint = svgEscape(trace.hint || 'Пиксельные кандидаты сохранены отдельно для проверки.');
-    output.push('<text x="600" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ</text>');
-    output.push(`<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">${message.slice(0, 150)}</text>`);
-    output.push(`<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">${hint.slice(0, 150)}</text>`);
+  if (!chains.length) {
+    output.push('<text x="600" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ НЕ ВЫДЕЛЕНЫ</text>');
+    output.push('<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">Проверьте отбор OpenCV-кандидатов и слой DETAIL_REVIEW.</text>');
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;
@@ -634,9 +624,9 @@ function buildDxf() {
     '0','SECTION','2','TABLES','0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
     '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
     '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0','0','ENDTAB',
-    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','5'];
+    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','6'];
   let layerHandle = 32;
-  for (const [name, color, lineweight, flags] of [['SHEET',7,13,0],['PIPE_MAIN',7,13,0],['DETAIL_REVIEW',8,9,1],['VERIFIED_TEXT',7,13,0],['NOTES',8,9,0]]) {
+  for (const [name, color, lineweight, flags] of [['SHEET',7,13,0],['PIPE_MAIN',7,13,0],['DETAIL_REVIEW',8,9,1],['QWEN_REVIEW',30,9,1],['VERIFIED_TEXT',7,13,0],['NOTES',8,9,0]]) {
     output.push('0','LAYER','5',layerHandle.toString(16).toUpperCase(),'330','2',
       '100','AcDbSymbolTableRecord','100','AcDbLayerTableRecord',
       '2',name,'70',String(flags),'62',String(color),'6','CONTINUOUS','370',String(lineweight));
@@ -675,15 +665,19 @@ function buildDxf() {
     const points = chain.points.map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
     addPolyline('PIPE_MAIN',points,false,13);
   }
-  // Pixel detector output is always review-only when semantic routing exists;
-  // the 'show all' toggle must never promote these fragments into PIPE_MAIN.
-  const reviewEdges = graph.edges.filter(item => item.source !== 'manual' && (
-    (Array.isArray(graph.semanticRoutes) && item.user_include !== true) ||
-    (!Array.isArray(graph.semanticRoutes) && (showAllSegments || (item.cad_include !== true && item.user_include !== true)))
-  ));
+  // Unselected detector fragments stay available on a frozen review layer.
+  // The main layer above uses cad_include/user_include regardless of whether
+  // Qwen returned any suggestions.
+  const reviewEdges = graph.edges.filter(item => item.source !== 'manual' && !isPrimaryCadEdge(item));
   for (const edge of reviewEdges) {
     const points = (edge.geometry || []).map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
     addPolyline('DETAIL_REVIEW',points,false,9);
+  }
+  // Qwen's semantic candidates are diagnostic suggestions, never the sole
+  // source of PIPE_MAIN geometry.
+  for (const route of (graph.semanticRoutes || []).filter(item => item.include !== false && Number(item.confidence ?? 60) >= 35)) {
+    const points = (route.points || []).map(point => [offsetX + Number(point[0]) * scale, offsetY + Number(point[1]) * scale]);
+    addPolyline('QWEN_REVIEW',points,false,9);
   }
   for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
     const box = annotation.bbox;

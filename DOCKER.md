@@ -1,6 +1,6 @@
 # Docker deployment · CAD Reconstruction Engine 4.2.7
 
-The app image includes Node.js, Python, OpenCV, Pillow and Tesseract with English/Russian language data. The Compose stack also provides a local Ollama service for Qwen3-VL handwriting OCR and semantic pipe centre-line tracing. The clean CAD sheet relies on the semantic route response; pixel-level OpenCV detections remain review candidates.
+The app image includes Node.js, Python, OpenCV, Pillow and Tesseract with English/Russian language data. The Compose stack also provides a local Ollama service for Qwen3-VL handwriting OCR and semantic pipe centre-line tracing. Selected and connected OpenCV graph paths form the primary PIPE_MAIN geometry. Qwen semantic routes are additional review suggestions on QWEN_REVIEW; unselected OpenCV fragments remain on DETAIL_REVIEW. Ollama is used for OCR and semantic suggestions, but it is not required to build the primary OpenCV geometry.
 
 On first setup, download the model into the persistent Ollama volume:
 

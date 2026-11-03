@@ -350,32 +350,36 @@ class GraphTests(unittest.TestCase):
             self.assertIn('не найдена', status['error'])
             self.assertIn('ollama pull qwen3-vl:4b', status['hint'])
 
-    def test_semantic_route_overrides_pixel_candidate_lines_in_clean_sheet(self):
-        noisy_edges = [
-            {"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [20, 90]], "cad_include": True},
-            {"id": "E2", "from": "N2", "to": "N3", "geometry": [[20, 90], [110, 100]], "cad_include": True},
+    def test_qwen_routes_do_not_replace_selected_opencv_primary_geometry(self):
+        selected_edges = [
+            {"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [20, 90]],
+             "cad_include": True, "component_role": "line_structure"},
+            {"id": "E2", "from": "N2", "to": "N3", "geometry": [[20, 90], [110, 100]],
+             "cad_include": True, "component_role": "line_structure"},
         ]
+        # Deliberately different Qwen coordinates: suggestions must not erase
+        # the selected detector geometry from the primary clean drawing.
         routes = [{"id": "P1", "points": [[10, 10], [100, 10], [100, 100]], "confidence": 90, "include": True}]
-        svg = processor.build_clean_svg(120, 120, noisy_edges, [], semantic_routes=routes)
+        svg = processor.build_clean_svg(120, 120, selected_edges, [], semantic_routes=routes)
         self.assertEqual(svg.count('<polyline points='), 1)
-        self.assertIn('10.00,10.00 100.00,10.00 100.00,100.00', svg)
-        dxf = processor.build_dxf(120, 120, noisy_edges, [], semantic_routes=routes)
-        self.assertIn('PIPE_MAIN', dxf)
+        self.assertIn('10.00,10.00 20.00,90.00 110.00,100.00', svg)
+        self.assertNotIn('100.00,10.00 100.00,100.00', svg)
+        dxf = processor.build_dxf(120, 120, selected_edges, [], semantic_routes=routes)
         self.assertIn('8\nPIPE_MAIN\n100\nAcDbPolyline', dxf)
+        self.assertIn('QWEN_REVIEW', dxf)
+        self.assertIn('QWEN_REVIEW\n70\n1', dxf)
 
 
-    def test_empty_semantic_trace_does_not_promote_raw_detector_segments_to_pipe_main(self):
+    def test_empty_semantic_trace_does_not_suppress_selected_opencv_primary_geometry(self):
         edges = [{"id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 10], [110, 10]],
                   "cad_include": True, "component_role": "line_structure"}]
         svg = processor.build_clean_svg(120, 120, edges, [], semantic_routes=[])
-        self.assertEqual(svg.count('<polyline points='), 0)
-        self.assertIn('СЕМАНТИЧЕСКИЕ ТРАССЫ НЕ РАСПОЗНАНЫ', svg)
+        self.assertEqual(svg.count('<polyline points='), 1)
+        self.assertNotIn('НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ', svg)
         dxf = processor.build_dxf(120, 120, edges, [], semantic_routes=[])
-        # The candidate remains editable but belongs only to the frozen review layer.
+        self.assertIn('8\nPIPE_MAIN\n100\nAcDbPolyline', dxf)
         self.assertIn('DETAIL_REVIEW\n70\n1', dxf)
-        self.assertIn('8\nDETAIL_REVIEW\n100\nAcDbPolyline', dxf)
-        pipe_section = dxf.split('8\nPIPE_MAIN\n100\nAcDbPolyline')
-        self.assertEqual(len(pipe_section), 1)
+        self.assertIn('QWEN_REVIEW\n70\n1', dxf)
 
     def test_lsd_and_hough_edges_of_one_thick_stroke_collapse_to_one_candidate(self):
         image = np.full((180, 260, 3), 255, np.uint8)
@@ -500,7 +504,7 @@ class GraphTests(unittest.TestCase):
                 ocr_kwargs = call.call_args.kwargs
                 self.assertEqual(ocr_kwargs['num_predict'], 2048)
                 self.assertEqual(ocr_kwargs['format_schema']['required'], ['annotations'])
-                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 24)
+                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 48)
 
             with patch.dict(os.environ, {
                 'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
@@ -513,6 +517,7 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(pipe_kwargs['format_schema']['required'], ['routes'])
                 route_item = pipe_kwargs['format_schema']['properties']['routes']['items']
                 self.assertEqual(route_item['properties']['points']['maxItems'], 2)
+                self.assertEqual(pipe_kwargs['format_schema']['properties']['routes']['maxItems'], 48)
                 self.assertIn('каждый видимый прямой участок трубы отдельно', call.call_args.args[1])
 
     def test_qwen_call_accepts_schema_and_marks_truncated_generation(self):
@@ -537,6 +542,23 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(payload['format'], schema)
         self.assertTrue(diagnostics['truncated'])
         self.assertEqual(diagnostics['eval_count'], 2048)
+
+
+class BrowserExportRegressionTests(unittest.TestCase):
+    def test_browser_main_layer_uses_opencv_selection_even_if_qwen_routes_exist(self):
+        app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('function isPrimaryCadEdge(edge)', app_js)
+        self.assertIn('edge.cad_include === true', app_js)
+        self.assertIn('const primaryEdges = graph.edges.filter(isPrimaryCadEdge);', app_js)
+        self.assertIn("addPolyline('PIPE_MAIN',points,false,13);", app_js)
+        self.assertIn("addPolyline('QWEN_REVIEW',points,false,9);", app_js)
+        self.assertNotIn('if (Array.isArray(graph?.semanticRoutes)) {', app_js)
+
+    def test_ui_does_not_describe_qwen_as_the_only_main_geometry_source(self):
+        index_html = (ROOT / 'public' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV', index_html)
+        self.assertIn('замороженный QWEN_REVIEW', index_html)
+        self.assertNotIn('Основной лист строится только из семантических маршрутов Qwen', index_html)
 
 
 if __name__ == "__main__":

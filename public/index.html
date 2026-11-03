@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.2.7</title>
+  <title>CAD Reconstruction Engine · 4.2.8</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.2.7">
-  <script src="/app.js?v=4.2.7" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.2.8">
+  <script src="/app.js?v=4.2.8" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.2.7</b></div>
+      <div class="version-pill">ENGINE <b>4.2.8</b></div>
     </div>
   </header>
 
@@ -79,7 +79,7 @@
 
         <details class="card inspector-card" id="edgePanel" hidden open>
           <summary class="details-heading"><div><div class="step-label"><span>03A</span> ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count-pill" id="edgeCount">0</span></summary>
-          <p class="helper">Основной лист строится только из семантических маршрутов Qwen. Пиксельные отрезки, стрелки, штрихи символов и спорные детали сохраняются отдельно на замороженном слое DETAIL_REVIEW DXF.</p>
+          <p class="helper">Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV (cad_include). Маршруты Qwen вынесены отдельно на замороженный QWEN_REVIEW; неоднозначные и неотобранные кандидаты остаются на DETAIL_REVIEW.</p>
           <div class="list-tools"><input id="edgeSearch" type="search" placeholder="Найти E12 или HOUGH…" aria-label="Поиск линии"><button class="tiny-button" id="allEdges" type="button">Все</button><button class="tiny-button" id="longEdges" type="button">Основные</button></div>
           <div class="scrolllist" id="edgeList"></div>
           <button class="load-more" id="edgeMore" type="button" hidden>Показать ещё</button>
@@ -121,7 +121,7 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Чистый лист строится из распознанных осевых маршрутов труб и проверенных текстовых обозначений; пиксельные кандидаты в него не подмешиваются.</p></div>
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Основной лист строится из отобранных и объединённых геометрических путей OpenCV и проверенных текстовых обозначений. Qwen используется как дополнительный источник проверки, а не как единственный источник труб.</p></div>
             <div class="export-actions">
               <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
               <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
@@ -133,10 +133,10 @@
           <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
         </section>
 
-        <section class="bottom-note"><span class="note-icon">i</span><span>Qwen3-VL строит семантические осевые маршруты труб и распознаёт текст на увеличенных фрагментах. Геометрические кандидаты OpenCV хранятся отдельно. Если Qwen не вернул маршруты, лист явно помечается как черновик, а не готовая CAD-схема.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
+        <section class="bottom-note"><span class="note-icon">i</span><span>OpenCV формирует основные геометрические пути после отбора и топологической сборки. Qwen предлагает дополнительные семантические маршруты на отдельном замороженном слое QWEN_REVIEW; остальные кандидаты доступны в DETAIL_REVIEW. Подписи OCR экспортируются как редактируемый CAD TEXT.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.7</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.2.8</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>
