@@ -85,8 +85,61 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     raise ValueError('Модель не вернула JSON-объект с annotations.')
 
 
+OCR_RESPONSE_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'annotations': {
+            'type': 'array', 'maxItems': 24,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'text': {'type': 'string'},
+                    'bbox': {
+                        'type': 'object',
+                        'properties': {
+                            'x': {'type': 'number'}, 'y': {'type': 'number'},
+                            'w': {'type': 'number'}, 'h': {'type': 'number'},
+                        },
+                        'required': ['x', 'y', 'w', 'h'],
+                    },
+                    'confidence': {'type': 'number'},
+                },
+                'required': ['text', 'bbox'],
+            },
+        },
+    },
+    'required': ['annotations'],
+}
+
+PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'routes': {
+            'type': 'array', 'maxItems': 24,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'id': {'type': 'string'},
+                    'points': {
+                        'type': 'array', 'minItems': 2, 'maxItems': 2,
+                        'items': {
+                            'type': 'array', 'minItems': 2, 'maxItems': 2,
+                            'items': {'type': 'number'},
+                        },
+                    },
+                    'confidence': {'type': 'number'},
+                },
+                'required': ['points'],
+            },
+        },
+    },
+    'required': ['routes'],
+}
+
+
 def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
-               max_edge: int, num_predict: int = 1536, diagnostics: dict[str, Any] | None = None) -> tuple[dict[str, Any], float, tuple[int, int]]:
+               max_edge: int, num_predict: int = 1536, diagnostics: dict[str, Any] | None = None,
+               format_schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], float, tuple[int, int]]:
     """Run one bounded local Ollama vision request and return its resize transform."""
     src_w, src_h = rgb.size
     resize_scale = min(1.0, max_edge / max(src_w, src_h))
@@ -99,7 +152,7 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         'model': model,
         'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
         'stream': False,
-        'format': 'json',
+        'format': format_schema or 'json',
         'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': max(128, min(4096, int(num_predict)))},
     }
     request = urllib.request.Request(
@@ -125,6 +178,7 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         diagnostics.update({
             'done': body.get('done'),
             'done_reason': body.get('done_reason'),
+            'truncated': body.get('done_reason') == 'length',
             'eval_count': body.get('eval_count'),
             'prompt_eval_count': body.get('prompt_eval_count'),
             'response_chars': len(content),
@@ -202,21 +256,22 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
     try:
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
         timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
-        max_output_tokens = max(256, min(2048, int(os.getenv('QWEN_OCR_MAX_TOKENS', '1024'))))
+        max_output_tokens = max(512, min(2048, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
         prompt_template = (
-            'Ты OCR-оператор рукописной инженерной схемы. Твоя задача — только переписать чернила как текст, '
-            'а не классифицировать их как геометрию. Просмотри фрагмент слева направо и сверху вниз. '
-            'Найди ВСЕ видимые записи: одиночные цифры, группы цифр, размеры, диаметры DN/Ду/Ø, буквы, '
-            'обозначения и единицы измерения. Не пропускай отдельные цифры и короткие пометки. '
-            'Не включай трубы, размерные линии, выноски, стрелки, наконечники, рамки и символы арматуры. '
-            'Один bbox должен охватывать один цельный текстовый фрагмент. Если символ неясен, '
-            'верни наиболее вероятное буквальное чтение и низкую confidence; не выдумывай текст. '
-            'Координаты bbox — пиксели текущего фрагмента, начало в левом верхнем углу. '
-            'Верни только JSON: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
-            'Максимум 20 текстовых фрагментов на один кадр. Размер фрагмента: {width}x{height} px.'
+            'Ты читаешь рукописную инженерную схему. Это задача OCR, не трассировки линий. '
+            'Внимательно перечисли все читаемые надписи в ЭТОМ фрагменте, включая отдельные цифры, '
+            'числа, DN, Ду, Ø, диаметры, размеры, буквенные коды и единицы. Не пропускай короткие метки. '
+            'Не переписывай трубы, стрелки и графические символы. Один bbox — одна надпись или одна группа цифр, '
+            'которая написана слитно. Не объединяй разнесённые подписи. Если чтение сомнительно, укажи '
+            'наиболее вероятный буквальный текст и низкую confidence; не придумывай символы. '
+            'Координаты bbox — пиксели отправленного изображения, x/y — левый верхний угол, w/h — ширина/высота. '
+            'Верни объект annotations как массив, даже если найден только один текст. '
+            'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
+            'Пример формы: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
+            'Максимум 24 надписи на фрагмент. Размер изображения: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
@@ -260,7 +315,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             try:
                 parsed, resize_scale, sent_size = _qwen_call(
                     crop, prompt, url=url, model=model, timeout=timeout,
-                    max_edge=max_edge, num_predict=max_output_tokens, diagnostics=call_diagnostics
+                    max_edge=max_edge, num_predict=max_output_tokens, diagnostics=call_diagnostics,
+                    format_schema=OCR_RESPONSE_SCHEMA
                 )
                 coordinate_scale = crop_scale * resize_scale
                 calls_ok += 1
@@ -358,10 +414,11 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'available': True, 'model': model, 'annotations': len(deduped),
             'tiles': len(regions), 'successful_tiles': calls_ok,
             'tiles_with_annotations': sum(1 for item in tile_diagnostics if item.get('accepted_annotations', 0) > 0),
+            'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
             'recognized_anything': bool(deduped),
             'empty_result': calls_ok > 0 and not deduped,
-            'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else ('Все плитки обработаны, но Qwen не вернула распознанных надписей.' if calls_ok > 0 and not deduped else None)),
+            'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else (('OCR-ответы достигли лимита токенов.' if any(item.get('truncated') for item in tile_diagnostics) else 'Все плитки обработаны, но Qwen не вернула распознанных надписей.') if calls_ok > 0 and not deduped else None)),
         }
     except Exception as error:
         reason = str(error).strip() or error.__class__.__name__
@@ -404,7 +461,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
     try:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
-        max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1536'))))
+        max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
         grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '1'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
@@ -434,17 +491,23 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 sent_width, sent_height = max(1, round(crop.width * sent_scale)), max(1, round(crop.height * sent_scale))
                 tile_index = row * grid + col + 1
                 prompt = (
-                    'Ты восстанавливаешь инженерную схему трубопровода для CAD. Анализируй ТОЛЬКО этот фрагмент. '
-                    'Найди видимые осевые линии труб: длинные прямые участки, повороты и ответвления. '
-                    'Для каждого видимого участка верни отдельную полилинию от конца до конца; если линия уходит за край фрагмента, '
-                    'доведи её до края изображения. Не требуется описывать всю систему целиком. '
-                    'Игнорируй цифры, буквы, размеры, стрелки, выноски, штрихи букв, рамки и короткие символы арматуры. '
-                    'Не соединяй две линии только по близости и не придумывай скрытые участки. '
-                    'При сомнении верни видимую часть линии с confidence 40–60, а не пустой список. '
-                    f'Координаты — пиксели фрагмента {sent_width}x{sent_height}; начало (0,0) слева сверху. '
-                    'Верни только JSON: {"routes":[{"id":"P1","points":[[20,80],[320,80],[320,240]],"confidence":70}]}. '
-                    'Максимум 12 маршрутов и 16 точек на маршрут. Если труб действительно нет, верни {"routes":[]}. '
-                    'Не добавляй пояснений.'
+                    'Это фрагмент РУКОПИСНОЙ инженерной схемы трубопроводов. Найди на изображении сами линии труб. '
+                    'НЕ пытайся распознать всю систему целиком и НЕ описывай её словами. Выполни простую задачу: '
+                    'перечисли каждый видимый прямой участок трубы отдельно, как отрезок с двумя концами. '
+                    'Труба обычно выглядит как длинный непрерывный штрих или как две близкие параллельные границы. '
+                    'Учитывай горизонтальные, вертикальные и диагональные участки. На повороте верни два отрезка, '
+                    'которые встречаются в точке поворота. На Т-ответвлении верни каждый видимый подходящий участок. '
+                    'Сохраняй части трубы до и после клапана/фитинга; не рисуй сам короткий символ клапана. '
+                    'Не путай трубы с цифрами, буквами, короткими размерными рисками, стрелками, наконечниками выносок '
+                    'и рамкой листа. Но НЕ удаляй длинную линию только потому, что рядом есть подпись или символ. '
+                    'Не придумывай скрытые участки и не соединяй несвязанные линии. Если не уверен, верни видимый '
+                    'отрезок с confidence 40–60, а не пустой массив. Пустой массив допустим только если в этом фрагменте '
+                    'действительно нет ни одного длинного линейного участка трубы. '
+                    f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху. '
+                    'Каждый элемент routes — ОДИН прямой отрезок, points содержит ровно две точки [[x1,y1],[x2,y2]]. '
+                    'Верни массив routes, а не одну общую полилинию. Максимум 24 отрезка. '
+                    'Пример: {"routes":[{"id":"S1","points":[[20,80],[320,80]],"confidence":70}]}. '
+                    'Верни только JSON без текста и без объяснений.'
                 )
                 diag: dict[str, Any] = {
                     'tile': tile_index, 'row': row + 1, 'column': col + 1,
@@ -454,7 +517,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 try:
                     parsed, resize_scale, sent_size = _qwen_call(
                         crop, prompt, url=url, model=model, timeout=timeout,
-                        max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag
+                        max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag,
+                        format_schema=PIPE_RESPONSE_SCHEMA
                     )
                     raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('pipe_routes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', []))))))
                     if not isinstance(raw_routes, list):
@@ -469,7 +533,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     accepted_before = len(result)
                     coordinate_scale = crop_scale * resize_scale
                     core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
-                    for raw_index, raw in enumerate(raw_routes[:12], 1):
+                    for raw_index, raw in enumerate(raw_routes[:24], 1):
                         if isinstance(raw, list):
                             raw = {'points': raw}
                         if not isinstance(raw, dict):
@@ -541,6 +605,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
             'routes': len(result), 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
             'tiles': len(tile_diagnostics), 'successful_tiles': successful_tiles,
+            'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
             'error': None, 'hint': None,
             'image_size': {'width': original_width, 'height': original_height},
@@ -554,7 +619,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 status['hint'] = hint[:260]
             elif raw_count == 0 and successful_tiles:
                 status['error'] = f'Qwen успешно обработала {successful_tiles}/{len(tile_diagnostics)} фрагментов, но вернула пустой список маршрутов.'
-                status['hint'] = 'Проверьте tile_diagnostics: JSON-ключи, число токенов и маршруты каждого фрагмента. Если все tiles пусты, модель не увидела осевые линии.'
+                status['hint'] = 'Промпт теперь запрашивает отдельные прямые отрезки, а не сложные полилинии. Если routes снова пусты, Qwen не распознаёт геометрию даже на уровне сегментов: нужно менять модель/визуальную предобработку, а не порог confidence.'
             elif rejected_low_confidence:
                 status['error'] = f'Qwen вернул маршруты, но все ниже порога уверенности {min_confidence:g}%.'
                 status['hint'] = 'Проверьте координаты и confidence каждого фрагмента.'

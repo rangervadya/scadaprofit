@@ -485,5 +485,59 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(payload['options']['num_predict'], 777)
 
 
+    def test_qwen_ocr_and_pipe_calls_use_required_structured_schemas(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            with patch.dict(os.environ, {
+                'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_UPSCALE': '1', 'QWEN_OCR_MAX_TOKENS': '2048',
+                'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
+                'QWEN_MAX_IMAGE_EDGE': '1200', 'QWEN_PIPE_MAX_IMAGE_EDGE': '1200',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
+                processor._qwen_annotations(str(image_path), 1000, 800)
+                ocr_kwargs = call.call_args.kwargs
+                self.assertEqual(ocr_kwargs['num_predict'], 2048)
+                self.assertEqual(ocr_kwargs['format_schema']['required'], ['annotations'])
+                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 24)
+
+            with patch.dict(os.environ, {
+                'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
+                'QWEN_PIPE_MAX_IMAGE_EDGE': '1200', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+                'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', return_value=({'routes': []}, 1.0, (1000, 800))) as call:
+                processor._qwen_semantic_routes(str(image_path), 1000, 800)
+                pipe_kwargs = call.call_args.kwargs
+                self.assertEqual(pipe_kwargs['num_predict'], 2048)
+                self.assertEqual(pipe_kwargs['format_schema']['required'], ['routes'])
+                route_item = pipe_kwargs['format_schema']['properties']['routes']['items']
+                self.assertEqual(route_item['properties']['points']['maxItems'], 2)
+                self.assertIn('каждый видимый прямой участок трубы отдельно', call.call_args.args[1])
+
+    def test_qwen_call_accepts_schema_and_marks_truncated_generation(self):
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self):
+                return json.dumps({
+                    'message': {'content': '{"routes":[]}'},
+                    'done': True, 'done_reason': 'length', 'eval_count': 2048,
+                    'prompt_eval_count': 1400
+                }).encode('utf-8')
+        from PIL import Image as PILImage
+        image = PILImage.new('RGB', (32, 24), 'white')
+        diagnostics = {}
+        schema = {'type': 'object', 'properties': {'routes': {'type': 'array'}}, 'required': ['routes']}
+        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+            processor._qwen_call(image, 'return JSON routes', url='http://ollama.test/api/chat',
+                                  model='qwen3-vl:4b-instruct', timeout=10, max_edge=64,
+                                  num_predict=2048, diagnostics=diagnostics, format_schema=schema)
+        payload = json.loads(mocked.call_args.args[0].data.decode('utf-8'))
+        self.assertEqual(payload['format'], schema)
+        self.assertTrue(diagnostics['truncated'])
+        self.assertEqual(diagnostics['eval_count'], 2048)
+
+
 if __name__ == "__main__":
     unittest.main()

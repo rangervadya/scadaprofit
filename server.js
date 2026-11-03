@@ -86,15 +86,15 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.2.6', mode: 'cad-reconstruction-engine',
+  res.json({ ok: true, version: '4.2.7', mode: 'cad-reconstruction-engine',
     geometry: 'Qwen3-VL semantic pipe centre-lines; OpenCV LSD/Hough are review-only candidates',
     ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract supplementary OCR',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
-      ocrMaxTokens: Number(process.env.QWEN_OCR_MAX_TOKENS || 1024),
+      ocrMaxTokens: Number(process.env.QWEN_OCR_MAX_TOKENS || 2048),
       pipeTraceTimeoutSeconds: Number(process.env.QWEN_PIPE_TRACE_TIMEOUT || 240),
-      pipeMaxTokens: Number(process.env.QWEN_PIPE_MAX_TOKENS || 1536),
+      pipeMaxTokens: Number(process.env.QWEN_PIPE_MAX_TOKENS || 2048),
       pipeTileGrid: Number(process.env.QWEN_PIPE_TILE_GRID || 2),
       pipeUpscale: Number(process.env.QWEN_PIPE_UPSCALE || 1.8),
       pipeTileOverlap: Number(process.env.QWEN_PIPE_TILE_OVERLAP || 0.14),
@@ -150,6 +150,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.2.6: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.2.7: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: Qwen semantic routes for clean CAD; OpenCV candidates for review.');
 });
