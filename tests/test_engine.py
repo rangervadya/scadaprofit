@@ -542,7 +542,7 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(graph['summary']['isolated_strokes_kept_for_review'], 1)
             self.assertEqual(graph['summary']['text_regions_used_for_geometry_mask'], 1)
             for filename in ('primary-overlay.png', 'text-region-mask.png',
-                             'ink-without-text-boxes.png', 'ink-inside-text-boxes.png'):
+                             'ink-without-text-boxes.png', 'ink-inside-text-boxes.png', 'handwritten-text-blocks.png'):
                 self.assertTrue((out_dir / filename).exists(), filename)
             self.assertTrue((out_dir / 'drawing.dxf').exists())
             dxf = (out_dir / 'drawing.dxf').read_text(encoding='utf-8')
@@ -672,9 +672,197 @@ class BrowserExportRegressionTests(unittest.TestCase):
 
     def test_ui_does_not_describe_qwen_as_the_only_main_geometry_source(self):
         index_html = (ROOT / 'public' / 'index.html').read_text(encoding='utf-8')
-        self.assertIn('Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV', index_html)
+        self.assertIn('OpenCV собирает геометрический граф', index_html)
         self.assertIn('замороженный QWEN_REVIEW', index_html)
         self.assertNotIn('Основной лист строится только из семантических маршрутов Qwen', index_html)
+
+
+class Recovery431RegressionTests(unittest.TestCase):
+    def test_ink_supported_qwen_route_is_promoted_to_pipe_main(self):
+        ink = np.zeros((120, 180), np.uint8)
+        cv2.line(ink, (12, 60), (166, 60), 255, 3, cv2.LINE_AA)
+        text_mask = np.zeros_like(ink)
+        routes = [{'id': 'P7', 'points': [[12, 60], [166, 60]], 'confidence': 82}]
+        accepted, stats = processor.validate_primary_semantic_routes(routes, ink, text_mask, [], 120)
+        self.assertEqual(len(accepted), 1)
+        self.assertGreaterEqual(accepted[0]['ink_support'], 0.38)
+        svg = processor.build_clean_svg(180, 120, [], [], primary_semantic_routes=accepted)
+        self.assertEqual(svg.count('<polyline points='), 1)
+        dxf = processor.build_dxf(180, 120, [], [], semantic_routes=routes, primary_semantic_routes=accepted)
+        self.assertIn('8\nPIPE_MAIN\n100\nAcDbPolyline', dxf)
+        self.assertEqual(stats['accepted_routes'], 1)
+
+
+    def test_ink_validation_tolerates_small_qwen_centerline_offset(self):
+        ink = np.zeros((120, 180), np.uint8)
+        cv2.line(ink, (12, 60), (166, 60), 255, 2, cv2.LINE_AA)
+        text_mask = np.zeros_like(ink)
+        # The predicted centreline is offset by 3 px but still follows the same
+        # hand-drawn source stroke after the 7x7 support dilation.
+        routes = [{'id': 'P9', 'points': [[12, 63], [166, 63]], 'confidence': 78}]
+        accepted, stats = processor.validate_primary_semantic_routes(routes, ink, text_mask, [], 120)
+        self.assertEqual(len(accepted), 1)
+        self.assertGreaterEqual(accepted[0]['ink_support'], 0.30)
+
+    def test_qwen_route_made_only_of_text_ink_is_not_promoted(self):
+        ink = np.zeros((120, 180), np.uint8)
+        # Ink exists only inside a text box; it does not continue outside it.
+        cv2.line(ink, (65, 60), (115, 60), 255, 3, cv2.LINE_AA)
+        text_mask = np.zeros_like(ink)
+        cv2.rectangle(text_mask, (58, 48), (122, 72), 255, -1)
+        routes = [{'id': 'P8', 'points': [[20, 60], [160, 60]], 'confidence': 88}]
+        accepted, stats = processor.validate_primary_semantic_routes(routes, ink, text_mask, [], 120)
+        self.assertEqual(accepted, [])
+        self.assertIn(stats['reasons'].get('weak-source-ink', 0) + stats['reasons'].get('text-overlap', 0), [1])
+
+    def test_multisegment_ambiguous_but_supported_route_can_be_primary(self):
+        nodes = [
+            {'id': 'N1', 'x': 10, 'y': 20, 'degree': 1},
+            {'id': 'N2', 'x': 60, 'y': 20, 'degree': 2},
+            {'id': 'N3', 'x': 60, 'y': 90, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'N1', 'to': 'N2', 'geometry': [[10, 20], [60, 20]],
+             'component_id': 'C1', 'component_role': 'ambiguous', 'ink_support': .85, 'ocr_overlap': 0.0},
+            {'id': 'E2', 'from': 'N2', 'to': 'N3', 'geometry': [[60, 20], [60, 90]],
+             'component_id': 'C1', 'component_role': 'ambiguous', 'ink_support': .85, 'ocr_overlap': 0.0},
+        ]
+        stats = processor.select_primary_cad_edges(nodes, edges, 500)
+        self.assertEqual(stats['cad_primary_edges'], 2)
+        self.assertTrue(all(edge['cad_reason'] == 'ambiguous-but-connected-route' for edge in edges))
+
+    def test_low_confidence_text_is_exported_to_frozen_text_review(self):
+        annotations = [{
+            'source': 'qwen3-vl-block', 'text': '4) насос + клапан (0511)',
+            'confidence': 42, 'verified': False, 'include': False,
+            'bbox': {'x': 40, 'y': 40, 'w': 170, 'h': 18}
+        }]
+        svg = processor.build_clean_svg(300, 180, [], annotations)
+        self.assertIn('data-layer="TEXT_REVIEW"', svg)
+        self.assertIn('насос + клапан', svg)
+        dxf = processor.build_dxf(300, 180, [], annotations)
+        self.assertIn('TEXT_REVIEW', dxf)
+        self.assertIn('насос + клапан', dxf)
+        self.assertIn('TEXT_REVIEW\n70\n1', dxf)
+
+    def test_handwritten_note_box_cluster_is_detected_for_second_ocr_pass(self):
+        items = []
+        for i in range(10):
+            items.append({'bbox': {'x': 600 + (i % 2) * 6, 'y': 100 + i * 20, 'w': 135 + (i % 3) * 8, 'h': 15},
+                          'text': f'{i+1} test'})
+        blocks = processor._candidate_handwritten_text_blocks(items, 1280, 906, max_blocks=2)
+        self.assertTrue(blocks)
+        self.assertGreaterEqual(blocks[0]['source_boxes'], 5)
+        self.assertGreaterEqual(blocks[0]['h'], 100)
+
+    def test_handwritten_block_ocr_returns_full_line_boxes(self):
+        from PIL import Image as PILImage
+        image = PILImage.new('RGB', (500, 400), 'white')
+        response = {'annotations': [
+            {'text': '1) Линия подачи (0405)', 'bbox': {'x': 10, 'y': 15, 'w': 138, 'h': 24}, 'confidence': 72},
+            {'text': '2) Насос + клапан (0434)', 'bbox': {'x': 10, 'y': 48, 'w': 140, 'h': 24}, 'confidence': 55},
+        ]}
+        with patch('processor._qwen_call', return_value=(response, 1.0, (500, 400))) as call:
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                image,
+                [{'bbox': {'x': 20, 'y': 18 + i*26, 'w': 145, 'h': 16}, 'text': str(i)} for i in range(6)],
+                url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]['source'], 'qwen3-vl-block')
+        self.assertTrue(lines[0]['verified'])
+        self.assertFalse(lines[1]['verified'])
+        self.assertEqual(diagnostics[0]['accepted_lines'], 2)
+        self.assertIn('строку целиком', call.call_args.args[1])
+
+
+
+    def test_qwen_ocr_runs_second_pass_even_when_primary_ocr_returns_zero_boxes(self):
+        from PIL import Image as PILImage
+        with TemporaryDirectory() as temp:
+            source = Path(temp) / 'note.png'
+            canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+            for i in range(10):
+                y = 285 + i * 17
+                cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+                cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                            (68, 78, 125), 1, cv2.LINE_AA)
+                cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+            PILImage.fromarray(canvas).save(source)
+            block_response = {'annotations': [
+                {'text': '1) KCL + pump (0405)', 'bbox': {'x': 10, 'y': 10, 'w': 200, 'h': 20}, 'confidence': 70},
+                {'text': '2) Line / valve (0434)', 'bbox': {'x': 10, 'y': 40, 'w': 200, 'h': 20}, 'confidence': 54},
+            ]}
+            with patch.dict(os.environ, {
+                'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_UPSCALE': '1',
+                'QWEN_OCR_MAX_TOKENS': '1024', 'QWEN_OCR_BLOCK_MAX_TOKENS': '1200',
+                'QWEN_MAX_IMAGE_EDGE': '1024', 'QWEN_OCR_TIMEOUT': '30',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }, clear=False), patch('processor._qwen_call', side_effect=[
+                ({'annotations': []}, 1.0, (980, 490)),
+                (block_response, 1.0, (234, 198)),
+            ]) as call:
+                annotations, status = processor._qwen_annotations(str(source), 980, 490)
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(status['block_passes'], 1)
+            self.assertEqual(status['block_annotations'], 2)
+            self.assertEqual([a['source'] for a in annotations], ['qwen3-vl-block', 'qwen3-vl-block'])
+
+    def test_source_ink_detector_finds_handwritten_note_block_without_ocr_boxes(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        # A separate ten-line note block with circled item numbers and cursive-like
+        # connected marks. It should be found even when the OCR pass supplied no boxes.
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        blocks = processor._candidate_handwritten_text_blocks([], 980, 490, max_blocks=2,
+                                                               image=PILImage.fromarray(canvas))
+        self.assertTrue(blocks)
+        self.assertEqual(blocks[0]['detection_source'], 'source-ink-multiline-block')
+        self.assertGreaterEqual(blocks[0]['row_peaks'], 4)
+        self.assertLess(blocks[0]['x'], 640)
+        self.assertGreater(blocks[0]['h'], 80)
+
+
+    def test_block_ocr_runs_from_source_ink_when_first_pass_found_no_text(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        response = {'annotations': [
+            {'text': '1) KCL + pump (0405)', 'bbox': {'x': 10, 'y': 10, 'w': 200, 'h': 20}, 'confidence': 70},
+            {'text': '2) Line / valve (0434)', 'bbox': {'x': 10, 'y': 40, 'w': 200, 'h': 20}, 'confidence': 54},
+        ]}
+        with patch('processor._qwen_call', return_value=(response, 1.0, (234, 198))) as call:
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
+                model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(diagnostics[0]['detection_source'], 'source-ink-multiline-block')
+        self.assertGreaterEqual(diagnostics[0]['row_peaks'], 4)
+        self.assertIn('не додумывай', call.call_args.args[1])
+
+    def test_primary_semantic_routes_are_used_by_browser_svg_and_dxf(self):
+        app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('graph.primarySemanticRoutes', app_js)
+        self.assertIn('handwrittenTextBlocksUrl', app_js)
+        self.assertIn("addText(layer,annotation.text", app_js)
+        self.assertIn("['TEXT_REVIEW',30,9,1]", app_js)
+        self.assertIn('function annotationExportLayer(item)', app_js)
+
 
 
 if __name__ == "__main__":

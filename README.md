@@ -1,5 +1,13 @@
-# CAD Reconstruction Engine 4.3.0
+# CAD Reconstruction Engine 4.3.1
 
-Local-first prototype for turning photographed, handwritten piping sketches into editable SVG/DXF geometry. OCR boxes are used to suppress handwriting strokes from the line detector. The OpenCV graph promotes only connected multi-segment routes with topology evidence to `PIPE_MAIN`; isolated and ambiguous strokes remain in `DETAIL_REVIEW`. Qwen pipe traces are review suggestions on `QWEN_REVIEW`, not the sole source of the main drawing.
+Локальная реконструкция фотографий инженерных схем в SVG/DXF. Обработка выполняется в Docker на сервере пользователя с локальной Qwen/Ollama и OpenCV.
 
-See [`README-RU.md`](README-RU.md), [`INSTALL-4.3.0-RU.md`](INSTALL-4.3.0-RU.md), and [`CHANGELOG-RU.md`](CHANGELOG-RU.md) for details. All output remains preliminary and must be checked against the original sketch.
+- OpenCV строит геометрический граф и отбирает связные трубопроводные маршруты.
+- Маршруты Qwen могут дополнить основной слой только после проверки координат, поддержки исходными пикселями и пересечений OCR-масок.
+- OCR выполняется по увеличенным фрагментам; отдельный проход ищет многострочные рукописные заметки даже при отсутствии OCR-рамок.
+- Подтверждённый текст экспортируется в `VERIFIED_TEXT`, сомнительный — в `TEXT_REVIEW`; оба слоя содержат редактируемые CAD TEXT.
+- Неотобранные линии и неоднозначные элементы сохраняются на отдельных review-слоях.
+
+Установка: [`INSTALL-4.3.1-RU.md`](INSTALL-4.3.1-RU.md). Сохраните `.env`, `.git`, резервные копии и каталог `public/`, включая `public/styles.css`.
+
+Все маршруты, размеры и подписи являются предварительным результатом и должны быть проверены по оригиналу.

@@ -86,8 +86,8 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.0', mode: 'cad-reconstruction-engine',
-    geometry: 'OCR-masked OpenCV topology paths form PIPE_MAIN; isolated and ambiguous strokes stay in DETAIL_REVIEW; Qwen traces are QWEN_REVIEW suggestions',
+  res.json({ ok: true, version: '4.3.1', mode: 'cad-reconstruction-engine',
+    geometry: 'OCR-masked OpenCV topology paths plus source-ink-validated Qwen traces form PIPE_MAIN; rejected traces stay in QWEN_REVIEW; uncertain text stays in TEXT_REVIEW',
     ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract; low-confidence text boxes still mask geometry',
     qwenModel,
     qwenLimits: {
@@ -126,6 +126,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     graph.primaryOverlayUrl = `/jobs/${id}/primary-overlay.png`;
     graph.textMaskUrl = `/jobs/${id}/text-region-mask.png`;
     graph.geometryInkUrl = `/jobs/${id}/ink-without-text-boxes.png`;
+    graph.handwrittenTextBlocksUrl = `/jobs/${id}/handwritten-text-blocks.png`;
     graph.inkUrl = `/jobs/${id}/ink-mask.png`;
     graph.svgUrl = `/jobs/${id}/clean.svg`;
     graph.dxfUrl = `/jobs/${id}/drawing.dxf`;
@@ -133,9 +134,9 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const oq = graph.ocr?.qwen || {};
     const ot = graph.ocr?.tesseract || {};
     const st = graph.semanticTrace || {};
-    console.log(`[ENGINE ${id.slice(0,8)}] OCR Qwen=${oq.annotations || 0} tiles=${oq.successful_tiles || 0}/${oq.tiles || 0}; Tesseract=${ot.annotations || 0}; verifiedText=${graph.summary.verified_annotations || 0}`);
+    console.log(`[ENGINE ${id.slice(0,8)}] OCR Qwen=${oq.annotations || 0} tiles=${oq.successful_tiles || 0}/${oq.tiles || 0}; noteBlocks=${oq.block_annotations || 0} (${oq.block_passes || 0} passes); Tesseract=${ot.annotations || 0}; verifiedText=${graph.summary.verified_annotations || 0}; textReview=${graph.summary.text_review_annotations || 0}`);
     console.log(`[ENGINE ${id.slice(0,8)}] PIPE Qwen routes=${st.routes || 0} raw=${st.raw_routes || 0} tiles=${st.successful_tiles || 0}/${st.tiles || 0}; rejected=${st.rejected_invalid || 0}+${st.rejected_low_confidence || 0}`);
-    console.log(`[ENGINE ${id.slice(0,8)}] CAD PIPE_MAIN edges=${graph.summary.cad_primary_edges || 0} paths=${graph.summary.cad_primary_paths || graph.summary.cad_primary_chains || 0}; DETAIL_REVIEW=${graph.summary.cad_review_edges || 0}; isolatedReview=${graph.summary.isolated_strokes_kept_for_review || 0}`);
+    console.log(`[ENGINE ${id.slice(0,8)}] CAD PIPE_MAIN OpenCV_edges=${graph.summary.cad_primary_edges || 0} Qwen_routes=${graph.summary.cad_primary_qwen_routes || 0} total_paths=${graph.summary.cad_primary_total_paths || 0}; DETAIL_REVIEW=${graph.summary.cad_review_edges || 0}; isolatedReview=${graph.summary.isolated_strokes_kept_for_review || 0}`);
     console.log(`[ENGINE ${id.slice(0,8)}] OCR-MASK boxes=${graph.summary.text_regions_used_for_geometry_mask || graph.summary.geometry_excluded_text_regions || 0}; inkPixelsMasked=${graph.summary.ink_pixels_inside_text_regions || 0}; textComponents=${graph.summary.text_or_annotation_components || 0}; ambiguous=${graph.summary.review_only_ambiguous_components || 0}`);
     res.json(graph);
   } catch (error) {
@@ -155,6 +156,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
-  console.log('Geometry: OCR-aware topology paths for PIPE_MAIN; isolated strokes are review-only; Qwen routes stay in QWEN_REVIEW.');
+  console.log(`CAD Reconstruction Engine 4.3.1: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log('Geometry: OCR-aware OpenCV topology plus ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
 });

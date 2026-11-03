@@ -1,3 +1,3 @@
-CAD Reconstruction Engine 4.2.7
+CAD Reconstruction Engine 4.3.1
 
-См. README-RU.md для установки, настройки локальной Qwen3-VL через Ollama и обновления Docker.
+См. README-RU.md и INSTALL-4.3.1-RU.md. В этой версии добавлена проверка Qwen-трасс по исходным пикселям и второй OCR-проход по многострочным рукописным блокам.

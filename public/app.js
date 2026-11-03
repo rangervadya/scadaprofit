@@ -168,7 +168,8 @@ function showResult() {
     const links = [
       graph.primaryOverlayUrl ? `<a href="${escapeHtml(graph.primaryOverlayUrl)}" target="_blank" rel="noreferrer">Отбор PIPE_MAIN</a>` : '',
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
-      graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : ''
+      graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
+      graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : ''
     ].filter(Boolean);
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;
@@ -177,9 +178,12 @@ function showResult() {
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
-  const primaryPathCount = Number(summary.cad_primary_chains ?? summary.cad_primary_paths ?? 0);
+  const primaryPathCount = Number(summary.cad_primary_total_paths ?? summary.cad_primary_chains ?? summary.cad_primary_paths ?? 0);
+  const qwenPrimaryCount = Number(summary.cad_primary_qwen_routes ?? 0);
   const isolatedReview = Number(summary.isolated_strokes_kept_for_review || 0);
-  const traceState = `Основных связных CAD-путей: ${primaryPathCount}. Маршрутов Qwen для отдельной проверки: ${qwenRouteCount}. Изолированных штрихов оставлено на проверку: ${isolatedReview}. `;
+  const textBlockCount = Number(summary.text_block_annotations || 0);
+  const textReviewCount = Number(summary.text_review_annotations || 0);
+  const traceState = `Основных CAD-путей: ${primaryPathCount} (Qwen, подтверждённых чернилами: ${qwenPrimaryCount}). Остальные маршруты Qwen: ${qwenRouteCount - qwenPrimaryCount}. Строк из рукописных блоков: ${textBlockCount}; текст на ручную проверку: ${textReviewCount}. Изолированных штрихов на проверке: ${isolatedReview}. `;
   $('statusline').textContent = traceState + graph.warnings.join(' ');
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],
@@ -192,7 +196,7 @@ function showResult() {
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
   $('nodeCount').textContent = graph.nodes.length.toLocaleString('ru-RU');
-  $('textCount').textContent = graph.annotations.filter(a => ['qwen3-vl', 'tesseract'].includes(a.source)).length.toLocaleString('ru-RU');
+  $('textCount').textContent = graph.annotations.filter(a => ['qwen3-vl', 'qwen3-vl-block', 'tesseract'].includes(a.source)).length.toLocaleString('ru-RU');
   renderOverlay();
   renderClean();
   renderEdgeList();
@@ -250,11 +254,15 @@ function renderOverlay() {
   }).join('');
   const semanticRoutes = !showAllSegments && Array.isArray(graph.semanticRoutes)
     ? graph.semanticRoutes.filter(route => route.include !== false && Number(route.confidence ?? 60) >= 35) : [];
-  const qwenReviewLines = semanticRoutes.map(route => {
+  const qwenPrimaryLines = semanticRoutes.filter(route => route.primary_validated).map(route => {
     const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
-    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#8b62a3" stroke-width="2.4" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" opacity=".66"/>` : '';
+    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#168e70" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".96"/>` : '';
   }).join('');
-  const lines = detectorLines + qwenReviewLines;
+  const qwenReviewLines = semanticRoutes.filter(route => !route.primary_validated).map(route => {
+    const points = (route.points || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
+    return points ? `<polyline data-route="${escapeHtml(route.id)}" points="${points}" fill="none" stroke="#8b62a3" stroke-width="2.2" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>` : '';
+  }).join('');
+  const lines = detectorLines + qwenPrimaryLines + qwenReviewLines;
   const nodes = $('showNodes').checked ? graph.nodes.map(node => `
     <g class="node" data-node="${escapeHtml(node.id)}">
       <circle cx="${node.x}" cy="${node.y}" r="${node.degree >= 3 ? 6.2 : 4.4}" fill="#fff" stroke="${nodeSelected(node.id) ? '#e58c48' : '#ca5f54'}" stroke-width="2.1"/>
@@ -412,12 +420,12 @@ function renderJoinList() {
   }));
 }
 function renderTextList() {
-  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'tesseract'].includes(item.source) && item.text);
+  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
     <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Заменить рукописную надпись CAD-текстом" aria-label="Заменить рукописную надпись ${escapeHtml(annotation.id)} CAD-текстом">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
@@ -538,13 +546,24 @@ function cleanCadPoints(sourcePoints) {
   return rdp(simplified).map(point => point.map(value => Number(value.toFixed(1))));
 }
 function cleanCadChains() {
-  // The server's cad_include flag is the default geometric selection. Do not
-  // make the presence of Qwen routes switch the whole sheet to Qwen-only mode.
-  // Explicit user inclusions and manual connections are also retained.
+  // OpenCV supplies the topology graph; Qwen paths are admitted only after
+  // the server has validated their coordinates against source-image ink and
+  // excluded text-only strokes. This combines recall with OCR-aware filtering.
   const primaryEdges = graph.edges.filter(isPrimaryCadEdge);
-  return buildChains(primaryEdges).map(chain => ({
-    ...chain, points: cleanCadPoints(chain.points)
+  const opencv = buildChains(primaryEdges).map(chain => ({
+    ...chain, points: cleanCadPoints(chain.points), source: 'opencv'
   })).filter(chain => chain.points.length >= 2);
+  const semantic = (graph.primarySemanticRoutes || []).map(route => ({
+    edgeIds: [], points: cleanCadPoints(route.points || []), source: 'qwen-ink-validated', id: route.id
+  })).filter(chain => chain.points.length >= 2);
+  return [...opencv, ...semantic];
+}
+function annotationExportLayer(item) {
+  if (!item || !item.text || !item.bbox) return null;
+  if ((item.include ?? item.verified) && item.verified) return 'VERIFIED_TEXT';
+  const confidence = Number(item.confidence ?? 0);
+  if (item.source === 'qwen3-vl-block' || (confidence >= 38 && item.text !== '?')) return 'TEXT_REVIEW';
+  return null;
 }
 
 function svgEscape(value) {
@@ -584,13 +603,17 @@ function buildSheetSvg() {
     output.push('<text x="600" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ НЕ ВЫДЕЛЕНЫ</text>');
     output.push('<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">Проверьте отбор OpenCV-кандидатов и слой DETAIL_REVIEW.</text>');
   }
-  for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
+  for (const annotation of graph.annotations.filter(item => annotationExportLayer(item))) {
+    const layer = annotationExportLayer(annotation);
     const box = annotation.bbox;
     const x = offsetX + (box.x + box.w / 2) * scale;
     const y = offsetY + (box.y + box.h / 2) * scale;
-    const labelWidth = Math.max(24, Math.min(190, String(annotation.text).length * 4.8 + 8));
-    output.push(`<rect x="${x - labelWidth / 2}" y="${y - 8.4}" width="${labelWidth}" height="13.2" fill="#fff" stroke="none"/>`);
-    output.push(`<text x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" fill="#15191d">${svgEscape(annotation.text)}</text>`);
+    const labelWidth = Math.max(24, Math.min(220, String(annotation.text).length * 4.8 + 8));
+    const fill = layer === 'VERIFIED_TEXT' ? '#fff' : '#fff7eb';
+    const color = layer === 'VERIFIED_TEXT' ? '#15191d' : '#9b642d';
+    const fontSize = layer === 'VERIFIED_TEXT' ? 8 : 7;
+    output.push(`<rect x="${x - labelWidth / 2}" y="${y - 8.4}" width="${labelWidth}" height="13.2" fill="${fill}" stroke="none"/>`);
+    output.push(`<text data-layer="${layer}" x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" fill="${color}">${svgEscape(annotation.text)}</text>`);
   }
   output.push(
     '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -607,7 +630,7 @@ function buildSheetSvg() {
 function renderClean() {
   if (!graph) return;
   const visible = shownEdges();
-  const hasIncludedText = graph.annotations.some(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox);
+  const hasIncludedText = graph.annotations.some(item => annotationExportLayer(item));
   if (!visible.length && !(graph.semanticRoutes || []).length && !hasIncludedText) {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Нет выбранных линий</b><span>Включи «Показать все» или отметь кандидаты в списке слева.</span></div>';
     return;
@@ -635,9 +658,9 @@ function buildDxf() {
     '0','SECTION','2','TABLES','0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
     '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
     '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0','0','ENDTAB',
-    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','6'];
+    '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','7'];
   let layerHandle = 32;
-  for (const [name, color, lineweight, flags] of [['SHEET',7,13,0],['PIPE_MAIN',7,13,0],['DETAIL_REVIEW',8,9,1],['QWEN_REVIEW',30,9,1],['VERIFIED_TEXT',7,13,0],['NOTES',8,9,0]]) {
+  for (const [name, color, lineweight, flags] of [['SHEET',7,13,0],['PIPE_MAIN',7,13,0],['DETAIL_REVIEW',8,9,1],['QWEN_REVIEW',30,9,1],['VERIFIED_TEXT',7,13,0],['TEXT_REVIEW',30,9,1],['NOTES',8,9,0]]) {
     output.push('0','LAYER','5',layerHandle.toString(16).toUpperCase(),'330','2',
       '100','AcDbSymbolTableRecord','100','AcDbLayerTableRecord',
       '2',name,'70',String(flags),'62',String(color),'6','CONTINUOUS','370',String(lineweight));
@@ -684,18 +707,18 @@ function buildDxf() {
     const points = (edge.geometry || []).map(point => [offsetX + point[0] * scale, offsetY + point[1] * scale]);
     addPolyline('DETAIL_REVIEW',points,false,9);
   }
-  // Qwen's semantic candidates are diagnostic suggestions, never the sole
-  // source of PIPE_MAIN geometry.
-  for (const route of (graph.semanticRoutes || []).filter(item => item.include !== false && Number(item.confidence ?? 60) >= 35)) {
+  // Semantic routes that failed ink/text validation remain review-only.
+  for (const route of (graph.semanticRoutes || []).filter(item => item.include !== false && !item.primary_validated && Number(item.confidence ?? 60) >= 35)) {
     const points = (route.points || []).map(point => [offsetX + Number(point[0]) * scale, offsetY + Number(point[1]) * scale]);
     addPolyline('QWEN_REVIEW',points,false,9);
   }
-  for (const annotation of graph.annotations.filter(item => (item.include ?? item.verified) && item.verified && item.text && item.bbox)) {
+  for (const annotation of graph.annotations.filter(item => annotationExportLayer(item))) {
+    const layer = annotationExportLayer(annotation);
     const box = annotation.bbox;
     const x = offsetX + (box.x + box.w / 2) * scale;
     const y = offsetY + (box.y + box.h / 2) * scale;
     const widthMm = Math.min(70, String(annotation.text).length * 1.65);
-    addText('VERIFIED_TEXT',annotation.text,pageToPagePointCentered(x,y,widthMm,scale),3.0);
+    addText(layer,annotation.text,pageToPagePointCentered(x,y,widthMm,scale),layer === 'VERIFIED_TEXT' ? 3.0 : 2.7);
   }
   addText('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',[40,52],5.6);
   addText('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',[40,68],2.6);

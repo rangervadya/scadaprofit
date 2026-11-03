@@ -111,6 +111,296 @@ OCR_RESPONSE_SCHEMA: dict[str, Any] = {
     'required': ['annotations'],
 }
 
+
+OCR_BLOCK_RESPONSE_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'annotations': {
+            'type': 'array', 'maxItems': 32,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'text': {'type': 'string'},
+                    'bbox': {
+                        'type': 'object',
+                        'properties': {
+                            'x': {'type': 'number'}, 'y': {'type': 'number'},
+                            'w': {'type': 'number'}, 'h': {'type': 'number'},
+                        },
+                        'required': ['x', 'y', 'w', 'h'],
+                    },
+                    'confidence': {'type': 'number'},
+                },
+                'required': ['text', 'bbox'],
+            },
+        },
+    },
+    'required': ['annotations'],
+}
+
+
+def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, height: int,
+                                       max_blocks: int = 2,
+                                       image: Image.Image | None = None) -> list[dict[str, Any]]:
+    """Find dense handwritten note blocks from OCR boxes *and source ink*.
+
+    OCR boxes alone are not a reliable locator: a model can miss every row of a
+    handwritten list. The ink-based pass removes long page/pipe rules, joins
+    nearby glyphs on the same row, and looks for compact components containing
+    several horizontal text rows. It is deliberately limited to a few compact
+    blocks so full pipe networks are not sent back to OCR as one giant crop.
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    for item in items:
+        box = item.get('bbox') or {}
+        try:
+            x, y, w, h = (float(box[k]) for k in ('x', 'y', 'w', 'h'))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if w >= 2 and h >= 2:
+            boxes.append((x, y, w, h))
+
+    candidates: list[tuple[float, dict[str, Any]]] = []
+
+    # First: OCR detections can group words and rows even when the original
+    # pixels are faint. Keep these as candidate blocks, not as proof of text.
+    if len(boxes) >= 5:
+        parent = list(range(len(boxes)))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        max_x_gap = max(24.0, min(width, height) * 0.035)
+        max_y_gap = max(20.0, min(width, height) * 0.030)
+        for i, (ax, ay, aw, ah) in enumerate(boxes):
+            for j in range(i + 1, len(boxes)):
+                bx, by, bw, bh = boxes[j]
+                ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+                iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+                x_overlap = ix / max(1.0, min(aw, bw))
+                y_overlap = iy / max(1.0, min(ah, bh))
+                x_gap = max(0.0, max(ax - (bx + bw), bx - (ax + aw)))
+                y_gap = max(0.0, max(ay - (by + bh), by - (ay + ah)))
+                same_row = y_overlap >= 0.22 and x_gap <= max_x_gap
+                stacked_rows = x_overlap >= 0.18 and y_gap <= max_y_gap
+                close_diagonal = math.hypot(x_gap, y_gap) <= 14.0
+                if same_row or stacked_rows or close_diagonal:
+                    union(i, j)
+
+        groups: dict[int, list[tuple[float, float, float, float]]] = {}
+        for i, box in enumerate(boxes):
+            groups.setdefault(find(i), []).append(box)
+        image_area = float(width * height)
+        for group in groups.values():
+            if len(group) < 5:
+                continue
+            left = min(box[0] for box in group)
+            top = min(box[1] for box in group)
+            right = max(box[0] + box[2] for box in group)
+            bottom = max(box[1] + box[3] for box in group)
+            bw, bh = right - left, bottom - top
+            area = bw * bh
+            aspect = bw / max(1.0, bh)
+            if bw < 65 or bh < 48 or area > image_area * 0.28:
+                continue
+            if not 0.24 <= aspect <= 6.2:
+                continue
+            score = len(group) * 2.0 + min(12.0, bh / 18.0) - area / max(1.0, image_area) * 10.0
+            candidates.append((score, {
+                'x': max(0, int(math.floor(left))),
+                'y': max(0, int(math.floor(top))),
+                'w': min(width, int(math.ceil(right))) - max(0, int(math.floor(left))),
+                'h': min(height, int(math.ceil(bottom))) - max(0, int(math.floor(top))),
+                'source_boxes': len(group),
+                'detection_source': 'ocr-box-cluster',
+                'row_peaks': 0,
+            }))
+
+    # Second: detect a dense handwritten list even when OCR found few/no boxes.
+    # Long dimension rules and pipe strokes are removed before connected
+    # components are built; the surviving compact components must contain
+    # multiple separated horizontal ink bands (not just one long line).
+    if image is not None and width >= 160 and height >= 120:
+        try:
+            rgb = np.asarray(image.convert('RGB') if isinstance(image, Image.Image) else image)
+            if rgb.ndim == 3 and rgb.shape[2] >= 3:
+                rgb = rgb[:, :, :3].copy()
+                if rgb.shape[1] != width or rgb.shape[0] != height:
+                    rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+                # Dark pencil/ink and saturated blue/red pen on light paper.
+                ink = ((gray < 205) | ((hsv[:, :, 1] > 30) & (hsv[:, :, 2] < 250))).astype(np.uint8) * 255
+                # Remove only very long page rules; shorter handwritten rows
+                # must remain intact for the multi-line detector.
+                h_kernel = max(60, int(width * 0.55))
+                v_kernel = max(60, int(height * 0.55))
+                long_h = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, h_kernel), np.uint8))
+                long_v = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((v_kernel, 1), np.uint8))
+                text_ink = cv2.subtract(ink, cv2.bitwise_or(long_h, long_v))
+                join_w = max(14, int(min(width, height) * 0.018))
+                row_joined = cv2.morphologyEx(text_ink, cv2.MORPH_CLOSE, np.ones((1, join_w), np.uint8))
+                connected = cv2.dilate(row_joined, np.ones((3, 3), np.uint8), iterations=1)
+                count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(connected, 8)
+                image_area = float(width * height)
+                for comp_index in range(1, count):
+                    x, y, bw, bh, pixel_area = map(int, stats[comp_index])
+                    if bw < max(70, int(width * 0.055)) or bh < max(45, int(height * 0.05)):
+                        continue
+                    if bw > width * 0.78 or bh > height * 0.72 or pixel_area > image_area * 0.17:
+                        continue
+                    aspect = bw / max(1.0, bh)
+                    if not 0.35 <= aspect <= 5.0:
+                        continue
+                    roi = row_joined[y:y + bh, x:x + bw]
+                    profile = (roi > 0).sum(axis=1).astype(np.float32)
+                    smooth = cv2.blur(profile.reshape(-1, 1), (1, 5)).reshape(-1)
+                    threshold = max(3.0, bw * 0.018)
+                    peaks: list[int] = []
+                    for row in range(2, max(2, len(smooth) - 2)):
+                        if smooth[row] < threshold or smooth[row] < smooth[row - 1] or smooth[row] < smooth[row + 1]:
+                            continue
+                        if not peaks or row - peaks[-1] >= 7:
+                            peaks.append(row)
+                        elif smooth[row] > smooth[peaks[-1]]:
+                            peaks[-1] = row
+                    if len(peaks) < 4:
+                        continue
+                    # Extend to include OCR boxes in/near the pixel-derived block;
+                    # this gives the line OCR pass a complete text region even if
+                    # the first pass detected only a few characters.
+                    left, top, right, bottom = x, y, x + bw, y + bh
+                    seed_count = 0
+                    for bx, by, bww, bhh in boxes:
+                        cx, cy = bx + bww / 2.0, by + bhh / 2.0
+                        if left - 14 <= cx <= right + 14 and top - 14 <= cy <= bottom + 14:
+                            left = min(left, int(math.floor(bx)))
+                            top = min(top, int(math.floor(by)))
+                            right = max(right, int(math.ceil(bx + bww)))
+                            bottom = max(bottom, int(math.ceil(by + bhh)))
+                            seed_count += 1
+                    left, top = max(0, left), max(0, top)
+                    right, bottom = min(width, right), min(height, bottom)
+                    area_ratio = ((right - left) * (bottom - top)) / max(1.0, image_area)
+                    score = 18.0 + len(peaks) * 3.5 + min(20.0, seed_count * 1.5) - area_ratio * 40.0
+                    candidates.append((score, {
+                        'x': left, 'y': top, 'w': right - left, 'h': bottom - top,
+                        'source_boxes': seed_count,
+                        'detection_source': 'source-ink-multiline-block',
+                        'row_peaks': len(peaks),
+                    }))
+        except Exception:
+            # OCR box clustering remains available when the image heuristic
+            # cannot process an unusual image encoding.
+            pass
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected: list[dict[str, Any]] = []
+    for _score, box in candidates:
+        if any(_boxes_overlap(box, existing) > 0.48 for existing in selected):
+            continue
+        # Skip large clusters that merely encompass most of a drawing.
+        if box['w'] * box['h'] > width * height * 0.30:
+            continue
+        selected.append(box)
+        if len(selected) >= max_blocks:
+            break
+    return selected
+
+
+def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str, Any]], *,
+                               url: str, model: str, timeout: float, max_edge: int,
+                               max_tokens: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Second OCR pass: transcribe compact handwritten notes line-by-line."""
+    blocks = _candidate_handwritten_text_blocks(seed_items, *original.size, max_blocks=2, image=original)
+    results: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for block_index, block in enumerate(blocks, 1):
+        results_before_block = len(results)
+        pad_x = max(8, int(block['w'] * 0.06))
+        pad_y = max(8, int(block['h'] * 0.08))
+        left = max(0, block['x'] - pad_x)
+        top = max(0, block['y'] - pad_y)
+        right = min(original.width, block['x'] + block['w'] + pad_x)
+        bottom = min(original.height, block['y'] + block['h'] + pad_y)
+        crop = original.crop((left, top, right, bottom))
+        diag: dict[str, Any] = {'block': block_index, 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+                                'seed_boxes': block['source_boxes'], 'detection_source': block.get('detection_source'), 'row_peaks': block.get('row_peaks', 0)}
+        prompt = (
+            'Это крупный фрагмент рукописной технической схемы с плотной текстовой заметкой или нумерованным списком. '
+            'Выполни OCR ИМЕННО текста, не геометрии. Прочитай каждую строку целиком слева направо и сверху вниз. '
+            'Сохраняй номера пунктов, кириллические и латинские буквы, цифры, скобки, плюсы, дроби и коды в скобках. '
+            'НЕ дроби слово на отдельные буквы и не объединяй соседние строки. Одна строка списка — один объект annotations. '
+            'Если строка частично читается, передай читаемую часть буквально; не додумывай. '
+            'Если строку совсем нельзя прочитать, верни text="?" с рамкой всей строки. '
+            'bbox должен охватывать полную строку, включая номер пункта слева и код/значение справа. '
+            'Координаты — пиксели данного фрагмента, начало в левом верхнем углу. '
+            'Верни только JSON вида {"annotations":[{"text":"1) пример (0405)",'
+            '"bbox":{"x":10,"y":12,"w":220,"h":20},"confidence":60}]}. '
+            'Максимум 32 строки. Никаких пояснений.'
+        )
+        try:
+            parsed, resize_scale, sent_size = _qwen_call(
+                crop, prompt, url=url, model=model, timeout=timeout,
+                max_edge=max_edge, num_predict=max_tokens, diagnostics=diag,
+                format_schema=OCR_BLOCK_RESPONSE_SCHEMA
+            )
+            raw_items, key = _annotation_items_from_response(parsed)
+            diag['json_key'] = key
+            diag['raw_lines'] = len(raw_items)
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                text_value = raw.get('text', raw.get('value', raw.get('label', '')))
+                text = re.sub(r'\s+', ' ', str(text_value)).strip()
+                bbox = raw.get('bbox') or raw.get('box')
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    x1, y1, x2, y2 = map(float, bbox)
+                    raw_box = {'x': x1, 'y': y1, 'w': x2-x1, 'h': y2-y1}
+                elif isinstance(bbox, dict):
+                    try:
+                        raw_box = {key: float(bbox[key]) for key in ('x','y','w','h')}
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                else:
+                    continue
+                confidence = float(raw.get('confidence', raw.get('score', 0)) or 0)
+                if 0 <= confidence <= 1:
+                    confidence *= 100
+                x = int(round(left + raw_box['x'] / max(resize_scale, 1e-9)))
+                y = int(round(top + raw_box['y'] / max(resize_scale, 1e-9)))
+                bw = int(round(raw_box['w'] / max(resize_scale, 1e-9)))
+                bh = int(round(raw_box['h'] / max(resize_scale, 1e-9)))
+                x = max(0, min(original.width - 1, x))
+                y = max(0, min(original.height - 1, y))
+                bw = max(0, min(original.width - x, bw))
+                bh = max(0, min(original.height - y, bh))
+                if not text or bw < 4 or bh < 5:
+                    continue
+                alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+                verified = confidence >= 58 and alnum and text != '?'
+                results.append({
+                    'id': f'QB{len(results)+1}', 'text': text,
+                    'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                    'bbox': {'x': x, 'y': y, 'w': bw, 'h': bh},
+                    'verified': verified, 'include': verified,
+                    'geometry_exclude': True, 'source': 'qwen3-vl-block',
+                    'block_line': True,
+                })
+            diag['accepted_lines'] = len(results) - results_before_block
+        except Exception as error:
+            diag['error'] = str(error).strip()[:180]
+        diagnostics.append(diag)
+    return results, diagnostics
+
 PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
@@ -383,6 +673,38 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 call_diagnostics['error'] = message
                 tile_diagnostics.append(call_diagnostics)
 
+        # A second, line-oriented OCR pass reads dense handwritten note blocks
+        # as whole rows instead of independent glyph boxes. This is especially
+        # useful for the numbered handwritten list at the right of the drawing.
+        block_tokens = max(768, min(2048, int(os.getenv('QWEN_OCR_BLOCK_MAX_TOKENS', '1536'))))
+        block_items, block_diagnostics = _run_handwritten_block_ocr(
+            original, items, url=url, model=model, timeout=timeout,
+            max_edge=max_edge, max_tokens=block_tokens
+        ) if calls_ok > 0 else ([], [])
+        # Prefer a full-row transcription over tiny OCR fragments inside it.
+        for block_item in block_items:
+            bb = block_item['bbox']
+            kept_items = []
+            for old_item in items:
+                ob = old_item.get('bbox') or {}
+                try:
+                    old_area = float(ob['w']) * float(ob['h'])
+                    block_area = float(bb['w']) * float(bb['h'])
+                except Exception:
+                    kept_items.append(old_item)
+                    continue
+                inside = (
+                    float(ob.get('x', 0)) >= bb['x'] - 3 and
+                    float(ob.get('y', 0)) >= bb['y'] - 3 and
+                    float(ob.get('x', 0)) + float(ob.get('w', 0)) <= bb['x'] + bb['w'] + 3 and
+                    float(ob.get('y', 0)) + float(ob.get('h', 0)) <= bb['y'] + bb['h'] + 3
+                )
+                if inside and old_area < block_area * 0.62:
+                    continue
+                kept_items.append(old_item)
+            items = kept_items
+            items.append(block_item)
+
         # Deduplicate boxes repeated in the overlapping tile seams.
         items.sort(key=lambda item: item['confidence'], reverse=True)
         deduped: list[dict[str, Any]] = []
@@ -420,6 +742,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'tiles_with_annotations': sum(1 for item in tile_diagnostics if item.get('accepted_annotations', 0) > 0),
             'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
+            'block_passes': len(block_diagnostics), 'block_diagnostics': block_diagnostics,
+            'block_annotations': sum(1 for item in deduped if item.get('source') == 'qwen3-vl-block'),
             'recognized_anything': bool(deduped),
             'empty_result': calls_ok > 0 and not deduped,
             'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else (('OCR-ответы достигли лимита токенов.' if any(item.get('truncated') for item in tile_diagnostics) else 'Все плитки обработаны, но Qwen не вернула распознанных надписей.') if calls_ok > 0 and not deduped else None)),
@@ -982,7 +1306,7 @@ def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict
     for item in annotations or []:
         box = item.get('bbox')
         source = str(item.get('source') or '')
-        is_ocr_record = source in {'qwen3-vl', 'tesseract'}
+        is_ocr_record = source in {'qwen3-vl', 'qwen3-vl-block', 'tesseract'}
         # In this pipeline the annotations list itself is OCR-owned; older
         # serialized jobs may omit the source field, so a valid bbox is enough.
         if not (is_ocr_record or item.get('geometry_exclude') or item.get('verified') or item.get('include') or isinstance(box, dict)):
@@ -1216,6 +1540,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
             'id': f'E{len(edges) + 1}', 'from': node_a, 'to': node_b,
             'source': 'candidate',
             'confidence': round(min(0.99, 0.45 + 0.45 * float(segment.get('support', 0.0)) + min(float(segment.get('length', 0.0)) / 800, 0.12)), 2),
+            'ink_support': round(float(segment.get('support', 0.0)), 3),
             'geometry': snapped, 'raw_geometry': raw_geometry,
             'review': True, 'detector': segment.get('source', 'LSD'),
             'source_segment_index': index,
@@ -1306,18 +1631,28 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
             and (turn_density >= 1.2 or edge_density >= 1.65 or max_degree >= 3)
         )
         coherent_route = (
-            len(comp_edges) >= 2 and extent >= 65.0 and total >= 78.0
-            and average_length >= 18.0 and max_degree <= 4
-            and edge_density <= 3.25 and turn_density <= 3.2
-            and unexplained_ocr_overlap < 0.16
+            len(comp_edges) >= 2 and extent >= 48.0 and total >= 54.0
+            and average_length >= 12.0 and max_degree <= 5
+            and edge_density <= 4.10 and turn_density <= 4.6
+            and unexplained_ocr_overlap < 0.17
             and not text_crossing_suspect
         )
         branch_route = (
-            len(comp_edges) >= 3 and branch_nodes >= 1 and total >= 95.0
-            and average_length >= 14.0 and max_degree <= 4
-            and edge_density <= 3.60 and turn_density <= 3.6
-            and unexplained_ocr_overlap < 0.12
+            len(comp_edges) >= 3 and branch_nodes >= 1 and total >= 68.0
+            and average_length >= 10.0 and max_degree <= 5
+            and edge_density <= 4.35 and turn_density <= 5.0
+            and unexplained_ocr_overlap < 0.16
             and not text_crossing_suspect
+        )
+        # Many hand-drawn pipe routes are broken into several short detector
+        # edges. Accept a modestly connected route when its geometry is
+        # elongated, moderately sparse, and not inside OCR regions.
+        connected_line_candidate = (
+            len(comp_edges) >= 2 and extent >= 42.0 and total >= 48.0
+            and average_length >= 9.0 and max_degree <= 5
+            and edge_density <= 4.8 and turn_density <= 6.0
+            and unexplained_ocr_overlap < 0.10
+            and text_crossing_ratio < 0.22
         )
         text_like = (
             unexplained_ocr_overlap >= 0.16
@@ -1338,7 +1673,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
         elif dense_symbol_cluster:
             # Keep dense handwritten/symbol groups out of the clean pipe layer.
             role = 'ambiguous'
-        elif coherent_route or branch_route:
+        elif coherent_route or branch_route or connected_line_candidate:
             role = 'line_structure'
         else:
             role = 'ambiguous'
@@ -1359,6 +1694,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
             'edge_density': round(edge_density, 2), 'turn_density': round(turn_density, 2),
             'elongation': round(elongation, 2),
             'coherent_route': coherent_route, 'branch_route': branch_route,
+            'connected_line_candidate': connected_line_candidate,
             'text_crossing_suspect': text_crossing_suspect,
         })
 
@@ -1456,9 +1792,9 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
         cid = str(edge.get('component_id') or '')
         component_sizes[cid] = component_sizes.get(cid, 0) + 1
 
-    min_path = max(20.0, float(min_dimension) * 0.028)
-    junction_stub = max(min_path, float(min_dimension) * 0.045)
-    cycle_min = max(46.0, float(min_dimension) * 0.060)
+    min_path = max(14.0, float(min_dimension) * 0.016)
+    junction_stub = max(min_path, float(min_dimension) * 0.032)
+    cycle_min = max(34.0, float(min_dimension) * 0.042)
     visited: set[int] = set()
     paths: list[dict[str, Any]] = []
 
@@ -1571,8 +1907,35 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
             keep = False
             reason = 'text-or-annotation'
         elif has_ambiguous_role and not single_edge_isolated:
-            keep = False
-            reason = 'ambiguous-component'
+            # A component may be ambiguous only because a hand-drawn pipe was
+            # fragmented by LSD/Hough. Promote it when the individual path is
+            # still a connected multi-edge route with adequate ink support and
+            # little OCR overlap. Dense text/symbol clusters remain review-only.
+            path_edges_data = [edges[index] for index in path_edges]
+            path_points = [point for edge in path_edges_data for point in (edge.get('geometry') or [])]
+            path_x = [point[0] for point in path_points]
+            path_y = [point[1] for point in path_points]
+            path_extent = max(max(path_x) - min(path_x), max(path_y) - min(path_y)) if path_points else 0.0
+            path_support = float(np.mean([edge.get('ink_support', 0.0) for edge in path_edges_data])) if path_edges_data else 0.0
+            path_overlap = max((float(edge.get('ocr_overlap', 0.0)) for edge in path_edges_data), default=0.0)
+            path_turns = 0
+            for left_edge, right_edge in zip(path_edges_data, path_edges_data[1:]):
+                ga, gb = left_edge.get('geometry') or [], right_edge.get('geometry') or []
+                if len(ga) >= 2 and len(gb) >= 2:
+                    va = np.array(ga[-1], dtype=float) - np.array(ga[0], dtype=float)
+                    vb = np.array(gb[-1], dtype=float) - np.array(gb[0], dtype=float)
+                    na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+                    if na > 0 and nb > 0 and abs(float(np.dot(va/na, vb/nb))) < 0.90:
+                        path_turns += 1
+            ambiguous_route_candidate = (
+                len(path_edges) >= 2 and total >= max(30.0, float(min_dimension) * 0.034)
+                and path_extent >= max(24.0, float(min_dimension) * 0.026)
+                and path_support >= 0.38 and path_overlap < 0.12
+                and path_turns <= 5 and max(start_degree, end_degree) <= 5
+            )
+            keep = ambiguous_route_candidate
+            reason = 'ambiguous-but-connected-route' if keep else 'ambiguous-component'
+
         elif is_cycle:
             keep = total >= cycle_min
             reason = 'closed-route' if keep else 'short-closed-mark'
@@ -1589,13 +1952,13 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
             keep = total >= min_path
             reason = 'coherent-route' if keep else 'short-fragment'
 
-        if continuation and total >= min_path and not (has_text_role or has_ambiguous_role):
+        if continuation and total >= min_path and not has_text_role:
             keep = True
             reason = 'collinear-continuation'
 
         # The earlier endpoint heuristic can explicitly identify a short
         # detached, coaxial continuation across a small scan gap. Preserve it.
-        if any(edges[index].get('continuation_candidate') for index in path_edges) and total >= 8.0 and not (has_text_role or has_ambiguous_role):
+        if any(edges[index].get('continuation_candidate') for index in path_edges) and total >= 8.0 and not has_text_role:
             keep = True
             reason = 'collinear-continuation'
 
@@ -1814,7 +2177,159 @@ def _semantic_route_chains(semantic_routes: list[dict[str, Any]] | None) -> list
     return result
 
 
-def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None, semantic_status: dict[str, Any] | None = None) -> str:
+
+def _point_to_segment_distance(point: tuple[float, float], a: list[float], b: list[float]) -> float:
+    px, py = point
+    dx, dy = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-9:
+        return math.hypot(px - float(a[0]), py - float(a[1]))
+    t = max(0.0, min(1.0, ((px - float(a[0])) * dx + (py - float(a[1])) * dy) / length_sq))
+    return math.hypot(px - (float(a[0]) + t * dx), py - (float(a[1]) + t * dy))
+
+
+def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | None,
+                                     ink: np.ndarray, text_mask: np.ndarray,
+                                     primary_edges: list[dict[str, Any]],
+                                     min_dimension: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Promote only Qwen traces that are supported by source ink and not text strokes.
+
+    OpenCV remains the geometric backbone, but valid Qwen centre-lines fill gaps
+    that the strict graph selector can miss. A route is admitted only if its
+    coordinates fall on source ink, and intersections with OCR masks have a
+    two-sided continuation check. Near-duplicates of OpenCV paths are omitted.
+    """
+    h, w = ink.shape[:2]
+    # A 7x7 support halo tolerates small Qwen centre-line offsets on pencil/blue-pen strokes.
+    ink_dilated = cv2.dilate(ink, np.ones((7, 7), np.uint8), iterations=1)
+    graph_segments = []
+    for edge in primary_edges:
+        points = edge.get('geometry') or []
+        for a, b in zip(points, points[1:]):
+            graph_segments.append((a, b))
+    accepted: list[dict[str, Any]] = []
+    reasons: dict[str, int] = {}
+    min_length = max(18.0, float(min_dimension) * 0.012)
+
+    for index, route in enumerate(semantic_routes or []):
+        if not isinstance(route, dict) or route.get('include') is False:
+            reasons['not-included'] = reasons.get('not-included', 0) + 1
+            continue
+        try:
+            confidence = float(route.get('confidence', 60))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 35:
+            reasons['low-confidence'] = reasons.get('low-confidence', 0) + 1
+            continue
+        raw_points = route.get('points')
+        if not isinstance(raw_points, list) or len(raw_points) < 2:
+            reasons['invalid-points'] = reasons.get('invalid-points', 0) + 1
+            continue
+        points: list[list[float]] = []
+        valid_bounds = True
+        for raw in raw_points[:64]:
+            try:
+                x, y = float(raw[0]), float(raw[1])
+            except (TypeError, ValueError, IndexError):
+                valid_bounds = False
+                break
+            if not math.isfinite(x) or not math.isfinite(y) or x < -2 or y < -2 or x > w + 2 or y > h + 2:
+                valid_bounds = False
+                break
+            point = [max(0.0, min(w - 1.0, x)), max(0.0, min(h - 1.0, y))]
+            if not points or math.dist(points[-1], point) >= 2.0:
+                points.append(point)
+        if not valid_bounds or len(points) < 2:
+            reasons['invalid-bounds'] = reasons.get('invalid-bounds', 0) + 1
+            continue
+        segment_lengths = [math.dist(a, b) for a, b in zip(points, points[1:])]
+        total_length = sum(segment_lengths)
+        if total_length < min_length:
+            reasons['too-short'] = reasons.get('too-short', 0) + 1
+            continue
+
+        weighted_support = 0.0
+        weighted_text = 0.0
+        invalid_text_crossing = False
+        for a, b, length in zip(points, points[1:], segment_lengths):
+            if length < 1:
+                continue
+            support = _sample_line_support(ink_dilated, a[0], a[1], b[0], b[1])
+            weighted_support += support * length
+            overlap, through = _segment_text_mask_metrics((a[0], a[1], b[0], b[1]), text_mask, ink_dilated)
+            weighted_text += overlap * length
+            if overlap >= 0.08 and not through:
+                invalid_text_crossing = True
+        support_ratio = weighted_support / max(total_length, 1.0)
+        text_ratio = weighted_text / max(total_length, 1.0)
+        if support_ratio < 0.30:
+            reasons['weak-source-ink'] = reasons.get('weak-source-ink', 0) + 1
+            continue
+        if invalid_text_crossing and text_ratio >= 0.08:
+            reasons['text-overlap'] = reasons.get('text-overlap', 0) + 1
+            continue
+
+        # Remove duplicate Qwen predictions where the selected OpenCV graph
+        # already traces essentially the same line. Partial/independent traces
+        # are retained to restore missed portions of the pipe network.
+        sample_points = []
+        for a, b, length in zip(points, points[1:], segment_lengths):
+            count = max(2, int(length / 4.0) + 1)
+            sample_points.extend((a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
+                                 for t in np.linspace(0.0, 1.0, count))
+        if graph_segments and sample_points:
+            hits = sum(1 for point in sample_points if any(
+                _point_to_segment_distance(point, a, b) <= 5.0 for a, b in graph_segments
+            ))
+            duplicate_ratio = hits / len(sample_points)
+        else:
+            duplicate_ratio = 0.0
+        if duplicate_ratio >= 0.72:
+            reasons['opencv-duplicate'] = reasons.get('opencv-duplicate', 0) + 1
+            continue
+
+        accepted.append({
+            'id': str(route.get('id') or f'QPRIMARY{index+1}'),
+            'points': points, 'confidence': confidence,
+            'ink_support': round(support_ratio, 3),
+            'text_overlap': round(text_ratio, 3),
+            'opencv_duplicate_ratio': round(duplicate_ratio, 3),
+            'include': True, 'source': 'qwen3-vl-validated',
+        })
+    return accepted, {
+        'candidate_routes': len(semantic_routes or []),
+        'accepted_routes': len(accepted),
+        'reasons': reasons,
+        'min_length_px': round(min_length, 1),
+        'minimum_ink_support': 0.30,
+    }
+
+
+def _annotation_export_kind(annotation: dict[str, Any]) -> str | None:
+    """Return VERIFIED_TEXT or TEXT_REVIEW for visible OCR content."""
+    text = re.sub(r'\s+', ' ', str(annotation.get('text') or '')).strip()
+    box = annotation.get('bbox') or {}
+    if not text or not all(key in box for key in ('x', 'y', 'w', 'h')):
+        return None
+    if annotation.get('verified') and annotation.get('include', True):
+        return 'VERIFIED_TEXT'
+    try:
+        confidence = float(annotation.get('confidence', 0) or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    source = str(annotation.get('source') or '')
+    if source == 'qwen3-vl-block' or (confidence >= 38 and text != '?'):
+        return 'TEXT_REVIEW'
+    return None
+
+
+def _primary_semantic_chains(primary_routes: list[dict[str, Any]] | None) -> list[list[list[float]]]:
+    return [route['points'] for route in (primary_routes or [])
+            if isinstance(route, dict) and route.get('include', True)
+            and isinstance(route.get('points'), list) and len(route['points']) >= 2]
+
+def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None, semantic_status: dict[str, Any] | None = None, primary_semantic_routes: list[dict[str, Any]] | None = None) -> str:
     """Create a clean A3 CAD sheet: uniform linework and editable OCR text."""
     pagew, pageh = 1200, 850
     scale, tx, ty = _sheet_layout(width, height)
@@ -1840,11 +2355,12 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
     # topology/length/symbol-stub selection. Qwen suggestions remain available
     # in graph.json and on the frozen QWEN_REVIEW DXF layer.
     clean_chains = _cad_edge_chains(edges)
-    for chain in clean_chains:
+    semantic_primary_chains = _primary_semantic_chains(primary_semantic_routes)
+    for chain in clean_chains + semantic_primary_chains:
         pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
-    if not clean_chains:
+    if not clean_chains and not semantic_primary_chains:
         out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ</text>')
         detail = (semantic_status or {}).get('error') or 'Проверьте исходное изображение и параметры выделения геометрии.'
         hint = (semantic_status or {}).get('hint') or 'Результаты Qwen сохранены отдельно для проверки.'
@@ -1854,15 +2370,19 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
     # OCR output is rendered as typography with an opaque paper-colour mask;
     # the handwritten glyph traces have already been filtered from geometry.
     for annotation in annotations:
-        if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
+        export_kind = _annotation_export_kind(annotation)
+        if not export_kind:
             continue
         box=annotation.get('bbox') or {}
         x=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
         y=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
         label=str(annotation['text'])
-        label_width=max(24.0, min(190.0, len(label)*4.8+8.0))
-        out.append(f'<rect x="{x-label_width/2:.2f}" y="{y-8.4:.2f}" width="{label_width:.2f}" height="13.2" fill="#fff" stroke="none"/>')
-        out.append(f'<text x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="8" text-anchor="middle" fill="#15191d">{xml_escape(label)}</text>')
+        label_width=max(24.0, min(220.0, len(label)*4.8+8.0))
+        fill = '#fff' if export_kind == 'VERIFIED_TEXT' else '#fff8ee'
+        text_color = '#15191d' if export_kind == 'VERIFIED_TEXT' else '#9b642d'
+        font_size = 8 if export_kind == 'VERIFIED_TEXT' else 7
+        out.append(f'<rect x="{x-label_width/2:.2f}" y="{y-8.4:.2f}" width="{label_width:.2f}" height="13.2" fill="{fill}" stroke="none"/>')
+        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" text-anchor="middle" fill="{text_color}">{xml_escape(label)}</text>')
 
     out += [
         '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -1879,7 +2399,7 @@ def xml_escape(s:str)->str:
     return str(s).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
 
 
-def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], semantic_routes: list[dict[str, Any]] | None = None) -> str:
+def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], semantic_routes: list[dict[str, Any]] | None = None, primary_semantic_routes: list[dict[str, Any]] | None = None) -> str:
     """Export the same A3 sheet layout to AutoCAD-compatible millimetre units."""
     pagew, pageh = 1200.0, 850.0
     scale, tx, ty = _sheet_layout(width, height)
@@ -1913,9 +2433,9 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
        '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
        '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
        '0','ENDTAB',
-       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','6']
+       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','7']
     for handle, (name, colour, lineweight, flags) in enumerate([
-        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('QWEN_REVIEW',30,9,1),('VERIFIED_TEXT',7,13,0),('NOTES',8,9,0)
+        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('QWEN_REVIEW',30,9,1),('VERIFIED_TEXT',7,13,0),('TEXT_REVIEW',30,9,1),('NOTES',8,9,0)
     ], start=32):
         d += ['0','LAYER','5',format(handle,'X'),'330','2','100','AcDbSymbolTableRecord',
               '100','AcDbLayerTableRecord','2',name,'70',str(flags),'62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
@@ -1936,7 +2456,8 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     # selection already suppresses short symbol strokes and retains coherent
     # line paths; Qwen is deliberately not allowed to replace it wholesale.
     clean_chains = _cad_edge_chains(edges)
-    for chain in clean_chains:
+    semantic_primary_chains = _primary_semantic_chains(primary_semantic_routes)
+    for chain in clean_chains + semantic_primary_chains:
         page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
         d += dxf_polyline('PIPE_MAIN',page_points,False,13)
 
@@ -1952,21 +2473,28 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     # Semantic traces from Qwen are useful diagnostics, but are not trusted as
     # primary geometry until their coordinates and coverage are validated.
     # They are therefore preserved on a separate frozen layer.
-    for chain in _semantic_route_chains(semantic_routes):
-        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
+    primary_ids = {str(route.get('id')) for route in (primary_semantic_routes or [])}
+    for route in (semantic_routes or []):
+        if str(route.get('id')) in primary_ids:
+            continue
+        chain = _semantic_route_chains([route])
+        if not chain:
+            continue
+        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain[0]]
         d += dxf_polyline('QWEN_REVIEW',page_points,False,9)
 
     for annotation in annotations:
-        if not (annotation.get('include', annotation.get('verified', False)) and annotation.get('verified', False)) or not annotation.get('text'):
+        export_kind = _annotation_export_kind(annotation)
+        if not export_kind:
             continue
         box=annotation.get('bbox') or {}
         px=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
         py=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
         x,y=page_to_mm((px,py))
         text=str(annotation['text'])
-        # TEXT is centre-aligned in the sheet; standard 3 mm drafting height.
+        # TEXT is centre-aligned in the sheet; review labels are on a frozen layer.
         x -= min(70.0, len(text)*1.65)
-        d += dxf_text('VERIFIED_TEXT',text,x,y,3.0)
+        d += dxf_text(export_kind,text,x,y,3.0 if export_kind == 'VERIFIED_TEXT' else 2.7)
 
     d += dxf_text('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',page_to_mm((40,52))[0],page_to_mm((40,52))[1],5.6)
     d += dxf_text('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',page_to_mm((40,68))[0],page_to_mm((40,68))[1],2.6)
@@ -1994,12 +2522,21 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     segments=extract_segments(gray,ink,annotations)
     nodes,edges,components=endpoint_clusters(segments)
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
+    text_mask = _text_region_mask(gray.shape[:2], annotations)
+    primary_opencv_edges = [edge for edge in edges if edge.get('cad_include')]
+    primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
+        semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
+    )
+    primary_semantic_ids = {str(route.get('id')) for route in primary_semantic_routes}
+    for route in semantic_routes:
+        route['primary_validated'] = str(route.get('id')) in primary_semantic_ids
+    for route in primary_semantic_routes:
+        route['primary_validated'] = True
     # OCR overlap is now a real exclusion signal, not merely a note. Confirmed
     # continuous routes crossing a text box are retained by the two-sided ink test.
     for edge in edges:
         edge['visible'] = True
     crossings=detect_crossings(segments)
-    text_mask = _text_region_mask(gray.shape[:2], annotations)
     ink_in_text_regions = cv2.bitwise_and(ink, text_mask)
     geometry_ink = cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
 
@@ -2020,6 +2557,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
             color=(150,150,150)
             thickness=1
         cv2.line(primary_overlay,(int(segment['x1']),int(segment['y1'])),(int(segment['x2']),int(segment['y2'])),color,thickness,cv2.LINE_AA)
+    for route in primary_semantic_routes:
+        pts = np.array([[int(round(p[0])), int(round(p[1]))] for p in route['points']], dtype=np.int32)
+        if len(pts) >= 2:
+            cv2.polylines(primary_overlay, [pts], False, (255, 170, 20), 3, cv2.LINE_AA)
     for node in nodes:
         if node['degree'] >= 3:
             cv2.circle(overlay,(int(node['x']),int(node['y'])),4,(0,0,255),-1,cv2.LINE_AA)
@@ -2028,10 +2569,24 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     cv2.imwrite(str(Path(out_dir)/'text-region-mask.png'), text_mask)
     cv2.imwrite(str(Path(out_dir)/'ink-without-text-boxes.png'), geometry_ink)
     cv2.imwrite(str(Path(out_dir)/'ink-inside-text-boxes.png'), ink_in_text_regions)
+    # Visual audit of the independent dense-note detector and its row-OCR pass.
+    note_overlay = bgr.copy()
+    for block_index, diag in enumerate(ocr_status.get('qwen', {}).get('block_diagnostics', []), 1):
+        box = diag.get('bbox') or {}
+        try:
+            x1, y1 = int(box['x']), int(box['y'])
+            x2, y2 = x1 + int(box['w']), y1 + int(box['h'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        cv2.rectangle(note_overlay, (x1, y1), (x2, y2), (200, 40, 210), 2, cv2.LINE_AA)
+        label = f"NOTE {block_index}: {diag.get('accepted_lines', 0)} rows"
+        cv2.putText(note_overlay, label, (x1, max(18, y1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 40, 210), 1, cv2.LINE_AA)
+    cv2.imwrite(str(Path(out_dir)/'handwritten-text-blocks.png'), note_overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
-    svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status)
+    svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
-    Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes),encoding='utf-8')
+    Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes, primary_semantic_routes=primary_semantic_routes),encoding='utf-8')
     # Open-end gap candidates are suggestions only; no geometry is connected automatically.
     node_map = {n['id']: n for n in nodes}
     edge_at = {}
@@ -2060,19 +2615,24 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                 if len(joins)>=200: break
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
-           "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"semanticTrace":route_status,
+           "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":11.25,
-                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_review_only_until_geometry_validation":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
+                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
                       "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
                       "cad_primary_chains":len(_cad_edge_chains(edges)),
-                      "primary_geometry_source":"opencv-selected-graph",
+                      "cad_primary_qwen_routes":len(primary_semantic_routes),
+                      "cad_primary_total_paths":len(_cad_edge_chains(edges)) + len(primary_semantic_routes),
+                      "semantic_validation":semantic_validation,
+                      "primary_geometry_source":"opencv-selected-graph+ink-validated-qwen",
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
                       "geometry_excluded_text_regions":len(_confirmed_text_boxes(annotations)),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
                       "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
+                      "text_review_annotations":len([a for a in annotations if _annotation_export_kind(a) == 'TEXT_REVIEW']),
+                      "text_block_annotations":len([a for a in annotations if a.get('source') == 'qwen3-vl-block']),
                       "qwen_verified_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl' and a.get('verified')]),
                       "tesseract_verified_annotations":len([a for a in annotations if a.get('source')=='tesseract' and a.get('verified')]),
                       "review_annotations":len([a for a in annotations if not a.get('verified') and a.get('text')]),
@@ -2096,11 +2656,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
            "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
-                       "Qwen-маршруты сохранены отдельно на замороженном слое QWEN_REVIEW и не заменяют геометрию графа.",
+                       "Qwen-маршруты проходят проверку по исходным пикселям и добавляются в PIPE_MAIN только при подтверждении чернилами; остальные остаются в QWEN_REVIEW.",
                        "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
                        "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",
                        "OCR-рамки участвуют в маске геометрии даже при низкой уверенности текста; непрерывная труба через рамку сохраняется при подтверждении с обеих сторон.",
-                       "Распознанные подтверждённые подписи экспортируются как редактируемый CAD TEXT.",
+                       "Подтверждённые подписи экспортируются как VERIFIED_TEXT; сомнительные OCR-чтения выводятся отдельно на замороженный TEXT_REVIEW.",
+                       "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
@@ -2108,7 +2669,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         graph['warnings'].append('Qwen не предоставила семантические маршруты для дополнительной проверки. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
     if not _cad_edge_chains(edges):
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
-    if len(segments) >= 80 and cad_selection.get('cad_primary_edges', 0) < max(8, int(len(segments) * 0.08)):
+    if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     return graph
