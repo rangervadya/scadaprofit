@@ -421,13 +421,31 @@ function chooseNode(id) {
   renderOverlay();
 }
 function renderJoinList() {
-  const joins = graph.joinCandidates.slice(0, 80);
-  $('joinList').innerHTML = joins.length ? joins.map(join => `
-    <div class="rowitem"><span class="id">${escapeHtml(join.id)}</span><span class="meta">${escapeHtml(join.from)} ↔ ${escapeHtml(join.to)} · ${join.distance} px</span><button type="button" data-join="${escapeHtml(join.id)}">Соединить</button></div>`).join('') : '<div class="helper">Нет коротких соосных разрывов-кандидатов.</div>';
+  const joins = Array.isArray(graph.joinCandidates) ? graph.joinCandidates.slice(0, 80) : [];
+  $('joinList').innerHTML = joins.length ? joins.map(join => {
+    const high = join.priority === 'high' && !join.has_alternatives;
+    const flags = Array.isArray(join.review_flags) ? join.review_flags : [];
+    const details = [
+      `${join.distance} px`,
+      `соосность ${Math.round(Number(join.alignment || 0) * 100)}%`,
+      `поперечное ${join.lateral_offset_px ?? '?'} px`
+    ].join(' · ');
+    const warning = join.has_alternatives ? 'Есть альтернативные пары' : (join.message || 'Требуется визуальная проверка');
+    return `<div class="rowitem join-candidate ${high ? 'join-high' : 'join-review'}">
+      <span class="id">${escapeHtml(join.id)}</span>
+      <span class="meta" title="${escapeHtml(warning)}">${escapeHtml(join.from)} ↔ ${escapeHtml(join.to)} · ${escapeHtml(details)}<small>${escapeHtml(warning)}${flags.length ? ` · ${escapeHtml(flags.join(', '))}` : ''}</small></span>
+      <button type="button" data-join="${escapeHtml(join.id)}" title="Добавить ручной соединительный отрезок">Добавить</button>
+    </div>`;
+  }).join('') : '<div class="helper">Подходящих пар открытых концов не найдено. Кандидаты не добавляются автоматически.</div>';
   $('joinList').querySelectorAll('[data-join]').forEach(button => button.addEventListener('click', () => {
     const candidate = graph.joinCandidates.find(item => item.id === button.dataset.join);
-    if (candidate && addManualConnection(candidate.from, candidate.to)) {
-      graph.joinCandidates = graph.joinCandidates.filter(item => item.id !== candidate.id);
+    if (!candidate) return;
+    if (candidate.has_alternatives && !window.confirm(`У одного из концов есть альтернативные пары. Добавить только ${candidate.from} ↔ ${candidate.to}?`)) return;
+    if (addManualConnection(candidate.from, candidate.to)) {
+      const used = new Set([candidate.from, candidate.to]);
+      // An open endpoint should not be consumed by two alternative continuations.
+      graph.joinCandidates = graph.joinCandidates.filter(item =>
+        item.id !== candidate.id && !used.has(item.from) && !used.has(item.to));
       renderJoinList();
     }
   }));

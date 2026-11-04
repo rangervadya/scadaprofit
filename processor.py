@@ -2883,108 +2883,230 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     return '\n'.join(d)+'\n'
 
 def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
-                           min_gap: float = 7.0, max_gap: float = 28.0) -> list[dict[str, Any]]:
-    """Suggest only genuine end-to-end continuations, never self/overlap joins.
+                           min_gap: float = 4.5, max_gap: float = 45.0,
+                           image_size: tuple[int, int] | None = None) -> list[dict[str, Any]]:
+    """Return review-only endpoint continuation proposals.
 
-    A candidate must use two different edges in different graph components;
-    both inward tangents must point away from the gap; the gap must be on-axis;
-    and neither endpoint may sit inside the other segment. This prevents the
-    former J2/J3 overlap suggestions and the J4 same-edge self-join.
+    Unlike the former implementation, this diagnostic considers both
+    ``line_structure`` and ``ambiguous`` components and does not discard a
+    short detector fragment solely because its length is below 25 px. A
+    proposal is never auto-joined: the UI requires an explicit user action.
+    Text/annotation components are excluded, competing matches are flagged,
+    and candidates near the image border or OCR regions remain review-only.
     """
     node_by_id = {str(node.get('id')): node for node in nodes}
     edge_at: dict[str, dict[str, Any]] = {}
+    allowed_roles = {'line_structure', 'ambiguous'}
     for edge in edges:
-        if edge.get('component_role') != 'line_structure':
+        role = str(edge.get('component_role') or 'ambiguous')
+        reason = str(edge.get('cad_reason') or '')
+        if role not in allowed_roles or reason == 'text-or-annotation':
             continue
         for node_id in (str(edge.get('from', '')), str(edge.get('to', ''))):
-            if node_id:
-                edge_at.setdefault(node_id, edge)
+            if node_id and node_id not in edge_at:
+                edge_at[node_id] = edge
+
+    def polyline_length(geometry: list[list[float]]) -> float:
+        return sum(math.dist(a, b) for a, b in zip(geometry, geometry[1:]))
 
     def endpoint_geometry(node_id: str, edge: dict[str, Any]):
         geometry = edge.get('geometry') or []
         if len(geometry) < 2:
             return None
         if str(edge.get('from')) == node_id:
-            endpoint, inner = geometry[0], geometry[1]
+            endpoint = geometry[0]
+            inner_points = geometry[1:]
         elif str(edge.get('to')) == node_id:
-            endpoint, inner = geometry[-1], geometry[-2]
+            endpoint = geometry[-1]
+            inner_points = list(reversed(geometry[:-1]))
         else:
             return None
-        vector = np.array([float(inner[0]) - float(endpoint[0]),
-                           float(inner[1]) - float(endpoint[1])], dtype=float)
+        endpoint_array = np.array(endpoint, dtype=float)
+        inner = None
+        for candidate in inner_points:
+            candidate_array = np.array(candidate, dtype=float)
+            if float(np.linalg.norm(candidate_array - endpoint_array)) >= 2.0:
+                inner = candidate_array
+                break
+        if inner is None:
+            return None
+        vector = inner - endpoint_array
         norm = float(np.linalg.norm(vector))
         if norm < 1.0:
             return None
-        return np.array(endpoint, dtype=float), vector / norm, geometry
+        return endpoint_array, vector / norm, geometry, polyline_length(geometry)
 
-    def point_segment(point: np.ndarray, geometry: list[list[float]]):
-        a = np.array(geometry[0], dtype=float)
-        b = np.array(geometry[-1], dtype=float)
-        delta = b - a
-        length_sq = float(np.dot(delta, delta))
-        if length_sq < 1e-8:
-            return 0.0, float(np.linalg.norm(point - a))
-        t = float(np.dot(point - a, delta) / length_sq)
-        projection = a + max(0.0, min(1.0, t)) * delta
-        return t, float(np.linalg.norm(point - projection))
+    def endpoint_hits_polyline(point: np.ndarray, geometry: list[list[float]],
+                               tolerance: float = 4.0) -> bool:
+        for a_raw, b_raw in zip(geometry, geometry[1:]):
+            a = np.array(a_raw, dtype=float)
+            b = np.array(b_raw, dtype=float)
+            delta = b - a
+            length_sq = float(np.dot(delta, delta))
+            if length_sq < 1e-8:
+                continue
+            t = float(np.dot(point - a, delta) / length_sq)
+            if not 0.04 < t < 0.96:
+                continue
+            projection = a + t * delta
+            if float(np.linalg.norm(point - projection)) <= tolerance:
+                return True
+        return False
 
     open_nodes = [node for node in nodes
                   if int(node.get('degree', 0)) == 1 and str(node.get('id')) in edge_at]
-    candidates: list[dict[str, Any]] = []
-    for index, node_a in enumerate(open_nodes):
-        id_a = str(node_a['id'])
-        edge_a = edge_at[id_a]
-        geo_a = endpoint_geometry(id_a, edge_a)
-        if geo_a is None or math.dist(*edge_a.get('geometry', [[0, 0], [0, 0]])) < 25.0:
+    endpoints = []
+    for node in open_nodes:
+        node_id = str(node['id'])
+        edge = edge_at[node_id]
+        geometry = endpoint_geometry(node_id, edge)
+        if geometry is None:
             continue
-        point_a, inward_a, geometry_a = geo_a
-        for node_b in open_nodes[index + 1:]:
-            id_b = str(node_b['id'])
-            edge_b = edge_at[id_b]
-            # A line's two own endpoints can never be a connection candidate.
+        point, inward, edge_geometry, edge_length = geometry
+        # Suppress tiny OCR ticks and detector noise; short pipe fragments
+        # (e.g. 14-24 px) remain eligible for review.
+        if edge_length < 8.0:
+            continue
+        endpoints.append({
+            'node_id': node_id,
+            'edge': edge,
+            'point': point,
+            'inward': inward,
+            'geometry': edge_geometry,
+            'length': edge_length,
+            'role': str(edge.get('component_role') or 'ambiguous'),
+            'reason': str(edge.get('cad_reason') or ''),
+            'ink_support': float(edge.get('ink_support', 0.0) or 0.0),
+            'ocr_overlap': float(edge.get('ocr_overlap', 0.0) or 0.0),
+            'text_crossing': bool(edge.get('text_crossing')),
+        })
+
+    raw_candidates: list[dict[str, Any]] = []
+    width = int(image_size[0]) if image_size else None
+    height = int(image_size[1]) if image_size else None
+    for index, a in enumerate(endpoints):
+        edge_a = a['edge']
+        for b in endpoints[index + 1:]:
+            edge_b = b['edge']
             if str(edge_a.get('id')) == str(edge_b.get('id')):
                 continue
-            if edge_a.get('component_id') and edge_a.get('component_id') == edge_b.get('component_id'):
+            component_a = str(edge_a.get('component_id') or '')
+            component_b = str(edge_b.get('component_id') or '')
+            if component_a and component_a == component_b:
                 continue
-            geo_b = endpoint_geometry(id_b, edge_b)
-            if geo_b is None or math.dist(*edge_b.get('geometry', [[0, 0], [0, 0]])) < 25.0:
-                continue
-            point_b, inward_b, geometry_b = geo_b
-            gap = point_b - point_a
+
+            gap = b['point'] - a['point']
             distance = float(np.linalg.norm(gap))
-            if distance < min_gap or distance > max_gap:
+            if distance < min_gap or distance > max_gap or distance < 1e-6:
                 continue
             gap_unit = gap / distance
+            inward_a = a['inward']
+            inward_b = b['inward']
 
-            # Do not join an endpoint to the interior of an already detected line.
-            ta, da = point_segment(point_b, geometry_a)
-            tb, db = point_segment(point_a, geometry_b)
-            if (0.04 < ta < 0.96 and da <= 4.0) or (0.04 < tb < 0.96 and db <= 4.0):
+            # Do not suggest endpoint-to-interior joins, including bent
+            # polylines whose intermediate segment passes through the gap.
+            if endpoint_hits_polyline(b['point'], a['geometry']) or endpoint_hits_polyline(a['point'], b['geometry']):
                 continue
 
-            # Both segment interiors must face away from the gap, with small lateral offset.
             dot_a = float(np.dot(inward_a, gap_unit))
             dot_b = float(np.dot(inward_b, -gap_unit))
             lateral_a = abs(float(inward_a[0] * gap_unit[1] - inward_a[1] * gap_unit[0])) * distance
             lateral_b = abs(float(inward_b[0] * gap_unit[1] - inward_b[1] * gap_unit[0])) * distance
             tangent_dot = float(np.dot(inward_a, inward_b))
-            if dot_a > -0.82 or dot_b > -0.82 or tangent_dot > -0.94:
+            lateral = max(lateral_a, lateral_b)
+            alignment = min(-dot_a, -dot_b)
+            if dot_a > -0.82 or dot_b > -0.82 or tangent_dot > -0.85:
                 continue
-            if lateral_a > 4.5 or lateral_b > 4.5:
+            if lateral > 8.0:
                 continue
 
-            candidates.append({
-                'id': f'J{len(candidates) + 1}', 'from': id_a, 'to': id_b,
+            near_border = bool(width and height and any(
+                min(point[0], point[1], width - point[0], height - point[1]) < 5.0
+                for point in (a['point'], b['point'])
+            ))
+            min_ink = min(a['ink_support'], b['ink_support'])
+            max_ocr = max(a['ocr_overlap'], b['ocr_overlap'])
+            flags = []
+            if a['role'] == 'ambiguous' or b['role'] == 'ambiguous':
+                flags.append('ambiguous_component')
+            if min(a['length'], b['length']) < 25.0:
+                flags.append('short_fragment')
+            if distance > 28.0:
+                flags.append('gap_over_28px')
+            if lateral > 4.5:
+                flags.append('lateral_offset')
+            if max_ocr >= 0.15:
+                flags.append('ocr_overlap')
+            if a['text_crossing'] or b['text_crossing']:
+                flags.append('text_crossing')
+            if near_border:
+                flags.append('near_image_border')
+
+            # This is a ranking aid, not a probability. Geometry, source ink,
+            # and OCR proximity are kept visible for human review.
+            ink_score = min(1.0, min_ink / 0.65)
+            score = 100.0 * (
+                0.38 * max(0.0, min(1.0, alignment)) +
+                0.24 * max(0.0, min(1.0, -tangent_dot)) +
+                0.18 * max(0.0, 1.0 - lateral / 8.0) +
+                0.20 * ink_score
+            )
+            high_priority = (
+                a['role'] == 'line_structure' and b['role'] == 'line_structure' and
+                min_ink >= 0.50 and max_ocr < 0.15 and
+                not a['text_crossing'] and not b['text_crossing'] and
+                not near_border and distance <= 20.0 and lateral <= 4.5 and
+                alignment >= 0.92 and tangent_dot <= -0.94
+            )
+            raw_candidates.append({
+                'from': a['node_id'], 'to': b['node_id'],
                 'from_edge': str(edge_a.get('id')), 'to_edge': str(edge_b.get('id')),
+                'from_component': component_a, 'to_component': component_b,
+                'from_role': a['role'], 'to_role': b['role'],
+                'from_reason': a['reason'], 'to_reason': b['reason'],
                 'distance': round(distance, 1),
-                'lateral_offset_px': round(max(lateral_a, lateral_b), 1),
+                'lateral_offset_px': round(lateral, 1),
+                'alignment': round(alignment, 3),
+                'tangent_alignment': round(-tangent_dot, 3),
+                'from_edge_length': round(a['length'], 1),
+                'to_edge_length': round(b['length'], 1),
+                'from_ink_support': round(a['ink_support'], 3),
+                'to_ink_support': round(b['ink_support'], 3),
+                'from_ocr_overlap': round(a['ocr_overlap'], 3),
+                'to_ocr_overlap': round(b['ocr_overlap'], 3),
+                'review_flags': flags,
+                'near_image_border': near_border,
+                'score': round(score, 1),
+                'priority': 'high' if high_priority else 'review',
                 'status': 'needs_review',
-                'message': 'Разные края почти соосных линий — подтвердить по чернилам перед соединением',
+                'message': ('Геометрически сильный кандидат; перед добавлением проверь исходный чертёж.'
+                            if high_priority else
+                            'Неоднозначный кандидат; требуется визуальная проверка перед соединением.'),
             })
-            if len(candidates) >= 200:
-                return candidates
-    return candidates
 
+    # One terminal may have several plausible partners. Keep the alternatives
+    # but mark every affected candidate so the UI cannot imply a unique answer.
+    alternatives: dict[str, int] = {}
+    for candidate in raw_candidates:
+        alternatives[candidate['from']] = alternatives.get(candidate['from'], 0) + 1
+        alternatives[candidate['to']] = alternatives.get(candidate['to'], 0) + 1
+    for candidate in raw_candidates:
+        conflicts = [node_id for node_id in (candidate['from'], candidate['to'])
+                     if alternatives.get(node_id, 0) > 1]
+        candidate['conflicting_nodes'] = conflicts
+        candidate['has_alternatives'] = bool(conflicts)
+        if conflicts:
+            candidate['priority'] = 'review'
+            candidate['review_flags'].append('competing_candidate')
+            candidate['message'] = 'У одного из концов есть альтернативные пары; выбери только после визуальной проверки.'
+
+    raw_candidates.sort(key=lambda item: (
+        item['priority'] != 'high', -item['score'], item['distance']
+    ))
+    candidates = raw_candidates[:200]
+    for index, candidate in enumerate(candidates, 1):
+        candidate['id'] = f'J{index}'
+    return candidates
 
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     Path(out_dir).mkdir(parents=True,exist_ok=True)
@@ -3088,11 +3210,13 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     # Candidate joins are diagnostic only. The graph's ink-supported endpoint
     # clustering performs conservative auto-joins; this list must not invent
     # same-edge, endpoint-to-interior, or laterally displaced connections.
-    joins = _build_join_candidates(nodes, edges)
+    joins = _build_join_candidates(nodes, edges, image_size=(w, h))
+    _progress('CAD', f'Endpoint continuation candidates: total={len(joins)} high={sum(1 for item in joins if item.get("priority")=="high")} review={sum(1 for item in joins if item.get("priority")!="high")}')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":19,
-                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
+                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
+                    "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
@@ -3127,6 +3251,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "isolated_strokes_kept_for_review":sum(1 for e in edges if e.get('cad_reason')=='isolated-stroke-review'),
                       "geometry_candidates_preserved":len(segments),
                       "open_end_join_candidates":len(joins),
+                      "join_candidates_high_priority":sum(1 for item in joins if item.get('priority')=='high'),
+                      "join_candidates_needing_review":sum(1 for item in joins if item.get('priority')!='high'),
+                      "join_candidates_with_alternatives":sum(1 for item in joins if item.get('has_alternatives')),
+                      "open_terminal_nodes":sum(1 for node in nodes if int(node.get('degree', 0))==1),
                       "components":len(components),
                       **cad_selection,
                       "line_components":sum(1 for c in components if c['role']=='line_structure'),

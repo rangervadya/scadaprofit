@@ -1135,3 +1135,81 @@ if __name__ == "__main__":
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]['distance'], 12.0)
         self.assertEqual(result[0]['status'], 'needs_review')
+
+    def test_join_candidates_include_short_ink_supported_fragments_for_review(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 60.1, 'y': 52.2, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[35, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure',
+             'cad_reason': 'collinear-continuation', 'ink_support': 1.0, 'ocr_overlap': 0.0},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[60.1, 52.2], [75, 52.2]],
+             'component_id': 'C2', 'component_role': 'line_structure',
+             'cad_reason': 'branch-route', 'ink_support': 1.0, 'ocr_overlap': 0.0},
+        ]
+        result = processor._build_join_candidates(nodes, edges, image_size=(200, 120))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['from'], 'N1')
+        self.assertEqual(result[0]['to'], 'N2')
+        self.assertIn('short_fragment', result[0]['review_flags'])
+        self.assertEqual(result[0]['status'], 'needs_review')
+        self.assertEqual(result[0]['priority'], 'high')
+        # Candidate generation is diagnostic and must not edit the source graph.
+        self.assertEqual(len(edges), 2)
+
+    def test_join_candidates_include_ambiguous_edges_but_keep_them_review_only(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 65, 'y': 50, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[35, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'ambiguous',
+             'cad_reason': 'isolated-stroke-review', 'ink_support': 1.0, 'ocr_overlap': 0.0},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[65, 50], [80, 50]],
+             'component_id': 'C2', 'component_role': 'line_structure',
+             'cad_reason': 'branch-route', 'ink_support': 1.0, 'ocr_overlap': 0.0},
+        ]
+        result = processor._build_join_candidates(nodes, edges)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['priority'], 'review')
+        self.assertIn('ambiguous_component', result[0]['review_flags'])
+
+    def test_join_candidates_flag_competing_partners_for_same_terminal(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 62, 'y': 50, 'degree': 1},
+            {'id': 'N3', 'x': 65, 'y': 50, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[35, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure',
+             'ink_support': 1.0, 'ocr_overlap': 0.0},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[62, 50], [77, 50]],
+             'component_id': 'C2', 'component_role': 'line_structure',
+             'ink_support': 1.0, 'ocr_overlap': 0.0},
+            {'id': 'E3', 'from': 'N3', 'to': 'C', 'geometry': [[65, 50], [80, 50]],
+             'component_id': 'C3', 'component_role': 'line_structure',
+             'ink_support': 1.0, 'ocr_overlap': 0.0},
+        ]
+        result = processor._build_join_candidates(nodes, edges)
+        self.assertGreaterEqual(len(result), 2)
+        competing = [item for item in result if item['has_alternatives']]
+        self.assertTrue(competing)
+        self.assertTrue(all('competing_candidate' in item['review_flags'] for item in competing))
+        self.assertTrue(all(item['priority'] == 'review' for item in competing))
+
+    def test_join_candidates_exclude_text_annotation_edges(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 65, 'y': 50, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[35, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[65, 50], [80, 50]],
+             'component_id': 'C2', 'component_role': 'text_or_annotation'},
+        ]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])

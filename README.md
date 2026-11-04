@@ -1,7 +1,5 @@
-# CAD Reconstruction Engine 4.3.4
+# CAD Reconstruction Engine 4.3.5
 
-OCR-aware computer-vision reconstruction of handwritten piping sketches into reviewable SVG and DXF.
+Version 4.3.5 expands endpoint continuation diagnostics to short and ambiguous detector fragments without automatically joining them. Candidates carry ink/OCR evidence, geometric alignment, border warnings, and competing-partner flags. Manual user confirmation is required.
 
-Version 4.3.4 raises the Python child-process timeout to 45 minutes and streams timestamped Python progress events to container logs and each job's `progress.log`. Ollama request-level timeouts are unchanged.
-
-See `README-RU.md`, `INSTALL-4.3.4-RU.md`, and `CHANGELOG-RU.md`. Preserve `.env`, `.git`, server backups, and `public/styles.css`.
+Retains 4.3.4 streaming progress logs and the 45-minute Python job timeout. See `README-RU.md` and `INSTALL-4.3.5-RU.md`.

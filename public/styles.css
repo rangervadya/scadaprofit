@@ -6,3 +6,4 @@
 
 /* Small, always-secondary links to geometry diagnostics. */
 .diagnostic-links{display:flex;flex-wrap:wrap;gap:8px;padding:8px 14px 12px;font-size:12px;color:#74847f}.diagnostic-links a{color:#127d70;text-decoration:underline;text-underline-offset:2px}.diagnostic-links a:hover{color:#0b5e55}
+.rowitem.join-candidate{align-items:flex-start}.join-candidate .meta{white-space:normal;line-height:1.35}.join-candidate .meta small{display:block;margin-top:3px;font-size:8px;white-space:normal}.join-candidate.join-high{border-color:#cfe4d9;background:#f8fcfa}.join-candidate.join-review{border-color:#efe1cc;background:#fffcf7}.join-candidate button{flex:none}
