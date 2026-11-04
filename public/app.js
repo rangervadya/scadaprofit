@@ -223,9 +223,12 @@ function showResult() {
   const primaryPathCount = Number(summary.cad_primary_total_paths ?? summary.cad_primary_chains ?? summary.cad_primary_paths ?? 0);
   const qwenPrimaryCount = Number(summary.cad_primary_qwen_routes ?? 0);
   const isolatedReview = Number(summary.isolated_strokes_kept_for_review || 0);
+  const topologyNetworkComponents = Number(summary.topology_network_candidate_components || 0);
+  const topologyNetworkEdges = Number(summary.topology_network_primary_edges || 0);
+  const structuredRouteComponents = Number(summary.structured_route_components || 0);
   const textBlockCount = Number(summary.text_block_annotations || 0);
   const textReviewCount = Number(summary.text_review_annotations || 0);
-  const traceState = `Основных CAD-путей: ${primaryPathCount} (Qwen, подтверждённых чернилами: ${qwenPrimaryCount}). Остальные маршруты Qwen: ${qwenRouteCount - qwenPrimaryCount}. Строк из рукописных блоков: ${textBlockCount}; текст на ручную проверку: ${textReviewCount}. Изолированных штрихов на проверке: ${isolatedReview}. `;
+  const traceState = `Основных CAD-путей: ${primaryPathCount} (Qwen, подтверждённых чернилами: ${qwenPrimaryCount}). Остальные маршруты Qwen: ${qwenRouteCount - qwenPrimaryCount}. Структурных компонентов: ${structuredRouteComponents}; многоветвевых сетей: ${topologyNetworkComponents} (${topologyNetworkEdges} рёбер в PIPE_MAIN). Строк из рукописных блоков: ${textBlockCount}; текст на ручную проверку: ${textReviewCount}. Изолированных штрихов на проверке: ${isolatedReview}. `;
   $('statusline').textContent = traceState + graph.warnings.join(' ');
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],

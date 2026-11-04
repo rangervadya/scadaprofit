@@ -1902,6 +1902,13 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             edge_lengths[index] for index, edge in enumerate(comp_edges) if edge.get('text_crossing')
         )
         text_crossing_ratio = text_crossing_length / max(total, 1.0)
+        mean_ink_support = float(np.mean([
+            float(edge.get('ink_support', 0.0) or 0.0) for edge in comp_edges
+        ])) if comp_edges else 0.0
+        max_edge_ocr_overlap = max(
+            (float(edge.get('ocr_overlap', 0.0) or 0.0) for edge in comp_edges),
+            default=0.0,
+        )
 
         # Text can sometimes form long, connected strokes. Use graph shape and
         # text-box overlap together; bounding-box elongation alone is not proof
@@ -1942,6 +1949,22 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             and unexplained_ocr_overlap < 0.12
             and text_crossing_ratio < 0.24
         )
+        # A real pipe network can contain several T-junctions or a manifold,
+        # so a strict max-degree<=5 rule rejects some otherwise coherent routes.
+        # Admit only substantial, multi-edge, source-ink-supported networks with
+        # low OCR overlap and restrained turn density. This is not based on ink
+        # support alone: isolated dimensions and page borders cannot satisfy the
+        # topology/branch-count requirements.
+        topology_network_candidate = (
+            len(comp_edges) >= 8 and extent >= 28.0 and total >= 135.0
+            and average_length >= 12.0 and 2 <= branch_nodes <= 7
+            and max_degree <= 8 and edge_density <= 5.6
+            and turn_density <= 1.35 and mean_ink_support >= 0.40
+            and unexplained_ocr_overlap < 0.10
+            and max_edge_ocr_overlap < 0.18
+            and text_crossing_ratio < 0.12
+            and not text_crossing_suspect
+        )
         text_like = (
             unexplained_ocr_overlap >= 0.16
             or (text_crossing_suspect and not branch_route)
@@ -1950,10 +1973,22 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
                 and short_edge_ratio >= 0.55 and turn_density >= 1.5
             )
         )
+        # A dense symbol veto is relaxed only for a connected/elbow route that
+        # also has multiple branches, enough total geometry, low turning and
+        # very low OCR overlap. This avoids promoting compact text/glyph clusters
+        # merely because they happened to pass a loose connected-route test.
+        dense_route_exemption = (
+            (connected_line_candidate or elbow_route_candidate)
+            and len(comp_edges) >= 6 and total >= 90.0
+            and branch_nodes >= 1 and average_length >= 12.0
+            and turn_density <= 1.25 and max_edge_ocr_overlap < 0.08
+            and text_crossing_ratio < 0.12
+        )
         dense_symbol_cluster = (
             len(comp_edges) >= 4 and average_length < 20.0
             and edge_density >= 1.85
             and (max_degree >= 4 or turn_density >= 2.0)
+            and not (dense_route_exemption or topology_network_candidate)
         )
 
         if text_like:
@@ -1961,7 +1996,8 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         elif dense_symbol_cluster:
             # Keep dense handwritten/symbol groups out of the clean pipe layer.
             role = 'ambiguous'
-        elif coherent_route or branch_route or connected_line_candidate or elbow_route_candidate:
+        elif (coherent_route or branch_route or connected_line_candidate
+              or elbow_route_candidate or topology_network_candidate):
             role = 'line_structure'
         else:
             role = 'ambiguous'
@@ -1970,6 +2006,8 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         for edge in comp_edges:
             edge['component_id'] = component_id
             edge['component_role'] = role
+            edge['topology_network_candidate'] = bool(topology_network_candidate)
+            edge['dense_route_exemption'] = bool(dense_route_exemption)
         component_summaries.append({
             'id': component_id, 'role': role, 'edge_count': len(comp_edges),
             'total_length': round(total, 1),
@@ -1981,9 +2019,14 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             'max_node_degree': max_degree, 'branch_nodes': branch_nodes,
             'edge_density': round(edge_density, 2), 'turn_density': round(turn_density, 2),
             'elongation': round(elongation, 2),
+            'mean_ink_support': round(mean_ink_support, 3),
+            'max_edge_ocr_overlap': round(max_edge_ocr_overlap, 3),
+            'short_edge_ratio': round(short_edge_ratio, 3),
             'coherent_route': coherent_route, 'branch_route': branch_route,
             'connected_line_candidate': connected_line_candidate,
             'elbow_route_candidate': elbow_route_candidate,
+            'topology_network_candidate': topology_network_candidate,
+            'dense_route_exemption': dense_route_exemption,
             'text_crossing_suspect': text_crossing_suspect,
         })
 
@@ -3216,7 +3259,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":19,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
-                    "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False},
+                    "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
@@ -3244,6 +3287,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "auto_joined_collinear_gaps":len({(edge['from'], edge['to']) for edge in edges if edge.get('auto_joined_gap')}),
                       "text_or_annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "review_only_ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
+                      "topology_network_candidate_components":sum(1 for c in components if c.get('topology_network_candidate')),
+                      "topology_network_primary_edges":sum(1 for e in edges if e.get('topology_network_candidate') and e.get('cad_include')),
+                      "structured_route_components":sum(1 for c in components if c.get('connected_line_candidate') or c.get('elbow_route_candidate') or c.get('topology_network_candidate')),
+                      "dense_route_exempted_components":sum(1 for c in components if c.get('dense_route_exemption')),
                       "primary_edge_count_by_detector":{
                           name:sum(1 for e in edges if e.get('cad_include') and e.get('detector')==name)
                           for name in ('LSD','HOUGH')
@@ -3262,6 +3309,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
            "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
+                       "В 4.3.7 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
                        "Qwen-маршруты проходят проверку по исходным пикселям и добавляются в PIPE_MAIN только при подтверждении чернилами; остальные остаются в QWEN_REVIEW.",
                        "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
                        "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",

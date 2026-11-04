@@ -352,8 +352,8 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.6', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
-    geometry: 'Confidence-filtered OCR mask plus OpenCV topology paths and source-ink-validated Qwen traces form PIPE_MAIN; endpoint continuation candidates include ambiguous/short fragments for manual review only; uncertain text stays in TEXT_REVIEW',
+  res.json({ ok: true, version: '4.3.7', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
+    geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
     ocr: 'Qwen3-VL 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
     qwenLimits: {
@@ -420,6 +420,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.6: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.7: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
 });

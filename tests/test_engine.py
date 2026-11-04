@@ -151,6 +151,87 @@ class GraphTests(unittest.TestCase):
         stats = processor.select_primary_cad_edges(nodes, edges, 900)
         self.assertEqual(stats["cad_primary_edges"], 3)
 
+    def test_dense_connected_route_with_branch_is_not_vetoed_as_symbol(self):
+        # A compact, segmented cross-shaped pipe route is connected and has
+        # a real branch. The old dense-symbol veto overrode the route candidate.
+        points = [
+            ((20, 50), (35, 50)), ((35, 50), (50, 50)),
+            ((50, 50), (65, 50)), ((65, 50), (80, 50)),
+            ((50, 20), (50, 35)), ((50, 35), (50, 50)),
+            ((50, 50), (50, 65)), ((50, 65), (50, 80)),
+        ]
+        segments = []
+        for a, b in points:
+            length = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            segments.append({
+                'x1': float(a[0]), 'y1': float(a[1]),
+                'x2': float(b[0]), 'y2': float(b[1]),
+                'source': 'HOUGH', 'support': .92, 'length': length,
+                'angle': 0.0, 'ocr_overlap': 0.0, 'text_crossing': False,
+            })
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(len(components), 1)
+        self.assertTrue(components[0]['connected_line_candidate'] or components[0]['elbow_route_candidate'])
+        self.assertTrue(components[0]['dense_route_exemption'])
+        self.assertEqual(components[0]['role'], 'line_structure')
+        stats = processor.select_primary_cad_edges(nodes, edges, 100)
+        self.assertGreater(stats['cad_primary_edges'], 0)
+
+    def test_topology_rich_multibranch_network_with_degree_six_is_selected(self):
+        # A connected pipe manifold can contain degree-six junctions. Earlier
+        # component rules rejected it solely because max_degree exceeded five.
+        # Strong ink, multiple branches, low OCR and moderate density support it.
+        segments = []
+        def add(a, b):
+            length = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            segments.append({
+                'x1': float(a[0]), 'y1': float(a[1]),
+                'x2': float(b[0]), 'y2': float(b[1]),
+                'source': 'HOUGH', 'support': .92, 'length': length,
+                'angle': 0.0, 'ocr_overlap': 0.0, 'text_crossing': False,
+            })
+
+        hub_a, hub_b = (20, 50), (120, 50)
+        for endpoint in [(0, 50), (20, 20), (20, 80), (45, 25), (45, 75)]:
+            add(hub_a, endpoint)
+        for endpoint in [(150, 50), (120, 20), (120, 80), (145, 25)]:
+            add(hub_b, endpoint)
+        add(hub_a, hub_b)
+
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(len(components), 1)
+        self.assertEqual(components[0]['max_node_degree'], 6)
+        self.assertTrue(components[0]['topology_network_candidate'])
+        self.assertEqual(components[0]['role'], 'line_structure')
+        stats = processor.select_primary_cad_edges(nodes, edges, 160)
+        self.assertEqual(stats['cad_primary_edges'], len(edges))
+        self.assertTrue(all(edge['cad_include'] for edge in edges))
+
+    def test_topology_network_candidate_is_rejected_when_ocr_overlap_is_high(self):
+        # Similar topology must not be promoted when it overlaps OCR regions.
+        segments = []
+        def add(a, b):
+            length = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            segments.append({
+                'x1': float(a[0]), 'y1': float(a[1]),
+                'x2': float(b[0]), 'y2': float(b[1]),
+                'source': 'HOUGH', 'support': .92, 'length': length,
+                'angle': 0.0, 'ocr_overlap': .35, 'text_crossing': False,
+            })
+        hub_a, hub_b = (20, 50), (120, 50)
+        for endpoint in [(0, 50), (20, 20), (20, 80), (45, 25), (45, 75)]:
+            add(hub_a, endpoint)
+        for endpoint in [(150, 50), (120, 20), (120, 80), (145, 25)]:
+            add(hub_b, endpoint)
+        add(hub_a, hub_b)
+
+        nodes, edges, components = processor.endpoint_clusters(segments)
+        self.assertEqual(len(components), 1)
+        self.assertFalse(components[0]['topology_network_candidate'])
+        self.assertEqual(components[0]['role'], 'text_or_annotation')
+        stats = processor.select_primary_cad_edges(nodes, edges, 160)
+        self.assertEqual(stats['cad_primary_edges'], 0)
+
     def test_crossing_is_not_auto_joined(self):
         segments = [
             {"x1": 10.0, "y1": 50.0, "x2": 90.0, "y2": 50.0, "source": "LSD", "support": .8, "length": 80, "angle": 0},
