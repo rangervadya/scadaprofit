@@ -16,10 +16,17 @@ const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
 const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
+
+// ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
+// 2 700 000 мс = 45 минут, а не 2 700 000 секунд.
 const configuredPythonTimeout = Number(process.env.PYTHON_JOB_TIMEOUT_MS || 2_700_000);
-const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout) ? Math.max(60_000, configuredPythonTimeout) : 2_700_000;
+const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout)
+  ? Math.max(60_000, configuredPythonTimeout)
+  : 2_700_000;
+
 const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 await mkdir(DATA, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
@@ -50,27 +57,44 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
       if (!message) return;
       const entry = `${new Date().toISOString()} ${message}`;
       console.log(`[JOB ${shortId}] ${message}`);
-      if (!progressFileFailed && !progressFile.destroyed && progressFile.writable) progressFile.write(`${entry}\n`);
+      if (!progressFileFailed && !progressFile.destroyed && progressFile.writable) {
+        progressFile.write(`${entry}\n`);
+      }
     };
+
     const fail = (error) => {
       if (settled) return;
       settled = true;
       reject(error);
     };
+
     const complete = (code, signal) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (forceKillHandle) clearTimeout(forceKillHandle);
       if (stderrPending.trim()) logLine(stderrPending);
+
       const finish = () => {
         if (spawnError) {
           fail(Object.assign(spawnError, { stderr: stderrTail, stdout }));
         } else if (timedOut) {
           const error = new Error(`Python job exceeded ${Math.round(timeout / 60_000)} minute timeout and was terminated.`);
-          Object.assign(error, { code: 'ETIMEDOUT', killed: true, signal: signal || 'SIGTERM', stderr: stderrTail, stdout });
+          Object.assign(error, {
+            code: 'ETIMEDOUT',
+            killed: true,
+            signal: signal || 'SIGTERM',
+            stderr: stderrTail,
+            stdout
+          });
           fail(error);
         } else if (outputOverflow) {
           const error = new Error(`Python stdout exceeded the ${maxBuffer} byte output limit.`);
-          Object.assign(error, { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true, signal: signal || 'SIGTERM', stderr: stderrTail, stdout });
+          Object.assign(error, {
+            code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+            killed: true,
+            signal: signal || 'SIGTERM',
+            stderr: stderrTail,
+            stdout
+          });
           fail(error);
         } else if (code !== 0) {
           const error = new Error(`Python process exited with code ${code}${signal ? ` (signal ${signal})` : ''}.`);
@@ -81,11 +105,13 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
           resolve({ stdout, stderr: stderrTail });
         }
       };
+
       if (progressFileFailed || progressFile.destroyed) finish();
       else progressFile.end(finish);
     };
 
-    logLine(`[JOB] Python process started; timeout=${Math.round(timeout / 60_000)}m`);
+    logLine(`[JOB] Python process started; timeout=${Math.round(timeout / 60_000)}m (${timeout} ms)`);
+
     timeoutHandle = setTimeout(() => {
       if (child.exitCode !== null || child.signalCode !== null) return;
       timedOut = true;
@@ -100,6 +126,7 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
+
     child.stdout.on('data', (chunk) => {
       stdoutBytes += Buffer.byteLength(chunk, 'utf8');
       if (stdoutBytes > maxBuffer) {
@@ -115,6 +142,7 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
       }
       stdout += chunk;
     });
+
     child.stderr.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk).slice(-64 * 1024);
       stderrPending += chunk;
@@ -126,17 +154,20 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
         stderrPending = stderrPending.slice(4000);
       }
     });
+
     child.on('error', (error) => {
       spawnError = error;
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (forceKillHandle) clearTimeout(forceKillHandle);
       logLine(`[JOB] Unable to start Python: ${error.message}`);
     });
+
     child.on('close', complete);
   });
 }
 
 app.disable('x-powered-by');
+
 // This app is commonly opened over plain HTTP on a private LAN (e.g. http://192.168.x.x:3001).
 // Helmet's default CSP includes upgrade-insecure-requests, which makes browsers rewrite
 // the relative CSS/JS URLs to HTTPS. There is no TLS listener in this container, so assets
@@ -163,6 +194,7 @@ app.use(helmet({
   originAgentCluster: false,
   hsts: false
 }));
+
 app.use(express.json({ limit: '15mb' }));
 app.use(rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }));
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -173,7 +205,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.use('/jobs', express.static(DATA, { maxAge: '1h', dotfiles: 'deny', index: false }));
 
-const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, files: 1 },
+const upload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 18 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     const extOk = /\.(jpe?g|png|webp|tiff?)$/i.test(file.originalname || '');
     const mimeOk = /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
@@ -209,6 +243,7 @@ function nextManualEdgeId(edges) {
 app.get('/api/jobs/:jobId/graph', async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+
   const jobDir = path.join(DATA, jobId);
   try {
     const [raw, entries] = await Promise.all([
@@ -221,7 +256,11 @@ app.get('/api/jobs/:jobId/graph', async (req, res) => {
     return res.json(attachJobUrls(jobId, graph, sourceName));
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
-    return res.status(status).json({ error: status === 404 ? 'Сохранённое задание не найдено или уже удалено.' : 'Не удалось прочитать граф задания.' });
+    return res.status(status).json({
+      error: status === 404
+        ? 'Сохранённое задание не найдено или уже удалено.'
+        : 'Не удалось прочитать граф задания.'
+    });
   }
 });
 
@@ -233,12 +272,14 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
   const to = String(req.body?.to || '').trim();
   const candidateId = req.body?.candidateId == null ? null : String(req.body.candidateId).trim();
   const confirmAlternative = req.body?.confirmAlternative === true;
+
   if (!from || !to || from === to || from.length > 64 || to.length > 64) {
     return res.status(400).json({ error: 'Укажите два разных узла графа.' });
   }
 
   const jobDir = path.join(DATA, jobId);
   const graphPath = path.join(jobDir, 'graph.json');
+
   try {
     const graph = JSON.parse(await readFile(graphPath, 'utf8'));
     graph.nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
@@ -249,7 +290,9 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
     const nodeById = new Map(graph.nodes.map(node => [String(node.id), node]));
     const a = nodeById.get(from);
     const b = nodeById.get(to);
-    if (!a || !b) return res.status(404).json({ error: 'Один из узлов больше не существует в сохранённом графе.' });
+    if (!a || !b) {
+      return res.status(404).json({ error: 'Один из узлов больше не существует в сохранённом графе.' });
+    }
 
     let candidate = null;
     if (candidateId) {
@@ -258,7 +301,10 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
           (String(item.from) === to && String(item.to) === from);
         return String(item.id) === candidateId && samePair;
       });
-      if (!candidate) return res.status(409).json({ error: 'Кандидат устарел или уже был использован. Обновите сохранённое задание.' });
+
+      if (!candidate) {
+        return res.status(409).json({ error: 'Кандидат устарел или уже был использован. Обновите сохранённое задание.' });
+      }
       if (candidate.has_alternatives && !confirmAlternative) {
         return res.status(409).json({ error: 'У узла есть конкурирующие варианты. Требуется явное подтверждение выбранной пары.' });
       }
@@ -275,6 +321,7 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
 
     const edgeId = nextManualEdgeId(graph.edges);
     const confirmedAt = new Date().toISOString();
+
     graph.edges.push({
       id: edgeId,
       from,
@@ -292,6 +339,7 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
       candidate_score: candidate?.score ?? null,
       confirmed_at: confirmedAt
     });
+
     a.degree = Number(a.degree || 0) + 1;
     b.degree = Number(b.degree || 0) + 1;
     a.review = false;
@@ -312,6 +360,7 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
     graph.joinCandidates = graph.joinCandidates.filter(item =>
       !consumed.has(String(item.from)) && !consumed.has(String(item.to))
     );
+
     graph.summary = graph.summary && typeof graph.summary === 'object' ? graph.summary : {};
     graph.summary.edges = graph.edges.length;
     graph.summary.confirmed_connections = graph.confirmedConnections.length;
@@ -333,17 +382,26 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
 
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b';
-  const tagsUrl = process.env.OLLAMA_TAGS_URL || (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
+  const tagsUrl = process.env.OLLAMA_TAGS_URL ||
+    (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
+
   let ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
+
   try {
     const response = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
     if (!response.ok) throw new Error(`Ollama API вернула HTTP ${response.status}`);
     const data = await response.json();
     const models = Array.isArray(data.models) ? data.models : [];
     const names = models.map(item => String(item.name || item.model || '')).filter(Boolean);
+
     ollama.reachable = true;
     ollama.models = names;
-    ollama.modelInstalled = names.some(name => name === qwenModel || name === `${qwenModel}:latest` || name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''));
+    ollama.modelInstalled = names.some(name =>
+      name === qwenModel ||
+      name === `${qwenModel}:latest` ||
+      name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, '')
+    );
+
     if (!ollama.modelInstalled) {
       ollama.error = `Модель ${qwenModel} не найдена. Установлены: ${names.join(', ') || 'нет моделей'}.`;
       ollama.hint = `Выполните: docker compose exec ollama ollama pull ${qwenModel}`;
@@ -352,7 +410,12 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.7', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
+
+  res.json({
+    ok: true,
+    version: '4.3.7',
+    pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
+    mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
     ocr: 'Qwen3-VL 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
@@ -369,57 +432,135 @@ app.get('/api/health', async (_req, res) => {
       ocrTileGrid: Number(process.env.QWEN_OCR_TILE_GRID || 3),
       ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2)
     },
-    ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL), ollamaRequiredForCleanCad: false, ollamaRequired: false, ollama });
+    ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
+    ollamaRequiredForCleanCad: false,
+    ollamaRequired: false,
+    ollama
+  });
 });
 
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
+
   const id = randomUUID();
   const jobDir = path.join(DATA, id);
   await mkdir(jobDir, { recursive: true });
+
   const ext = path.extname(req.file.originalname || '').toLowerCase() || '.img';
   const sourcePath = path.join(jobDir, `source${ext}`);
+
   try {
-    // move uploaded temp file into isolated job folder
+    // Move uploaded temp file into isolated job folder.
     const fs = await import('node:fs/promises');
     await fs.copyFile(req.file.path, sourcePath);
     await fs.rm(req.file.path, { force: true });
+
     const progressPath = path.join(jobDir, 'progress.log');
-    const { stdout } = await runPythonStreaming(
+    await runPythonStreaming(
       [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
       { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
     );
+
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     attachJobUrls(id, graph, path.basename(sourcePath));
     graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
-    console.log(`[ENGINE ${id.slice(0,8)}] segments=${graph.summary.segment_candidates} nodes=${graph.summary.nodes} edges=${graph.summary.edges} crossings=${graph.summary.crossings_to_review}`);
+
+    // Все показатели берутся из graph.summary, который формирует processor.py.
+    // Значение MISSING означает, что поле не было записано Python-процессором.
+    const summary = graph.summary && typeof graph.summary === 'object' ? graph.summary : {};
+    const metric = (key) => summary[key] ?? 'MISSING';
+
+    console.log(
+      `[ENGINE ${id.slice(0, 8)}] segments=${metric('segment_candidates')} ` +
+      `nodes=${metric('nodes')} edges=${metric('edges')} ` +
+      `crossings=${metric('crossings_to_review')}`
+    );
+
     const oq = graph.ocr?.qwen || {};
     const ot = graph.ocr?.tesseract || {};
     const st = graph.semanticTrace || {};
-    console.log(`[ENGINE ${id.slice(0,8)}] OCR Qwen=${oq.annotations || 0} tiles=${oq.successful_tiles || 0}/${oq.tiles || 0}; noteBlocks=${oq.block_annotations || 0} (${oq.block_passes || 0} passes); Tesseract=${ot.annotations || 0}; verifiedText=${graph.summary.verified_annotations || 0}; textReview=${graph.summary.text_review_annotations || 0}`);
-    console.log(`[ENGINE ${id.slice(0,8)}] PIPE Qwen routes=${st.routes || 0} raw=${st.raw_routes || 0} tiles=${st.successful_tiles || 0}/${st.tiles || 0}; rejected=${st.rejected_invalid || 0}+${st.rejected_low_confidence || 0}`);
-    console.log(`[ENGINE ${id.slice(0,8)}] CAD PIPE_MAIN OpenCV_edges=${graph.summary.cad_primary_edges || 0} Qwen_routes=${graph.summary.cad_primary_qwen_routes || 0} total_paths=${graph.summary.cad_primary_total_paths || 0}; DETAIL_REVIEW=${graph.summary.cad_review_edges || 0}; isolatedReview=${graph.summary.isolated_strokes_kept_for_review || 0}`);
-    console.log(`[ENGINE ${id.slice(0,8)}] OCR-MASK boxes=${graph.summary.text_regions_used_for_geometry_mask || graph.summary.geometry_excluded_text_regions || 0}; inkPixelsMasked=${graph.summary.ink_pixels_inside_text_regions || 0}; textComponents=${graph.summary.text_or_annotation_components || 0}; ambiguous=${graph.summary.review_only_ambiguous_components || 0}`);
-    res.json(graph);
+    console.log(
+      `[ENGINE ${id.slice(0, 8)}] OCR Qwen=${oq.annotations || 0} ` +
+      `tiles=${oq.successful_tiles || 0}/${oq.tiles || 0}; ` +
+      `noteBlocks=${oq.block_annotations || 0} (${oq.block_passes || 0} passes); ` +
+      `Tesseract=${ot.annotations || 0}; ` +
+      `verifiedText=${metric('verified_annotations')}; ` +
+      `textReview=${metric('text_review_annotations')}`
+    );
+
+    console.log(
+      `[ENGINE ${id.slice(0, 8)}] PIPE Qwen routes=${st.routes || 0} ` +
+      `raw=${st.raw_routes || 0} tiles=${st.successful_tiles || 0}/${st.tiles || 0}; ` +
+      `rejected=${st.rejected_invalid || 0}+${st.rejected_low_confidence || 0}`
+    );
+
+    // Основные четыре показателя, которые нужно проверять после нового анализа.
+    console.log(
+      `[ENGINE ${id.slice(0, 8)}] CAD ` +
+      `cad_primary_edges=${metric('cad_primary_edges')}; ` +
+      `cad_review_edges=${metric('cad_review_edges')}; ` +
+      `topology_network_candidate_components=${metric('topology_network_candidate_components')}; ` +
+      `topology_network_primary_edges=${metric('topology_network_primary_edges')}; ` +
+      `cad_primary_qwen_routes=${metric('cad_primary_qwen_routes')}; ` +
+      `cad_primary_total_paths=${metric('cad_primary_total_paths')}; ` +
+      `isolatedReview=${metric('isolated_strokes_kept_for_review')}`
+    );
+
+    console.log(
+      `[ENGINE ${id.slice(0, 8)}] OCR-MASK ` +
+      `boxes=${metric('text_regions_used_for_geometry_mask') !== 'MISSING'
+        ? metric('text_regions_used_for_geometry_mask')
+        : metric('geometry_excluded_text_regions')}; ` +
+      `inkPixelsMasked=${metric('ink_pixels_inside_text_regions')}; ` +
+      `textComponents=${metric('text_or_annotation_components')}; ` +
+      `ambiguous=${metric('review_only_ambiguous_components')}`
+    );
+
+    // Возвращаем граф целиком: все четыре показателя также доступны в response.summary.
+    return res.json(graph);
   } catch (error) {
-    console.error(`[JOB ${id.slice(0,8)}] Analyze failed:`, error?.stderr || error);
+    console.error(`[JOB ${id.slice(0, 8)}] Analyze failed:`, error?.stderr || error);
     const progressUrl = `/jobs/${id}/progress.log`;
-    const details = [String(error?.stderr || '').slice(-900), String(error?.message || error).slice(-350)].filter(Boolean).join('\n');
-    res.status(500).json({ error: 'Не удалось проанализировать изображение.', details: `${details}\nЖурнал этапов: ${progressUrl}`, jobId: id, progressUrl });
+    const details = [
+      String(error?.stderr || '').slice(-900),
+      String(error?.message || error).slice(-350)
+    ].filter(Boolean).join('\n');
+
+    return res.status(500).json({
+      error: 'Не удалось проанализировать изображение.',
+      details: `${details}\nЖурнал этапов: ${progressUrl}`,
+      jobId: id,
+      progressUrl
+    });
   } finally {
-    if (req.file?.path) { const fs = await import('node:fs/promises'); await fs.rm(req.file.path, { force: true }).catch(()=>{}); }
+    if (req.file?.path) {
+      const fs = await import('node:fs/promises');
+      await fs.rm(req.file.path, { force: true }).catch(() => {});
+    }
   }
 });
 
-app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'), { headers: { 'Cache-Control': 'no-store, max-age=0' } }));
+app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'), {
+    headers: { 'Cache-Control': 'no-store, max-age=0' }
+  });
+});
+
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API-маршрут не найден.' }));
+
 app.use((err, _req, res, _next) => {
   console.error(err);
   const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
-  const message = err?.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 18 МБ.' : err?.code === 'LIMIT_UNEXPECTED_FILE' ? 'Можно загрузить только один файл за раз.' : 'Ошибка запроса.';
+  const message = err?.code === 'LIMIT_FILE_SIZE'
+    ? 'Файл больше 18 МБ.'
+    : err?.code === 'LIMIT_UNEXPECTED_FILE'
+      ? 'Можно загрузить только один файл за раз.'
+      : 'Ошибка запроса.';
   res.status(status).json({ error: message, details: err.message });
 });
+
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log(`CAD Reconstruction Engine 4.3.7: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
+  console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });
