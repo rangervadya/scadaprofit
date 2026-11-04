@@ -9,6 +9,8 @@ let firstNode = null;
 let draggingNode = null;
 let showAllSegments = false;
 let edgePage = 1;
+let activeJoinId = null;
+let activeJoinGroupNode = null;
 const EDGE_PAGE_SIZE = 140;
 
 const fileInput = $('fileInput');
@@ -24,6 +26,31 @@ function setState(text, kind = 'ready') {
   $('analysisState').textContent = text;
   const dot = document.querySelector('.live-status i');
   if (dot) dot.style.background = kind === 'error' ? '#c95c52' : kind === 'busy' ? '#e58c48' : '#55b38e';
+}
+function normalizeGraph(data) {
+  const next = data && typeof data === 'object' ? data : {};
+  next.annotations = Array.isArray(next.annotations) ? next.annotations : [];
+  next.crossings = Array.isArray(next.crossings) ? next.crossings : [];
+  next.joinCandidates = Array.isArray(next.joinCandidates) ? next.joinCandidates : [];
+  next.confirmedConnections = Array.isArray(next.confirmedConnections) ? next.confirmedConnections : [];
+  next.warnings = Array.isArray(next.warnings) ? next.warnings : [];
+  next.edges = Array.isArray(next.edges) ? next.edges : [];
+  next.nodes = Array.isArray(next.nodes) ? next.nodes : [];
+  next.edges.forEach(edge => { if (edge.visible === undefined) edge.visible = true; });
+  return next;
+}
+function setJobAddress(jobId) {
+  if (!jobId || !window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set('job', jobId);
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+function clearJobAddress() {
+  if (!window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('job')) return;
+  url.searchParams.delete('job');
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
@@ -52,6 +79,7 @@ dropzone.addEventListener('drop', event => setFile(event.dataTransfer?.files?.[0
 
 function setFile(file) {
   if (!file) return;
+  clearJobAddress();
   setAlert('');
   if (!supportedImage(file)) {
     setAlert('Формат файла не поддерживается. Выбери JPG, PNG, WEBP или TIFF.');
@@ -87,6 +115,7 @@ function setFile(file) {
 }
 
 $('clearFile').addEventListener('click', () => {
+  clearJobAddress();
   selectedFile = null;
   graph = null;
   fileInput.value = '';
@@ -131,12 +160,10 @@ analyzeBtn.addEventListener('click', async () => {
     if (!data.image || !Array.isArray(data.edges) || !Array.isArray(data.nodes)) {
       throw new Error('Сервер вернул неполный граф. Посмотри журнал приложения.');
     }
-    graph = data;
-    graph.annotations = Array.isArray(graph.annotations) ? graph.annotations : [];
-    graph.crossings = Array.isArray(graph.crossings) ? graph.crossings : [];
-    graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
-    graph.warnings = Array.isArray(graph.warnings) ? graph.warnings : [];
-    graph.edges.forEach(edge => { if (edge.visible === undefined) edge.visible = true; });
+    graph = normalizeGraph(data);
+    setJobAddress(graph.jobId);
+    activeJoinId = null;
+    activeJoinGroupNode = null;
     showAllSegments = false;
     connectMode = false;
     firstNode = null;
@@ -187,7 +214,9 @@ function showResult() {
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;
   }
-  $('previewMeta').textContent = 'Анализ завершён · можно редактировать';
+  $('previewMeta').textContent = graph.confirmedConnections.length
+    ? `Анализ завершён · подтверждённых соединений: ${graph.confirmedConnections.length}`
+    : 'Анализ завершён · можно редактировать';
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
@@ -283,10 +312,30 @@ function renderOverlay() {
     </g>`).join('') : '';
   const crossings = $('showCrossings').checked ? graph.crossings.map(crossing => `
     <g><circle cx="${crossing.x}" cy="${crossing.y}" r="8" fill="none" stroke="#9a71b5" stroke-width="2" stroke-dasharray="3 2"/><text x="${crossing.x + 9}" y="${crossing.y - 7}" font-size="10" fill="#80519b" stroke="#fff" stroke-width="2.5" paint-order="stroke">?</text></g>`).join('') : '';
+  const previewCandidates = activeJoinGroupNode
+    ? graph.joinCandidates.filter(item => (item.conflicting_nodes || []).includes(activeJoinGroupNode))
+    : (activeJoinId ? graph.joinCandidates.filter(item => item.id === activeJoinId) : []);
+  const nodeById = new Map(graph.nodes.map(node => [String(node.id), node]));
+  const joinPreview = previewCandidates.map((candidate, index) => {
+    const a = nodeById.get(String(candidate.from));
+    const b = nodeById.get(String(candidate.to));
+    if (!a || !b) return '';
+    const color = index === 0 ? '#159879' : '#e18a32';
+    const midpointX = (Number(a.x) + Number(b.x)) / 2;
+    const midpointY = (Number(a.y) + Number(b.y)) / 2;
+    return `<g class="join-preview" pointer-events="none">
+      <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".9"/>
+      <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${color}" stroke-width="3.5" stroke-dasharray="7 4" stroke-linecap="round"/>
+      <circle cx="${a.x}" cy="${a.y}" r="7.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>
+      <circle cx="${b.x}" cy="${b.y}" r="7.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>
+      <rect x="${midpointX - 13}" y="${midpointY - 17}" width="26" height="15" rx="4" fill="${color}"/>
+      <text x="${midpointX}" y="${midpointY - 6}" text-anchor="middle" font-size="9" font-weight="bold" fill="#fff">${escapeHtml(candidate.id)}</text>
+    </g>`;
+  }).join('');
   const overlay = $('overlay');
   overlay.setAttribute('viewBox', `0 0 ${graph.image.width} ${graph.image.height}`);
   overlay.setAttribute('preserveAspectRatio', 'none');
-  overlay.innerHTML = lines + crossings + nodes;
+  overlay.innerHTML = lines + crossings + joinPreview + nodes;
   overlay.querySelectorAll('.node').forEach(group => {
     group.addEventListener('pointerdown', event => startNodeAction(event, group.dataset.node));
     group.addEventListener('click', event => {
@@ -379,32 +428,66 @@ function nextEdgeId() {
   const nums = graph.edges.map(edge => Number(String(edge.id).replace(/^E/, '')) || 0);
   return `E${Math.max(0, ...nums) + 1}`;
 }
-function addManualConnection(from, to) {
+function addManualConnectionLocal(from, to) {
   const a = graph.nodes.find(node => node.id === from);
   const b = graph.nodes.find(node => node.id === to);
   if (!a || !b || a.id === b.id) return false;
   const exists = graph.edges.some(edge => (edge.from === a.id && edge.to === b.id) || (edge.from === b.id && edge.to === a.id));
   if (exists) return false;
-  graph.edges.push({ id: nextEdgeId(), from: a.id, to: b.id, source: 'manual', confidence: 1,
+  const id = nextEdgeId();
+  graph.edges.push({ id, from: a.id, to: b.id, source: 'manual', confidence: 1,
     geometry: [[a.x, a.y], [b.x, b.y]], visible: true, review: false, detector: 'MANUAL',
-    component_role: 'line_structure', component_id: 'MANUAL' });
+    component_role: 'line_structure', component_id: 'MANUAL', manual_reason: 'user-created-connection' });
   a.degree = (a.degree || 0) + 1;
   b.degree = (b.degree || 0) + 1;
+  graph.confirmedConnections.push({ id: `MC${graph.confirmedConnections.length + 1}`, edgeId: id, from, to, confirmation: 'local-user-action' });
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
   renderOverlay(); renderClean(); renderEdgeList(); renderNodeList(); renderJoinList();
   return true;
 }
+
+function refreshGraphAfterConnection(data, message) {
+  graph = normalizeGraph(data);
+  activeJoinId = null;
+  activeJoinGroupNode = null;
+  showResult();
+  setState('СОЕДИНЕНИЕ СОХРАНЕНО');
+  $('selectMode').textContent = message;
+  $('previewMeta').textContent = `Сохранённое задание · подтверждённых соединений: ${graph.confirmedConnections.length}`;
+}
+
+async function persistManualConnection(from, to, { candidate = null } = {}) {
+  if (!graph.jobId) {
+    const ok = addManualConnectionLocal(from, to);
+    if (!ok) throw new Error('Соединение не добавлено: узлы отсутствуют или связь уже существует.');
+    return true;
+  }
+  const response = await fetch(`/api/jobs/${encodeURIComponent(graph.jobId)}/connections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from, to,
+      candidateId: candidate?.id || null,
+      confirmAlternative: Boolean(candidate?.has_alternatives)
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.graph) throw new Error(data.error || `Ошибка сохранения соединения (${response.status})`);
+  refreshGraphAfterConnection(data.graph, `Сохранено ${candidate?.id ? `${candidate.id}: ` : ''}${from} ↔ ${to}`);
+  return true;
+}
+
 $('connectMode').addEventListener('click', () => {
   connectMode = !connectMode;
   firstNode = null;
   if (connectMode) $('showNodes').checked = true;
   $('connectHelp').hidden = !connectMode;
-  $('connectHelp').textContent = 'Выбери первый узел, затем второй. Соединение будет добавлено вручную.';
+  $('connectHelp').textContent = 'Выбери первый узел, затем второй. Подтверждённое вручную соединение будет сохранено в задании.';
   $('connectMode').textContent = connectMode ? 'Отмена соединения' : '＋ Соединить два узла';
   $('selectMode').textContent = connectMode ? 'Режим: выбери два узла' : 'Режим: просмотр';
   renderOverlay();
 });
-function chooseNode(id) {
+async function chooseNode(id) {
   if (!firstNode) {
     firstNode = id;
     $('connectHelp').textContent = `Первый узел: ${id}. Теперь выбери второй узел.`;
@@ -413,16 +496,56 @@ function chooseNode(id) {
   }
   if (firstNode === id) return;
   const from = firstNode;
-  if (addManualConnection(from, id)) $('selectMode').textContent = `Добавлено соединение ${from} ↔ ${id}`;
   connectMode = false;
   firstNode = null;
   $('connectHelp').hidden = true;
   $('connectMode').textContent = '＋ Соединить два узла';
+  try {
+    await persistManualConnection(from, id);
+  } catch (error) {
+    setAlert(`Не удалось сохранить соединение: ${error.message}`);
+    setState('ОШИБКА СОХРАНЕНИЯ', 'error');
+  }
   renderOverlay();
 }
+
+function collectJoinConflictGroups(joins) {
+  const grouped = new Map();
+  for (const join of joins) {
+    for (const nodeId of (join.conflicting_nodes || [])) {
+      if (!grouped.has(nodeId)) grouped.set(nodeId, []);
+      grouped.get(nodeId).push(join);
+    }
+  }
+  return [...grouped.entries()]
+    .map(([nodeId, candidates]) => ({
+      nodeId,
+      candidates: [...new Map(candidates.map(item => [item.id, item])).values()]
+        .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    }))
+    .filter(group => group.candidates.length > 1)
+    .sort((a, b) => b.candidates.length - a.candidates.length);
+}
+
+function scrollToJoinPreview() {
+  $('sourceStage')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function renderJoinList() {
-  const joins = Array.isArray(graph.joinCandidates) ? graph.joinCandidates.slice(0, 80) : [];
-  $('joinList').innerHTML = joins.length ? joins.map(join => {
+  const joins = Array.isArray(graph.joinCandidates) ? graph.joinCandidates.slice(0, 120) : [];
+  const groups = collectJoinConflictGroups(joins);
+  const groupHtml = groups.map(group => {
+    const ranked = group.candidates;
+    const gap = Math.abs(Number(ranked[0].score || 0) - Number(ranked[1].score || 0));
+    const pairs = ranked.map(item => `${escapeHtml(item.id)}: ${escapeHtml(item.from)} ↔ ${escapeHtml(item.to)} (${Number(item.score || 0).toFixed(1)})`).join(' · ');
+    return `<div class="join-conflict-group">
+      <div><b>Конкурирующие пары у узла ${escapeHtml(group.nodeId)}</b><small>${pairs}</small><small>Разница оценок двух лучших вариантов: ${gap.toFixed(1)} балла. Это рейтинг, не вероятность.</small></div>
+      <button type="button" data-compare-node="${escapeHtml(group.nodeId)}">Сравнить</button>
+    </div>`;
+  }).join('');
+  const confirmed = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
+  const confirmedHtml = confirmed.length ? `<div class="join-confirmed"><b>Сохранённые соединения (${confirmed.length})</b>${confirmed.slice(-8).map(item => `<small>${escapeHtml(item.candidateId || item.id)} · ${escapeHtml(item.from)} ↔ ${escapeHtml(item.to)} · ${escapeHtml(item.edgeId || '')}</small>`).join('')}</div>` : '';
+  const joinsHtml = joins.map(join => {
     const high = join.priority === 'high' && !join.has_alternatives;
     const flags = Array.isArray(join.review_flags) ? join.review_flags : [];
     const details = [
@@ -430,26 +553,54 @@ function renderJoinList() {
       `соосность ${Math.round(Number(join.alignment || 0) * 100)}%`,
       `поперечное ${join.lateral_offset_px ?? '?'} px`
     ].join(' · ');
-    const warning = join.has_alternatives ? 'Есть альтернативные пары' : (join.message || 'Требуется визуальная проверка');
-    return `<div class="rowitem join-candidate ${high ? 'join-high' : 'join-review'}">
-      <span class="id">${escapeHtml(join.id)}</span>
-      <span class="meta" title="${escapeHtml(warning)}">${escapeHtml(join.from)} ↔ ${escapeHtml(join.to)} · ${escapeHtml(details)}<small>${escapeHtml(warning)}${flags.length ? ` · ${escapeHtml(flags.join(', '))}` : ''}</small></span>
-      <button type="button" data-join="${escapeHtml(join.id)}" title="Добавить ручной соединительный отрезок">Добавить</button>
+    const warning = join.has_alternatives ? `Есть альтернативные пары: ${(join.conflicting_nodes || []).join(', ')}` : (join.message || 'Требуется визуальная проверка');
+    return `<div class="rowitem join-candidate ${high ? 'join-high' : 'join-review'} ${activeJoinId === join.id ? 'join-active' : ''}">
+      <div class="join-candidate-main">
+        <span class="id">${escapeHtml(join.id)}</span>
+        <span class="meta">${escapeHtml(join.from)} ↔ ${escapeHtml(join.to)} · ${escapeHtml(details)}<small>Оценка ${Number(join.score || 0).toFixed(1)}/100 · ${escapeHtml(warning)}${flags.length ? ` · ${escapeHtml(flags.join(', '))}` : ''}</small></span>
+      </div>
+      <div class="join-actions">
+        <button type="button" data-preview-join="${escapeHtml(join.id)}" title="Подсветить соединение на исходном чертеже">На схеме</button>
+        <button type="button" data-join="${escapeHtml(join.id)}" title="Подтвердить и сохранить соединение">Подтвердить</button>
+      </div>
     </div>`;
-  }).join('') : '<div class="helper">Подходящих пар открытых концов не найдено. Кандидаты не добавляются автоматически.</div>';
-  $('joinList').querySelectorAll('[data-join]').forEach(button => button.addEventListener('click', () => {
+  }).join('');
+  $('joinList').innerHTML = confirmedHtml + groupHtml + joinsHtml || '<div class="helper">Подходящих пар открытых концов не найдено. Кандидаты не добавляются автоматически.</div>';
+  $('joinList').querySelectorAll('[data-compare-node]').forEach(button => button.addEventListener('click', () => {
+    activeJoinGroupNode = button.dataset.compareNode;
+    activeJoinId = null;
+    renderOverlay();
+    scrollToJoinPreview();
+  }));
+  $('joinList').querySelectorAll('[data-preview-join]').forEach(button => button.addEventListener('click', () => {
+    activeJoinId = button.dataset.previewJoin;
+    activeJoinGroupNode = null;
+    renderJoinList();
+    renderOverlay();
+    scrollToJoinPreview();
+  }));
+  $('joinList').querySelectorAll('[data-join]').forEach(button => button.addEventListener('click', async () => {
     const candidate = graph.joinCandidates.find(item => item.id === button.dataset.join);
     if (!candidate) return;
-    if (candidate.has_alternatives && !window.confirm(`У одного из концов есть альтернативные пары. Добавить только ${candidate.from} ↔ ${candidate.to}?`)) return;
-    if (addManualConnection(candidate.from, candidate.to)) {
-      const used = new Set([candidate.from, candidate.to]);
-      // An open endpoint should not be consumed by two alternative continuations.
-      graph.joinCandidates = graph.joinCandidates.filter(item =>
-        item.id !== candidate.id && !used.has(item.from) && !used.has(item.to));
-      renderJoinList();
+    const competitors = graph.joinCandidates.filter(item => item.id !== candidate.id &&
+      [candidate.from, candidate.to].some(nodeId => item.from === nodeId || item.to === nodeId));
+    const competitorText = competitors.map(item => `${item.id}: ${item.from} ↔ ${item.to} (${Number(item.score || 0).toFixed(1)}/100)`).join('\n');
+    const message = candidate.has_alternatives
+      ? `Подтвердить только ${candidate.id}: ${candidate.from} ↔ ${candidate.to}?\n\nКонкурирующие варианты:\n${competitorText || 'см. список'}\n\nОценка ${Number(candidate.score || 0).toFixed(1)}/100 — это рейтинг, не вероятность. Решение сохранится в задании, а альтернативы с этими узлами будут сняты.`
+      : `Подтвердить соединение ${candidate.from} ↔ ${candidate.to} (${candidate.distance} px) и сохранить его в задании?`;
+    if (!window.confirm(message)) return;
+    button.disabled = true;
+    try {
+      await persistManualConnection(candidate.from, candidate.to, { candidate });
+      setAlert('');
+    } catch (error) {
+      setAlert(`Не удалось сохранить ${candidate.id}: ${error.message}`);
+      setState('ОШИБКА СОХРАНЕНИЯ', 'error');
+      button.disabled = false;
     }
   }));
 }
+
 function renderTextList() {
   const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
@@ -788,6 +939,35 @@ window.addEventListener('unhandledrejection', event => {
   console.error(event.reason);
   setAlert(`Ошибка операции: ${event.reason?.message || event.reason || 'неизвестная ошибка'}`);
 });
+async function restoreSavedJobFromUrl() {
+  const jobId = new URLSearchParams(window.location.search).get('job');
+  if (!jobId) return;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    setAlert('В адресе указан некорректный ID задания.');
+    return;
+  }
+  setAlert('');
+  setState('ВОССТАНОВЛЕНИЕ ЗАДАНИЯ', 'busy');
+  try {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/graph`, { cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    graph = normalizeGraph(data);
+    activeJoinId = null;
+    activeJoinGroupNode = null;
+    showAllSegments = false;
+    connectMode = false;
+    firstNode = null;
+    analyzeBtn.disabled = true;
+    showResult();
+    $('previewMeta').textContent = `Сохранённое задание восстановлено · ${graph.confirmedConnections.length} подтверждённых соединений`;
+    setState('СОХРАНЁННОЕ ЗАДАНИЕ ВОССТАНОВЛЕНО');
+  } catch (error) {
+    setAlert(`Не удалось восстановить задание: ${error.message}`);
+    setState('ОШИБКА ВОССТАНОВЛЕНИЯ', 'error');
+  }
+}
+
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
   const ollama = health.ollama || {};
   if (!ollama.reachable) {
@@ -803,3 +983,5 @@ fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).th
 }).catch(() => {
   $('serverState').textContent = 'Проверить сервер';
 });
+
+restoreSavedJobFromUrl();

@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.3.5</title>
+  <title>CAD Reconstruction Engine · 4.3.6</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.5">
-  <script src="/app.js?v=4.3.5" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.6">
+  <script src="/app.js?v=4.3.6" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.3.5</b></div>
+      <div class="version-pill">ENGINE <b>4.3.6</b></div>
     </div>
   </header>
 
@@ -87,7 +87,7 @@
 
         <details class="card inspector-card" id="nodePanel" hidden>
           <summary class="details-heading"><div><div class="step-label"><span>03B</span> ТОПОЛОГИЯ</div><h2>Узлы и соединения</h2></div><span class="count-pill" id="nodeCount">0</span></summary>
-          <p class="helper">Включи узлы на схеме, чтобы перетаскивать их. Ручное соединение не означает, что пересечение было соединено изначально.</p>
+          <p class="helper">Включи узлы на схеме, чтобы перетаскивать их. Сравни конкурирующие пары кнопкой «Сравнить», подсвети кандидат на исходном чертеже и подтверди только проверенное соединение. Подтверждения сохраняются в задании и восстанавливаются по URL.</p>
           <button class="secondary-button" id="connectMode" type="button">＋ Соединить два узла</button>
           <div id="connectHelp" class="connect-help" hidden>Выбери первый узел, затем второй. Нажми «Отмена», чтобы выйти.</div>
           <div class="scrolllist compact-list" id="nodeList"></div>
@@ -138,6 +138,6 @@
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.5</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.6</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>

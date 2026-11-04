@@ -22,7 +22,10 @@ ENV PATH="/opt/venv/bin:${PATH}"
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY --chown=node:node . .
-RUN npm run check && chown -R node:node /app
+RUN npm run check \
+    && chown -R node:node /app \
+    && mkdir -p /data/cad-reconstruction-jobs \
+    && chown -R node:node /data
 
 USER node
 EXPOSE 3000

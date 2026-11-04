@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 
@@ -19,6 +19,7 @@ const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
 const configuredPythonTimeout = Number(process.env.PYTHON_JOB_TIMEOUT_MS || 2_700_000);
 const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout) ? Math.max(60_000, configuredPythonTimeout) : 2_700_000;
 const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
+const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 await mkdir(DATA, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
@@ -180,6 +181,156 @@ const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 18 * 1024 * 1024, 
   }
 });
 
+function attachJobUrls(jobId, graph, sourceName = null) {
+  graph.jobId = jobId;
+  graph.progressUrl = `/jobs/${jobId}/progress.log`;
+  if (sourceName) graph.sourceUrl = `/jobs/${jobId}/${sourceName}`;
+  graph.overlayUrl = `/jobs/${jobId}/overlay.png`;
+  graph.primaryOverlayUrl = `/jobs/${jobId}/primary-overlay.png`;
+  graph.textMaskUrl = `/jobs/${jobId}/text-region-mask.png`;
+  graph.geometryInkUrl = `/jobs/${jobId}/ink-without-text-boxes.png`;
+  graph.handwrittenTextBlocksUrl = `/jobs/${jobId}/handwritten-text-blocks.png`;
+  graph.inkUrl = `/jobs/${jobId}/ink-mask.png`;
+  graph.svgUrl = `/jobs/${jobId}/clean.svg`;
+  graph.dxfUrl = `/jobs/${jobId}/drawing.dxf`;
+  graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
+  graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
+  return graph;
+}
+
+function nextManualEdgeId(edges) {
+  const maxId = (Array.isArray(edges) ? edges : []).reduce((max, edge) => {
+    const match = /^E(\d+)$/i.exec(String(edge?.id || ''));
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `E${maxId + 1}`;
+}
+
+app.get('/api/jobs/:jobId/graph', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+  const jobDir = path.join(DATA, jobId);
+  try {
+    const [raw, entries] = await Promise.all([
+      readFile(path.join(jobDir, 'graph.json'), 'utf8'),
+      readdir(jobDir)
+    ]);
+    const graph = JSON.parse(raw);
+    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    if (!sourceName) return res.status(404).json({ error: 'Исходное изображение задания не найдено.' });
+    return res.json(attachJobUrls(jobId, graph, sourceName));
+  } catch (error) {
+    const status = error?.code === 'ENOENT' ? 404 : 500;
+    return res.status(status).json({ error: status === 404 ? 'Сохранённое задание не найдено или уже удалено.' : 'Не удалось прочитать граф задания.' });
+  }
+});
+
+app.post('/api/jobs/:jobId/connections', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+
+  const from = String(req.body?.from || '').trim();
+  const to = String(req.body?.to || '').trim();
+  const candidateId = req.body?.candidateId == null ? null : String(req.body.candidateId).trim();
+  const confirmAlternative = req.body?.confirmAlternative === true;
+  if (!from || !to || from === to || from.length > 64 || to.length > 64) {
+    return res.status(400).json({ error: 'Укажите два разных узла графа.' });
+  }
+
+  const jobDir = path.join(DATA, jobId);
+  const graphPath = path.join(jobDir, 'graph.json');
+  try {
+    const graph = JSON.parse(await readFile(graphPath, 'utf8'));
+    graph.nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+    graph.edges = Array.isArray(graph.edges) ? graph.edges : [];
+    graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
+    graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
+
+    const nodeById = new Map(graph.nodes.map(node => [String(node.id), node]));
+    const a = nodeById.get(from);
+    const b = nodeById.get(to);
+    if (!a || !b) return res.status(404).json({ error: 'Один из узлов больше не существует в сохранённом графе.' });
+
+    let candidate = null;
+    if (candidateId) {
+      candidate = graph.joinCandidates.find(item => {
+        const samePair = (String(item.from) === from && String(item.to) === to) ||
+          (String(item.from) === to && String(item.to) === from);
+        return String(item.id) === candidateId && samePair;
+      });
+      if (!candidate) return res.status(409).json({ error: 'Кандидат устарел или уже был использован. Обновите сохранённое задание.' });
+      if (candidate.has_alternatives && !confirmAlternative) {
+        return res.status(409).json({ error: 'У узла есть конкурирующие варианты. Требуется явное подтверждение выбранной пары.' });
+      }
+      if (Number(a.degree) !== 1 || Number(b.degree) !== 1) {
+        return res.status(409).json({ error: 'Один из концов уже соединён. Обновите список кандидатов.' });
+      }
+    }
+
+    const duplicate = graph.edges.some(edge =>
+      (String(edge.from) === from && String(edge.to) === to) ||
+      (String(edge.from) === to && String(edge.to) === from)
+    );
+    if (duplicate) return res.status(409).json({ error: 'Такое соединение уже существует.' });
+
+    const edgeId = nextManualEdgeId(graph.edges);
+    const confirmedAt = new Date().toISOString();
+    graph.edges.push({
+      id: edgeId,
+      from,
+      to,
+      source: 'manual',
+      confidence: 1,
+      geometry: [[Number(a.x), Number(a.y)], [Number(b.x), Number(b.y)]],
+      visible: true,
+      review: false,
+      detector: 'MANUAL',
+      component_role: 'line_structure',
+      component_id: 'MANUAL',
+      manual_reason: candidate ? 'user-confirmed-join-candidate' : 'user-created-connection',
+      candidate_id: candidate?.id || null,
+      candidate_score: candidate?.score ?? null,
+      confirmed_at: confirmedAt
+    });
+    a.degree = Number(a.degree || 0) + 1;
+    b.degree = Number(b.degree || 0) + 1;
+    a.review = false;
+    b.review = false;
+
+    const record = {
+      id: `MC${graph.confirmedConnections.length + 1}`,
+      edgeId,
+      candidateId: candidate?.id || null,
+      from,
+      to,
+      score: candidate?.score ?? null,
+      confirmedAt,
+      confirmation: 'explicit-user-action'
+    };
+    graph.confirmedConnections.push(record);
+    const consumed = new Set([from, to]);
+    graph.joinCandidates = graph.joinCandidates.filter(item =>
+      !consumed.has(String(item.from)) && !consumed.has(String(item.to))
+    );
+    graph.summary = graph.summary && typeof graph.summary === 'object' ? graph.summary : {};
+    graph.summary.edges = graph.edges.length;
+    graph.summary.confirmed_connections = graph.confirmedConnections.length;
+
+    const tempPath = `${graphPath}.tmp-${randomUUID()}`;
+    await writeFile(tempPath, JSON.stringify(graph, null, 2), 'utf8');
+    await rename(tempPath, graphPath);
+
+    const entries = await readdir(jobDir);
+    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    console.log(`[JOB ${jobId.slice(0, 8)}] Confirmed connection ${record.id}: ${from} <-> ${to}; edge=${edgeId}; candidate=${candidate?.id || 'manual'}`);
+    return res.json({ ok: true, connection: record, graph: attachJobUrls(jobId, graph, sourceName) });
+  } catch (error) {
+    const status = error?.code === 'ENOENT' ? 404 : 500;
+    console.error(`[JOB ${jobId.slice(0, 8)}] Cannot save connection:`, error);
+    return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить соединение.' });
+  }
+});
+
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b';
   const tagsUrl = process.env.OLLAMA_TAGS_URL || (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
@@ -201,7 +352,7 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.5', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
+  res.json({ ok: true, version: '4.3.6', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
     geometry: 'Confidence-filtered OCR mask plus OpenCV topology paths and source-ink-validated Qwen traces form PIPE_MAIN; endpoint continuation candidates include ambiguous/short fragments for manual review only; uncertain text stays in TEXT_REVIEW',
     ocr: 'Qwen3-VL 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
@@ -239,17 +390,8 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
     );
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
-    graph.jobId = id;
-    graph.progressUrl = `/jobs/${id}/progress.log`;
-    graph.sourceUrl = `/jobs/${id}/${path.basename(sourcePath)}`;
-    graph.overlayUrl = `/jobs/${id}/overlay.png`;
-    graph.primaryOverlayUrl = `/jobs/${id}/primary-overlay.png`;
-    graph.textMaskUrl = `/jobs/${id}/text-region-mask.png`;
-    graph.geometryInkUrl = `/jobs/${id}/ink-without-text-boxes.png`;
-    graph.handwrittenTextBlocksUrl = `/jobs/${id}/handwritten-text-blocks.png`;
-    graph.inkUrl = `/jobs/${id}/ink-mask.png`;
-    graph.svgUrl = `/jobs/${id}/clean.svg`;
-    graph.dxfUrl = `/jobs/${id}/drawing.dxf`;
+    attachJobUrls(id, graph, path.basename(sourcePath));
+    graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
     console.log(`[ENGINE ${id.slice(0,8)}] segments=${graph.summary.segment_candidates} nodes=${graph.summary.nodes} edges=${graph.summary.edges} crossings=${graph.summary.crossings_to_review}`);
     const oq = graph.ocr?.qwen || {};
     const ot = graph.ocr?.tesseract || {};
@@ -278,6 +420,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.5: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.6: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
 });
