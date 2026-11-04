@@ -599,7 +599,7 @@ PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
         'routes': {
-            'type': 'array', 'maxItems': 48,
+            'type': 'array', 'maxItems': 64,
             'items': {
                 'type': 'object',
                 'properties': {
@@ -762,7 +762,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
-        grid = max(1, min(3, int(os.getenv('QWEN_OCR_TILE_GRID', '2'))))
+        grid = max(1, min(3, int(os.getenv('QWEN_OCR_TILE_GRID', '3'))))
         if original_width < 720 or original_height < 520:
             grid = 1
         tile_w = max(1, int(round(original_width / grid)))
@@ -984,7 +984,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
-        grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '1'))))
+        grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
         with Image.open(image_path) as source:
@@ -1027,7 +1027,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'действительно нет ни одного длинного линейного участка трубы. '
                     f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху. '
                     'Каждый элемент routes — ОДИН прямой отрезок, points содержит ровно две точки [[x1,y1],[x2,y2]]. '
-                    'Верни массив routes, а не одну общую полилинию. Максимум 48 отрезков. '
+                    'Верни массив routes, а не одну общую полилинию. Максимум 64 отрезка. '
                     'Пример: {"routes":[{"id":"S1","points":[[20,80],[320,80]],"confidence":70}]}. '
                     'Верни только JSON без текста и без объяснений.'
                 )
@@ -1052,11 +1052,11 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                         raw_routes = [{'id': 'P1', 'points': raw_routes}]
                     raw_count += len(raw_routes)
                     diag['raw_routes'] = len(raw_routes)
-                    diag['possibly_capped_at_schema_limit'] = len(raw_routes) >= 48
+                    diag['possibly_capped_at_schema_limit'] = len(raw_routes) >= 64
                     accepted_before = len(result)
                     coordinate_scale = crop_scale * resize_scale
                     core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
-                    for raw_index, raw in enumerate(raw_routes[:48], 1):
+                    for raw_index, raw in enumerate(raw_routes[:64], 1):
                         if isinstance(raw, list):
                             raw = {'points': raw}
                         if not isinstance(raw, dict):
@@ -1490,24 +1490,41 @@ def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[s
 
 
 def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Collect OCR boxes as *candidate text masks*, regardless of spelling confidence.
+    """Build a conservative geometry mask from source-aware OCR evidence.
 
-    Confidence controls whether a label is exported as CAD TEXT, not whether the
-    handwritten strokes are allowed to become pipe geometry. A low-confidence
-    OCR box still masks its glyphs; a verified straight line may pass through it.
+    The previous policy masked every Tesseract candidate, including low-score
+    noise. On the user's saved job that removed 64.1% of all source ink and cut
+    the primary graph from 531 edges (verified-only comparison) to 172. Keep
+    dense note-row boxes because they were found by a dedicated block detector;
+    keep Qwen tile boxes from confidence 25 upward; use Tesseract only from 55
+    upward. Low-confidence OCR remains available in TEXT_REVIEW but cannot erase
+    linework merely because Tesseract proposed a rectangle.
     """
-    boxes = []
+    boxes: list[dict[str, Any]] = []
     for item in annotations or []:
         box = item.get('bbox')
-        source = str(item.get('source') or '')
-        is_ocr_record = source in {'qwen3-vl', 'qwen3-vl-block', 'tesseract'}
-        # In this pipeline the annotations list itself is OCR-owned; older
-        # serialized jobs may omit the source field, so a valid bbox is enough.
-        if not (is_ocr_record or item.get('geometry_exclude') or item.get('verified') or item.get('include') or isinstance(box, dict)):
+        if not isinstance(box, dict) or not all(key in box for key in ('x', 'y', 'w', 'h')):
             continue
-        if isinstance(box, dict) and all(key in box for key in ('x', 'y', 'w', 'h')):
-            if float(box.get('w', 0) or 0) >= 2 and float(box.get('h', 0) or 0) >= 2:
-                boxes.append(box)
+        try:
+            width = float(box.get('w', 0) or 0)
+            height = float(box.get('h', 0) or 0)
+            confidence = float(item.get('confidence', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if width < 2 or height < 2:
+            continue
+        source = str(item.get('source') or '')
+        if source == 'qwen3-vl-block':
+            eligible = True  # Dedicated numbered-note row: preserve its ink as text.
+        elif source == 'qwen3-vl':
+            eligible = bool(item.get('verified')) or confidence >= 25.0
+        elif source == 'tesseract':
+            eligible = bool(item.get('verified')) or confidence >= 55.0
+        else:
+            # Backward compatibility for explicitly supplied/manual masks.
+            eligible = bool(item.get('geometry_exclude') or item.get('verified') or confidence >= 55.0)
+        if eligible:
+            boxes.append(box)
     return boxes
 
 
@@ -2830,6 +2847,110 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     d += ['0','ENDSEC','0','EOF']
     return '\n'.join(d)+'\n'
 
+def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                           min_gap: float = 7.0, max_gap: float = 28.0) -> list[dict[str, Any]]:
+    """Suggest only genuine end-to-end continuations, never self/overlap joins.
+
+    A candidate must use two different edges in different graph components;
+    both inward tangents must point away from the gap; the gap must be on-axis;
+    and neither endpoint may sit inside the other segment. This prevents the
+    former J2/J3 overlap suggestions and the J4 same-edge self-join.
+    """
+    node_by_id = {str(node.get('id')): node for node in nodes}
+    edge_at: dict[str, dict[str, Any]] = {}
+    for edge in edges:
+        if edge.get('component_role') != 'line_structure':
+            continue
+        for node_id in (str(edge.get('from', '')), str(edge.get('to', ''))):
+            if node_id:
+                edge_at.setdefault(node_id, edge)
+
+    def endpoint_geometry(node_id: str, edge: dict[str, Any]):
+        geometry = edge.get('geometry') or []
+        if len(geometry) < 2:
+            return None
+        if str(edge.get('from')) == node_id:
+            endpoint, inner = geometry[0], geometry[1]
+        elif str(edge.get('to')) == node_id:
+            endpoint, inner = geometry[-1], geometry[-2]
+        else:
+            return None
+        vector = np.array([float(inner[0]) - float(endpoint[0]),
+                           float(inner[1]) - float(endpoint[1])], dtype=float)
+        norm = float(np.linalg.norm(vector))
+        if norm < 1.0:
+            return None
+        return np.array(endpoint, dtype=float), vector / norm, geometry
+
+    def point_segment(point: np.ndarray, geometry: list[list[float]]):
+        a = np.array(geometry[0], dtype=float)
+        b = np.array(geometry[-1], dtype=float)
+        delta = b - a
+        length_sq = float(np.dot(delta, delta))
+        if length_sq < 1e-8:
+            return 0.0, float(np.linalg.norm(point - a))
+        t = float(np.dot(point - a, delta) / length_sq)
+        projection = a + max(0.0, min(1.0, t)) * delta
+        return t, float(np.linalg.norm(point - projection))
+
+    open_nodes = [node for node in nodes
+                  if int(node.get('degree', 0)) == 1 and str(node.get('id')) in edge_at]
+    candidates: list[dict[str, Any]] = []
+    for index, node_a in enumerate(open_nodes):
+        id_a = str(node_a['id'])
+        edge_a = edge_at[id_a]
+        geo_a = endpoint_geometry(id_a, edge_a)
+        if geo_a is None or math.dist(*edge_a.get('geometry', [[0, 0], [0, 0]])) < 25.0:
+            continue
+        point_a, inward_a, geometry_a = geo_a
+        for node_b in open_nodes[index + 1:]:
+            id_b = str(node_b['id'])
+            edge_b = edge_at[id_b]
+            # A line's two own endpoints can never be a connection candidate.
+            if str(edge_a.get('id')) == str(edge_b.get('id')):
+                continue
+            if edge_a.get('component_id') and edge_a.get('component_id') == edge_b.get('component_id'):
+                continue
+            geo_b = endpoint_geometry(id_b, edge_b)
+            if geo_b is None or math.dist(*edge_b.get('geometry', [[0, 0], [0, 0]])) < 25.0:
+                continue
+            point_b, inward_b, geometry_b = geo_b
+            gap = point_b - point_a
+            distance = float(np.linalg.norm(gap))
+            if distance < min_gap or distance > max_gap:
+                continue
+            gap_unit = gap / distance
+
+            # Do not join an endpoint to the interior of an already detected line.
+            ta, da = point_segment(point_b, geometry_a)
+            tb, db = point_segment(point_a, geometry_b)
+            if (0.04 < ta < 0.96 and da <= 4.0) or (0.04 < tb < 0.96 and db <= 4.0):
+                continue
+
+            # Both segment interiors must face away from the gap, with small lateral offset.
+            dot_a = float(np.dot(inward_a, gap_unit))
+            dot_b = float(np.dot(inward_b, -gap_unit))
+            lateral_a = abs(float(inward_a[0] * gap_unit[1] - inward_a[1] * gap_unit[0])) * distance
+            lateral_b = abs(float(inward_b[0] * gap_unit[1] - inward_b[1] * gap_unit[0])) * distance
+            tangent_dot = float(np.dot(inward_a, inward_b))
+            if dot_a > -0.82 or dot_b > -0.82 or tangent_dot > -0.94:
+                continue
+            if lateral_a > 4.5 or lateral_b > 4.5:
+                continue
+
+            candidates.append({
+                'id': f'J{len(candidates) + 1}', 'from': id_a, 'to': id_b,
+                'from_edge': str(edge_a.get('id')), 'to_edge': str(edge_b.get('id')),
+                'distance': round(distance, 1),
+                'lateral_offset_px': round(max(lateral_a, lateral_b), 1),
+                'status': 'needs_review',
+                'message': 'Разные края почти соосных линий — подтвердить по чернилам перед соединением',
+            })
+            if len(candidates) >= 200:
+                return candidates
+    return candidates
+
+
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     Path(out_dir).mkdir(parents=True,exist_ok=True)
     bgr=load_image(input_path); h,w=bgr.shape[:2]
@@ -2918,33 +3039,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
     Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes, primary_semantic_routes=primary_semantic_routes),encoding='utf-8')
-    # Open-end gap candidates are suggestions only; no geometry is connected automatically.
-    node_map = {n['id']: n for n in nodes}
-    edge_at = {}
-    for e in edges:
-        for nid in (e['from'], e['to']): edge_at.setdefault(nid, e)
-    open_nodes = [n for n in nodes if n['degree'] == 1 and n['id'] in edge_at]
-    joins=[]
-    for i, a in enumerate(open_nodes):
-        ea=edge_at[a['id']]
-        if ea.get('component_role') != 'line_structure' or math.dist(*ea['geometry']) < 25: continue
-        ga=ea['geometry']; other_a=ga[-1] if ea['from']==a['id'] else ga[0]
-        va=np.array([other_a[0]-a['x'], other_a[1]-a['y']], dtype=float); na=np.linalg.norm(va)
-        if na<1: continue
-        va/=na
-        for b in open_nodes[i+1:]:
-            eb=edge_at[b['id']]
-            if eb.get('component_role') != 'line_structure' or math.dist(*eb['geometry']) < 25: continue
-            dist=math.hypot(a['x']-b['x'],a['y']-b['y'])
-            if dist<7 or dist>28: continue
-            gb=eb['geometry']; other_b=gb[-1] if eb['from']==b['id'] else gb[0]
-            vb=np.array([other_b[0]-b['x'], other_b[1]-b['y']], dtype=float); nb=np.linalg.norm(vb)
-            if nb<1: continue
-            vb/=nb
-            if float(np.dot(va,vb)) < -0.91:
-                joins.append({"id":f"J{len(joins)+1}","from":a['id'],"to":b['id'],"distance":round(dist,1),"status":"needs_review","message":"Почти соосные окончания — подтвердить вручную"})
-                if len(joins)>=200: break
-        if len(joins)>=200: break
+    # Candidate joins are diagnostic only. The graph's ink-supported endpoint
+    # clustering performs conservative auto-joins; this list must not invent
+    # same-edge, endpoint-to-interior, or laterally displaced connections.
+    joins = _build_join_candidates(nodes, edges)
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":19,

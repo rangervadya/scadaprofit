@@ -1,3 +1,2 @@
-CAD Reconstruction Engine 4.3.2
-
-См. README-RU.md и INSTALL-4.3.2-RU.md. В этой версии OCR плотных нумерованных блоков выполняется построчно, поддерживаются короткие подтверждённые ответвления и исправлена проверка чернильной непрерывности при склейке малых разрывов.
+CAD Reconstruction Engine 4.3.3
+See README-RU.md and INSTALL-4.3.3-RU.md.

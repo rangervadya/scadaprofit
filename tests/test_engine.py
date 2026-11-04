@@ -15,6 +15,13 @@ import processor
 
 
 class GraphTests(unittest.TestCase):
+    def setUp(self):
+        self._grid_patch = patch.dict(os.environ, {'QWEN_PIPE_TILE_GRID': '1'}, clear=False)
+        self._grid_patch.start()
+
+    def tearDown(self):
+        self._grid_patch.stop()
+
     def test_near_endpoints_are_snapped_to_same_node(self):
         segments = [
             {"x1": 10.0, "y1": 10.0, "x2": 40.0, "y2": 10.0, "source": "LSD", "support": .9, "length": 30, "angle": 0},
@@ -161,7 +168,8 @@ class GraphTests(unittest.TestCase):
         annotations = [{"id": "T1", "bbox": {"x": 55, "y": 40, "w": 45, "h": 20}}]
         candidates = processor.extract_segments(gray, ink, annotations)
         self.assertTrue(candidates)
-        self.assertTrue(any(x["ocr_overlap"] > 0 for x in candidates))
+        # An unconfirmed generic box is not part of the geometry mask.
+        self.assertTrue(any(x['length'] > 100 for x in candidates))
         # OCR overlap is metadata and must not subtract the underlying geometry.
         self.assertTrue(any(x["length"] > 100 for x in candidates))
 
@@ -261,8 +269,8 @@ class GraphTests(unittest.TestCase):
         cv2.line(gray, (10, 55), (230, 55), 25, 2, cv2.LINE_AA)
         cv2.line(ink, (10, 55), (230, 55), 255, 2, cv2.LINE_AA)
         annotations = [
-            {"source": "qwen3-vl", "text": "1500", "bbox": {"x": 52, "y": 40, "w": 42, "h": 24}},
-            {"source": "tesseract", "text": "DN50", "bbox": {"x": 112, "y": 40, "w": 46, "h": 24}},
+            {"source": "qwen3-vl", "text": "1500", "confidence": 85, "bbox": {"x": 52, "y": 40, "w": 42, "h": 24}},
+            {"source": "tesseract", "text": "DN50", "confidence": 82, "bbox": {"x": 112, "y": 40, "w": 46, "h": 24}},
         ]
         candidates = processor.extract_segments(gray, ink, annotations)
         self.assertTrue(any(item['length'] > 180 and item['text_crossing'] for item in candidates))
@@ -276,8 +284,8 @@ class GraphTests(unittest.TestCase):
             cv2.line(gray, a, b, 25, 2, cv2.LINE_AA)
             cv2.line(ink, a, b, 255, 2, cv2.LINE_AA)
         annotations = [
-            {"source": "qwen3-vl", "text": "AB", "bbox": {"x": 50, "y": 25, "w": 48, "h": 34}},
-            {"source": "tesseract", "text": "CD", "bbox": {"x": 96, "y": 24, "w": 54, "h": 35}},
+            {"source": "qwen3-vl", "text": "AB", "confidence": 82, "bbox": {"x": 50, "y": 25, "w": 48, "h": 34}},
+            {"source": "tesseract", "text": "CD", "confidence": 80, "bbox": {"x": 96, "y": 24, "w": 54, "h": 35}},
         ]
         candidates = processor.extract_segments(gray, ink, annotations)
         self.assertFalse(any(item.get("ocr_overlap", 0) >= 0.08 for item in candidates))
@@ -675,7 +683,7 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(pipe_kwargs['format_schema']['required'], ['routes'])
                 route_item = pipe_kwargs['format_schema']['properties']['routes']['items']
                 self.assertEqual(route_item['properties']['points']['maxItems'], 2)
-                self.assertEqual(pipe_kwargs['format_schema']['properties']['routes']['maxItems'], 48)
+                self.assertEqual(pipe_kwargs['format_schema']['properties']['routes']['maxItems'], 64)
                 self.assertIn('каждый видимый прямой участок трубы отдельно', call.call_args.args[1])
 
     def test_qwen_call_accepts_schema_and_marks_truncated_generation(self):
@@ -995,3 +1003,135 @@ class Recovery431RegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_low_confidence_tesseract_box_does_not_mask_pipe_geometry(self):
+        boxes = processor._confirmed_text_boxes([
+            {'source': 'tesseract', 'text': 'noise', 'confidence': 34, 'verified': False,
+             'bbox': {'x': 10, 'y': 10, 'w': 30, 'h': 15}},
+            {'source': 'tesseract', 'text': 'DN50', 'confidence': 72, 'verified': True,
+             'bbox': {'x': 50, 'y': 10, 'w': 35, 'h': 15}},
+            {'source': 'qwen3-vl-block', 'text': '?', 'confidence': 0, 'verified': False,
+             'bbox': {'x': 90, 'y': 10, 'w': 50, 'h': 18}},
+            {'source': 'qwen3-vl', 'text': '1500', 'confidence': 31, 'verified': False,
+             'bbox': {'x': 150, 'y': 10, 'w': 32, 'h': 15}},
+        ])
+        self.assertEqual(len(boxes), 3)
+        self.assertNotIn({'x': 10, 'y': 10, 'w': 30, 'h': 15}, boxes)
+
+    def test_join_candidates_reject_same_edge_self_join(self):
+        nodes = [
+            {'id': 'N1', 'x': 10, 'y': 10, 'degree': 1},
+            {'id': 'N2', 'x': 110, 'y': 10, 'degree': 1},
+        ]
+        edges = [{'id': 'E1', 'from': 'N1', 'to': 'N2',
+                  'geometry': [[10, 10], [110, 10]], 'component_id': 'C1',
+                  'component_role': 'line_structure'}]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_reject_endpoint_inside_other_edge(self):
+        nodes = [
+            {'id': 'N1', 'x': 100, 'y': 10, 'degree': 1},
+            {'id': 'N2', 'x': 70, 'y': 11, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 10], [100, 10]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[70, 11], [140, 11]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_require_gap_to_lie_on_both_tangent_axes(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 65, 'y': 65, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 60], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[65, 65], [110, 55]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_keep_true_collinear_gap_for_review(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 62, 'y': 50, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[62, 50], [112, 50]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        result = processor._build_join_candidates(nodes, edges)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['distance'], 12.0)
+        self.assertEqual(result[0]['status'], 'needs_review')
+
+    def test_low_confidence_tesseract_box_does_not_mask_pipe_geometry(self):
+        boxes = processor._confirmed_text_boxes([
+            {'source': 'tesseract', 'text': 'noise', 'confidence': 34, 'verified': False,
+             'bbox': {'x': 10, 'y': 10, 'w': 30, 'h': 15}},
+            {'source': 'tesseract', 'text': 'DN50', 'confidence': 72, 'verified': True,
+             'bbox': {'x': 50, 'y': 10, 'w': 35, 'h': 15}},
+            {'source': 'qwen3-vl-block', 'text': '?', 'confidence': 0, 'verified': False,
+             'bbox': {'x': 90, 'y': 10, 'w': 50, 'h': 18}},
+            {'source': 'qwen3-vl', 'text': '1500', 'confidence': 31, 'verified': False,
+             'bbox': {'x': 150, 'y': 10, 'w': 32, 'h': 15}},
+        ])
+        self.assertEqual(len(boxes), 3)
+        self.assertNotIn({'x': 10, 'y': 10, 'w': 30, 'h': 15}, boxes)
+
+    def test_join_candidates_reject_same_edge_self_join(self):
+        nodes = [
+            {'id': 'N1', 'x': 10, 'y': 10, 'degree': 1},
+            {'id': 'N2', 'x': 110, 'y': 10, 'degree': 1},
+        ]
+        edges = [{'id': 'E1', 'from': 'N1', 'to': 'N2',
+                  'geometry': [[10, 10], [110, 10]], 'component_id': 'C1',
+                  'component_role': 'line_structure'}]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_reject_endpoint_inside_other_edge(self):
+        nodes = [
+            {'id': 'N1', 'x': 100, 'y': 10, 'degree': 1},
+            {'id': 'N2', 'x': 70, 'y': 11, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 10], [100, 10]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[70, 11], [140, 11]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_require_gap_to_lie_on_both_tangent_axes(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 65, 'y': 65, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 60], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[65, 65], [110, 55]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+    def test_join_candidates_keep_true_collinear_gap_for_review(self):
+        nodes = [
+            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 62, 'y': 50, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 50], [50, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure'},
+            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[62, 50], [112, 50]],
+             'component_id': 'C2', 'component_role': 'line_structure'},
+        ]
+        result = processor._build_join_candidates(nodes, edges)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['distance'], 12.0)
+        self.assertEqual(result[0]['status'], 'needs_review')
