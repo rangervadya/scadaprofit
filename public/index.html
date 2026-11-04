@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101d27">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.3.1</title>
+  <title>CAD Reconstruction Engine · 4.3.2</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.1">
-  <script src="/app.js?v=4.3.1" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.2">
+  <script src="/app.js?v=4.3.2" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.3.1</b></div>
+      <div class="version-pill">ENGINE <b>4.3.2</b></div>
     </div>
   </header>
 
@@ -30,7 +30,7 @@
       <div>
         <div class="eyebrow">РУКОПИСНЫЙ ЭСКИЗ → ВЕКТОРНАЯ ОСНОВА</div>
         <h1>Из эскиза — в техническую схему</h1>
-        <p class="intro-copy">OCR отмечает подписи и повторно читает плотные рукописные заметки построчно. OpenCV собирает геометрический граф, а трассы Qwen попадают в основной слой только после проверки по исходным пикселям. Сомнительные надписи и линии остаются на отдельных слоях проверки.</p>
+        <p class="intro-copy">OCR отмечает подписи и читает плотные нумерованные заметки отдельными запросами для каждой строки. OpenCV собирает геометрический граф труб и сохраняет подтверждённые короткие ответвления, а трассы Qwen проверяются по исходным чернилам. Неуверенные надписи и линии остаются на отдельных слоях проверки.</p>
       </div>
       <div class="workflow" aria-label="Этапы обработки">
         <div class="flow-step active"><span>01</span><b>Фото</b></div><div class="flow-line"></div>
@@ -138,6 +138,6 @@
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.1</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.2</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
 </body>
 </html>

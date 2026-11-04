@@ -139,6 +139,186 @@ OCR_BLOCK_RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 
+OCR_ROW_RESPONSE_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'text': {'type': 'string'},
+        'confidence': {'type': 'number'},
+    },
+    'required': ['text', 'confidence'],
+}
+
+
+def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> list[dict[str, int]]:
+    """Locate individual handwritten rows using the numbered left margin.
+
+    A vertical ink projection in the narrow left column finds the circled item
+    markers without requiring a separate OCR result. We use non-maximum
+    suppression to estimate how many rows exist, then fit a regular row pitch
+    to those ink peaks. This is more stable than asking a 4B model to read a
+    dense ten-row note as one image.
+    """
+    try:
+        x, y = int(block['x']), int(block['y'])
+        width, height = int(block['w']), int(block['h'])
+        if width < 90 or height < 65:
+            return []
+        crop = image.crop((max(0, x), max(0, y), min(image.width, x + width), min(image.height, y + height))).convert('RGB')
+        rgb = np.asarray(crop)
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        hue, sat, val = cv2.split(hsv)
+        ink = (((hue >= 82) & (hue <= 155) & (sat >= 18) & (val <= 252)) | (gray < 145)).astype(np.uint8)
+        strip_width = max(18, min(42, int(round(width * 0.12))))
+        projection = ink[:, :strip_width].sum(axis=1).astype(np.float32)
+        smooth_width = max(5, int(round(height * 0.045)) | 1)
+        smooth = np.convolve(projection, np.ones(smooth_width, dtype=np.float32) / smooth_width, mode='same')
+        if float(smooth.max(initial=0.0)) < 1.8:
+            return []
+
+        # Find distinct ink bands in the number column, suppressing multiple
+        # peaks from one hand-drawn circle. Keep 5..18 rows; other note layouts
+        # use the whole-block OCR fallback.
+        local_peaks: list[tuple[float, int]] = []
+        for yy in range(1, height - 1):
+            if smooth[yy] >= smooth[yy - 1] and smooth[yy] >= smooth[yy + 1] and smooth[yy] >= 2.0:
+                local_peaks.append((float(smooth[yy]), yy))
+        min_spacing = max(9, int(round(height * 0.055)))
+        selected_peaks: list[tuple[float, int]] = []
+        for score, yy in sorted(local_peaks, reverse=True):
+            if all(abs(yy - old_y) >= min_spacing for _old_score, old_y in selected_peaks):
+                selected_peaks.append((score, yy))
+        selected_peaks.sort(key=lambda item: item[1])
+        if not 5 <= len(selected_peaks) <= 18:
+            return []
+
+        row_count = len(selected_peaks)
+        target_pitch = height / float(row_count + 1)
+        best = None
+        min_pitch = max(9.5, target_pitch * 0.78)
+        max_pitch = min(30.0, target_pitch * 1.24)
+        for pitch in np.linspace(min_pitch, max_pitch, 85):
+            start_min = max(1.0, pitch * 0.32)
+            start_max = min(pitch * 1.55, height / max(1, row_count))
+            for row_start in np.linspace(start_min, start_max, 55):
+                centers = [row_start + i * pitch for i in range(row_count)]
+                if centers[-1] >= height - 1.0:
+                    continue
+                score = 0.0
+                for center in centers:
+                    cy = int(round(center))
+                    lo, hi = max(0, cy - 2), min(height, cy + 3)
+                    score += float(np.max(smooth[lo:hi])) if hi > lo else 0.0
+                score -= abs(float(pitch) - target_pitch) * row_count * 0.10
+                if best is None or score > best[0]:
+                    best = (score, float(pitch), float(row_start), centers)
+        if best is None:
+            return []
+        _score, pitch, _start, centers = best
+        peak_floor = max(1.6, float(np.percentile(smooth, 72)) * 0.26)
+        if sum(float(np.max(smooth[max(0, int(c)-2):min(height, int(c)+3)])) >= peak_floor for c in centers) < max(4, int(row_count * 0.60)):
+            return []
+
+        rows = []
+        pad = max(1, int(round(pitch * 0.06)))
+        for index, center in enumerate(centers):
+            band_top = max(0.0, center - pitch / 2.0) if index == 0 else (centers[index - 1] + center) / 2.0
+            band_bottom = min(float(height), center + pitch / 2.0) if index == row_count - 1 else (center + centers[index + 1]) / 2.0
+            top = max(0, int(math.floor(band_top - pad)))
+            bottom = min(height, int(math.ceil(band_bottom + pad)))
+            if bottom - top < 9:
+                continue
+            rows.append({'x': x, 'y': y + top, 'w': width, 'h': bottom - top,
+                         'row': index + 1, 'center_y': round(y + center, 1),
+                         'pitch': round(pitch, 1), 'ink_peak': round(float(np.max(smooth[max(0, int(center)-2):min(height, int(center)+3)])), 2)})
+        return rows if len(rows) >= 5 else []
+    except Exception:
+        return []
+
+
+def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[dict[str, int]], *,
+                          url: str, model: str, timeout: float, max_edge: int,
+                          max_tokens: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Transcribe each detected numbered note row in a separate small Qwen request."""
+    results: list[dict[str, Any]] = []
+    row_diags: list[dict[str, Any]] = []
+    for row in rows:
+        left = max(0, int(row['x']) - 2)
+        top = max(0, int(row['y']))
+        right = min(image.width, int(row['x'] + row['w']) + 4)
+        bottom = min(image.height, int(row['y'] + row['h']))
+        crop = image.crop((left, top, right, bottom)).convert('RGB')
+        # Enlarge thin handwriting to a useful visual height before Ollama's
+        # max-edge resize; keep original colour to retain blue-pen contrast.
+        scale = min(4.0, max(2.5, 84.0 / max(1.0, crop.height)))
+        crop = crop.resize((max(1, int(round(crop.width * scale))),
+                            max(1, int(round(crop.height * scale)))), Image.Resampling.LANCZOS)
+        diag: dict[str, Any] = {'row': row['row'], 'center_y': row['center_y'],
+                                'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+                                'input_size': list(crop.size)}
+        sent_size = crop.size
+        # Share the OCR request budget across line calls instead of allowing
+        # ten serial retries to each consume the full 180-second timeout.
+        row_timeout = max(8.0, min(25.0, float(timeout) / max(1, len(rows))))
+        prompt = (
+            'Это ОДНА строка рукописного нумерованного списка на инженерной схеме. '
+            'Выполни точное OCR только этой строки. Прочитай слева направо. '
+            'Сохрани номер в кружке/слева, все кириллические и латинские буквы, цифры, '
+            'знаки +, скобки и код в конце без исправления и без перевода. '
+            'Не описывай линии, стрелки и символы. Не добавляй слова, которых не видно. '
+            'Если часть неразборчива, оставь читаемые фрагменты и поставь [?] только на месте '
+            'нечитаемого слова/кода. Если вся строка не читается, text="?". '
+            'Верни строго JSON: {"text":"1) буквальный текст (0405)","confidence":65}. '
+            'confidence — число 0..100, не завышай уверенность.'
+        )
+        try:
+            parsed, _resize_scale, sent_size = _qwen_call(
+                crop, prompt, url=url, model=model, timeout=row_timeout,
+                max_edge=max_edge, num_predict=max(128, min(220, int(max_tokens))),
+                diagnostics=diag, format_schema=OCR_ROW_RESPONSE_SCHEMA
+            )
+            value = parsed.get('text', '')
+            if not value and isinstance(parsed.get('annotations'), list) and parsed['annotations']:
+                value = parsed['annotations'][0].get('text', '')
+            text = re.sub(r'\s+', ' ', str(value or '')).strip() or '?'
+            try:
+                confidence = float(parsed.get('confidence', 0) or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if 0 <= confidence <= 1:
+                confidence *= 100.0
+            confidence = max(0.0, min(100.0, confidence))
+            alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+            verified = confidence >= 58 and alnum and text != '?'
+            results.append({
+                'id': f'QBR{row["row"]}', 'text': text,
+                'confidence': round(confidence, 1),
+                'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+                'verified': verified, 'include': verified,
+                'geometry_exclude': True, 'source': 'qwen3-vl-block',
+                'block_line': True, 'row_index': row['row'],
+            })
+            diag['text_preview'] = text[:100]
+            diag['confidence'] = round(confidence, 1)
+            diag['accepted'] = bool(text != '?' and alnum)
+        except Exception as error:
+            diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
+            # Keep a full-row review box even when the model timed out or
+            # returned malformed JSON, so the handwriting is not treated as pipe.
+            results.append({
+                'id': f'QBR{row["row"]}', 'text': '?', 'confidence': 0.0,
+                'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+                'verified': False, 'include': False, 'geometry_exclude': True,
+                'source': 'qwen3-vl-block', 'block_line': True,
+                'row_index': row['row'],
+            })
+            diag['confidence'] = 0.0
+            diag['accepted'] = False
+        diag['sent_size'] = list(sent_size)
+        row_diags.append(diag)
+    return results, {'rows_detected': len(rows), 'rows_returned': len(results), 'row_diagnostics': row_diags}
+
+
 def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, height: int,
                                        max_blocks: int = 2,
                                        image: Image.Image | None = None) -> list[dict[str, Any]]:
@@ -334,6 +514,19 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
         crop = original.crop((left, top, right, bottom))
         diag: dict[str, Any] = {'block': block_index, 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
                                 'seed_boxes': block['source_boxes'], 'detection_source': block.get('detection_source'), 'row_peaks': block.get('row_peaks', 0)}
+        row_bands = _detect_handwritten_row_bands(original, block)
+        if len(row_bands) >= 5:
+            row_results, row_summary = _run_numbered_row_ocr(
+                original, block, row_bands, url=url, model=model, timeout=timeout,
+                max_edge=max_edge, max_tokens=max_tokens
+            )
+            results.extend(row_results)
+            diag.update(row_summary)
+            diag['strategy'] = 'numbered-left-margin-row-crops'
+            diag['accepted_lines'] = len(row_results)
+            diag['verified_lines'] = sum(1 for item in row_results if item.get('verified'))
+            diagnostics.append(diag)
+            continue
         prompt = (
             'Это крупный фрагмент рукописной технической схемы с плотной текстовой заметкой или нумерованным списком. '
             'Выполни OCR ИМЕННО текста, не геометрии. Прочитай каждую строку целиком слева направо и сверху вниз. '
@@ -396,6 +589,7 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
                     'block_line': True,
                 })
             diag['accepted_lines'] = len(results) - results_before_block
+            diag['strategy'] = 'whole-block-fallback'
         except Exception as error:
             diag['error'] = str(error).strip()[:180]
         diagnostics.append(diag)
@@ -1364,7 +1558,9 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
             if length >= min_hough_len:
                 raw.append((x1, y1, x2, y2, 'HOUGH', length))
 
-    ink_dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
+    # A 5x5 halo tolerates centreline offsets and faint pen strokes. Text
+    # regions are still protected by the expanded OCR mask and bilateral test.
+    ink_dilated = cv2.dilate(ink, np.ones((5, 5), np.uint8), iterations=1)
     text_mask = _text_region_mask((h, w), annotations)
     candidates: list[dict[str, Any]] = []
     for x1, y1, x2, y2, source, length in raw:
@@ -1378,7 +1574,7 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
             continue
 
         support = _sample_line_support(ink_dilated, x1, y1, x2, y2)
-        if support < 0.24:
+        if support < 0.15:
             continue
         candidates.append({
             'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'source': source,
@@ -1405,7 +1601,8 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
     kept.sort(key=lambda item: item['length'], reverse=True)
     return kept[:2400]
 
-def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
+def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
+                      ink: np.ndarray | None = None, text_mask: np.ndarray | None = None):
     """Build a route graph, snap close ends and bridge only strict collinear gaps.
 
     Intersections in the middle of strokes are never unioned. A small gap is
@@ -1451,7 +1648,8 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
         buckets.setdefault(key, []).append(index)
 
     # Then join tiny broken line ends only if there is strong collinear evidence.
-    gap_radius = max(radius + 1.0, min(12.0, radius * 2.5))
+    gap_radius = max(radius + 1.0, min(19.0 if ink is not None else 12.0, radius * (4.2 if ink is not None else 2.5)))
+    ink_for_gap = cv2.dilate(ink, np.ones((5, 5), np.uint8), iterations=1) if ink is not None else None
     gap_cell = max(1, int(math.ceil(gap_radius)))
     gap_buckets: dict[tuple[int, int], list[int]] = {}
     auto_gap_pairs: list[tuple[int, int]] = []
@@ -1459,8 +1657,15 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
     def inward_vector(endpoint_index: int) -> np.ndarray | None:
         seg_index, side, _x, _y = endpoints[endpoint_index]
         seg = segments[seg_index]
-        if seg.get('text_crossing') or float(seg.get('ocr_overlap', 0.0)) >= 0.12:
+        if seg.get('text_crossing') and ink_for_gap is None:
             return None
+        if float(seg.get('ocr_overlap', 0.0)) >= 0.35:
+            return None
+        if ink_for_gap is not None:
+            support = _sample_line_support(ink_for_gap, float(seg['x1']), float(seg['y1']),
+                                           float(seg['x2']), float(seg['y2']))
+            if support < 0.20:
+                return None
         a = np.array([float(seg['x1']), float(seg['y1'])], dtype=float)
         b = np.array([float(seg['x2']), float(seg['y2'])], dtype=float)
         vector = (b - a) if side == 0 else (a - b)
@@ -1483,6 +1688,29 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
                         distance = math.hypot(x - ox, y - oy)
                         if distance <= radius or distance > gap_radius:
                             continue
+                        if ink_for_gap is not None:
+                            # Test the actual undilated pen pixels inside the gap. Using the
+                            # dilated mask here lets the two segment endpoints
+                            # overlap and falsely looks like continuous ink.
+                            gap_distance = math.hypot(ox - x, oy - y)
+                            gap_margin = min(3.0, gap_distance * 0.22)
+                            gap_dx = (ox - x) / max(gap_distance, 1e-6)
+                            gap_dy = (oy - y) / max(gap_distance, 1e-6)
+                            # Sample only the inner gap; endpoint caps alone
+                            # must never prove a missing pipe connection.
+                            gap_support = _sample_line_support(
+                                ink,
+                                x + gap_dx * gap_margin,
+                                y + gap_dy * gap_margin,
+                                ox - gap_dx * gap_margin,
+                                oy - gap_dy * gap_margin,
+                            )
+                            if gap_support < 0.24:
+                                continue
+                            if text_mask is not None:
+                                gap_overlap, gap_through = _segment_text_mask_metrics((x, y, ox, oy), text_mask, ink_for_gap)
+                                if gap_overlap >= 0.08 and not gap_through:
+                                    continue
                         vb = inward_vector(other)
                         if vb is None:
                             continue
@@ -1648,11 +1876,19 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
         # edges. Accept a modestly connected route when its geometry is
         # elongated, moderately sparse, and not inside OCR regions.
         connected_line_candidate = (
-            len(comp_edges) >= 2 and extent >= 42.0 and total >= 48.0
-            and average_length >= 9.0 and max_degree <= 5
-            and edge_density <= 4.8 and turn_density <= 6.0
-            and unexplained_ocr_overlap < 0.10
-            and text_crossing_ratio < 0.22
+            len(comp_edges) >= 2 and extent >= 34.0 and total >= 38.0
+            and average_length >= 7.0 and max_degree <= 5
+            and edge_density <= 5.2 and turn_density <= 7.0
+            and unexplained_ocr_overlap < 0.14
+            and text_crossing_ratio < 0.28
+        )
+        elbow_route_candidate = (
+            len(comp_edges) >= 3 and extent >= 26.0 and total >= 42.0
+            and average_length >= 7.0 and max_degree <= 5
+            and branch_nodes <= 4 and edge_density <= 5.4
+            and turn_density <= 7.2
+            and unexplained_ocr_overlap < 0.12
+            and text_crossing_ratio < 0.24
         )
         text_like = (
             unexplained_ocr_overlap >= 0.16
@@ -1673,7 +1909,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
         elif dense_symbol_cluster:
             # Keep dense handwritten/symbol groups out of the clean pipe layer.
             role = 'ambiguous'
-        elif coherent_route or branch_route or connected_line_candidate:
+        elif coherent_route or branch_route or connected_line_candidate or elbow_route_candidate:
             role = 'line_structure'
         else:
             role = 'ambiguous'
@@ -1695,6 +1931,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5):
             'elongation': round(elongation, 2),
             'coherent_route': coherent_route, 'branch_route': branch_route,
             'connected_line_candidate': connected_line_candidate,
+            'elbow_route_candidate': elbow_route_candidate,
             'text_crossing_suspect': text_crossing_suspect,
         })
 
@@ -1928,10 +2165,10 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                     if na > 0 and nb > 0 and abs(float(np.dot(va/na, vb/nb))) < 0.90:
                         path_turns += 1
             ambiguous_route_candidate = (
-                len(path_edges) >= 2 and total >= max(30.0, float(min_dimension) * 0.034)
-                and path_extent >= max(24.0, float(min_dimension) * 0.026)
-                and path_support >= 0.38 and path_overlap < 0.12
-                and path_turns <= 5 and max(start_degree, end_degree) <= 5
+                len(path_edges) >= 2 and total >= max(24.0, float(min_dimension) * 0.027)
+                and path_extent >= max(18.0, float(min_dimension) * 0.020)
+                and path_support >= 0.27 and path_overlap < 0.16
+                and path_turns <= 7 and max(start_degree, end_degree) <= 5
             )
             keep = ambiguous_route_candidate
             reason = 'ambiguous-but-connected-route' if keep else 'ambiguous-component'
@@ -1946,8 +2183,24 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
             keep = False
             reason = 'isolated-stroke-review'
         elif (start_degree >= 3 and end_degree == 1) or (end_degree >= 3 and start_degree == 1):
-            keep = total >= junction_stub or (continuation and total >= min_path)
-            reason = 'branch-route' if keep else 'short-symbol-stub'
+            # Short real branches often terminate at a fitting or continue as
+            # a faint hand-drawn line. Admit them only when attached to a
+            # multi-edge component already classified as pipe-like and their
+            # own source ink is strong; isolated valve/arrow ticks remain review.
+            edge_support = min((float(edges[index].get('ink_support', 0.0)) for index in path_edges), default=0.0)
+            edge_overlap = max((float(edges[index].get('ocr_overlap', 0.0)) for index in path_edges), default=1.0)
+            has_text_crossing = any(edges[index].get('text_crossing') for index in path_edges)
+            supported_branch = (
+                total >= max(14.0, float(min_dimension) * 0.016)
+                and component_size >= 3
+                and path_roles == {'line_structure'}
+                and edge_support >= 0.30
+                and edge_overlap < 0.10
+                and not has_text_crossing
+            )
+            keep = total >= junction_stub or (continuation and total >= min_path) or supported_branch
+            reason = ('supported-short-branch' if supported_branch and total < junction_stub
+                      else ('branch-route' if keep else 'short-symbol-stub'))
         else:
             keep = total >= min_path
             reason = 'coherent-route' if keep else 'short-fragment'
@@ -2192,39 +2445,65 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
                                      ink: np.ndarray, text_mask: np.ndarray,
                                      primary_edges: list[dict[str, Any]],
                                      min_dimension: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Promote only Qwen traces that are supported by source ink and not text strokes.
+    """Validate Qwen route segments independently against source ink and OCR masks.
 
-    OpenCV remains the geometric backbone, but valid Qwen centre-lines fill gaps
-    that the strict graph selector can miss. A route is admitted only if its
-    coordinates fall on source ink, and intersections with OCR masks have a
-    two-sided continuation check. Near-duplicates of OpenCV paths are omitted.
+    Earlier builds rejected an entire polyline when one of its segments touched
+    an OCR box, and required 30% sampled-pixel coverage with a 7x7 halo. That
+    discarded good pipe routes near faint pencil strokes and labels. This
+    version validates each segment separately, uses a moderate 9x9 support halo,
+    and drops only the text-crossing segment; other verified portions survive.
     """
     h, w = ink.shape[:2]
-    # A 7x7 support halo tolerates small Qwen centre-line offsets on pencil/blue-pen strokes.
-    ink_dilated = cv2.dilate(ink, np.ones((7, 7), np.uint8), iterations=1)
+    ink_dilated = cv2.dilate(ink, np.ones((9, 9), np.uint8), iterations=1)
     graph_segments = []
     for edge in primary_edges:
-        points = edge.get('geometry') or []
-        for a, b in zip(points, points[1:]):
+        edge_points = edge.get('geometry') or []
+        for a, b in zip(edge_points, edge_points[1:]):
             graph_segments.append((a, b))
     accepted: list[dict[str, Any]] = []
     reasons: dict[str, int] = {}
-    min_length = max(18.0, float(min_dimension) * 0.012)
+    route_diagnostics: list[dict[str, Any]] = []
+    min_length = max(16.0, float(min_dimension) * 0.010)
+    min_piece_length = max(9.0, float(min_dimension) * 0.006)
+
+    def bump(reason: str) -> None:
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def duplicate_ratio_for(points: list[list[float]]) -> float:
+        samples: list[tuple[float, float]] = []
+        for a, b in zip(points, points[1:]):
+            length = math.dist(a, b)
+            count = max(2, int(length / 4.0) + 1)
+            samples.extend((a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
+                           for t in np.linspace(0.0, 1.0, count))
+        if not graph_segments or not samples:
+            return 0.0
+        hits = sum(1 for point in samples if any(
+            _point_to_segment_distance(point, a, b) <= 5.5 for a, b in graph_segments
+        ))
+        return hits / len(samples)
 
     for index, route in enumerate(semantic_routes or []):
+        diag: dict[str, Any] = {'id': str(route.get('id') or f'Q{index+1}') if isinstance(route, dict) else f'Q{index+1}'}
         if not isinstance(route, dict) or route.get('include') is False:
-            reasons['not-included'] = reasons.get('not-included', 0) + 1
+            bump('not-included')
+            diag.update({'decision': 'reject', 'reason': 'not-included'})
+            route_diagnostics.append(diag)
             continue
         try:
             confidence = float(route.get('confidence', 60))
         except (TypeError, ValueError):
             confidence = 0.0
         if confidence < 35:
-            reasons['low-confidence'] = reasons.get('low-confidence', 0) + 1
+            bump('low-confidence')
+            diag.update({'decision': 'reject', 'reason': 'low-confidence'})
+            route_diagnostics.append(diag)
             continue
         raw_points = route.get('points')
         if not isinstance(raw_points, list) or len(raw_points) < 2:
-            reasons['invalid-points'] = reasons.get('invalid-points', 0) + 1
+            bump('invalid-points')
+            diag.update({'decision': 'reject', 'reason': 'invalid-points'})
+            route_diagnostics.append(diag)
             continue
         points: list[list[float]] = []
         valid_bounds = True
@@ -2241,68 +2520,110 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
             if not points or math.dist(points[-1], point) >= 2.0:
                 points.append(point)
         if not valid_bounds or len(points) < 2:
-            reasons['invalid-bounds'] = reasons.get('invalid-bounds', 0) + 1
-            continue
-        segment_lengths = [math.dist(a, b) for a, b in zip(points, points[1:])]
-        total_length = sum(segment_lengths)
-        if total_length < min_length:
-            reasons['too-short'] = reasons.get('too-short', 0) + 1
+            bump('invalid-bounds')
+            diag.update({'decision': 'reject', 'reason': 'invalid-bounds'})
+            route_diagnostics.append(diag)
             continue
 
-        weighted_support = 0.0
-        weighted_text = 0.0
-        invalid_text_crossing = False
-        for a, b, length in zip(points, points[1:], segment_lengths):
-            if length < 1:
+        kept_fragments: list[list[list[float]]] = []
+        current: list[list[float]] = []
+        support_by_fragment: list[list[float]] = []
+        text_by_fragment: list[list[float]] = []
+        rejected_segment_reasons: list[str] = []
+        for a, b in zip(points, points[1:]):
+            length = math.dist(a, b)
+            if length < min_piece_length:
+                if len(current) >= 2:
+                    kept_fragments.append(current); current = []
+                rejected_segment_reasons.append('short-segment')
                 continue
-            support = _sample_line_support(ink_dilated, a[0], a[1], b[0], b[1])
-            weighted_support += support * length
             overlap, through = _segment_text_mask_metrics((a[0], a[1], b[0], b[1]), text_mask, ink_dilated)
-            weighted_text += overlap * length
+            support = _sample_line_support(ink_dilated, a[0], a[1], b[0], b[1])
+            # Segments mostly inside an OCR region are text strokes unless a
+            # strong two-sided continuation demonstrates an actual pipe.
             if overlap >= 0.08 and not through:
-                invalid_text_crossing = True
-        support_ratio = weighted_support / max(total_length, 1.0)
-        text_ratio = weighted_text / max(total_length, 1.0)
-        if support_ratio < 0.30:
-            reasons['weak-source-ink'] = reasons.get('weak-source-ink', 0) + 1
-            continue
-        if invalid_text_crossing and text_ratio >= 0.08:
-            reasons['text-overlap'] = reasons.get('text-overlap', 0) + 1
-            continue
+                if len(current) >= 2:
+                    kept_fragments.append(current); current = []
+                rejected_segment_reasons.append('text-overlap')
+                continue
+            support_floor = 0.13 if confidence >= 60 else 0.18
+            if support < support_floor:
+                if len(current) >= 2:
+                    kept_fragments.append(current); current = []
+                rejected_segment_reasons.append('weak-source-ink')
+                continue
+            if current and math.dist(current[-1], a) <= 2.5:
+                current.append(b)
+            else:
+                if len(current) >= 2:
+                    kept_fragments.append(current)
+                current = [a, b]
+            support_by_fragment.append([support * length, length])
+            text_by_fragment.append([overlap * length, length])
+        if len(current) >= 2:
+            kept_fragments.append(current)
 
-        # Remove duplicate Qwen predictions where the selected OpenCV graph
-        # already traces essentially the same line. Partial/independent traces
-        # are retained to restore missed portions of the pipe network.
-        sample_points = []
-        for a, b, length in zip(points, points[1:], segment_lengths):
-            count = max(2, int(length / 4.0) + 1)
-            sample_points.extend((a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
-                                 for t in np.linspace(0.0, 1.0, count))
-        if graph_segments and sample_points:
-            hits = sum(1 for point in sample_points if any(
-                _point_to_segment_distance(point, a, b) <= 5.0 for a, b in graph_segments
-            ))
-            duplicate_ratio = hits / len(sample_points)
+        promoted_for_route = 0
+        fragment_diagnostics = []
+        for frag_index, fragment in enumerate(kept_fragments, 1):
+            length = sum(math.dist(a, b) for a, b in zip(fragment, fragment[1:]))
+            if length < min_length:
+                bump('short-after-filter')
+                continue
+            fragment_support_sum = 0.0
+            fragment_text_sum = 0.0
+            for fa, fb in zip(fragment, fragment[1:]):
+                flen = math.dist(fa, fb)
+                fsupport = _sample_line_support(ink_dilated, fa[0], fa[1], fb[0], fb[1])
+                foverlap, _fthrough = _segment_text_mask_metrics((fa[0], fa[1], fb[0], fb[1]), text_mask, ink_dilated)
+                fragment_support_sum += fsupport * flen
+                fragment_text_sum += foverlap * flen
+            support = fragment_support_sum / max(length, 1.0)
+            text_ratio = fragment_text_sum / max(length, 1.0)
+            duplicate = duplicate_ratio_for(fragment)
+            # Only remove near-exact duplicates. Qwen often supplies a longer
+            # or more continuous centreline than the detector graph.
+            if duplicate >= 0.90:
+                bump('opencv-duplicate')
+                fragment_diagnostics.append({'length': round(length, 1), 'support': round(support, 3),
+                                             'duplicate': round(duplicate, 3), 'decision': 'duplicate'})
+                continue
+            accepted.append({
+                'id': str(route.get('id') or f'QPRIMARY{index+1}') + (f'_{frag_index}' if len(kept_fragments) > 1 else ''),
+                'points': fragment, 'confidence': confidence,
+                'ink_support': round(support, 3),
+                'text_overlap': round(text_ratio, 3),
+                'opencv_duplicate_ratio': round(duplicate, 3),
+                'include': True, 'source': 'qwen3-vl-validated',
+                'split_from_text_or_weak_segment': bool(rejected_segment_reasons),
+            })
+            promoted_for_route += 1
+            fragment_diagnostics.append({'length': round(length, 1), 'support': round(support, 3),
+                                         'text_overlap': round(text_ratio, 3),
+                                         'duplicate': round(duplicate, 3), 'decision': 'accept'})
+        if promoted_for_route:
+            bump('accepted')
+            decision, reason = 'accept', 'ink-supported-fragment'
         else:
-            duplicate_ratio = 0.0
-        if duplicate_ratio >= 0.72:
-            reasons['opencv-duplicate'] = reasons.get('opencv-duplicate', 0) + 1
-            continue
+            for reason_item in rejected_segment_reasons:
+                bump(reason_item)
+            decision = 'reject'
+            reason = rejected_segment_reasons[0] if rejected_segment_reasons else 'no-valid-fragment'
+        diag.update({'decision': decision, 'reason': reason,
+                     'rejected_segments': rejected_segment_reasons,
+                     'accepted_fragments': promoted_for_route,
+                     'fragments': fragment_diagnostics})
+        route_diagnostics.append(diag)
 
-        accepted.append({
-            'id': str(route.get('id') or f'QPRIMARY{index+1}'),
-            'points': points, 'confidence': confidence,
-            'ink_support': round(support_ratio, 3),
-            'text_overlap': round(text_ratio, 3),
-            'opencv_duplicate_ratio': round(duplicate_ratio, 3),
-            'include': True, 'source': 'qwen3-vl-validated',
-        })
     return accepted, {
         'candidate_routes': len(semantic_routes or []),
         'accepted_routes': len(accepted),
+        'accepted_source_routes': reasons.get('accepted', 0),
         'reasons': reasons,
         'min_length_px': round(min_length, 1),
-        'minimum_ink_support': 0.30,
+        'minimum_ink_support': 0.13,
+        'ink_support_kernel': '9x9',
+        'route_diagnostics': route_diagnostics,
     }
 
 
@@ -2520,9 +2841,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     # traces are retained as independent review suggestions and cannot erase
     # detector geometry when the vision model returns a sparse/degenerate list.
     segments=extract_segments(gray,ink,annotations)
-    nodes,edges,components=endpoint_clusters(segments)
-    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
     text_mask = _text_region_mask(gray.shape[:2], annotations)
+    nodes,edges,components=endpoint_clusters(segments, ink=ink, text_mask=text_mask)
+    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
     primary_opencv_edges = [edge for edge in edges if edge.get('cad_include')]
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
@@ -2582,6 +2903,16 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         label = f"NOTE {block_index}: {diag.get('accepted_lines', 0)} rows"
         cv2.putText(note_overlay, label, (x1, max(18, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 40, 210), 1, cv2.LINE_AA)
+        for row_diag in diag.get('row_diagnostics', []):
+            row_box = row_diag.get('bbox') or {}
+            try:
+                rx, ry = int(row_box['x']), int(row_box['y'])
+                rw, rh = int(row_box['w']), int(row_box['h'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            cv2.rectangle(note_overlay, (rx, ry), (rx + rw, ry + rh), (255, 145, 20), 1, cv2.LINE_AA)
+            cv2.putText(note_overlay, str(row_diag.get('row', '?')), (rx, max(12, ry - 2)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.34, (255, 145, 20), 1, cv2.LINE_AA)
     cv2.imwrite(str(Path(out_dir)/'handwritten-text-blocks.png'), note_overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
@@ -2616,7 +2947,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         if len(joins)>=200: break
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
-           "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":11.25,
+           "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":19,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
@@ -2633,6 +2964,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
                       "text_review_annotations":len([a for a in annotations if _annotation_export_kind(a) == 'TEXT_REVIEW']),
                       "text_block_annotations":len([a for a in annotations if a.get('source') == 'qwen3-vl-block']),
+                      "text_block_rows_detected":sum(int(item.get('rows_detected', 0) or 0) for item in ocr_status.get('qwen', {}).get('block_diagnostics', [])),
+                      "text_block_rows_returned":sum(int(item.get('rows_returned', 0) or 0) for item in ocr_status.get('qwen', {}).get('block_diagnostics', [])),
+                      "text_block_rows_verified":sum(sum(1 for row in item.get('row_diagnostics', []) if row.get('accepted') and float(row.get('confidence', 0) or 0) >= 58) for item in ocr_status.get('qwen', {}).get('block_diagnostics', [])),
                       "qwen_verified_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl' and a.get('verified')]),
                       "tesseract_verified_annotations":len([a for a in annotations if a.get('source')=='tesseract' and a.get('verified')]),
                       "review_annotations":len([a for a in annotations if not a.get('verified') and a.get('text')]),

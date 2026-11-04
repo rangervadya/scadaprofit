@@ -1,13 +1,5 @@
-# CAD Reconstruction Engine 4.3.1
+# CAD Reconstruction Engine 4.3.2
 
-Локальная реконструкция фотографий инженерных схем в SVG/DXF. Обработка выполняется в Docker на сервере пользователя с локальной Qwen/Ollama и OpenCV.
+Local Docker-based reconstruction of photographed piping sketches into editable SVG/DXF. Qwen3-VL OCR and tiled pipe-trace suggestions run through local Ollama; OpenCV extracts and connects candidate line geometry. Dense numbered note blocks are detected from source ink and OCRed one row per request. Failed rows remain geometry-exclusion review boxes. Collinear endpoint gaps are joined only if actual source ink bridges the interior gap. Short branches may enter the primary layer only when attached to a pipe-like component and supported by source ink.
 
-- OpenCV строит геометрический граф и отбирает связные трубопроводные маршруты.
-- Маршруты Qwen могут дополнить основной слой только после проверки координат, поддержки исходными пикселями и пересечений OCR-масок.
-- OCR выполняется по увеличенным фрагментам; отдельный проход ищет многострочные рукописные заметки даже при отсутствии OCR-рамок.
-- Подтверждённый текст экспортируется в `VERIFIED_TEXT`, сомнительный — в `TEXT_REVIEW`; оба слоя содержат редактируемые CAD TEXT.
-- Неотобранные линии и неоднозначные элементы сохраняются на отдельных review-слоях.
-
-Установка: [`INSTALL-4.3.1-RU.md`](INSTALL-4.3.1-RU.md). Сохраните `.env`, `.git`, резервные копии и каталог `public/`, включая `public/styles.css`.
-
-Все маршруты, размеры и подписи являются предварительным результатом и должны быть проверены по оригиналу.
+See [README-RU.md](README-RU.md), [INSTALL-4.3.2-RU.md](INSTALL-4.3.2-RU.md), and [DIAGNOSE-QWEN-RU.md](DIAGNOSE-QWEN-RU.md). Keep `.env`, `.git`, server backups, and `public/styles.css`.

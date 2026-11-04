@@ -86,13 +86,15 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.1', mode: 'cad-reconstruction-engine',
-    geometry: 'OCR-masked OpenCV topology paths plus source-ink-validated Qwen traces form PIPE_MAIN; rejected traces stay in QWEN_REVIEW; uncertain text stays in TEXT_REVIEW',
-    ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract; low-confidence text boxes still mask geometry',
+  res.json({ ok: true, version: '4.3.2', mode: 'cad-reconstruction-engine',
+    geometry: 'OCR-masked OpenCV topology paths with ink-supported short branches plus source-ink-validated Qwen traces form PIPE_MAIN; rejected traces stay in QWEN_REVIEW; uncertain text stays in TEXT_REVIEW',
+    ocr: 'Qwen3-VL tiled handwriting OCR + Tesseract + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
       ocrMaxTokens: Number(process.env.QWEN_OCR_MAX_TOKENS || 2048),
+      ocrBlockMaxTokens: Number(process.env.QWEN_OCR_BLOCK_MAX_TOKENS || 1536),
+      ocrRowMaxTokens: 220,
       pipeTraceTimeoutSeconds: Number(process.env.QWEN_PIPE_TRACE_TIMEOUT || 240),
       pipeMaxTokens: Number(process.env.QWEN_PIPE_MAX_TOKENS || 2048),
       pipeTileGrid: Number(process.env.QWEN_PIPE_TILE_GRID || 2),
@@ -156,6 +158,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.1: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
-  console.log('Geometry: OCR-aware OpenCV topology plus ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
+  console.log(`CAD Reconstruction Engine 4.3.2: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
 });

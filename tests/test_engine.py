@@ -25,6 +25,28 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(edges[0]["to"], edges[1]["from"])
         self.assertEqual(edges[0]["geometry"][-1], edges[1]["geometry"][0])
 
+    def test_ink_supported_collinear_gap_up_to_19px_is_joined(self):
+        ink = np.zeros((100, 200), np.uint8)
+        cv2.line(ink, (10, 50), (150, 50), 255, 2, cv2.LINE_AA)
+        segments = [
+            {"x1": 10.0, "y1": 50.0, "x2": 70.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 60, "angle": 0},
+            {"x1": 88.0, "y1": 50.0, "x2": 150.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 62, "angle": 0},
+        ]
+        nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
+        self.assertEqual(edges[0]['to'], edges[1]['from'])
+        self.assertTrue(any(node.get('auto_joined_collinear') for node in nodes))
+
+    def test_unsupported_collinear_gap_is_not_joined(self):
+        ink = np.zeros((100, 200), np.uint8)
+        cv2.line(ink, (10, 50), (70, 50), 255, 2, cv2.LINE_AA)
+        cv2.line(ink, (88, 50), (150, 50), 255, 2, cv2.LINE_AA)
+        segments = [
+            {"x1": 10.0, "y1": 50.0, "x2": 70.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 60, "angle": 0},
+            {"x1": 88.0, "y1": 50.0, "x2": 150.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 62, "angle": 0},
+        ]
+        _nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
+        self.assertNotEqual(edges[0]['to'], edges[1]['from'])
+
     def test_clean_cad_keeps_route_and_suppresses_short_symbol_stubs(self):
         segments = [
             {"x1": 10.0, "y1": 50.0, "x2": 50.0, "y2": 50.0, "source": "LSD", "support": .95, "length": 40, "angle": 0},
@@ -41,6 +63,26 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(review), 1)
         self.assertEqual(review[0]["cad_reason"], "short-symbol-stub")
         self.assertTrue(all(edge["cad_reason"] == "collinear-continuation" for edge in main))
+
+    def test_supported_short_branch_attached_to_pipe_component_is_kept(self):
+        nodes = [
+            {'id': 'N1', 'x': 10, 'y': 50, 'degree': 1},
+            {'id': 'N2', 'x': 80, 'y': 50, 'degree': 3},
+            {'id': 'N3', 'x': 145, 'y': 50, 'degree': 1},
+            {'id': 'N4', 'x': 80, 'y': 72, 'degree': 1},
+        ]
+        edges = [
+            {'id': 'E1', 'from': 'N1', 'to': 'N2', 'geometry': [[10, 50], [80, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure', 'ink_support': .88, 'ocr_overlap': 0.0},
+            {'id': 'E2', 'from': 'N2', 'to': 'N3', 'geometry': [[80, 50], [145, 50]],
+             'component_id': 'C1', 'component_role': 'line_structure', 'ink_support': .86, 'ocr_overlap': 0.0},
+            {'id': 'E3', 'from': 'N2', 'to': 'N4', 'geometry': [[80, 50], [80, 72]],
+             'component_id': 'C1', 'component_role': 'line_structure', 'ink_support': .82, 'ocr_overlap': 0.0},
+        ]
+        stats = processor.select_primary_cad_edges(nodes, edges, 906)
+        self.assertTrue(edges[2]['cad_include'])
+        self.assertEqual(edges[2]['cad_reason'], 'supported-short-branch')
+        self.assertEqual(stats['cad_primary_edges'], 3)
 
     def test_short_collinear_continuation_survives_clean_selection(self):
         segments = [
@@ -660,6 +702,21 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(diagnostics['eval_count'], 2048)
 
 
+class SemanticSegmentRecoveryTests(unittest.TestCase):
+    def test_clear_part_of_qwen_route_survives_neighboring_text_overlap(self):
+        ink = np.zeros((140, 200), np.uint8)
+        cv2.line(ink, (10, 60), (48, 60), 255, 2, cv2.LINE_AA)
+        cv2.line(ink, (82, 60), (82, 120), 255, 2, cv2.LINE_AA)
+        text_mask = np.zeros_like(ink)
+        cv2.rectangle(text_mask, (45, 48), (72, 72), 255, -1)
+        route = {'id': 'Q-partial', 'points': [[10, 60], [82, 60], [82, 120]], 'confidence': 80}
+        accepted, stats = processor.validate_primary_semantic_routes([route], ink, text_mask, [], 140)
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]['points'][0], [82.0, 60.0])
+        self.assertEqual(accepted[0]['points'][-1], [82.0, 120.0])
+        self.assertEqual(stats['accepted_source_routes'], 1)
+
+
 class BrowserExportRegressionTests(unittest.TestCase):
     def test_browser_main_layer_uses_opencv_selection_even_if_qwen_routes_exist(self):
         app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
@@ -778,6 +835,76 @@ class Recovery431RegressionTests(unittest.TestCase):
 
 
 
+    def test_numbered_left_margin_detector_finds_all_ten_note_rows(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        image = PILImage.fromarray(canvas)
+        block = processor._candidate_handwritten_text_blocks([], 980, 490, max_blocks=2, image=image)[0]
+        rows = processor._detect_handwritten_row_bands(image, block)
+        self.assertEqual(len(rows), 10)
+        centers = [float(row['center_y']) for row in rows]
+        self.assertTrue(all(14 <= b-a <= 20 for a, b in zip(centers, centers[1:])))
+
+    def test_numbered_note_ocr_sends_one_qwen_request_per_row(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        image = PILImage.fromarray(canvas)
+        block = processor._candidate_handwritten_text_blocks([], 980, 490, max_blocks=2, image=image)[0]
+        calls = []
+        def fake_qwen(crop, prompt, **kwargs):
+            calls.append((crop.size, prompt))
+            idx = len(calls)
+            return {'text': f'{idx}) Test row (0{idx:03d})', 'confidence': 75}, 1.0, crop.size
+        with patch('processor._qwen_call', side_effect=fake_qwen):
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(lines), 10)
+        self.assertTrue(all(line['source'] == 'qwen3-vl-block' for line in lines))
+        self.assertTrue(all(line['geometry_exclude'] for line in lines))
+        self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
+        self.assertEqual(diagnostics[0]['rows_detected'], 10)
+
+    def test_failed_note_row_ocr_still_returns_geometry_exclusion_review_box(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        def failed_qwen(*_args, **_kwargs):
+            raise TimeoutError('synthetic timeout')
+        with patch('processor._qwen_call', side_effect=failed_qwen) as call:
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
+                model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(call.call_count, 10)
+        self.assertEqual(len(lines), 10)
+        self.assertTrue(all(line['text'] == '?' for line in lines))
+        self.assertTrue(all(line['geometry_exclude'] for line in lines))
+        self.assertTrue(all(processor._annotation_export_kind(line) == 'TEXT_REVIEW' for line in lines))
+        self.assertEqual(diagnostics[0]['rows_returned'], 10)
+
     def test_qwen_ocr_runs_second_pass_even_when_primary_ocr_returns_zero_boxes(self):
         from PIL import Image as PILImage
         with TemporaryDirectory() as temp:
@@ -791,24 +918,26 @@ class Recovery431RegressionTests(unittest.TestCase):
                 cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
                             cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
             PILImage.fromarray(canvas).save(source)
-            block_response = {'annotations': [
-                {'text': '1) KCL + pump (0405)', 'bbox': {'x': 10, 'y': 10, 'w': 200, 'h': 20}, 'confidence': 70},
-                {'text': '2) Line / valve (0434)', 'bbox': {'x': 10, 'y': 40, 'w': 200, 'h': 20}, 'confidence': 54},
-            ]}
             with patch.dict(os.environ, {
                 'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_UPSCALE': '1',
                 'QWEN_OCR_MAX_TOKENS': '1024', 'QWEN_OCR_BLOCK_MAX_TOKENS': '1200',
                 'QWEN_MAX_IMAGE_EDGE': '1024', 'QWEN_OCR_TIMEOUT': '30',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', side_effect=[
-                ({'annotations': []}, 1.0, (980, 490)),
-                (block_response, 1.0, (234, 198)),
-            ]) as call:
-                annotations, status = processor._qwen_annotations(str(source), 980, 490)
-            self.assertEqual(call.call_count, 2)
+            }, clear=False):
+                def fake_qwen(crop, prompt, **kwargs):
+                    if 'annotations' in prompt or 'Максимум 64 текстовые области' in prompt:
+                        return {'annotations': []}, 1.0, crop.size
+                    index = sum(1 for _ in [])  # call count is derived below
+                    return {'text': '1) KCL + pump / line (0405)', 'confidence': 70}, 1.0, crop.size
+                with patch('processor._qwen_call', side_effect=[
+                    ({'annotations': []}, 1.0, (980, 490)),
+                    *[({'text': f'{i}) KCL + pump / line (0405)', 'confidence': 70}, 1.0, (768, 60)) for i in range(1, 11)]
+                ]) as call:
+                    annotations, status = processor._qwen_annotations(str(source), 980, 490)
+            self.assertEqual(call.call_count, 11)
             self.assertEqual(status['block_passes'], 1)
-            self.assertEqual(status['block_annotations'], 2)
-            self.assertEqual([a['source'] for a in annotations], ['qwen3-vl-block', 'qwen3-vl-block'])
+            self.assertEqual(status['block_annotations'], 10)
+            self.assertEqual(len([a for a in annotations if a['source'] == 'qwen3-vl-block']), 10)
 
     def test_source_ink_detector_finds_handwritten_note_block_without_ocr_boxes(self):
         from PIL import Image as PILImage
@@ -841,19 +970,18 @@ class Recovery431RegressionTests(unittest.TestCase):
                         (68, 78, 125), 1, cv2.LINE_AA)
             cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
-        response = {'annotations': [
-            {'text': '1) KCL + pump (0405)', 'bbox': {'x': 10, 'y': 10, 'w': 200, 'h': 20}, 'confidence': 70},
-            {'text': '2) Line / valve (0434)', 'bbox': {'x': 10, 'y': 40, 'w': 200, 'h': 20}, 'confidence': 54},
-        ]}
-        with patch('processor._qwen_call', return_value=(response, 1.0, (234, 198))) as call:
+        def fake_qwen(crop, prompt, **kwargs):
+            return {'text': '1) KCL + pump / line (0405)', 'confidence': 70}, 1.0, crop.size
+        with patch('processor._qwen_call', side_effect=fake_qwen) as call:
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
                 model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
             )
-        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(lines), 10)
+        self.assertEqual(call.call_count, 10)
         self.assertEqual(diagnostics[0]['detection_source'], 'source-ink-multiline-block')
         self.assertGreaterEqual(diagnostics[0]['row_peaks'], 4)
-        self.assertIn('не додумывай', call.call_args.args[1])
+        self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
 
     def test_primary_semantic_routes_are_used_by_browser_svg_and_dxf(self):
         app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
