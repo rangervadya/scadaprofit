@@ -1,2 +1,2 @@
-CAD Reconstruction Engine 4.3.3
-See README-RU.md and INSTALL-4.3.3-RU.md.
+CAD Reconstruction Engine 4.3.4
+See README-RU.md and INSTALL-4.3.4-RU.md.

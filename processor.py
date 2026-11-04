@@ -24,6 +24,14 @@ import numpy as np
 from PIL import Image, ImageOps
 
 
+def _progress(stage: str, message: str) -> None:
+    """Emit a concise, immediately flushed progress line for the parent process."""
+    safe_stage = re.sub(r'[^A-Z0-9_-]', '', str(stage).upper())[:16] or 'JOB'
+    safe_message = re.sub(r'[\r\n]+', ' ', str(message)).strip()[:500]
+    sys.stderr.write(f'[{safe_stage}] {safe_message}\n')
+    sys.stderr.flush()
+
+
 def load_image(path: str) -> np.ndarray:
     pil = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
@@ -242,7 +250,9 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
     """Transcribe each detected numbered note row in a separate small Qwen request."""
     results: list[dict[str, Any]] = []
     row_diags: list[dict[str, Any]] = []
-    for row in rows:
+    _progress('OCR', f'Handwritten rows: {len(rows)} detected')
+    for row_index, row in enumerate(rows, 1):
+        _progress('OCR', f'Handwritten row {row_index}/{len(rows)} started')
         left = max(0, int(row['x']) - 2)
         top = max(0, int(row['y']))
         right = min(image.width, int(row['x'] + row['w']) + 4)
@@ -316,6 +326,8 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
             diag['accepted'] = False
         diag['sent_size'] = list(sent_size)
         row_diags.append(diag)
+        row_state = 'accepted' if diag.get('accepted') else ('failed' if diag.get('error') else 'review')
+        _progress('OCR', f'Handwritten row {row_index}/{len(rows)} completed ({row_state})')
     return results, {'rows_detected': len(rows), 'rows_returned': len(results), 'row_diagnostics': row_diags}
 
 
@@ -501,9 +513,11 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
                                max_tokens: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Second OCR pass: transcribe compact handwritten notes line-by-line."""
     blocks = _candidate_handwritten_text_blocks(seed_items, *original.size, max_blocks=2, image=original)
+    _progress('OCR', f'Handwritten note blocks detected: {len(blocks)}')
     results: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
     for block_index, block in enumerate(blocks, 1):
+        _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} started')
         results_before_block = len(results)
         pad_x = max(8, int(block['w'] * 0.06))
         pad_y = max(8, int(block['h'] * 0.08))
@@ -526,6 +540,7 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
             diag['accepted_lines'] = len(row_results)
             diag['verified_lines'] = sum(1 for item in row_results if item.get('verified'))
             diagnostics.append(diag)
+            _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} completed ({len(row_results)} rows)')
             continue
         prompt = (
             'Это крупный фрагмент рукописной технической схемы с плотной текстовой заметкой или нумерованным списком. '
@@ -593,6 +608,10 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
         except Exception as error:
             diag['error'] = str(error).strip()[:180]
         diagnostics.append(diag)
+        if diag.get('error'):
+            _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} failed: {diag.get("error", "unknown error")}')
+        else:
+            _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} completed ({diag.get("accepted_lines", 0)} lines)')
     return results, diagnostics
 
 PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -786,7 +805,9 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         items: list[dict[str, Any]] = []
         tile_errors = []
         tile_diagnostics: list[dict[str, Any]] = []
+        _progress('OCR', f'Image OCR started: {len(regions)} tiles ({grid}x{grid})')
         for tile_index, (left, top, right, bottom) in enumerate(regions, 1):
+            _progress('OCR', f'Tile {tile_index}/{len(regions)} started')
             crop = original.crop((left, top, right, bottom))
             # Actually magnify each crop so small handwritten figures reach the
             # vision model at a readable pixel height; respect the VRAM edge cap.
@@ -861,20 +882,24 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     })
                 call_diagnostics['accepted_annotations'] = len(items) - accepted_before
                 tile_diagnostics.append(call_diagnostics)
+                _progress('OCR', f'Tile {tile_index}/{len(regions)} completed; annotations={call_diagnostics["accepted_annotations"]}')
             except Exception as error:
                 message = str(error).strip()[:150] or error.__class__.__name__
                 tile_errors.append(message)
                 call_diagnostics['error'] = message
                 tile_diagnostics.append(call_diagnostics)
+                _progress('OCR', f'Tile {tile_index}/{len(regions)} failed: {message}')
 
         # A second, line-oriented OCR pass reads dense handwritten note blocks
         # as whole rows instead of independent glyph boxes. This is especially
         # useful for the numbered handwritten list at the right of the drawing.
         block_tokens = max(768, min(2048, int(os.getenv('QWEN_OCR_BLOCK_MAX_TOKENS', '1536'))))
+        _progress('OCR', 'Handwritten note OCR pass started')
         block_items, block_diagnostics = _run_handwritten_block_ocr(
             original, items, url=url, model=model, timeout=timeout,
             max_edge=max_edge, max_tokens=block_tokens
         ) if calls_ok > 0 else ([], [])
+        _progress('OCR', f'Handwritten note OCR pass completed; blocks={len(block_diagnostics)} rows={sum(int(item.get("rows_returned", 0) or 0) for item in block_diagnostics)}')
         # Prefer a full-row transcription over tiny OCR fragments inside it.
         for block_item in block_items:
             bb = block_item['bbox']
@@ -994,6 +1019,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
             grid = 1
         min_confidence = float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '35'))
         result: list[dict[str, Any]] = []
+        total_tiles = grid * grid
+        _progress('PIPE', f'Pipe tracing started: {total_tiles} tiles ({grid}x{grid})')
         for row in range(grid):
             core_top = round(row * original_height / grid)
             core_bottom = round((row + 1) * original_height / grid)
@@ -1036,6 +1063,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'core': {'x': core_left, 'y': core_top, 'w': core_w, 'h': core_h},
                     'crop': {'x': left, 'y': top, 'w': right - left, 'h': bottom - top},
                 }
+                _progress('PIPE', f'Tile {tile_index}/{total_tiles} started')
                 try:
                     parsed, resize_scale, sent_size = _qwen_call(
                         crop, prompt, url=url, model=model, timeout=timeout,
@@ -1121,6 +1149,10 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     diag['tile_status'] = 'error'
                     diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
                 tile_diagnostics.append(diag)
+                if diag.get('tile_status') == 'ok':
+                    _progress('PIPE', f'Tile {tile_index}/{total_tiles} completed; routes={diag.get("accepted_routes", 0)}')
+                else:
+                    _progress('PIPE', f'Tile {tile_index}/{total_tiles} failed: {diag.get("error", "unknown error")}')
 
         successful_tiles = sum(1 for item in tile_diagnostics if item.get('tile_status') == 'ok')
         status = {
@@ -1176,6 +1208,7 @@ def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, A
     qwen_items, qwen_status = _qwen_annotations(image_path, w, h)
     tesseract_items: list[dict[str, Any]] = []
     tesseract_error = None
+    _progress('OCR', 'Tesseract OCR started')
     try:
         import pytesseract
         from pytesseract import Output
@@ -1208,7 +1241,9 @@ def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, A
             })
     except Exception as error:
         tesseract_error = str(error)[:180]
+        _progress('OCR', f'Tesseract OCR unavailable: {tesseract_error}')
 
+    _progress('OCR', f'Tesseract OCR completed: annotations={len(tesseract_items)}')
     # Stable, unique IDs across both OCR engines.
     items = qwen_items + tesseract_items
     for index, item in enumerate(items, 1):
@@ -2953,11 +2988,18 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
 
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     Path(out_dir).mkdir(parents=True,exist_ok=True)
+    _progress('JOB', 'Image preprocessing started')
     bgr=load_image(input_path); h,w=bgr.shape[:2]
     gray,prep=normalize_document(bgr)
     ink=make_ink_mask(bgr,gray)
+    _progress('JOB', f'Image preprocessing completed: {w}x{h}')
+    _progress('OCR', 'OCR pipeline started')
     annotations, ocr_status = ocr_annotations(input_path, gray)
+    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}')
+    _progress('PIPE', 'CAD pipe-route trace started')
     semantic_routes, route_status = _qwen_semantic_routes(input_path, w, h)
+    _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+    _progress('CAD', 'Graph construction started')
     # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
     # traces are retained as independent review suggestions and cannot erase
     # detector geometry when the vision model returns a sparse/degenerate list.
@@ -2969,6 +3011,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
     )
+    _progress('CAD', f'Graph construction in progress: segments={len(segments)} nodes={len(nodes)} edges={len(edges)}')
     primary_semantic_ids = {str(route.get('id')) for route in primary_semantic_routes}
     for route in semantic_routes:
         route['primary_validated'] = str(route.get('id')) in primary_semantic_ids
@@ -2981,6 +3024,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     crossings=detect_crossings(segments)
     ink_in_text_regions = cv2.bitwise_and(ink, text_mask)
     geometry_ink = cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
+    _progress('CAD', f'Graph construction completed: segments={len(segments)} nodes={len(nodes)} edges={len(edges)} crossings={len(crossings)}')
 
     # The candidate overlay remains available for audit; the primary overlay
     # makes it immediately visible what will actually enter PIPE_MAIN.
@@ -3036,9 +3080,11 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.34, (255, 145, 20), 1, cv2.LINE_AA)
     cv2.imwrite(str(Path(out_dir)/'handwritten-text-blocks.png'), note_overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
+    _progress('EXPORT', 'SVG and DXF export started')
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
     Path(out_dir,'drawing.dxf').write_text(build_dxf(w,h,edges,annotations, semantic_routes=semantic_routes, primary_semantic_routes=primary_semantic_routes),encoding='utf-8')
+    _progress('EXPORT', 'SVG and DXF written')
     # Candidate joins are diagnostic only. The graph's ink-supported endpoint
     # clustering performs conservative auto-joins; this list must not invent
     # same-edge, endpoint-to-interior, or laterally displaced connections.
@@ -3104,6 +3150,8 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
+    _progress('EXPORT', 'graph.json written; all output files completed')
+    _progress('JOB', 'Analysis completed successfully')
     return graph
 
 

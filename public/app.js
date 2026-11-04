@@ -123,7 +123,11 @@ analyzeBtn.addEventListener('click', async () => {
     const response = await fetch('/api/analyze', { method: 'POST', body: form });
     const contentType = response.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await response.json() : { error: await response.text() };
-    if (!response.ok) throw new Error(data.details || data.error || `Ошибка сервера ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(data.details || data.error || `Ошибка сервера ${response.status}`);
+      error.progressUrl = data.progressUrl || null;
+      throw error;
+    }
     if (!data.image || !Array.isArray(data.edges) || !Array.isArray(data.nodes)) {
       throw new Error('Сервер вернул неполный граф. Посмотри журнал приложения.');
     }
@@ -141,6 +145,14 @@ analyzeBtn.addEventListener('click', async () => {
   } catch (error) {
     console.error('Analysis failed', error);
     setAlert(`Не удалось обработать изображение: ${error.message}`);
+    if (typeof error.progressUrl === 'string' && error.progressUrl.startsWith('/jobs/')) {
+      const link = document.createElement('a');
+      link.href = error.progressUrl;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = 'Открыть журнал этапов';
+      $('inlineError').append(document.createTextNode(' '), link);
+    }
     $('previewMeta').textContent = 'Обработка не завершилась';
     setState('ОШИБКА АНАЛИЗА', 'error');
   } finally {
@@ -169,7 +181,8 @@ function showResult() {
       graph.primaryOverlayUrl ? `<a href="${escapeHtml(graph.primaryOverlayUrl)}" target="_blank" rel="noreferrer">Отбор PIPE_MAIN</a>` : '',
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
       graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
-      graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : ''
+      graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : '',
+      graph.progressUrl ? `<a href="${escapeHtml(graph.progressUrl)}" target="_blank" rel="noreferrer">Журнал обработки</a>` : ''
     ].filter(Boolean);
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;

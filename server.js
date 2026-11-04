@@ -7,18 +7,133 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
 const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
+const configuredPythonTimeout = Number(process.env.PYTHON_JOB_TIMEOUT_MS || 2_700_000);
+const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout) ? Math.max(60_000, configuredPythonTimeout) : 2_700_000;
+const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 await mkdir(DATA, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
+
+function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER }) {
+  return new Promise((resolve, reject) => {
+    const shortId = String(jobId).slice(0, 8);
+    const child = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const progressFile = createWriteStream(progressPath, { flags: 'a' });
+    let stdout = '';
+    let stdoutBytes = 0;
+    let stderrTail = '';
+    let stderrPending = '';
+    let timedOut = false;
+    let outputOverflow = false;
+    let settled = false;
+    let spawnError = null;
+    let progressFileFailed = false;
+    let timeoutHandle;
+    let forceKillHandle;
+
+    progressFile.on('error', (error) => {
+      progressFileFailed = true;
+      console.error(`[JOB ${shortId}] Cannot persist progress.log: ${error.message}`);
+    });
+
+    const logLine = (line) => {
+      const message = String(line || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 2000);
+      if (!message) return;
+      const entry = `${new Date().toISOString()} ${message}`;
+      console.log(`[JOB ${shortId}] ${message}`);
+      if (!progressFileFailed && !progressFile.destroyed && progressFile.writable) progressFile.write(`${entry}\n`);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const complete = (code, signal) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (forceKillHandle) clearTimeout(forceKillHandle);
+      if (stderrPending.trim()) logLine(stderrPending);
+      const finish = () => {
+        if (spawnError) {
+          fail(Object.assign(spawnError, { stderr: stderrTail, stdout }));
+        } else if (timedOut) {
+          const error = new Error(`Python job exceeded ${Math.round(timeout / 60_000)} minute timeout and was terminated.`);
+          Object.assign(error, { code: 'ETIMEDOUT', killed: true, signal: signal || 'SIGTERM', stderr: stderrTail, stdout });
+          fail(error);
+        } else if (outputOverflow) {
+          const error = new Error(`Python stdout exceeded the ${maxBuffer} byte output limit.`);
+          Object.assign(error, { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true, signal: signal || 'SIGTERM', stderr: stderrTail, stdout });
+          fail(error);
+        } else if (code !== 0) {
+          const error = new Error(`Python process exited with code ${code}${signal ? ` (signal ${signal})` : ''}.`);
+          Object.assign(error, { code, signal, killed: Boolean(signal), stderr: stderrTail, stdout });
+          fail(error);
+        } else {
+          settled = true;
+          resolve({ stdout, stderr: stderrTail });
+        }
+      };
+      if (progressFileFailed || progressFile.destroyed) finish();
+      else progressFile.end(finish);
+    };
+
+    logLine(`[JOB] Python process started; timeout=${Math.round(timeout / 60_000)}m`);
+    timeoutHandle = setTimeout(() => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      timedOut = true;
+      logLine(`[JOB] Python timeout reached (${Math.round(timeout / 60_000)}m); sending SIGTERM`);
+      child.kill('SIGTERM');
+      forceKillHandle = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        logLine('[JOB] Python did not exit after SIGTERM; sending SIGKILL');
+        child.kill('SIGKILL');
+      }, 5000);
+    }, timeout);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += Buffer.byteLength(chunk, 'utf8');
+      if (stdoutBytes > maxBuffer) {
+        if (!outputOverflow) {
+          outputOverflow = true;
+          logLine(`[JOB] Python output exceeded ${maxBuffer} bytes; terminating process`);
+          child.kill('SIGTERM');
+          forceKillHandle = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+          }, 5000);
+        }
+        return;
+      }
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrTail = (stderrTail + chunk).slice(-64 * 1024);
+      stderrPending += chunk;
+      const lines = stderrPending.split(/\r?\n/);
+      stderrPending = lines.pop() || '';
+      for (const line of lines) logLine(line);
+      if (stderrPending.length > 4000) {
+        logLine(stderrPending.slice(0, 4000));
+        stderrPending = stderrPending.slice(4000);
+      }
+    });
+    child.on('error', (error) => {
+      spawnError = error;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (forceKillHandle) clearTimeout(forceKillHandle);
+      logLine(`[JOB] Unable to start Python: ${error.message}`);
+    });
+    child.on('close', complete);
+  });
+}
 
 app.disable('x-powered-by');
 // This app is commonly opened over plain HTTP on a private LAN (e.g. http://192.168.x.x:3001).
@@ -86,7 +201,7 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
-  res.json({ ok: true, version: '4.3.3', mode: 'cad-reconstruction-engine',
+  res.json({ ok: true, version: '4.3.4', pythonJobTimeoutMs: PYTHON_TIMEOUT_MS, mode: 'cad-reconstruction-engine',
     geometry: 'Confidence-filtered OCR mask plus OpenCV topology paths and source-ink-validated Qwen traces form PIPE_MAIN; rejected traces stay in QWEN_REVIEW; uncertain text stays in TEXT_REVIEW',
     ocr: 'Qwen3-VL 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
@@ -118,11 +233,14 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const fs = await import('node:fs/promises');
     await fs.copyFile(req.file.path, sourcePath);
     await fs.rm(req.file.path, { force: true });
-    const { stdout, stderr } = await execFileAsync(PYTHON, [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
-      { timeout: 900_000, maxBuffer: 16 * 1024 * 1024 });
-    if (stderr?.trim()) console.log(`[ENGINE ${id.slice(0,8)}] ${stderr.trim().slice(-1200)}`);
+    const progressPath = path.join(jobDir, 'progress.log');
+    const { stdout } = await runPythonStreaming(
+      [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
+      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
+    );
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     graph.jobId = id;
+    graph.progressUrl = `/jobs/${id}/progress.log`;
     graph.sourceUrl = `/jobs/${id}/${path.basename(sourcePath)}`;
     graph.overlayUrl = `/jobs/${id}/overlay.png`;
     graph.primaryOverlayUrl = `/jobs/${id}/primary-overlay.png`;
@@ -142,8 +260,10 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     console.log(`[ENGINE ${id.slice(0,8)}] OCR-MASK boxes=${graph.summary.text_regions_used_for_geometry_mask || graph.summary.geometry_excluded_text_regions || 0}; inkPixelsMasked=${graph.summary.ink_pixels_inside_text_regions || 0}; textComponents=${graph.summary.text_or_annotation_components || 0}; ambiguous=${graph.summary.review_only_ambiguous_components || 0}`);
     res.json(graph);
   } catch (error) {
-    console.error('Analyze failed:', error?.stderr || error);
-    res.status(500).json({ error: 'Не удалось проанализировать изображение.', details: String(error?.stderr || error?.message || error).slice(-1600) });
+    console.error(`[JOB ${id.slice(0,8)}] Analyze failed:`, error?.stderr || error);
+    const progressUrl = `/jobs/${id}/progress.log`;
+    const details = [String(error?.stderr || '').slice(-900), String(error?.message || error).slice(-350)].filter(Boolean).join('\n');
+    res.status(500).json({ error: 'Не удалось проанализировать изображение.', details: `${details}\nЖурнал этапов: ${progressUrl}`, jobId: id, progressUrl });
   } finally {
     if (req.file?.path) { const fs = await import('node:fs/promises'); await fs.rm(req.file.path, { force: true }).catch(()=>{}); }
   }
@@ -158,6 +278,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message, details: err.message });
 });
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.3: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.4: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
 });

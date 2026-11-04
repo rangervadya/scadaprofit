@@ -40,6 +40,7 @@ services:
       PORT: "3000"
       HOST: "0.0.0.0"
       MASK_PYTHON: "/opt/venv/bin/python"
+      PYTHON_JOB_TIMEOUT_MS: "2700000"
       DATA_DIR: "/tmp/cad-reconstruction-jobs"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
