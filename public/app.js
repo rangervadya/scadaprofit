@@ -45,6 +45,8 @@ function normalizeGraph(data) {
   next.warnings = Array.isArray(next.warnings) ? next.warnings : [];
   next.edges = Array.isArray(next.edges) ? next.edges : [];
   next.nodes = Array.isArray(next.nodes) ? next.nodes : [];
+  next.symbolCatalog = Array.isArray(next.symbolCatalog) ? next.symbolCatalog : [];
+  next.documentModel = next.documentModel && typeof next.documentModel === 'object' ? next.documentModel : null;
   next.edges.forEach(edge => { if (edge.visible === undefined) edge.visible = true; });
   return next;
 }
@@ -574,6 +576,7 @@ function showResult() {
   $('edgePanel').hidden = false;
   $('nodePanel').hidden = false;
   $('textPanel').hidden = false;
+  $('reviewPanel').hidden = !graph.documentModel;
   $('sourceEmpty').hidden = true;
   $('imageFrame').hidden = false;
   $('sourceImage').onload = () => fitImageFrame();
@@ -589,7 +592,8 @@ function showResult() {
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
       graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
       graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : '',
-      graph.progressUrl ? `<a href="${escapeHtml(graph.progressUrl)}" target="_blank" rel="noreferrer">Журнал обработки</a>` : ''
+      graph.progressUrl ? `<a href="${escapeHtml(graph.progressUrl)}" target="_blank" rel="noreferrer">Журнал обработки</a>` : '',
+      graph.diagnosticsUrl ? `<a href="${escapeHtml(graph.diagnosticsUrl)}" target="_blank" rel="noreferrer">Диагностика JSON</a>` : ''
     ].filter(Boolean);
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;
@@ -628,6 +632,7 @@ function showResult() {
   renderNodeList();
   renderTextList();
   renderJoinList();
+  renderReviewList();
   for (const id of ['exportSvg', 'exportDxf', 'exportJson', 'exportPdf']) $(id).disabled = false;
   setState('ГРАФ ПОСТРОЕН · НУЖНА ПРОВЕРКА');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
@@ -989,6 +994,61 @@ function renderJoinList() {
   }));
 }
 
+async function persistReviewAction(payload) {
+  if (!graph?.jobId) throw new Error('Сначала откройте сохранённое задание.');
+  const response = await fetch(`/api/jobs/${encodeURIComponent(graph.jobId)}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  graph = normalizeGraph(data.graph);
+  showResult();
+}
+
+function renderReviewList() {
+  const list = $('reviewList');
+  if (!list) return;
+  const model = graph?.documentModel;
+  if (!model) { list.innerHTML = '<div class="helper">Редактируемая модель отсутствует.</div>'; return; }
+  const tasks = (model.reviewTasks || []).filter(item => item.status === 'open');
+  const findings = (model.validationFindings || []).filter(item => item.status === 'open');
+  $('reviewCount').textContent = String(tasks.length + findings.length);
+  const catalogOptions = (graph.symbolCatalog || []).map(item => `<option value="${escapeHtml(item.type)}">${escapeHtml(item.label)}</option>`).join('');
+  const pipeOptions = (model.pipes || []).filter(item => item.state === 'primary').map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.id)}</option>`).join('');
+  const taskHtml = tasks.map(task => {
+    const targetId = String((task.targetIds || [])[0] || '');
+    let controls = `<button type="button" data-dismiss-task="${escapeHtml(task.id)}">Не учитывать</button>`;
+    if (task.kind === 'classify_symbol') controls = `<select data-symbol-type="${escapeHtml(targetId)}"><option value="">Выберите тип…</option>${catalogOptions}</select><input data-symbol-rotation="${escapeHtml(targetId)}" type="number" min="0" max="359" value="0" title="Поворот"><button type="button" data-save-symbol="${escapeHtml(targetId)}">Сохранить</button>`;
+    if (task.kind === 'assign_dimension') {
+      const dimension = (model.dimensions || []).find(item => item.id === targetId) || {};
+      controls = `<select data-dimension-pipe="${escapeHtml(targetId)}"><option value="">Выберите участок…</option>${pipeOptions}</select><input data-dimension-value="${escapeHtml(targetId)}" type="number" step="any" value="${escapeHtml(String(dimension.value ?? ''))}" title="Значение"><button type="button" data-save-dimension="${escapeHtml(targetId)}">Назначить</button>`;
+    }
+    if (task.kind === 'verify_text') {
+      const label = (model.labels || []).find(item => item.id === targetId) || {};
+      controls = `<input data-verified-text="${escapeHtml(targetId)}" type="text" value="${escapeHtml(label.text || '')}"><button type="button" data-save-text="${escapeHtml(targetId)}">Подтвердить</button>`;
+    }
+    return `<div class="rowitem review-action"><div class="review-action-main"><span class="id">${escapeHtml(task.id)}</span><span class="meta">${escapeHtml(task.message || task.kind)}<small>${escapeHtml(targetId)}</small></span></div><div class="review-controls">${controls}</div></div>`;
+  }).join('');
+  const findingHtml = findings.map(item => `<div class="rowitem review-action review-severity-${escapeHtml(item.severity || 'review')}"><div class="review-action-main"><span class="id">${escapeHtml(item.id)}</span><span class="meta">${escapeHtml(item.message || item.code)}<small>${escapeHtml((item.targetIds || []).join(', '))}</small></span></div><div class="review-controls"><button type="button" data-resolve-finding="${escapeHtml(item.id)}">Проверено</button></div></div>`).join('');
+  list.innerHTML = taskHtml + findingHtml || '<div class="helper">Все замечания обработаны.</div>';
+
+  const run = async (button, payload) => { button.disabled = true; try { await persistReviewAction(payload); setAlert(''); } catch (error) { setAlert(error.message); button.disabled = false; } };
+  list.querySelectorAll('[data-save-symbol]').forEach(button => button.addEventListener('click', () => {
+    const targetId = button.dataset.saveSymbol;
+    run(button, { action: 'classify_symbol', targetId, symbolType: list.querySelector(`[data-symbol-type="${CSS.escape(targetId)}"]`)?.value, rotation: Number(list.querySelector(`[data-symbol-rotation="${CSS.escape(targetId)}"]`)?.value || 0) });
+  }));
+  list.querySelectorAll('[data-save-dimension]').forEach(button => button.addEventListener('click', () => {
+    const targetId = button.dataset.saveDimension;
+    run(button, { action: 'assign_dimension', targetId, pipeId: list.querySelector(`[data-dimension-pipe="${CSS.escape(targetId)}"]`)?.value, value: list.querySelector(`[data-dimension-value="${CSS.escape(targetId)}"]`)?.value });
+  }));
+  list.querySelectorAll('[data-save-text]').forEach(button => button.addEventListener('click', () => {
+    const targetId = button.dataset.saveText;
+    run(button, { action: 'verify_text', targetId, text: list.querySelector(`[data-verified-text="${CSS.escape(targetId)}"]`)?.value });
+  }));
+  list.querySelectorAll('[data-resolve-finding]').forEach(button => button.addEventListener('click', () => run(button, { action: 'resolve_finding', targetId: button.dataset.resolveFinding })));
+  list.querySelectorAll('[data-dismiss-task]').forEach(button => button.addEventListener('click', () => run(button, { action: 'dismiss_task', targetId: button.dataset.dismissTask })));
+}
+
 function renderTextList() {
   const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
@@ -1139,7 +1199,45 @@ function annotationExportLayer(item) {
 function svgEscape(value) {
   return escapeHtml(value);
 }
+function buildCleanLayoutSvg(layout) {
+  const template = layout.template || {};
+  const fields = template.fields || {};
+  const output = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 1200 850">',
+    '<rect width="1200" height="850" fill="#fff"/>',
+    '<g fill="none" stroke="#15191d" stroke-width="1"><rect x="24" y="24" width="1152" height="802"/><path d="M36 78H1164 M36 88H1164 M36 740H1164 M24 760H1176 M830 760V826"/><rect x="36" y="88" width="1128" height="652" stroke="#aeb5bb" stroke-width=".55"/></g>',
+    `<text x="600" y="45" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold">${svgEscape(fields.title || 'ТРУБОПРОВОДНАЯ СХЕМА')}</text>`,
+    `<text x="600" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="9">${svgEscape(fields.subtitle || 'ЧИСТОВАЯ КОМПОНОВКА')}</text>`,
+    `<text x="600" y="77" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">${svgEscape(fields.address || 'Адрес: требуется заполнить')}</text>`,
+    '<g data-layer="PIPE_MAIN" fill="none" stroke="#17212b" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">'
+  ];
+  for (const pipe of (layout.pipes || [])) {
+    const points = (pipe.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
+    if (points) output.push(`<polyline data-id="${svgEscape(pipe.id || '')}" points="${points}"/>`);
+  }
+  output.push('</g><g data-layer="SYMBOLS" fill="none" stroke="#111" stroke-width="1.25" stroke-linejoin="round">');
+  for (const symbol of (layout.symbols || [])) for (const primitive of (symbol.primitives || [])) {
+    if (primitive.kind === 'line') output.push(`<line x1="${primitive.from[0]}" y1="${primitive.from[1]}" x2="${primitive.to[0]}" y2="${primitive.to[1]}"/>`);
+    if (primitive.kind === 'polyline') output.push(`<polyline points="${primitive.points.map(point => point.join(',')).join(' ')}"/>`);
+    if (primitive.kind === 'circle') output.push(`<circle cx="${primitive.center[0]}" cy="${primitive.center[1]}" r="${primitive.radius}"/>`);
+  }
+  output.push('</g>');
+  for (const dimension of (layout.dimensions || [])) {
+    const position = dimension.position || [0, 0];
+    output.push(`<text data-layer="DIMENSIONS" x="${position[0]}" y="${position[1]}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" style="paint-order:stroke;stroke:#fff;stroke-width:2px">${svgEscape(dimension.rawText ?? dimension.value ?? '')}</text>`);
+  }
+  for (const label of (layout.labels || [])) {
+    const position = label.position || [0, 0];
+    output.push(`<text data-layer="LABELS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8" style="paint-order:stroke;stroke:#fff;stroke-width:2px">${svgEscape(label.text || '')}</text>`);
+  }
+  const legend = template.legend || [];
+  output.push('<g data-layer="LEGEND"><rect x="810" y="535" width="330" height="185" fill="none" stroke="#777" stroke-width=".7"/><text x="820" y="553" font-family="Arial,sans-serif" font-size="8" font-weight="bold">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ</text>');
+  legend.forEach((item, index) => output.push(`<text x="822" y="${573 + index * 22}" font-family="Arial,sans-serif" font-size="9">${svgEscape(item.code || '')}</text><text x="848" y="${573 + index * 22}" font-family="Arial,sans-serif" font-size="7">${svgEscape(item.label || '')}</text>`));
+  output.push('</g>', `<text x="820" y="758" font-family="Arial,sans-serif" font-size="7">Схему составил: ${svgEscape(fields.preparedBy || '____________')}</text>`, `<text x="820" y="780" font-family="Arial,sans-serif" font-size="7">Схему проверил: ${svgEscape(fields.checkedBy || '____________')}</text>`, '</svg>');
+  return output.join('\n');
+}
 function buildSheetSvg() {
+  if (graph.cleanLayout?.schema === 'cad-clean-layout/1.0') return buildCleanLayoutSvg(graph.cleanLayout);
   const width = graph.image.width;
   const height = graph.image.height;
   const pageWidth = 1200, pageHeight = 850;
@@ -1338,7 +1436,11 @@ function buildDxf() {
   return output.join('\n') + '\n';
 }
 $('exportSvg').addEventListener('click', () => downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml'));
-$('exportDxf').addEventListener('click', () => downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf'));
+$('exportDxf').addEventListener('click', () => {
+  if (graph?.dxfUrl && graph?.cleanLayout) {
+    const link = document.createElement('a'); link.href = graph.dxfUrl; link.download = 'reconstructed-scheme.dxf'; document.body.appendChild(link); link.click(); link.remove();
+  } else downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf');
+});
 $('exportJson').addEventListener('click', () => downloadFile('reconstruction-graph.json', JSON.stringify(graph, null, 2), 'application/json'));
 $('exportPdf').addEventListener('click', () => {
   const popup = window.open('', '_blank');

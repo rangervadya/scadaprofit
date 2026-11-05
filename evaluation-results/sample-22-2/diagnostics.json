@@ -1,0 +1,141 @@
+{
+  "schema": "cad-pipeline-diagnostics/1.0",
+  "status": "blocked",
+  "source": {
+    "name": "photo_2026-11-03_11-44-22 (2).jpg",
+    "bytes": 59435,
+    "sha256": "dc5908c517048030b786f30bc123c2725bb4c963c6d92a3b9391bfcd52f06deb"
+  },
+  "timingsMs": {
+    "preprocessing": 420.7,
+    "ocr": 180.0,
+    "qwen_pipe_trace": 63.1,
+    "opencv_geometry_and_topology": 1956.3,
+    "drawing_export_and_candidates": 819.6,
+    "total_before_graph_json_write": 3447.2
+  },
+  "stages": {
+    "geometry": {
+      "segments": 495,
+      "primaryPipes": 279,
+      "nodes": 671
+    },
+    "recognition": {
+      "labels": 0,
+      "symbols": 12,
+      "classifiedSymbols": 0,
+      "dimensions": 0,
+      "assignedDimensions": 0
+    },
+    "review": {
+      "openTasks": 331,
+      "openFindings": 167
+    }
+  },
+  "qualityGates": [
+    {
+      "id": "source-readable",
+      "passed": true,
+      "value": 59435
+    },
+    {
+      "id": "primary-geometry-present",
+      "passed": true,
+      "value": 279
+    },
+    {
+      "id": "primary-selection-not-sparse",
+      "passed": true,
+      "value": {
+        "segments": 495,
+        "primaryEdges": 279
+      }
+    },
+    {
+      "id": "no-engineering-errors",
+      "passed": false,
+      "value": 1
+    },
+    {
+      "id": "exports-created",
+      "passed": true,
+      "value": {
+        "clean.svg": 20494,
+        "drawing.dxf": 31934
+      }
+    }
+  ],
+  "blockingGates": [
+    "no-engineering-errors"
+  ],
+  "artifacts": [
+    {
+      "name": "prepared-input.png",
+      "exists": true,
+      "bytes": 490063
+    },
+    {
+      "name": "ink-mask.png",
+      "exists": true,
+      "bytes": 26670
+    },
+    {
+      "name": "blue-ink-mask.png",
+      "exists": true,
+      "bytes": 21256
+    },
+    {
+      "name": "dark-ink-mask.png",
+      "exists": true,
+      "bytes": 26418
+    },
+    {
+      "name": "primary-overlay.png",
+      "exists": true,
+      "bytes": 508242
+    },
+    {
+      "name": "text-region-mask.png",
+      "exists": true,
+      "bytes": 3438
+    },
+    {
+      "name": "handwritten-text-blocks.png",
+      "exists": true,
+      "bytes": 490063
+    },
+    {
+      "name": "clean.svg",
+      "exists": true,
+      "bytes": 20494
+    },
+    {
+      "name": "drawing.dxf",
+      "exists": true,
+      "bytes": 31934
+    },
+    {
+      "name": "graph.json",
+      "exists": false,
+      "bytes": 0
+    },
+    {
+      "name": "progress.log",
+      "exists": false,
+      "bytes": 0
+    }
+  ],
+  "warnings": [
+    "PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
+    "В 4.3.9 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
+    "Qwen-маршруты проходят проверку по исходным пикселям и добавляются в PIPE_MAIN только при подтверждении чернилами; остальные остаются в QWEN_REVIEW.",
+    "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
+    "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",
+    "OCR-рамки участвуют в маске геометрии даже при низкой уверенности текста; непрерывная труба через рамку сохраняется при подтверждении с обеих сторон.",
+    "Подтверждённые подписи экспортируются как VERIFIED_TEXT; сомнительные OCR-чтения выводятся отдельно на замороженный TEXT_REVIEW.",
+    "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
+    "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа.",
+    "Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.",
+    "Qwen не предоставила семантические маршруты для дополнительной проверки. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: Не удаётся подключиться к Ollama: <urlopen error [Errno 111] Connection refused> Действие: Проверьте, что контейнер Ollama запущен и адрес OLLAMA_CHAT_URL доступен из контейнера приложения."
+  ]
+}

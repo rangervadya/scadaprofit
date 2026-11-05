@@ -259,6 +259,7 @@ function attachJobUrls(jobId, graph, sourceName = null) {
   graph.inkUrl = `/jobs/${jobId}/ink-mask.png`;
   graph.svgUrl = `/jobs/${jobId}/clean.svg`;
   graph.dxfUrl = `/jobs/${jobId}/drawing.dxf`;
+  graph.diagnosticsUrl = `/jobs/${jobId}/diagnostics.json`;
   graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
   graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
   return graph;
@@ -888,6 +889,75 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
     const status = error?.code === 'ENOENT' ? 404 : 500;
     console.error(`[JOB ${jobId.slice(0, 8)}] Cannot save connection:`, error);
     return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить соединение.' });
+  }
+});
+
+app.post('/api/jobs/:jobId/review', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+  const action = String(req.body?.action || '').trim();
+  const targetId = String(req.body?.targetId || '').trim();
+  if (!action || !targetId || targetId.length > 64) return res.status(400).json({ error: 'Не указано действие или объект проверки.' });
+  const jobDir = path.join(DATA, jobId);
+  const graphPath = path.join(jobDir, 'graph.json');
+  try {
+    const graph = JSON.parse(await readFile(graphPath, 'utf8'));
+    const model = graph.documentModel;
+    if (!model || typeof model !== 'object') return res.status(409).json({ error: 'В задании нет редактируемой модели.' });
+    model.reviewTasks = Array.isArray(model.reviewTasks) ? model.reviewTasks : [];
+    model.validationFindings = Array.isArray(model.validationFindings) ? model.validationFindings : [];
+    const resolveTasks = kind => model.reviewTasks.forEach(task => {
+      if ((!kind || task.kind === kind) && (task.targetIds || []).map(String).includes(targetId)) task.status = 'resolved';
+    });
+    if (action === 'classify_symbol') {
+      const symbol = (model.symbols || []).find(item => String(item.id) === targetId);
+      const symbolType = String(req.body?.symbolType || '').trim();
+      const catalog = (graph.symbolCatalog || []).find(item => String(item.type) === symbolType);
+      if (!symbol) return res.status(404).json({ error: 'Кандидат символа не найден.' });
+      if (!catalog) return res.status(400).json({ error: 'Неизвестный тип CAD-символа.' });
+      Object.assign(symbol, { type: symbolType, catalogLabel: cleanLabel(catalog.label, 100),
+        rotation: Math.max(0, Math.min(359.99, Number(req.body?.rotation) || 0)),
+        ports: Array.isArray(catalog.ports) ? catalog.ports : [], state: 'primary' });
+      resolveTasks('classify_symbol');
+    } else if (action === 'assign_dimension') {
+      const dimension = (model.dimensions || []).find(item => String(item.id) === targetId);
+      const pipeId = String(req.body?.pipeId || '').trim();
+      const pipe = (model.pipes || []).find(item => String(item.id) === pipeId && item.state === 'primary');
+      if (!dimension) return res.status(404).json({ error: 'Размер не найден.' });
+      if (!pipe) return res.status(400).json({ error: 'Выберите подтверждённый участок трубопровода.' });
+      const numericValue = Number(req.body?.value);
+      if (Number.isFinite(numericValue) && numericValue >= 0) dimension.value = numericValue;
+      Object.assign(dimension, { targetId: pipeId, state: 'primary' });
+      resolveTasks('assign_dimension');
+    } else if (action === 'verify_text') {
+      const label = (model.labels || []).find(item => String(item.id) === targetId);
+      const text = cleanLabel(req.body?.text, 240);
+      if (!label) return res.status(404).json({ error: 'Подпись не найдена.' });
+      if (!text) return res.status(400).json({ error: 'Введите подтверждённый текст.' });
+      Object.assign(label, { text, state: 'primary' });
+      resolveTasks('verify_text');
+    } else if (action === 'resolve_finding') {
+      const finding = model.validationFindings.find(item => String(item.id) === targetId);
+      if (!finding) return res.status(404).json({ error: 'Замечание не найдено.' });
+      Object.assign(finding, { status: 'resolved', resolution: cleanLabel(req.body?.resolution || 'Проверено оператором', 180) });
+    } else if (action === 'dismiss_task') {
+      const task = model.reviewTasks.find(item => String(item.id) === targetId);
+      if (!task) return res.status(404).json({ error: 'Задание проверки не найдено.' });
+      task.status = 'dismissed';
+    } else return res.status(400).json({ error: 'Неподдерживаемое действие проверки.' });
+
+    model.status = model.reviewTasks.some(item => item.status === 'open') || model.validationFindings.some(item => item.status === 'open') ? 'needs_review' : 'confirmed';
+    graph.status = model.status;
+    const tempPath = `${graphPath}.tmp-${randomUUID()}`;
+    await writeFile(tempPath, JSON.stringify(graph, null, 2), 'utf8');
+    await rename(tempPath, graphPath);
+    const entries = await readdir(jobDir);
+    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    return res.json({ ok: true, graph: attachJobUrls(jobId, graph, sourceName) });
+  } catch (error) {
+    const status = error?.code === 'ENOENT' ? 404 : 500;
+    console.error(`[JOB ${jobId.slice(0, 8)}] Cannot save review action:`, error);
+    return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить решение проверки.' });
   }
 });
 

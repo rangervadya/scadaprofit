@@ -11,6 +11,10 @@
   <script src="/app.js?v=4.3.15" defer></script>
 </head>
 <body>
+  <nav class="product-switcher" aria-label="Разделы приложения">
+    <span class="product-switcher__current">Схемы домов</span>
+    <a href="/vdgo/">Технические заключения ВДГО</a>
+  </nav>
   <main class="app-shell">
     <div class="workspace-grid">
       <aside class="sidebar">
@@ -100,6 +104,12 @@
           <summary class="details-heading"><div><div class="step-label"><span>03C</span> АННОТАЦИИ</div><h2>Рукописные подписи</h2></div><span class="count-pill" id="textCount">0</span></summary>
           <p class="helper">Qwen читает подписи на увеличенных фрагментах листа. Распознанный текст экспортируется отдельными редактируемыми CAD TEXT; его штрихи не должны становиться трубами. Проверь цифры, поправь текст и сними галочку, чтобы убрать подпись с листа.</p>
           <div class="scrolllist" id="textList"></div>
+        </details>
+
+        <details class="card inspector-card" id="reviewPanel" hidden open>
+          <summary class="details-heading"><div><div class="step-label"><span>03D</span> ПРОВЕРКА</div><h2>Решения оператора</h2></div><span class="count-pill" id="reviewCount">0</span></summary>
+          <p class="helper">Выберите тип символа, назначьте размер участку или закройте замечание после сверки с исходным листом.</p>
+          <div class="scrolllist review-list" id="reviewList"></div>
         </details>
       </aside>
 

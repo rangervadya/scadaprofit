@@ -1,0 +1,141 @@
+{
+  "schema": "cad-example-evaluation/1.0",
+  "referenceFile": "photo_2026-11-05_19-00-31.jpg",
+  "inputCount": 7,
+  "readyCount": 0,
+  "blockedCount": 7,
+  "results": [
+    {
+      "file": "photo_2026-11-03_11-44-21.jpg",
+      "status": "blocked",
+      "segments": 998,
+      "primaryEdges": 594,
+      "openEndpoints": 949,
+      "crossings": 93,
+      "labels": 0,
+      "symbolCandidates": 19,
+      "reviewTasks": 595,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-22 (2).jpg",
+      "status": "blocked",
+      "segments": 495,
+      "primaryEdges": 279,
+      "openEndpoints": 484,
+      "crossings": 92,
+      "labels": 0,
+      "symbolCandidates": 12,
+      "reviewTasks": 331,
+      "blockingGates": [
+        "text-recognition-available",
+        "no-engineering-errors"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "excessive-crossings",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-22.jpg",
+      "status": "blocked",
+      "segments": 540,
+      "primaryEdges": 301,
+      "openEndpoints": 569,
+      "crossings": 57,
+      "labels": 0,
+      "symbolCandidates": 13,
+      "reviewTasks": 334,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-26.jpg",
+      "status": "blocked",
+      "segments": 938,
+      "primaryEdges": 548,
+      "openEndpoints": 865,
+      "crossings": 163,
+      "labels": 0,
+      "symbolCandidates": 20,
+      "reviewTasks": 612,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "excessive-crossings",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-27.jpg",
+      "status": "blocked",
+      "segments": 1018,
+      "primaryEdges": 607,
+      "openEndpoints": 994,
+      "crossings": 130,
+      "labels": 0,
+      "symbolCandidates": 15,
+      "reviewTasks": 617,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "excessive-crossings",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-28 (2).jpg",
+      "status": "blocked",
+      "segments": 1040,
+      "primaryEdges": 577,
+      "openEndpoints": 930,
+      "crossings": 234,
+      "labels": 0,
+      "symbolCandidates": 26,
+      "reviewTasks": 785,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "excessive-crossings",
+        "no-text-recognition"
+      ]
+    },
+    {
+      "file": "photo_2026-11-03_11-44-28.jpg",
+      "status": "blocked",
+      "segments": 984,
+      "primaryEdges": 552,
+      "openEndpoints": 968,
+      "crossings": 126,
+      "labels": 0,
+      "symbolCandidates": 20,
+      "reviewTasks": 636,
+      "blockingGates": [
+        "text-recognition-available"
+      ],
+      "qualityFlags": [
+        "excessive-open-endpoints",
+        "excessive-crossings",
+        "no-text-recognition"
+      ]
+    }
+  ]
+}

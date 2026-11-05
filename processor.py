@@ -24,6 +24,17 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from structured_model import build_document_model
+from recognition_channels import split_recognition_channels
+from cad_symbols import catalog_manifest
+from topology_reconstruction import attach_pipes_to_symbols
+from annotation_linking import link_annotations
+from engineering_validation import validate_engineering_model
+from clean_layout import build_clean_layout
+from clean_export import build_layout_svg, build_layout_dxf
+from drawing_template import build_drawing_template
+from pipeline_diagnostics import build_pipeline_diagnostics
+
 
 def _progress(stage: str, message: str) -> None:
     """Emit a concise, immediately flushed progress line for the parent process."""
@@ -36,6 +47,87 @@ def _progress(stage: str, message: str) -> None:
 def load_image(path: str) -> np.ndarray:
     pil = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+
+def _order_quad(points: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32).reshape(4, 2)
+    ordered = np.zeros((4, 2), dtype=np.float32)
+    sums, diffs = points.sum(axis=1), np.diff(points, axis=1).reshape(-1)
+    ordered[0], ordered[2] = points[np.argmin(sums)], points[np.argmax(sums)]
+    ordered[1], ordered[3] = points[np.argmin(diffs)], points[np.argmax(diffs)]
+    return ordered
+
+
+def _detect_page_quad(bgr: np.ndarray) -> np.ndarray | None:
+    """Find a large four-corner paper boundary; return None when uncertain."""
+    h, w = bgr.shape[:2]
+    scale = min(1.0, 1400.0 / max(h, w))
+    small = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 35, 110)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8), iterations=2)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    image_area = float(small.shape[0] * small.shape[1])
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:12]:
+        if cv2.contourArea(contour) < image_area * 0.42:
+            break
+        perimeter = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.018 * perimeter, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            quad = _order_quad(approx.reshape(4, 2) / scale)
+            side_lengths = [np.linalg.norm(quad[(i + 1) % 4] - quad[i]) for i in range(4)]
+            if min(side_lengths) >= min(h, w) * 0.35:
+                return quad
+    return None
+
+
+def _warp_page(bgr: np.ndarray, quad: np.ndarray) -> np.ndarray:
+    tl, tr, br, bl = _order_quad(quad)
+    width = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
+    height = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
+    target_w, target_h = max(2, int(round(width))), max(2, int(round(height)))
+    destination = np.array([[0, 0], [target_w - 1, 0], [target_w - 1, target_h - 1], [0, target_h - 1]], dtype=np.float32)
+    transform = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl], dtype=np.float32), destination)
+    return cv2.warpPerspective(bgr, transform, (target_w, target_h), borderValue=(255, 255, 255))
+
+
+def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float]:
+    """Use Tesseract OSD when it is confident; otherwise preserve orientation."""
+    try:
+        import pytesseract
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        result = pytesseract.image_to_osd(Image.fromarray(rgb), config='--psm 0')
+        rotate_match = re.search(r'Rotate:\s*(0|90|180|270)', result)
+        confidence_match = re.search(r'Orientation confidence:\s*([0-9.]+)', result)
+        rotation = int(rotate_match.group(1)) if rotate_match else 0
+        confidence = float(confidence_match.group(1)) if confidence_match else 0.0
+        return (rotation, confidence) if confidence >= 3.0 else (0, confidence)
+    except Exception:
+        return 0, 0.0
+
+
+def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+    """Rectify a photographed page and rotate confidently detected text upright."""
+    original_h, original_w = bgr.shape[:2]
+    quad = _detect_page_quad(bgr)
+    prepared = _warp_page(bgr, quad) if quad is not None else bgr.copy()
+    if rotation_degrees is None:
+        rotation_degrees, orientation_confidence = _detect_text_rotation(prepared)
+    else:
+        orientation_confidence = 100.0
+    rotation_degrees = int(rotation_degrees or 0) % 360
+    rotate_codes = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    if rotation_degrees in rotate_codes:
+        prepared = cv2.rotate(prepared, rotate_codes[rotation_degrees])
+    return prepared, {
+        "original_width": original_w, "original_height": original_h,
+        "page_quad_detected": quad is not None,
+        "perspective_corrected": quad is not None,
+        "rotation_degrees": rotation_degrees,
+        "orientation_confidence": round(float(orientation_confidence), 2),
+        "prepared_width": int(prepared.shape[1]), "prepared_height": int(prepared.shape[0]),
+    }
 
 
 def normalize_document(bgr: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
@@ -54,11 +146,9 @@ def normalize_document(bgr: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
     return norm, {"background_kernel": int(k), "contrast_p01": float(p1), "contrast_p99": float(p99)}
 
 
-def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
+def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, np.ndarray]:
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    # Blue / violet pen plus dark pencil / black ink. Keep separate categories only
-    # as a union; do not classify OCR regions as non-geometry.
     blue = ((h >= 82) & (h <= 155) & (s >= 22) & (v <= 252)).astype(np.uint8) * 255
     dark = (norm_gray < 158).astype(np.uint8) * 255
     combined = cv2.bitwise_or(blue, dark)
@@ -69,7 +159,11 @@ def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
     for i in range(1, n):
         if stats[i, cv2.CC_STAT_AREA] >= min_area:
             out[labels == i] = 255
-    return out
+    return {"blue": cv2.bitwise_and(blue, out), "dark": cv2.bitwise_and(dark, out), "combined": out}
+
+
+def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
+    return make_ink_layers(bgr, norm_gray)["combined"]
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:
@@ -3597,19 +3691,25 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     Path(out_dir).mkdir(parents=True,exist_ok=True)
     _progress('JOB', 'Image preprocessing started')
     stage_started = time.perf_counter()
-    bgr=load_image(input_path); h,w=bgr.shape[:2]
+    source_bgr = load_image(input_path)
+    bgr, preparation = prepare_document_image(source_bgr)
+    h,w=bgr.shape[:2]
+    prepared_input_path = str(Path(out_dir) / 'prepared-input.png')
+    cv2.imwrite(prepared_input_path, bgr)
     gray,prep=normalize_document(bgr)
-    ink=make_ink_mask(bgr,gray)
+    prep.update(preparation)
+    ink_layers = make_ink_layers(bgr, gray)
+    ink = ink_layers['combined']
     timings_ms['preprocessing'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('JOB', f'Image preprocessing completed: {w}x{h}; {timings_ms["preprocessing"]:.1f} ms')
     _progress('OCR', 'OCR pipeline started')
     stage_started = time.perf_counter()
-    annotations, ocr_status = ocr_annotations(input_path, gray)
+    annotations, ocr_status = ocr_annotations(prepared_input_path, gray)
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
     _progress('PIPE', 'CAD pipe-route trace started')
     stage_started = time.perf_counter()
-    semantic_routes, route_status = _qwen_semantic_routes(input_path, w, h)
+    semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h)
     timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; {timings_ms["qwen_pipe_trace"]:.1f} ms')
     _progress('CAD', 'Graph construction started')
@@ -3696,6 +3796,8 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.34, (255, 145, 20), 1, cv2.LINE_AA)
     cv2.imwrite(str(Path(out_dir)/'handwritten-text-blocks.png'), note_overlay)
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
+    cv2.imwrite(str(Path(out_dir)/'blue-ink-mask.png'), ink_layers['blue'])
+    cv2.imwrite(str(Path(out_dir)/'dark-ink-mask.png'), ink_layers['dark'])
     _progress('EXPORT', 'SVG and DXF export started')
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
@@ -3708,7 +3810,26 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     _progress('CAD', f'Endpoint continuation candidates: total={len(joins)} high={sum(1 for item in joins if item.get("priority")=="high")} review={sum(1 for item in joins if item.get("priority")!="high")}')
     timings_ms['drawing_export_and_candidates'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
+    recognition_channels = split_recognition_channels(w, h, components, edges, annotations)
+    document_model = build_document_model(
+        w, h, nodes, edges, annotations, crossings, joins, recognition_channels
+    )
+    document_model, topology_diagnostics = attach_pipes_to_symbols(document_model)
+    document_model, annotation_linking_diagnostics = link_annotations(document_model)
+    document_model, engineering_validation = validate_engineering_model(document_model)
+    drawing_template = build_drawing_template()
+    clean_layout, clean_layout_diagnostics = build_clean_layout(document_model, template=drawing_template)
+    Path(out_dir,'clean.svg').write_text(build_layout_svg(clean_layout), encoding='utf-8')
+    Path(out_dir,'drawing.dxf').write_text(build_layout_dxf(clean_layout), encoding='utf-8')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
+           "documentModel":document_model,
+           "recognitionChannels":recognition_channels,
+           "symbolCatalog":catalog_manifest(),
+           "topologyDiagnostics":topology_diagnostics,
+           "annotationLinkingDiagnostics":annotation_linking_diagnostics,
+           "engineeringValidation":engineering_validation,
+           "cleanLayout":clean_layout,"cleanLayoutDiagnostics":clean_layout_diagnostics,
+           "drawingTemplate":drawing_template,
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "timings_ms":timings_ms,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
@@ -3779,6 +3900,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
+    diagnostics = build_pipeline_diagnostics(input_path, out_dir, graph)
+    graph['diagnostics'] = diagnostics
+    Path(out_dir,'diagnostics.json').write_text(json.dumps(diagnostics,ensure_ascii=False,indent=2),encoding='utf-8')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     _progress('EXPORT', 'graph.json written; all output files completed')
     _progress('JOB', 'Analysis completed successfully')

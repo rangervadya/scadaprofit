@@ -1,0 +1,11 @@
+.env
+.venv/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+backend/output/*
+!backend/output/.keep
+backend/uploads/*
+!backend/uploads/.keep
+*.pyc

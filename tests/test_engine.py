@@ -12,6 +12,16 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import processor
+from structured_model import build_document_model, validate_document_model
+from recognition_channels import split_recognition_channels
+from cad_symbols import assign_symbol_type, symbol_primitives
+from topology_reconstruction import attach_pipes_to_symbols
+from annotation_linking import link_annotations
+from engineering_validation import validate_engineering_model
+from clean_layout import build_clean_layout
+from clean_export import build_layout_svg, build_layout_dxf
+from drawing_template import build_drawing_template
+from pipeline_diagnostics import build_pipeline_diagnostics
 
 
 class GraphTests(unittest.TestCase):
@@ -21,6 +31,268 @@ class GraphTests(unittest.TestCase):
 
     def tearDown(self):
         self._grid_patch.stop()
+
+    def test_document_model_converts_graph_and_creates_review_tasks(self):
+        nodes = [
+            {"id": "N1", "x": 10, "y": 20, "degree": 1, "review": True},
+            {"id": "N2", "x": 90, "y": 20, "degree": 1, "review": True},
+        ]
+        edges = [{
+            "id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 20], [90, 20]],
+            "confidence": .72, "detector": "LSD", "cad_include": False,
+        }]
+        annotations = [{
+            "id": "A1", "text": "1500", "bbox": {"x": 40, "y": 5, "w": 24, "h": 10},
+            "confidence": 45, "verified": False, "source": "qwen3-vl",
+        }]
+        model = build_document_model(100, 80, nodes, edges, annotations)
+        self.assertEqual(model["schema"], "cad-document-model/1.0")
+        self.assertEqual(model["status"], "needs_review")
+        self.assertEqual(model["pipes"][0]["state"], "review")
+        self.assertEqual(model["labels"][0]["role"], "unassigned")
+        self.assertEqual({task["kind"] for task in model["reviewTasks"]}, {"confirm_pipe", "verify_text"})
+        self.assertEqual(validate_document_model(model), [])
+
+    def test_document_model_validation_rejects_broken_references(self):
+        model = build_document_model(
+            100, 80,
+            [{"id": "N1", "x": 10, "y": 20, "degree": 1, "review": False}],
+            [], [],
+        )
+        model["pipes"] = [{
+            "id": "E1", "fromNode": "N1", "toNode": "N404",
+            "geometry": [[10, 20], [90, 20]], "state": "primary",
+        }]
+        errors = validate_document_model(model)
+        self.assertTrue(any("unknown node" in error for error in errors))
+
+    def test_recognition_channels_separate_symbol_dimension_and_text(self):
+        components = [{
+            "id": "C1", "role": "ambiguous", "edge_count": 6,
+            "bbox": {"x": 40, "y": 40, "w": 28, "h": 24},
+            "ocr_overlap_ratio": 0.02, "edge_density": 2.1,
+            "max_node_degree": 4, "text_crossing_suspect": False,
+        }]
+        edges = [{"id": "E1", "component_id": "C1", "cad_include": False}]
+        annotations = [
+            {"id": "A1", "text": "1500", "confidence": 82, "bbox": {"x": 5, "y": 5, "w": 30, "h": 10}},
+            {"id": "A2", "text": "ввод", "confidence": 75, "bbox": {"x": 5, "y": 20, "w": 35, "h": 10}},
+        ]
+        channels = split_recognition_channels(400, 300, components, edges, annotations)
+        self.assertEqual(len(channels["symbolCandidates"]), 1)
+        self.assertEqual(channels["dimensionCandidates"][0]["kind"], "length")
+        self.assertEqual(channels["textAnnotationIds"], ["A2"])
+
+    def test_document_model_links_dimension_label_and_review_task(self):
+        annotations = [{
+            "id": "A1", "text": "DN 50", "confidence": 88, "verified": True,
+            "bbox": {"x": 5, "y": 5, "w": 30, "h": 10},
+        }]
+        channels = split_recognition_channels(100, 80, [], [], annotations)
+        model = build_document_model(100, 80, [], [], annotations, recognition_channels=channels)
+        self.assertEqual(model["dimensions"][0]["kind"], "diameter")
+        self.assertEqual(model["labels"][0]["role"], "dimension_value")
+        self.assertEqual(model["labels"][0]["targetId"], model["dimensions"][0]["id"])
+        self.assertEqual([task["kind"] for task in model["reviewTasks"]], ["assign_dimension"])
+        self.assertEqual(validate_document_model(model), [])
+
+    def test_symbol_assignment_resolves_review_without_mutating_source(self):
+        model = {
+            "status": "needs_review",
+            "symbols": [{"id": "S1", "visualClass": "unknown_compact_mark", "bbox": {"x": 20, "y": 20, "w": 20, "h": 20}, "state": "review"}],
+            "reviewTasks": [{"id": "R1", "kind": "classify_symbol", "targetIds": ["S1"], "status": "open"}],
+        }
+        updated = assign_symbol_type(model, "S1", "shutoff_valve", rotation=90)
+        self.assertNotIn("type", model["symbols"][0])
+        self.assertEqual(updated["symbols"][0]["type"], "shutoff_valve")
+        self.assertEqual(updated["symbols"][0]["rotation"], 90)
+        self.assertEqual(updated["reviewTasks"][0]["status"], "resolved")
+        self.assertEqual(updated["status"], "confirmed")
+
+    def test_catalog_symbol_maps_to_export_primitives(self):
+        symbol = {"type": "coupling", "bbox": {"x": 40, "y": 30, "w": 20, "h": 20}, "rotation": 0}
+        primitives = symbol_primitives(symbol)
+        self.assertEqual([item["kind"] for item in primitives], ["line", "line", "line", "line"])
+        self.assertEqual(primitives[0]["from"], [40.0, 40.0])
+        self.assertEqual(primitives[-1]["to"], [60.0, 40.0])
+
+    def test_confirmed_symbol_connects_two_nearby_pipe_endpoints(self):
+        model = {
+            "status": "confirmed",
+            "nodes": [
+                {"id": "N1", "position": [35, 50], "kind": "endpoint", "state": "review"},
+                {"id": "N2", "position": [65, 50], "kind": "endpoint", "state": "review"},
+            ],
+            "pipes": [
+                {"id": "E1", "fromNode": "N1", "toNode": "N1", "geometry": [[10, 50], [35, 50]]},
+                {"id": "E2", "fromNode": "N2", "toNode": "N2", "geometry": [[65, 50], [90, 50]]},
+            ],
+            "symbols": [{"id": "S1", "type": "shutoff_valve", "bbox": {"x": 40, "y": 40, "w": 20, "h": 20}, "rotation": 0, "state": "primary"}],
+            "reviewTasks": [],
+        }
+        updated, diagnostics = attach_pipes_to_symbols(model)
+        self.assertEqual(diagnostics, {"attachedPorts": 2, "unresolvedPorts": 0, "throughLinks": 1})
+        self.assertEqual(updated["nodes"][0]["position"], [40.0, 50.0])
+        self.assertEqual(updated["nodes"][1]["position"], [60.0, 50.0])
+        self.assertEqual(updated["topologyLinks"][0]["symbolId"], "S1")
+
+    def test_distant_endpoint_is_not_connected_to_symbol(self):
+        model = {
+            "status": "confirmed",
+            "nodes": [{"id": "N1", "position": [5, 5], "kind": "endpoint", "state": "review"}],
+            "pipes": [],
+            "symbols": [{"id": "S1", "type": "terminal_cap", "bbox": {"x": 40, "y": 40, "w": 20, "h": 20}, "rotation": 0, "state": "primary"}],
+            "reviewTasks": [],
+        }
+        updated, diagnostics = attach_pipes_to_symbols(model, tolerance_px=8)
+        self.assertEqual(diagnostics["attachedPorts"], 0)
+        self.assertEqual(diagnostics["unresolvedPorts"], 1)
+        self.assertEqual(updated["reviewTasks"][0]["kind"], "connect_symbol_port")
+
+    def test_dimension_links_to_single_nearby_primary_pipe(self):
+        model = {
+            "status": "needs_review", "sourceImage": {"width": 400, "height": 300},
+            "pipes": [{"id": "E1", "geometry": [[20, 100], [300, 100]], "state": "primary"}],
+            "symbols": [],
+            "dimensions": [{"id": "D1", "sourceAnnotationId": "A1", "bbox": {"x": 120, "y": 70, "w": 30, "h": 12}, "state": "review"}],
+            "labels": [{"id": "A1", "text": "1500", "bbox": {"x": 120, "y": 70, "w": 30, "h": 12}, "targetId": "D1", "role": "dimension_value"}],
+            "reviewTasks": [{"id": "R1", "kind": "assign_dimension", "targetIds": ["D1", "A1"], "status": "open"}],
+        }
+        updated, diagnostics = link_annotations(model)
+        self.assertEqual(updated["dimensions"][0]["targetId"], "E1")
+        self.assertEqual(updated["dimensions"][0]["state"], "primary")
+        self.assertEqual(updated["reviewTasks"][0]["status"], "resolved")
+        self.assertEqual(diagnostics["linkedDimensions"], 1)
+
+    def test_dimension_between_two_equal_pipes_keeps_alternatives(self):
+        model = {
+            "status": "needs_review", "sourceImage": {"width": 400, "height": 300},
+            "pipes": [
+                {"id": "E1", "geometry": [[20, 90], [300, 90]], "state": "primary"},
+                {"id": "E2", "geometry": [[20, 110], [300, 110]], "state": "primary"},
+            ],
+            "symbols": [],
+            "dimensions": [{"id": "D1", "sourceAnnotationId": "A1", "bbox": {"x": 120, "y": 94, "w": 30, "h": 12}, "state": "review"}],
+            "labels": [], "reviewTasks": [],
+        }
+        updated, diagnostics = link_annotations(model)
+        self.assertIsNone(updated["dimensions"][0].get("targetId"))
+        self.assertEqual(updated["dimensions"][0]["candidateTargetIds"], ["E1", "E2"])
+        self.assertEqual(diagnostics["ambiguousDimensions"], 1)
+
+    def test_engineering_validation_reports_open_ends_and_unassigned_dimension(self):
+        model = {
+            "status": "confirmed",
+            "nodes": [
+                {"id": "N1", "position": [10, 20], "kind": "endpoint"},
+                {"id": "N2", "position": [90, 20], "kind": "endpoint"},
+            ],
+            "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[10, 20], [90, 20]], "state": "primary"}],
+            "symbols": [], "topologyLinks": [],
+            "dimensions": [{"id": "D1", "targetId": None}],
+            "labels": [], "reviewTasks": [],
+        }
+        updated, report = validate_engineering_model(model)
+        self.assertEqual(report["counts"]["review"], 2)
+        self.assertEqual(report["counts"]["warning"], 1)
+        self.assertEqual({item["code"] for item in updated["validationFindings"]}, {"open_endpoint", "unassigned_dimension"})
+        self.assertEqual(updated["status"], "needs_review")
+
+    def test_engineering_validation_reports_disconnected_network_and_duplicate_number(self):
+        model = {
+            "status": "confirmed",
+            "nodes": [
+                {"id": "N1", "position": [0, 0], "kind": "endpoint", "symbolId": "S0"},
+                {"id": "N2", "position": [10, 0], "kind": "endpoint", "symbolId": "S0"},
+                {"id": "N3", "position": [50, 0], "kind": "endpoint", "symbolId": "S0"},
+                {"id": "N4", "position": [60, 0], "kind": "endpoint", "symbolId": "S0"},
+            ],
+            "pipes": [
+                {"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[0, 0], [10, 0]], "state": "primary"},
+                {"id": "E2", "fromNode": "N3", "toNode": "N4", "geometry": [[50, 0], [60, 0]], "state": "primary"},
+            ],
+            "symbols": [], "topologyLinks": [], "dimensions": [],
+            "labels": [
+                {"id": "A1", "text": "3", "role": "section_number"},
+                {"id": "A2", "text": "3", "role": "section_number"},
+            ],
+            "reviewTasks": [],
+        }
+        _, report = validate_engineering_model(model)
+        self.assertEqual(report["networkComponents"], 2)
+        self.assertEqual({item["code"] for item in report["findings"]}, {"disconnected_network", "duplicate_number"})
+
+    def test_clean_layout_snaps_near_horizontal_pipe_without_breaking_endpoints(self):
+        model = {
+            "nodes": [
+                {"id": "N1", "position": [10, 20]},
+                {"id": "N2", "position": [110, 25]},
+            ],
+            "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[10, 20], [110, 25]], "state": "primary"}],
+            "symbols": [], "dimensions": [], "labels": [],
+        }
+        layout, diagnostics = build_clean_layout(model)
+        self.assertEqual(diagnostics["snappedHorizontalPipes"], 1)
+        self.assertEqual(layout["nodes"][0]["position"][1], layout["nodes"][1]["position"][1])
+        self.assertEqual(layout["pipes"][0]["geometry"][0], layout["nodes"][0]["position"])
+        self.assertEqual(layout["pipes"][0]["geometry"][-1], layout["nodes"][1]["position"])
+
+    def test_clean_layout_places_linked_dimension_and_label(self):
+        model = {
+            "nodes": [{"id": "N1", "position": [0, 0]}, {"id": "N2", "position": [100, 0]}],
+            "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[0, 0], [100, 0]], "state": "primary"}],
+            "symbols": [],
+            "dimensions": [{"id": "D1", "targetId": "E1", "value": 1500, "state": "primary"}],
+            "labels": [{"id": "A1", "text": "участок 1", "targetId": "E1", "role": "pipe_label", "state": "primary"}],
+        }
+        layout, diagnostics = build_clean_layout(model)
+        self.assertEqual(len(layout["dimensions"]), 1)
+        self.assertEqual(len(layout["labels"]), 1)
+        self.assertEqual(diagnostics["placedDimensions"], 1)
+
+    def test_clean_layout_exports_pipe_symbol_dimension_and_label(self):
+        layout = {
+            "page": {"width": 1200, "height": 850},
+            "pipes": [{"id": "E1", "geometry": [[100, 200], [300, 200]]}],
+            "symbols": [{"id": "S1", "primitives": [{"kind": "circle", "center": [200, 200], "radius": 8}]}],
+            "dimensions": [{"id": "D1", "rawText": "1500", "position": [200, 180]}],
+            "labels": [{"id": "A1", "text": "участок 1", "position": [210, 220]}],
+        }
+        svg = build_layout_svg(layout)
+        dxf = build_layout_dxf(layout)
+        self.assertIn('data-layer="PIPE_MAIN"', svg)
+        self.assertIn('<circle', svg)
+        self.assertIn('1500', svg)
+        self.assertIn('8\nSYMBOLS\n100\nAcDbCircle', dxf)
+        self.assertIn('8\nDIMENSIONS\n100\nAcDbText', dxf)
+
+    def test_reference_template_exports_title_address_legend_and_signatures(self):
+        template = build_drawing_template({"address": "г. Казань, ул. Тестовая, 1", "preparedBy": "А.А. Автор"})
+        layout, _ = build_clean_layout({"nodes": [], "pipes": [], "symbols": [], "dimensions": [], "labels": []}, template=template)
+        svg = build_layout_svg(layout)
+        self.assertIn('Схема неразрушающего контроля', svg)
+        self.assertIn('г. Казань, ул. Тестовая, 1', svg)
+        self.assertIn('УСЛОВНЫЕ ОБОЗНАЧЕНИЯ', svg)
+        self.assertIn('А.А. Автор', svg)
+
+    def test_pipeline_diagnostics_reports_quality_gates_and_artifacts(self):
+        with TemporaryDirectory() as temporary:
+            source = Path(temporary, 'source.png')
+            source.write_bytes(b'example-source')
+            Path(temporary, 'clean.svg').write_text('<svg/>', encoding='utf-8')
+            Path(temporary, 'drawing.dxf').write_text('0\nEOF\n', encoding='utf-8')
+            graph = {
+                'summary': {'segment_candidates': 4, 'cad_primary_edges': 1},
+                'documentModel': {'nodes': [{"id": "N1"}], 'pipes': [{"id": "E1", "state": "primary"}],
+                                  'labels': [], 'symbols': [], 'dimensions': [], 'reviewTasks': [], 'validationFindings': []},
+                'ocr': {'qwen': {'available': True}, 'tesseract': {'available': False}},
+                'warnings': [], 'timings_ms': {'preprocessing': 12.5},
+            }
+            diagnostics = build_pipeline_diagnostics(str(source), temporary, graph)
+            self.assertEqual(diagnostics['status'], 'ready')
+            self.assertEqual(diagnostics['stages']['geometry']['primaryPipes'], 1)
+            self.assertTrue(all(item['passed'] for item in diagnostics['qualityGates']))
+            self.assertEqual(len(diagnostics['source']['sha256']), 64)
 
     def test_near_endpoints_are_snapped_to_same_node(self):
         segments = [
@@ -650,6 +922,24 @@ class GraphTests(unittest.TestCase):
         candidates = processor.extract_segments(gray, ink, [])
         self.assertEqual(len(candidates), 1)
         self.assertGreater(candidates[0]['length'], 200)
+
+    def test_document_preparation_applies_explicit_quarter_turn(self):
+        image = np.full((60, 120, 3), 255, np.uint8)
+        cv2.line(image, (10, 15), (100, 15), (0, 0, 0), 2)
+        prepared, diagnostics = processor.prepare_document_image(image, rotation_degrees=90)
+        self.assertEqual(prepared.shape[:2], (120, 60))
+        self.assertEqual(diagnostics['rotation_degrees'], 90)
+
+    def test_ink_layers_keep_blue_and_dark_separate(self):
+        image = np.full((80, 160, 3), 255, np.uint8)
+        cv2.line(image, (10, 20), (140, 20), (180, 40, 20), 3)
+        cv2.line(image, (10, 60), (140, 60), (20, 20, 20), 3)
+        gray, _ = processor.normalize_document(image)
+        layers = processor.make_ink_layers(image, gray)
+        self.assertGreater(np.count_nonzero(layers['blue']), 0)
+        self.assertGreater(np.count_nonzero(layers['dark']), 0)
+        self.assertTrue(np.all(layers['combined'] >= layers['blue']))
+        self.assertTrue(np.all(layers['combined'] >= layers['dark']))
 
     def test_angled_duplicate_segments_merge_only_with_continuous_ink_band(self):
         # Two detectors can follow the same broad physical stroke at different
