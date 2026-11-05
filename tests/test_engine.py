@@ -449,7 +449,7 @@ class GraphTests(unittest.TestCase):
             from PIL import Image as PILImage
             PILImage.new('RGB', (1000, 800), 'white').save(image_path)
             response_body = {"message": {"content": json.dumps({"annotations": [
-                {"text": "1500", "bbox": {"x": 100, "y": 80, "w": 60, "h": 20}, "confidence": 91}
+                {"text": "1500", "bbox": [100, 80, 160, 100], "confidence": 91}
             ]})}}
             class FakeResponse:
                 def __enter__(self): return self
@@ -558,6 +558,7 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(len(routes), 1)
             self.assertEqual(routes[0]['confidence'], 60)
             self.assertTrue(routes[0]['confidence_assumed'])
+            self.assertEqual(routes[0]['points'], [[100.0, 100.0], [800.0, 100.0], [800.0, 600.0]])
             self.assertTrue(status['available'])
 
     def test_qwen_accepts_simple_coordinate_array_as_single_route(self):
@@ -850,6 +851,7 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(ocr_kwargs['num_predict'], 2048)
                 self.assertEqual(ocr_kwargs['format_schema']['required'], ['annotations'])
                 self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['maxItems'], 64)
+                self.assertEqual(ocr_kwargs['format_schema']['properties']['annotations']['items']['properties']['bbox']['type'], 'array')
 
             with patch.dict(os.environ, {
                 'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
@@ -861,9 +863,9 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(pipe_kwargs['num_predict'], 2048)
                 self.assertEqual(pipe_kwargs['format_schema']['required'], ['routes'])
                 route_item = pipe_kwargs['format_schema']['properties']['routes']['items']
-                self.assertEqual(route_item['properties']['points']['maxItems'], 2)
+                self.assertEqual(route_item['properties']['points']['maxItems'], 64)
                 self.assertEqual(pipe_kwargs['format_schema']['properties']['routes']['maxItems'], 64)
-                self.assertIn('каждый видимый прямой участок трубы отдельно', call.call_args.args[1])
+                self.assertIn('одну полилинию', call.call_args.args[1].lower())
 
     def test_qwen_call_accepts_schema_and_marks_truncated_generation(self):
         class FakeResponse:
@@ -1053,7 +1055,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 timeout=30, max_edge=1024, max_tokens=1200
             )
         self.assertEqual(len(lines), 3)
-        self.assertEqual(qwen.call_count, 3)
+        self.assertEqual(qwen.call_count, 4)  # one paired attempt plus individual fallback for 3 rows
         self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
 
     def test_numbered_left_margin_detector_finds_all_ten_note_rows(self):
@@ -1073,7 +1075,7 @@ class Recovery431RegressionTests(unittest.TestCase):
         centers = [float(row['center_y']) for row in rows]
         self.assertTrue(all(14 <= b-a <= 20 for a, b in zip(centers, centers[1:])))
 
-    def test_numbered_note_ocr_sends_one_qwen_request_per_row(self):
+    def test_numbered_note_ocr_batches_two_rows_and_keeps_all_verified_lines(self):
         from PIL import Image as PILImage
         canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
         for i in range(10):
@@ -1087,20 +1089,63 @@ class Recovery431RegressionTests(unittest.TestCase):
         block = processor._candidate_handwritten_text_blocks([], 980, 490, max_blocks=2, image=image)[0]
         calls = []
         def fake_qwen(crop, prompt, **kwargs):
-            calls.append((crop.size, prompt))
+            calls.append((crop.size, prompt, kwargs.get('format_schema')))
             idx = len(calls)
-            return {'text': f'{idx}) Test row (0{idx:03d})', 'confidence': 75}, 1.0, crop.size
+            return {'rows': [
+                {'text': f'{idx*2-1}) Test row (0{idx*2-1:03d})', 'confidence': 75},
+                {'text': f'{idx*2}) Test row (0{idx*2:03d})', 'confidence': 75},
+            ]}, 1.0, crop.size
         with patch('processor._qwen_call', side_effect=fake_qwen):
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=30, max_edge=1024, max_tokens=1200
             )
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 5)
         self.assertEqual(len(lines), 10)
+        self.assertEqual([line['row_index'] for line in lines], list(range(1, 11)))
         self.assertTrue(all(line['source'] == 'qwen3-vl-block' for line in lines))
         self.assertTrue(all(line['geometry_exclude'] for line in lines))
+        self.assertTrue(all(line['verified'] for line in lines))
         self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
         self.assertEqual(diagnostics[0]['rows_detected'], 10)
+        self.assertEqual(diagnostics[0]['row_batches'], 5)
+        self.assertEqual(diagnostics[0]['single_row_fallbacks'], 0)
+        self.assertTrue(all(call[2]['required'] == ['rows'] for call in calls))
+        self.assertTrue(all('ровно две соседние строки' in call[1].lower() for call in calls))
+
+    def test_batched_note_ocr_retries_only_the_uncertain_row_individually(self):
+        from PIL import Image as PILImage
+        canvas = np.full((490, 980, 3), 248, dtype=np.uint8)
+        for i in range(10):
+            y = 285 + i * 17
+            cv2.circle(canvas, (595, y), 7, (68, 78, 125), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(i + 1), (591, y + 3), cv2.FONT_HERSHEY_SIMPLEX, .35,
+                        (68, 78, 125), 1, cv2.LINE_AA)
+            cv2.putText(canvas, 'KCL + pump / line (0405)', (612, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
+        image = PILImage.fromarray(canvas)
+        block = processor._candidate_handwritten_text_blocks([], 980, 490, max_blocks=2, image=image)[0]
+        calls = []
+        def fake_qwen(crop, prompt, **kwargs):
+            calls.append(kwargs.get('format_schema'))
+            if kwargs.get('format_schema') is processor.OCR_ROWS_RESPONSE_SCHEMA:
+                batch_no = sum(1 for schema in calls if schema is processor.OCR_ROWS_RESPONSE_SCHEMA)
+                rows_response = [
+                    {'text': f'{batch_no*2-1}) Verified line', 'confidence': 82},
+                    {'text': f'{batch_no*2}) Uncertain line', 'confidence': 35 if batch_no == 1 else 82},
+                ]
+                return {'rows': rows_response}, 1.0, crop.size
+            return {'text': '2) Verified by fallback', 'confidence': 85}, 1.0, crop.size
+        with patch('processor._qwen_call', side_effect=fake_qwen):
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(len(lines), 10)
+        self.assertEqual(len(calls), 6)  # five paired calls and one targeted retry
+        self.assertEqual(lines[1]['text'], '2) Verified by fallback')
+        self.assertTrue(all(item['verified'] for item in lines))
+        self.assertEqual(diagnostics[0]['single_row_fallbacks'], 1)
 
     def test_failed_note_row_ocr_still_returns_geometry_exclusion_review_box(self):
         from PIL import Image as PILImage
@@ -1119,7 +1164,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
                 model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
             )
-        self.assertEqual(call.call_count, 10)
+        self.assertEqual(call.call_count, 15)  # 5 paired failures + 10 per-row quality fallbacks
         self.assertEqual(len(lines), 10)
         self.assertTrue(all(line['text'] == '?' for line in lines))
         self.assertTrue(all(line['geometry_exclude'] for line in lines))
@@ -1155,7 +1200,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                     *[({'text': f'{i}) KCL + pump / line (0405)', 'confidence': 70}, 1.0, (768, 60)) for i in range(1, 11)]
                 ]) as call:
                     annotations, status = processor._qwen_annotations(str(source), 980, 490)
-            self.assertEqual(call.call_count, 11)
+            self.assertEqual(call.call_count, 16)  # 1 full-page OCR + 5 paired + 10 row fallbacks
             self.assertEqual(status['block_passes'], 1)
             self.assertEqual(status['block_annotations'], 10)
             self.assertEqual(len([a for a in annotations if a['source'] == 'qwen3-vl-block']), 10)
@@ -1199,7 +1244,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
             )
         self.assertEqual(len(lines), 10)
-        self.assertEqual(call.call_count, 10)
+        self.assertEqual(call.call_count, 15)  # 5 paired attempts + 10 quality fallbacks
         self.assertEqual(diagnostics[0]['detection_source'], 'source-ink-multiline-block')
         self.assertGreaterEqual(diagnostics[0]['row_peaks'], 4)
         self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')

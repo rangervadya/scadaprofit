@@ -103,13 +103,11 @@ OCR_RESPONSE_SCHEMA: dict[str, Any] = {
                 'type': 'object',
                 'properties': {
                     'text': {'type': 'string'},
+                    # Compact [x1, y1, x2, y2] form cuts response tokens;
+                    # the OCR parser maps it back to the same source-pixel box.
                     'bbox': {
-                        'type': 'object',
-                        'properties': {
-                            'x': {'type': 'number'}, 'y': {'type': 'number'},
-                            'w': {'type': 'number'}, 'h': {'type': 'number'},
-                        },
-                        'required': ['x', 'y', 'w', 'h'],
+                        'type': 'array', 'minItems': 4, 'maxItems': 4,
+                        'items': {'type': 'number'},
                     },
                     'confidence': {'type': 'number'},
                 },
@@ -130,13 +128,11 @@ OCR_BLOCK_RESPONSE_SCHEMA: dict[str, Any] = {
                 'type': 'object',
                 'properties': {
                     'text': {'type': 'string'},
+                    # Compact [x1, y1, x2, y2] form cuts response tokens;
+                    # the OCR parser maps it back to the same source-pixel box.
                     'bbox': {
-                        'type': 'object',
-                        'properties': {
-                            'x': {'type': 'number'}, 'y': {'type': 'number'},
-                            'w': {'type': 'number'}, 'h': {'type': 'number'},
-                        },
-                        'required': ['x', 'y', 'w', 'h'],
+                        'type': 'array', 'minItems': 4, 'maxItems': 4,
+                        'items': {'type': 'number'},
                     },
                     'confidence': {'type': 'number'},
                 },
@@ -155,6 +151,24 @@ OCR_ROW_RESPONSE_SCHEMA: dict[str, Any] = {
         'confidence': {'type': 'number'},
     },
     'required': ['text', 'confidence'],
+}
+
+OCR_ROWS_RESPONSE_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'rows': {
+            'type': 'array', 'minItems': 2, 'maxItems': 2,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'text': {'type': 'string'},
+                    'confidence': {'type': 'number'},
+                },
+                'required': ['text', 'confidence'],
+            },
+        },
+    },
+    'required': ['rows'],
 }
 
 
@@ -261,88 +275,192 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
 def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[dict[str, int]], *,
                           url: str, model: str, timeout: float, max_edge: int,
                           max_tokens: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Transcribe each detected numbered note row in a separate small Qwen request."""
+    """OCR numbered rows in pairs, retrying incomplete/uncertain rows individually.
+
+    A pair crop keeps the same horizontal context and, after Ollama's max-edge
+    resize, approximately the same pixel height per row as a single-row crop.
+    Rows that are absent, malformed, or below the normal confidence threshold
+    are re-read individually. Thus batching removes repeated prompt prefill for
+    clear rows without silently accepting weaker readings.
+    """
     results: list[dict[str, Any]] = []
     row_diags: list[dict[str, Any]] = []
-    _progress('OCR', f'Handwritten rows: {len(rows)} detected')
-    for row_index, row in enumerate(rows, 1):
-        _progress('OCR', f'Handwritten row {row_index}/{len(rows)} started')
+    batch_diags: list[dict[str, Any]] = []
+    batch_size = max(1, min(2, int(os.getenv('QWEN_OCR_ROW_BATCH_SIZE', '2'))))
+    batches = [rows[index:index + batch_size] for index in range(0, len(rows), batch_size)]
+    _progress('OCR', f'Handwritten rows: {len(rows)} detected; batches={len(batches)}')
+
+    def row_box(row: dict[str, Any]) -> tuple[int, int, int, int]:
         left = max(0, int(row['x']) - 2)
         top = max(0, int(row['y']))
         right = min(image.width, int(row['x'] + row['w']) + 4)
         bottom = min(image.height, int(row['y'] + row['h']))
+        return left, top, right, bottom
+
+    def normalize(value: Any) -> tuple[str, float, bool]:
+        text = re.sub(r'\s+', ' ', str(value.get('text', '') if isinstance(value, dict) else '')).strip() or '?'
+        try:
+            confidence = float(value.get('confidence', 0) or 0) if isinstance(value, dict) else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if 0 <= confidence <= 1:
+            confidence *= 100.0
+        confidence = max(0.0, min(100.0, confidence))
+        alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+        return text, confidence, bool(confidence >= 58 and alnum and text != '?')
+
+    def make_result(row: dict[str, Any], box: tuple[int, int, int, int],
+                    parsed_row: Any, *, diag: dict[str, Any], fallback: bool = False) -> dict[str, Any]:
+        left, top, right, bottom = box
+        text, confidence, verified = normalize(parsed_row)
+        diag.update({'text_preview': text[:100], 'confidence': round(confidence, 1),
+                     'accepted': bool(text != '?' and bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))),
+                     'verified': verified, 'fallback_single_row': fallback})
+        return {
+            'id': f'QBR{row["row"]}', 'text': text,
+            'confidence': round(confidence, 1),
+            'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+            'verified': verified, 'include': verified,
+            'geometry_exclude': True, 'source': 'qwen3-vl-block',
+            'block_line': True, 'row_index': row['row'],
+        }
+
+    def single_row_read(row: dict[str, Any], *, batch_index: int, reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        box = row_box(row)
+        left, top, right, bottom = box
         crop = image.crop((left, top, right, bottom)).convert('RGB')
-        # Enlarge thin handwriting to a useful visual height before Ollama's
-        # max-edge resize; keep original colour to retain blue-pen contrast.
         scale = min(4.0, max(2.5, 84.0 / max(1.0, crop.height)))
         crop = crop.resize((max(1, int(round(crop.width * scale))),
                             max(1, int(round(crop.height * scale)))), Image.Resampling.LANCZOS)
         diag: dict[str, Any] = {'row': row['row'], 'center_y': row['center_y'],
                                 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
-                                'input_size': list(crop.size)}
-        sent_size = crop.size
-        # Share the OCR request budget across line calls instead of allowing
-        # ten serial retries to each consume the full 180-second timeout.
-        row_timeout = max(8.0, min(25.0, float(timeout) / max(1, len(rows))))
+                                'input_size': list(crop.size), 'batch_index': batch_index,
+                                'request_mode': 'single_fallback', 'fallback_reason': reason}
+        _progress('OCR', f'Handwritten row {row["row"]} individual retry started ({reason})')
         prompt = (
             'Это ОДНА строка рукописного нумерованного списка на инженерной схеме. '
             'Выполни точное OCR только этой строки. Прочитай слева направо. '
-            'Сохрани номер в кружке/слева, все кириллические и латинские буквы, цифры, '
-            'знаки +, скобки и код в конце без исправления и без перевода. '
-            'Не описывай линии, стрелки и символы. Не добавляй слова, которых не видно. '
-            'Если часть неразборчива, оставь читаемые фрагменты и поставь [?] только на месте '
-            'нечитаемого слова/кода. Если вся строка не читается, text="?". '
+            'Сохрани номер слева, все кириллические и латинские буквы, цифры, знаки +, '
+            'скобки и код в конце без исправления и перевода. Не описывай графику. '
+            'Не добавляй невидимые слова. При частичной нечитаемости используй [?] только '
+            'вместо нечитабельного фрагмента; если строка совсем не читается, text="?". '
             'Верни строго JSON: {"text":"1) буквальный текст (0405)","confidence":65}. '
             'confidence — число 0..100, не завышай уверенность.'
         )
         try:
+            row_timeout = max(8.0, min(25.0, float(timeout) / max(1, len(rows))))
             parsed, _resize_scale, sent_size = _qwen_call(
                 crop, prompt, url=url, model=model, timeout=row_timeout,
                 max_edge=max_edge, num_predict=max(128, min(220, int(max_tokens))),
                 diagnostics=diag, format_schema=OCR_ROW_RESPONSE_SCHEMA
             )
-            value = parsed.get('text', '')
-            if not value and isinstance(parsed.get('annotations'), list) and parsed['annotations']:
-                value = parsed['annotations'][0].get('text', '')
-            text = re.sub(r'\s+', ' ', str(value or '')).strip() or '?'
-            try:
-                confidence = float(parsed.get('confidence', 0) or 0)
-            except (TypeError, ValueError):
-                confidence = 0.0
-            if 0 <= confidence <= 1:
-                confidence *= 100.0
-            confidence = max(0.0, min(100.0, confidence))
-            alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
-            verified = confidence >= 58 and alnum and text != '?'
-            results.append({
-                'id': f'QBR{row["row"]}', 'text': text,
-                'confidence': round(confidence, 1),
-                'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
-                'verified': verified, 'include': verified,
-                'geometry_exclude': True, 'source': 'qwen3-vl-block',
-                'block_line': True, 'row_index': row['row'],
-            })
-            diag['text_preview'] = text[:100]
-            diag['confidence'] = round(confidence, 1)
-            diag['accepted'] = bool(text != '?' and alnum)
+            diag['sent_size'] = list(sent_size)
+            result = make_result(row, box, parsed, diag=diag, fallback=True)
         except Exception as error:
             diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
-            # Keep a full-row review box even when the model timed out or
-            # returned malformed JSON, so the handwriting is not treated as pipe.
-            results.append({
+            diag['confidence'] = 0.0
+            diag['accepted'] = False
+            diag['verified'] = False
+            diag['fallback_single_row'] = True
+            result = {
                 'id': f'QBR{row["row"]}', 'text': '?', 'confidence': 0.0,
                 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
                 'verified': False, 'include': False, 'geometry_exclude': True,
-                'source': 'qwen3-vl-block', 'block_line': True,
-                'row_index': row['row'],
-            })
-            diag['confidence'] = 0.0
-            diag['accepted'] = False
-        diag['sent_size'] = list(sent_size)
-        row_diags.append(diag)
-        row_state = 'accepted' if diag.get('accepted') else ('failed' if diag.get('error') else 'review')
-        _progress('OCR', f'Handwritten row {row_index}/{len(rows)} completed ({row_state})')
-    return results, {'rows_detected': len(rows), 'rows_returned': len(results), 'row_diagnostics': row_diags}
+                'source': 'qwen3-vl-block', 'block_line': True, 'row_index': row['row'],
+            }
+        state = 'accepted' if result.get('verified') else ('failed' if diag.get('error') else 'review')
+        _progress('OCR', f'Handwritten row {row["row"]} individual retry completed ({state})')
+        return result, diag
+
+    for batch_index, batch in enumerate(batches, 1):
+        first_box, last_box = row_box(batch[0]), row_box(batch[-1])
+        left = min(item[0] for item in (first_box, last_box))
+        top = first_box[1]
+        right = max(item[2] for item in (first_box, last_box))
+        bottom = last_box[3]
+        batch_diag: dict[str, Any] = {
+            'batch': batch_index, 'rows': [int(row['row']) for row in batch],
+            'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
+        }
+        batch_diags.append(batch_diag)
+        _progress('OCR', f'Handwritten batch {batch_index}/{len(batches)} started; rows {batch[0]["row"]}-{batch[-1]["row"]}')
+
+        parsed_rows: list[Any] | None = None
+        if len(batch) == 2:
+            crop = image.crop((left, top, right, bottom)).convert('RGB')
+            # Scale by the number of rows, preserving roughly the same target
+            # height for each row as the former one-request-per-row approach.
+            target_height = 84.0 * len(batch)
+            scale = min(4.0, max(2.5, target_height / max(1.0, crop.height)))
+            crop = crop.resize((max(1, int(round(crop.width * scale))),
+                                max(1, int(round(crop.height * scale)))), Image.Resampling.LANCZOS)
+            prompt = (
+                'На изображении ровно ДВЕ соседние строки одного рукописного нумерованного '
+                'списка инженерной схемы. Прочитай ОБЕ строки полностью, отдельно, сверху вниз. '
+                'Для каждой сохрани номер слева, кириллические и латинские буквы, цифры, знаки +, '
+                'скобки и коды в конце буквально, без исправлений и перевода. Не описывай графику, '
+                'не пропускай короткие цифры и не объединяй строки. Если фрагмент неразборчив, '
+                'поставь [?] только на его месте; не додумывай текст. Верни ровно два объекта '
+                'в массиве rows в том же порядке сверху вниз: '
+                '{"rows":[{"text":"1) текст (0405)","confidence":70},'
+                '{"text":"2) текст (0406)","confidence":65}]}. '
+                'confidence — число 0..100, не завышай уверенность. Только JSON.'
+            )
+            batch_diag.update({'input_size': list(crop.size), 'request_mode': 'paired_rows'})
+            try:
+                batch_timeout = max(12.0, min(35.0, float(timeout) / max(1, len(batches))))
+                parsed, _resize_scale, sent_size = _qwen_call(
+                    crop, prompt, url=url, model=model, timeout=batch_timeout,
+                    max_edge=max_edge, num_predict=max(256, min(440, int(max_tokens))),
+                    diagnostics=batch_diag, format_schema=OCR_ROWS_RESPONSE_SCHEMA
+                )
+                batch_diag['sent_size'] = list(sent_size)
+                value = parsed.get('rows') if isinstance(parsed, dict) else None
+                if isinstance(value, list) and len(value) == len(batch) and all(isinstance(item, dict) for item in value):
+                    parsed_rows = value
+                else:
+                    batch_diag['fallback_reason'] = 'paired_response_incomplete'
+            except Exception as error:
+                batch_diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
+                batch_diag['fallback_reason'] = 'paired_request_failed'
+        else:
+            batch_diag['request_mode'] = 'single_row'
+            batch_diag['fallback_reason'] = 'odd_final_row'
+
+        for index, row in enumerate(batch):
+            box = row_box(row)
+            if parsed_rows is not None:
+                row_diag = {
+                    'row': row['row'], 'center_y': row['center_y'],
+                    'bbox': {'x': box[0], 'y': box[1], 'w': box[2]-box[0], 'h': box[3]-box[1]},
+                    'batch_index': batch_index, 'batch_size': len(batch),
+                    'request_mode': 'paired_rows', 'batch_ollama_total_ms': batch_diag.get('ollama_total_ms'),
+                    'batch_eval_count': batch_diag.get('eval_count'),
+                }
+                parsed_row = parsed_rows[index]
+                _text, _confidence, verified = normalize(parsed_row)
+                # Batched reads are accepted only at a stronger confidence. Any
+                # borderline row gets the original single-row image/read path.
+                if verified and _confidence >= 70.0:
+                    result = make_result(row, box, parsed_row, diag=row_diag)
+                    results.append(result)
+                    row_diags.append(row_diag)
+                    _progress('OCR', f'Handwritten row {row["row"]} completed (batched, accepted)')
+                    continue
+                reason = 'paired_low_confidence_or_unreadable'
+            else:
+                reason = str(batch_diag.get('fallback_reason') or 'paired_response_unavailable')
+            result, row_diag = single_row_read(row, batch_index=batch_index, reason=reason)
+            results.append(result)
+            row_diags.append(row_diag)
+        _progress('OCR', f'Handwritten batch {batch_index}/{len(batches)} completed')
+
+    return results, {
+        'rows_detected': len(rows), 'rows_returned': len(results),
+        'row_diagnostics': row_diags, 'row_batch_diagnostics': batch_diags,
+        'row_batches': len(batches), 'row_batch_size': batch_size,
+        'single_row_fallbacks': sum(1 for item in row_diags if item.get('request_mode') == 'single_fallback'),
+    }
 
 
 def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, height: int,
@@ -568,9 +686,9 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
             'Если строка частично читается, передай читаемую часть буквально; не додумывай. '
             'Если строку совсем нельзя прочитать, верни text="?" с рамкой всей строки. '
             'bbox должен охватывать полную строку, включая номер пункта слева и код/значение справа. '
-            'Координаты — пиксели данного фрагмента, начало в левом верхнем углу. '
+            'bbox — массив [x1,y1,x2,y2] в пикселях фрагмента: левый верхний и правый нижний углы. '
             'Верни только JSON вида {"annotations":[{"text":"1) пример (0405)",'
-            '"bbox":{"x":10,"y":12,"w":220,"h":20},"confidence":60}]}. '
+            '"bbox":[10,12,230,32],"confidence":60}]}. '
             'Максимум 32 строки. Никаких пояснений.'
         )
         try:
@@ -642,7 +760,7 @@ PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
                 'properties': {
                     'id': {'type': 'string'},
                     'points': {
-                        'type': 'array', 'minItems': 2, 'maxItems': 2,
+                        'type': 'array', 'minItems': 2, 'maxItems': 64,
                         'items': {
                             'type': 'array', 'minItems': 2, 'maxItems': 2,
                             'items': {'type': 'number'},
@@ -810,10 +928,10 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'которая написана слитно. Не объединяй разнесённые подписи. Если чтение сомнительно, укажи '
             'наиболее вероятный буквальный текст и низкую confidence; не придумывай символы. '
             'Границы bbox должны охватывать все штрихи надписи, включая длинные связные рукописные штрихи. '
-            'Координаты bbox — пиксели отправленного изображения, x/y — левый верхний угол, w/h — ширина/высота. '
+            'bbox — массив [x1,y1,x2,y2] в пикселях отправленного изображения: левый верхний и правый нижний углы. '
             'Верни объект annotations как массив, даже если найден только один текст. '
             'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
-            'Пример формы: {"annotations":[{"text":"1500","bbox":{"x":10,"y":20,"w":35,"h":14},"confidence":72}]}. '
+            'Пример формы: {"annotations":[{"text":"1500","bbox":[10,20,45,34],"confidence":72}]}. '
             'Максимум 64 текстовые области на фрагмент. Размер изображения: {width}x{height} px.'
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
@@ -1079,20 +1197,24 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 prompt = (
                     'Это фрагмент РУКОПИСНОЙ инженерной схемы трубопроводов. Найди на изображении сами линии труб. '
                     'НЕ пытайся распознать всю систему целиком и НЕ описывай её словами. Выполни простую задачу: '
-                    'перечисли каждый видимый прямой участок трубы отдельно, как отрезок с двумя концами. '
+                    'перечисли все видимые непрерывные пути труб как полилинии с точками поворота. '
                     'Труба обычно выглядит как длинный непрерывный штрих или как две близкие параллельные границы. '
-                    'Учитывай горизонтальные, вертикальные и диагональные участки. На повороте верни два отрезка, '
-                    'которые встречаются в точке поворота. На Т-ответвлении верни каждый видимый подходящий участок. '
-                    'Сохраняй части трубы до и после клапана/фитинга; не рисуй сам короткий символ клапана. '
-                    'Не путай трубы с цифрами, буквами, короткими размерными рисками, стрелками, наконечниками выносок '
-                    'и рамкой листа. Но НЕ удаляй длинную линию только потому, что рядом есть подпись или символ. '
-                    'Не придумывай скрытые участки и не соединяй несвязанные линии. Если не уверен, верни видимый '
-                    'отрезок с confidence 40–60, а не пустой массив. Пустой массив допустим только если в этом фрагменте '
-                    'действительно нет ни одного длинного линейного участка трубы. '
+                    'Учитывай горизонтальные, вертикальные и диагональные участки. Для одной '
+                    'непрерывной трубы объединяй последовательные прямые участки в ОДНУ полилинию: '
+                    'на каждом видимом повороте добавь вершину points, не создавая отдельный объект '
+                    'для каждого маленького сегмента. Это только компактная запись уже видимого штриха, '
+                    'а не разрешение достраивать геометрию. На Т-ответвлении разделяй ветви в точке '
+                    'развилки; сохраняй части до и после клапана/фитинга, сам короткий символ клапана '
+                    'не рисуй. Разрывы, подписи, пересечения с неясной принадлежностью и неоднозначные '
+                    'стыки НЕ соединяй. Не путай трубы с цифрами, буквами, размерными рисками, стрелками, '
+                    'наконечниками выносок и рамкой листа. Но НЕ удаляй длинную линию только потому, что '
+                    'рядом есть подпись или символ. Не придумывай скрытые участки. Если не уверен, верни '
+                    'видимую линию с confidence 40–60, а не пустой массив. Пустой массив допустим только '
+                    'если в этом фрагменте действительно нет длинного линейного участка трубы. '
                     f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху. '
-                    'Каждый элемент routes — ОДИН прямой отрезок, points содержит ровно две точки [[x1,y1],[x2,y2]]. '
-                    'Верни массив routes, а не одну общую полилинию. Максимум 64 отрезка. '
-                    'Пример: {"routes":[{"id":"S1","points":[[20,80],[320,80]],"confidence":70}]}. '
+                    'Каждый routes[i].points — упорядоченный список из 2..64 видимых точек одной '
+                    'непрерывной полилинии [[x1,y1],[x2,y2],...]. Максимум 64 полилинии. '
+                    'Пример: {"routes":[{"id":"S1","points":[[20,80],[180,80],[180,240]],"confidence":70}]}. '
                     'Верни только JSON без текста и без объяснений.'
                 )
                 diag: dict[str, Any] = {
