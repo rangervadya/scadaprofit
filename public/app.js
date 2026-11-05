@@ -1362,6 +1362,95 @@ async function restoreSavedJobFromUrl() {
   await openLibraryScheme(jobId);
 }
 
+
+// Global drawing-style reference. This is stored separately from house uploads.
+const templateFileInput = $('templateFileInput');
+const templateUploadBtn = $('templateUploadBtn');
+const templateDeleteBtn = $('templateDeleteBtn');
+let selectedTemplateFile = null;
+
+function setTemplateMessage(message = '', kind = '') {
+  const box = $('templateMessage');
+  if (!box) return;
+  box.textContent = message;
+  box.dataset.kind = kind;
+}
+
+function renderTemplateInfo(template) {
+  const root = $('templateCurrent');
+  if (!root) return;
+  if (!template) {
+    root.innerHTML = '<span class="template-current-empty">Эталон ещё не загружен</span>';
+    templateDeleteBtn.hidden = true;
+    return;
+  }
+  const date = template.uploadedAt ? new Date(template.uploadedAt).toLocaleString('ru-RU') : '';
+  root.innerHTML = `<div class="template-current-file"><span class="template-file-mark">${escapeHtml((template.originalName.split('.').pop() || 'ФАЙЛ').toUpperCase())}</span><span class="template-file-info"><b>${escapeHtml(template.originalName)}</b><small>${formatBytes(template.size || 0)}${date ? ` · ${escapeHtml(date)}` : ''}</small></span></div><a class="template-download" href="${escapeHtml(template.downloadUrl || '/api/template/file')}" download>Скачать</a>`;
+  templateDeleteBtn.hidden = false;
+}
+
+async function loadTemplateInfo() {
+  try {
+    const response = await fetch('/api/template', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось загрузить сведения о шаблоне.');
+    renderTemplateInfo(data.template || null);
+  } catch (error) {
+    setTemplateMessage(error.message || 'Не удалось проверить шаблон.', 'error');
+  }
+}
+
+if (templateFileInput) {
+  templateFileInput.addEventListener('change', () => {
+    selectedTemplateFile = templateFileInput.files?.[0] || null;
+    $('templateSelectedName').textContent = selectedTemplateFile
+      ? `${selectedTemplateFile.name} · ${formatBytes(selectedTemplateFile.size)}`
+      : 'PDF, SVG, DXF или изображение · до 30 МБ';
+    templateUploadBtn.disabled = !selectedTemplateFile || selectedTemplateFile.size > 30 * 1024 * 1024;
+    setTemplateMessage(selectedTemplateFile?.size > 30 * 1024 * 1024 ? 'Файл больше 30 МБ.' : '');
+  });
+
+  templateUploadBtn.addEventListener('click', async () => {
+    if (!selectedTemplateFile || templateUploadBtn.disabled) return;
+    const form = new FormData();
+    form.append('template', selectedTemplateFile);
+    templateUploadBtn.disabled = true;
+    templateUploadBtn.textContent = 'Сохранение…';
+    setTemplateMessage('Загружаю эталон в постоянное хранилище сервера…');
+    try {
+      const response = await fetch('/api/template', { method: 'POST', body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить шаблон.');
+      selectedTemplateFile = null;
+      templateFileInput.value = '';
+      $('templateSelectedName').textContent = 'PDF, SVG, DXF или изображение · до 30 МБ';
+      renderTemplateInfo(data.template || null);
+      setTemplateMessage('Шаблон сохранён. Он не попадёт во входящие домов и не запустит распознавание.', 'success');
+    } catch (error) {
+      setTemplateMessage(error.message || 'Не удалось сохранить шаблон.', 'error');
+    } finally {
+      templateUploadBtn.textContent = 'Сохранить шаблон';
+      templateUploadBtn.disabled = !selectedTemplateFile;
+    }
+  });
+
+  templateDeleteBtn.addEventListener('click', async () => {
+    if (!window.confirm('Удалить общий эталон оформления?')) return;
+    templateDeleteBtn.disabled = true;
+    try {
+      const response = await fetch('/api/template', { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось удалить шаблон.');
+      renderTemplateInfo(null);
+      setTemplateMessage('Эталон удалён.', 'success');
+    } catch (error) {
+      setTemplateMessage(error.message || 'Не удалось удалить шаблон.', 'error');
+    } finally {
+      templateDeleteBtn.disabled = false;
+    }
+  });
+}
+
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
   const ollama = health.ollama || {};
   if (!ollama.reachable) {
@@ -1379,4 +1468,5 @@ fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).th
 });
 
 loadAddressLibrary();
+loadTemplateInfo();
 restoreSavedJobFromUrl();

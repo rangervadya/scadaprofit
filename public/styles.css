@@ -146,3 +146,31 @@ body{background:var(--page);color:var(--ink);font-size:14px}
 .tree-row{font-size:11px}
 .upload-hint{margin-top:5px}
 @media(max-width:820px){.workspace-grid{gap:8px}.sidebar{gap:7px}}
+
+
+/* 4.3.15 — persistent global drawing-style reference */
+.template-settings-card{padding:9px 10px}
+.template-settings-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none}
+.template-settings-summary::-webkit-details-marker{display:none}
+.template-settings-summary strong{display:block;font-size:11px;font-weight:650;color:#303b34}
+.template-settings-summary small{display:block;margin-top:2px;font-size:9px;color:#87918a}
+.template-settings-caret{font-size:11px;color:#87918a;transition:transform .15s}
+.template-settings-card[open] .template-settings-caret{transform:rotate(180deg)}
+.template-settings-body{padding-top:9px}
+.template-current{min-height:34px;padding:7px 8px;border:1px solid #edf0ed;border-radius:5px;background:#fbfcfb}
+.template-current-empty{font-size:10px;color:#8a958d}
+.template-current-file{display:flex;align-items:center;gap:8px;min-width:0}
+.template-file-mark{display:grid;place-items:center;width:31px;height:31px;flex:none;border-radius:4px;background:#edf4ef;color:#426b56;font-size:8px;font-weight:700}
+.template-file-info{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}
+.template-file-info b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600}
+.template-file-info small{font-size:8px;color:#87918a}
+.template-download{font-size:9px;color:#426b56;text-decoration:none;white-space:nowrap}
+.template-file-label{display:flex;align-items:center;justify-content:center;min-height:30px;margin-top:7px;padding:6px;border:1px dashed #cfd9d0;border-radius:5px;background:#fff;color:#486b57;font-size:10px;font-weight:600;cursor:pointer}
+.template-file-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.template-selected-name{margin-top:4px;color:#89938d;font-size:8px;overflow-wrap:anywhere}
+.template-actions{display:flex;gap:6px;align-items:center;margin-top:7px}
+.template-actions .secondary-button{min-height:28px;padding:0 9px}
+.template-message{min-height:0;margin-top:5px;font-size:9px;color:#79857e}
+.template-message[data-kind="success"]{color:#28734c}
+.template-message[data-kind="error"]{color:#b34b42}
+.template-note{margin:7px 0 0;color:#909a93;font-size:8px;line-height:1.45}

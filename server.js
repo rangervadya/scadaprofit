@@ -21,6 +21,10 @@ const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
 const LIBRARY_DIR = path.join(DATA, '.private');
 const LIBRARY_PATH = path.join(LIBRARY_DIR, 'address-library.json');
 const SCHEME_META_DIR = path.join(LIBRARY_DIR, 'schemes');
+// The global drawing-style reference is stored in the same named Docker volume
+// as the address library, not in /tmp and never inside an individual house job.
+const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
+const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 2 700 000 мс = 45 минут, а не 2 700 000 секунд.
@@ -36,6 +40,7 @@ const UUID_PATTERN = JOB_ID_PATTERN;
 await mkdir(DATA, { recursive: true });
 await mkdir(LIBRARY_DIR, { recursive: true });
 await mkdir(SCHEME_META_DIR, { recursive: true });
+await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -227,6 +232,21 @@ const upload = multer({
   }
 });
 
+const templateExtensions = new Set(['.pdf', '.svg', '.dxf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
+const templateMimeTypes = {
+  '.pdf': 'application/pdf', '.svg': 'image/svg+xml', '.dxf': 'application/dxf',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff'
+};
+const templateUpload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 30 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(String(file.originalname || '')).toLowerCase();
+    cb(null, templateExtensions.has(ext));
+  }
+});
+
 function attachJobUrls(jobId, graph, sourceName = null) {
   graph.jobId = jobId;
   graph.progressUrl = `/jobs/${jobId}/progress.log`;
@@ -246,6 +266,41 @@ function attachJobUrls(jobId, graph, sourceName = null) {
 
 function cleanLabel(value, maxLength = 100) {
   return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+async function readTemplateMeta() {
+  try {
+    const meta = JSON.parse(await readFile(TEMPLATE_META_PATH, 'utf8'));
+    const storageName = path.basename(String(meta.storageName || ''));
+    if (!storageName || !/^template-[a-f0-9-]+\.[a-z0-9]+$/i.test(storageName)) return null;
+    return {
+      originalName: cleanLabel(meta.originalName || 'Эталонный шаблон', 180),
+      storageName,
+      mimeType: templateMimeTypes[path.extname(storageName).toLowerCase()] || 'application/octet-stream',
+      size: Math.max(0, Number(meta.size) || 0),
+      uploadedAt: meta.uploadedAt || null
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function saveTemplateMeta(meta) {
+  const temporary = `${TEMPLATE_META_PATH}.tmp-${randomUUID()}`;
+  await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
+  await rename(temporary, TEMPLATE_META_PATH);
+}
+
+function publicTemplate(meta) {
+  if (!meta) return null;
+  return {
+    originalName: meta.originalName,
+    mimeType: meta.mimeType,
+    size: meta.size,
+    uploadedAt: meta.uploadedAt,
+    downloadUrl: '/api/template/file'
+  };
 }
 
 async function readAddressLibrary() {
@@ -395,6 +450,83 @@ function nextManualEdgeId(edges) {
   }, 0);
   return `E${maxId + 1}`;
 }
+
+// A single global style reference, separate from house uploads and analysis jobs.
+// Files live under DATA/.private/template inside the persistent cad_jobs volume.
+app.get('/api/template', async (_req, res) => {
+  try {
+    const meta = await readTemplateMeta();
+    return res.json({ ok: true, template: publicTemplate(meta) });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return res.json({ ok: true, template: null });
+    console.error('[TEMPLATE] Cannot read template metadata:', error);
+    return res.status(500).json({ error: 'Не удалось прочитать эталонный шаблон.' });
+  }
+});
+
+app.get('/api/template/file', async (_req, res) => {
+  try {
+    const meta = await readTemplateMeta();
+    if (!meta) return res.status(404).json({ error: 'Эталонный шаблон ещё не загружен.' });
+    const filePath = path.join(TEMPLATE_DIR, meta.storageName);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Always download reference files, including SVG, rather than rendering user content inline.
+    res.setHeader('Content-Type', 'application/octet-stream');
+    return res.download(filePath, meta.originalName, error => {
+      if (error && !res.headersSent) res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
+    });
+  } catch (error) {
+    console.error('[TEMPLATE] Cannot download template:', error);
+    return res.status(500).json({ error: 'Не удалось скачать эталонный шаблон.' });
+  }
+});
+
+app.post('/api/template', templateUpload.single('template'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Выберите PDF, SVG, DXF, PNG, JPG, WEBP или TIFF.' });
+  const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
+  if (!templateExtensions.has(ext)) {
+    await rm(req.file.path, { force: true }).catch(() => {});
+    return res.status(400).json({ error: 'Формат файла шаблона не поддерживается.' });
+  }
+  const originalName = cleanLabel(path.basename(String(req.file.originalname || '').replace(/\\/g, '/')), 180) || `template${ext}`;
+  const storageName = `template-${randomUUID()}${ext}`;
+  const destination = path.join(TEMPLATE_DIR, storageName);
+  const previous = await readTemplateMeta().catch(() => null);
+  try {
+    // /tmp and the named Docker volume can be different filesystems: copy, then remove.
+    await copyFile(req.file.path, destination);
+    const meta = {
+      originalName, storageName,
+      mimeType: templateMimeTypes[ext] || 'application/octet-stream',
+      size: Number(req.file.size) || 0,
+      uploadedAt: new Date().toISOString()
+    };
+    await saveTemplateMeta(meta);
+    if (previous?.storageName && previous.storageName !== storageName) {
+      await rm(path.join(TEMPLATE_DIR, previous.storageName), { force: true }).catch(() => {});
+    }
+    return res.status(201).json({ ok: true, template: publicTemplate(meta) });
+  } catch (error) {
+    await rm(destination, { force: true }).catch(() => {});
+    console.error('[TEMPLATE] Cannot save uploaded template:', error);
+    return res.status(500).json({ error: 'Не удалось сохранить эталонный шаблон.' });
+  } finally {
+    await rm(req.file.path, { force: true }).catch(() => {});
+  }
+});
+
+app.delete('/api/template', async (_req, res) => {
+  try {
+    const meta = await readTemplateMeta();
+    if (meta?.storageName) await rm(path.join(TEMPLATE_DIR, meta.storageName), { force: true });
+    await rm(TEMPLATE_META_PATH, { force: true });
+    return res.json({ ok: true, template: null });
+  } catch (error) {
+    console.error('[TEMPLATE] Cannot delete template:', error);
+    return res.status(500).json({ error: 'Не удалось удалить эталонный шаблон.' });
+  }
+});
 
 app.get('/api/library', async (_req, res) => {
   try {
@@ -792,7 +924,8 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.14',
+    version: '4.3.15',
+    drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
@@ -966,11 +1099,12 @@ app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API-маршрут не найден.' }));
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   console.error(err);
+  const isTemplateUpload = req.path === '/api/template';
   const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
   const message = err?.code === 'LIMIT_FILE_SIZE'
-    ? 'Файл больше 18 МБ.'
+    ? (isTemplateUpload ? 'Файл шаблона больше 30 МБ.' : 'Файл больше 18 МБ.')
     : err?.code === 'LIMIT_UNEXPECTED_FILE'
       ? 'Можно загрузить только один файл за раз.'
       : 'Ошибка запроса.';
@@ -978,7 +1112,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.12: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.15: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });

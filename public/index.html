@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
-  <title>Схемы домов · 4.3.14</title>
+  <title>Схемы домов · 4.3.15</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.14">
-  <script src="/app.js?v=4.3.14" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.15">
+  <script src="/app.js?v=4.3.15" defer></script>
 </head>
 <body>
   <main class="app-shell">
@@ -54,6 +54,23 @@
             <div class="progress-foot">Само распознавание при отправке не запускается.</div>
           </div>
         </section>
+
+
+        <details class="card template-settings-card" id="templateSettings">
+          <summary class="template-settings-summary"><span><strong>Шаблон оформления</strong><small>Общий эталон для чертежей</small></span><span class="template-settings-caret">▾</span></summary>
+          <div class="template-settings-body">
+            <div class="template-current" id="templateCurrent"><span class="template-current-empty">Эталон ещё не загружен</span></div>
+            <label class="template-file-label" for="templateFileInput">Выбрать файл эталона</label>
+            <input id="templateFileInput" class="template-file-input" type="file" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.webp,.tif,.tiff,application/pdf,image/svg+xml,image/png,image/jpeg,image/webp,image/tiff">
+            <div class="template-selected-name" id="templateSelectedName">PDF, SVG, DXF или изображение · до 30 МБ</div>
+            <div class="template-actions">
+              <button class="secondary-button" id="templateUploadBtn" type="button" disabled>Сохранить шаблон</button>
+              <button class="tiny-button" id="templateDeleteBtn" type="button" hidden>Удалить</button>
+            </div>
+            <div class="template-message" id="templateMessage" role="status" aria-live="polite"></div>
+            <p class="template-note">Файл хранится отдельно от входящих схем, в постоянном хранилище сервера. Загрузка не запускает OCR. Автоматическое применение оформления будет настроено после проверки самого эталона.</p>
+          </div>
+        </details>
 
         <section class="card stats-card" id="statsPanel" hidden>
           <div class="card-heading compact-heading"><div><div class="step-label"><span>02</span> РЕЗУЛЬТАТ АНАЛИЗА</div><h2>Сводка геометрии</h2></div><span class="review-badge">Нужна проверка</span></div>
