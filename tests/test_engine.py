@@ -621,9 +621,10 @@ class GraphTests(unittest.TestCase):
         # the selected detector geometry from the primary clean drawing.
         routes = [{"id": "P1", "points": [[10, 10], [100, 10], [100, 100]], "confidence": 90, "include": True}]
         svg = processor.build_clean_svg(120, 120, selected_edges, [], semantic_routes=routes)
-        self.assertEqual(svg.count('<polyline points='), 1)
+        self.assertEqual(svg.count('<polyline points='), 2)  # primary + review-only Qwen trace
         self.assertIn('10.00,10.00 20.00,90.00 110.00,100.00', svg)
-        self.assertNotIn('100.00,10.00 100.00,100.00', svg)
+        self.assertIn('100.00,10.00 100.00,100.00', svg)
+        self.assertIn('data-layer="QWEN_REVIEW"', svg)
         dxf = processor.build_dxf(120, 120, selected_edges, [], semantic_routes=routes)
         self.assertIn('8\nPIPE_MAIN\n100\nAcDbPolyline', dxf)
         self.assertIn('QWEN_REVIEW', dxf)
@@ -714,6 +715,22 @@ class GraphTests(unittest.TestCase):
         self.assertIn("DN 50", svg)
         self.assertIn("fill=\"#fff\"", svg)
         self.assertIn("stroke=\"#15191d\"", svg)
+
+    def test_svg_anchors_row_level_ocr_at_its_source_left_edge(self):
+        annotations = [{
+            'verified': True, 'include': True, 'source': 'qwen3-vl-block',
+            'text': '1) 1 2 3 4',
+            'bbox': {'x': 8, 'y': 6, 'w': 180, 'h': 18},
+        }]
+        svg = processor.build_clean_svg(300, 180, [], annotations)
+        # _sheet_layout for this image yields a predictable transform; the OCR
+        # row must begin at the original row's left boundary, not its centre.
+        scale, tx, ty = processor._sheet_layout(300, 180)
+        expected_x = tx + 8 * scale
+        expected_y = ty + (6 + 18) * scale + 1.0
+        self.assertIn('text-anchor="start"', svg)
+        self.assertIn(f'x="{expected_x:.2f}"', svg)
+        self.assertIn(f'y="{expected_y:.2f}"', svg)
 
     def test_dxf_keeps_removed_marks_on_frozen_review_layer(self):
         edges = [
@@ -916,9 +933,25 @@ class BrowserExportRegressionTests(unittest.TestCase):
         self.assertIn("addPolyline('QWEN_REVIEW',points,false,9);", app_js)
         self.assertNotIn('if (Array.isArray(graph?.semanticRoutes)) {', app_js)
 
+    def test_fitter_upload_stays_in_house_inbox_until_specialist_opens_it(self):
+        app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
+        upload_start = app_js.index("analyzeBtn.addEventListener('click'")
+        upload_end = app_js.index("$('processSchemeBtn').addEventListener('click'", upload_start)
+        upload_handler = app_js[upload_start:upload_end]
+        self.assertIn("fetch('/api/library/schemes/upload'", upload_handler)
+        self.assertIn('showAddressInbox(inboxStreetId, inboxBuildingId)', upload_handler)
+        self.assertNotIn('openLibraryScheme(jobId)', upload_handler)
+        self.assertIn('showAddressInbox(inboxStreetId, inboxBuildingId)', upload_handler)
+        self.assertIn('Специалист открывает его и запускает преобразование отдельно', app_js)
+        self.assertIn('streetMatches || buildingMatches', app_js)
+        self.assertIn('Специалист открывает его и запускает преобразование отдельно', app_js)
+        css = (ROOT / 'public' / 'styles.css').read_text(encoding='utf-8')
+        self.assertIn('.library-heading p,', css)
+        self.assertIn('.source-title .scheme-status-label', css)
+
     def test_ui_does_not_describe_qwen_as_the_only_main_geometry_source(self):
         index_html = (ROOT / 'public' / 'index.html').read_text(encoding='utf-8')
-        self.assertIn('OpenCV собирает геометрический граф', index_html)
+        self.assertIn('Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV', index_html)
         self.assertIn('замороженный QWEN_REVIEW', index_html)
         self.assertNotIn('Основной лист строится только из семантических маршрутов Qwen', index_html)
 
@@ -1249,6 +1282,98 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertGreaterEqual(diagnostics[0]['row_peaks'], 4)
         self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
 
+    def test_three_row_numeric_table_keeps_each_cell_at_source_coordinates(self):
+        from PIL import Image as PILImage
+        canvas = np.full((180, 420, 3), 250, dtype=np.uint8)
+        pen = (74, 82, 132)
+        source_rows = [('1)', '1', '2', '3', '4'), ('2)', '5', '6', '7', '8'), ('3)', '33', '34', '35', '36')]
+        for y in (36, 82, 128):
+            cv2.line(canvas, (22, y + 15), (204, y + 15), pen, 1, cv2.LINE_AA)
+        for row_index, values in enumerate(source_rows):
+            y = 35 + row_index * 46
+            x = 24
+            for value in values:
+                cv2.putText(canvas, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX, .48, pen, 1, cv2.LINE_AA)
+                x += 34 if len(value) == 1 else 40
+        image = PILImage.fromarray(canvas)
+        blocks = processor._candidate_handwritten_text_blocks([], 420, 180, max_blocks=2, image=image)
+        self.assertTrue(blocks)
+        rows = processor._detect_handwritten_row_bands(image, blocks[0])
+        self.assertEqual(len(rows), 3)
+
+        call_index = 0
+        def fake_qwen(crop, prompt, **kwargs):
+            nonlocal call_index
+            call_index += 1
+            if call_index == 1:
+                batch_rows = rows[:2]
+                batch_left = max(0, min(row['x'] - 2 for row in batch_rows))
+                batch_top = batch_rows[0]['y']
+                batch_bottom = batch_rows[-1]['y'] + batch_rows[-1]['h']
+                batch_height = batch_bottom - batch_top
+                scale = min(4.0, max(2.5, 168.0 / max(1.0, batch_height)))
+                parsed = []
+                for row_index, row in enumerate(batch_rows):
+                    values = source_rows[row_index]
+                    cells = []
+                    x = 24
+                    for value in values:
+                        x2 = x + (17 if len(value) == 1 else 23)
+                        cells.append({'text': value, 'confidence': 92,
+                                      'bbox': [(x - batch_left) * scale,
+                                               (row['y'] + 3 - batch_top) * scale,
+                                               (x2 - batch_left) * scale,
+                                               (row['y'] + 15 - batch_top) * scale]})
+                        x += 34 if len(value) == 1 else 40
+                    parsed.append({'text': ' '.join(values), 'confidence': 92, 'cells': cells})
+                return {'rows': parsed}, 1.0, crop.size
+            row = rows[2]
+            left = max(0, row['x'] - 2)
+            top = row['y']
+            scale = min(4.0, max(2.5, 84.0 / max(1.0, row['h'])))
+            cells = []
+            x = 24
+            for value in source_rows[2]:
+                x2 = x + (17 if len(value) == 1 else 23)
+                cells.append({'text': value, 'confidence': 92,
+                              'bbox': [(x - left) * scale, 3 * scale,
+                                       (x2 - left) * scale, 15 * scale]})
+                x += 34 if len(value) == 1 else 40
+            return {'text': ' '.join(source_rows[2]), 'confidence': 92, 'cells': cells}, 1.0, crop.size
+
+        with patch('processor._qwen_call', side_effect=fake_qwen):
+            annotations, diagnostics = processor._run_handwritten_block_ocr(
+                image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=30, max_edge=4096, max_tokens=1200
+            )
+        self.assertEqual(len(annotations), 15)
+        self.assertTrue(all(item.get('table_cell') for item in annotations))
+        self.assertTrue(all(item.get('bbox_coordinate_space') == 'original-image-pixels' for item in annotations))
+        by_row = {row: sorted((item for item in annotations if item['row_index'] == row), key=lambda item: item['bbox']['x'])
+                  for row in (1, 2, 3)}
+        self.assertTrue(all(len(items) == 5 for items in by_row.values()))
+        expected_x_by_row = {
+            1: [24, 64, 98, 132, 166],
+            2: [24, 64, 98, 132, 166],
+            3: [24, 64, 104, 144, 184],
+        }
+        for row_index, row_items in by_row.items():
+            for item, expected in zip(row_items, expected_x_by_row[row_index]):
+                self.assertAlmostEqual(item['bbox']['x'], expected, delta=1.5)
+        self.assertEqual(diagnostics[0]['row_batch_size'], 2)
+        # The odd third row is intentionally sent alone, not retried for low confidence.
+        self.assertEqual(diagnostics[0]['single_row_fallbacks'], 1)
+
+    def test_unvalidated_qwen_routes_remain_visible_only_on_review_layer(self):
+        route = {'id': 'R-review', 'include': False, 'primary_validated': False,
+                 'confidence': 24, 'points': [[10, 20], [50, 20], [70, 45]]}
+        svg = processor.build_clean_svg(120, 100, [], [], semantic_routes=[route], primary_semantic_routes=[])
+        dxf = processor.build_dxf(120, 100, [], [], semantic_routes=[route], primary_semantic_routes=[])
+        self.assertIn('data-layer="QWEN_REVIEW"', svg)
+        self.assertIn('QWEN_REVIEW', dxf)
+        self.assertNotIn('PIPE_MAIN', svg)
+        self.assertNotIn('\n8\nPIPE_MAIN\n', dxf)
+
     def test_primary_semantic_routes_are_used_by_browser_svg_and_dxf(self):
         app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
         self.assertIn('graph.primarySemanticRoutes', app_js)
@@ -1258,9 +1383,6 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertIn('function annotationExportLayer(item)', app_js)
 
 
-
-if __name__ == "__main__":
-    unittest.main()
 
     def test_low_confidence_tesseract_box_does_not_mask_pipe_geometry(self):
         boxes = processor._confirmed_text_boxes([
@@ -1471,3 +1593,7 @@ if __name__ == "__main__":
              'component_id': 'C2', 'component_role': 'text_or_annotation'},
         ]
         self.assertEqual(processor._build_join_candidates(nodes, edges), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

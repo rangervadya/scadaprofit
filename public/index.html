@@ -3,61 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f5f7f8">
-  <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>Схемы объектов · 4.3.10</title>
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
+  <title>Схемы домов · 4.3.14</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.10">
-  <script src="/app.js?v=4.3.10" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.14">
+  <script src="/app.js?v=4.3.14" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand-lockup">
-      <div class="brandmark" aria-hidden="true"><span></span></div>
-      <div class="brand-copy">
-        <div class="brand-name">Схемы объектов</div>
-        <div class="brand-caption">Архив трубопроводных схем по адресам</div>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Проверка Qwen…</span></div>
-      <div class="version-pill">Версия <b>4.3.10</b></div>
-    </div>
-  </header>
-
   <main class="app-shell">
-    <section class="intro-row">
-      <div>
-        <div class="eyebrow">ОБЩАЯ БИБЛИОТЕКА ДЛЯ СПЕЦИАЛИСТОВ</div>
-        <h1 id="mainTitle">Найди дом — открой его схему</h1>
-        <p class="intro-copy">Слесарь загружает фотографию в папку нужного адреса. Другой специалист открывает тот же эскиз из общей библиотеки и получает векторную схему с исходником, подписями и линиями на проверку.</p>
-      </div>
-    </section>
-
     <div class="workspace-grid">
       <aside class="sidebar">
         <section class="card library-card" aria-label="Папки объектов">
           <div class="library-heading">
-            <div><h2>Папки объектов</h2><p>Улица · дом · схемы</p></div>
+            <div><h2>Адресный архив</h2><p>Найди улицу и дом · входящие схемы</p></div>
+            <span id="serverState" class="server-state">Проверка Qwen…</span>
             <button class="icon-action" id="addStreetBtn" type="button" title="Добавить улицу" aria-label="Добавить улицу">＋</button>
           </div>
-          <label class="library-search"><span aria-hidden="true">⌕</span><input id="librarySearch" type="search" placeholder="Найти улицу, дом или схему" aria-label="Поиск по папкам"></label>
+          <label class="library-search"><span aria-hidden="true">⌕</span><input id="librarySearch" type="search" placeholder="Поиск улицы, дома или схемы…" aria-label="Поиск улицы и дома"></label>
           <div class="library-tree" id="libraryTree"><div class="library-empty"><b>Загружаю папки…</b></div></div>
           <div class="library-footer"><button class="secondary-button" id="addBuildingBtn" type="button" disabled>＋ Добавить дом</button></div>
-          <button class="assign-current-button" id="assignCurrentJobBtn" type="button" hidden>Переместить открытую схему в этот дом</button>
         </section>
 
         <section class="card upload-card">
           <div class="card-heading">
-            <div><div class="step-label">НОВАЯ СХЕМА</div><h2>Загрузить эскиз</h2></div>
+            <div><div class="step-label">ДЛЯ СЛЕСАРЯ</div><h2>Отправить фото в дом</h2></div>
             <span class="soft-tag">JPG · PNG · WEBP</span>
           </div>
-          <div class="selected-location" id="selectedLocation">Выбери улицу и дом в папках слева</div>
+          <div class="selected-location" id="selectedLocation">Сначала выбери дом</div>
           <label class="dropzone" id="dropzone" for="fileInput">
             <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff">
             <span class="drop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15.5v3A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-3"/></svg></span>
-            <strong id="fileName">Перетащи фото сюда</strong>
-            <span class="drop-sub">или <u>выбери файл на компьютере</u></span>
+            <strong id="fileName">Добавить фото схемы</strong>
+            <span class="drop-sub">или <u>выбрать файл</u></span>
             <span class="drop-limit">До 18 МБ · JPG, PNG, WEBP, TIFF</span>
           </label>
           <div class="file-preview" id="filePreview" hidden>
@@ -66,15 +44,15 @@
             <button class="icon-button" id="clearFile" type="button" aria-label="Убрать фотографию" title="Убрать фотографию">×</button>
           </div>
           <button class="primary-button" id="analyzeBtn" type="button" disabled>
-            <span class="button-icon">✳</span><span>Сначала выбери дом слева</span><span class="button-arrow">→</span>
+            <span class="button-icon">↑</span><span>Сначала выбери дом</span><span class="button-arrow">→</span>
           </button>
-          <div class="progress-wrap" id="progressWrap" hidden>
-            <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
-            <div class="progress-track"><span></span></div>
-            <div class="progress-foot">OCR-маска · геометрия OpenCV · семантическая проверка Qwen</div>
-          </div>
+          <p class="upload-hint">Выбери улицу и дом выше. Фото попадёт во входящие без распознавания.</p>
           <div class="inline-alert" id="inlineError" role="alert" hidden></div>
-          <div class="privacy-note"><span>i</span><span>Эскиз и результат сохраняются в общей папке выбранного дома.</span></div>
+          <div class="progress-wrap" id="progressWrap" hidden>
+            <div class="progress-head"><span id="progressLabel">Отправка файла…</span><b id="progressPercent">ОТПРАВКА</b></div>
+            <div class="progress-track"><span></span></div>
+            <div class="progress-foot">Само распознавание при отправке не запускается.</div>
+          </div>
         </section>
 
         <section class="card stats-card" id="statsPanel" hidden>
@@ -83,7 +61,7 @@
           <p class="statusline" id="statusline"></p>
         </section>
 
-        <details class="card inspector-card" id="edgePanel" hidden open>
+        <details class="card inspector-card" id="edgePanel" hidden>
           <summary class="details-heading"><div><div class="step-label"><span>03A</span> ГЕОМЕТРИЯ</div><h2>Кандидаты линий</h2></div><span class="count-pill" id="edgeCount">0</span></summary>
           <p class="helper">Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV (cad_include). Маршруты Qwen вынесены отдельно на замороженный QWEN_REVIEW; неоднозначные и неотобранные кандидаты остаются на DETAIL_REVIEW.</p>
           <div class="list-tools"><input id="edgeSearch" type="search" placeholder="Найти E12 или HOUGH…" aria-label="Поиск линии"><button class="tiny-button" id="allEdges" type="button">Все</button><button class="tiny-button" id="longEdges" type="button">Основные</button></div>
@@ -110,16 +88,21 @@
 
       <section class="main-column">
         <section class="card canvas-card">
-          <div class="canvas-header">
-            <div><div class="step-label"><span>02</span> РАСПОЗНАВАНИЕ</div><h2>Проверка исходного эскиза</h2><p class="canvas-description">OpenCV собирает геометрический граф по исходным штрихам; Qwen помогает проверить неоднозначные маршруты. Цветные линии показывают найденные сегменты, узлы и разрывы.</p></div>
+          <div class="canvas-header source-main-header">
+            <div class="source-title">
+              <div class="scheme-status-label" id="activeSchemeStatus">ОБЩИЙ АРХИВ</div>
+              <h2 id="mainTitle">Выбери схему во входящих дома</h2>
+              <p class="canvas-description" id="activeSchemeMeta">Найди улицу и дом слева. Отправка фото сохраняет его во входящих без запуска распознавания.</p>
+            </div>
+            <button class="primary-button process-scheme-button" id="processSchemeBtn" type="button" hidden>Преобразовать в CAD →</button>
             <div class="canvas-tools">
               <label class="check-control"><input type="checkbox" id="showNodes"><span class="check-ui"></span>Узлы</label>
               <label class="check-control"><input type="checkbox" id="showCrossings" checked><span class="check-ui"></span>Пересечения</label>
             </div>
           </div>
-          <div class="legend-row"><span><i class="legend-dot lsd"></i>LSD</span><span><i class="legend-dot hough"></i>Hough</span><span><i class="legend-dot manual"></i>Ручные связи</span><span><i class="legend-dot node"></i>Узел на проверку</span><span class="mode-label" id="selectMode">Режим: просмотр</span></div>
+          <div class="legend-row" hidden><span class="mode-label" id="selectMode">Режим: просмотр</span></div>
           <div class="image-stage" id="sourceStage">
-            <div class="stage-empty" id="sourceEmpty"><div class="empty-art"><span>01</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M12 74H48L67 54H101L124 30H148M48 74V88M101 54V17"/><circle cx="48" cy="74" r="4"/><circle cx="101" cy="54" r="4"/><circle cx="124" cy="30" r="4"/></svg></div><b>Здесь появится исходная схема</b><span>Загрузи фотографию слева, чтобы начать анализ.</span></div>
+            <div class="stage-empty" id="sourceEmpty"><div class="empty-art"><span>01</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M12 74H48L67 54H101L124 30H148M48 74V88M101 54V17"/><circle cx="48" cy="74" r="4"/><circle cx="101" cy="54" r="4"/><circle cx="124" cy="30" r="4"/></svg></div><b>Выбери схему во входящих дома</b><span>Фото отправляют в папку дома слева. Специалист запускает преобразование отдельно.</span></div>
             <div class="image-frame" id="imageFrame" hidden><img id="sourceImage" alt="Исходная инженерная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-label="Наложение найденной геометрии"></svg></div>
           </div>
           <div class="canvas-footer"><span id="canvasMeta">Ожидает изображения</span><span class="live-status"><i></i><span id="analysisState">ГОТОВ К РАБОТЕ</span></span></div>
@@ -128,7 +111,7 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Векторная схема</h2><p class="canvas-description">Основные линии показаны сплошным контуром. Неоднозначные найденные штрихи можно показать пунктиром и проверить отдельно.</p></div>
+            <div><h2>Результат</h2><p class="canvas-description">Сплошные линии — подтверждённые. Пунктир — на проверку.</p></div>
             <div class="output-tools">
               <label class="check-control"><input type="checkbox" id="showReviewGeometry" checked><span class="check-ui"></span>Линии на проверку</label>
               <label class="check-control"><input type="checkbox" id="showReviewText"><span class="check-ui"></span>Сомнительный текст</label>
@@ -143,8 +126,6 @@
           <div class="clean-stage" id="cleanStage"><div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M14 75H54V48H95V26H145M54 48L79 73H125"/><circle cx="54" cy="48" r="5"/><circle cx="95" cy="26" r="5"/><circle cx="79" cy="73" r="5"/></svg></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div></div>
           <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
         </section>
-
-        <section class="bottom-note"><span class="note-icon">i</span><span>OCR-области исключаются из линейных кандидатов даже при неуверенном чтении. В PIPE_MAIN попадают только связные маршруты с геометрическими признаками труб; одиночные штрихи, неоднозначные группы и подсказки Qwen сохранены отдельно для проверки. Подтверждённые подписи экспортируются как редактируемый CAD TEXT.</span><a href="/api/health" target="_blank" rel="noreferrer">Состояние сервера ↗</a></section>
       </section>
     </div>
   </main>
@@ -158,6 +139,5 @@
       <div class="dialog-actions"><button class="secondary-button" id="cancelLibraryDialog" type="button">Отмена</button><button class="primary-button" id="saveLibraryDialog" type="submit">Сохранить</button></div>
     </form>
   </dialog>
-  <footer><span>СХЕМЫ ОБЪЕКТОВ · 4.3.10</span><span>ОБЩАЯ БИБЛИОТЕКА · SVG / DXF / PDF</span></footer>
 </body>
 </html>

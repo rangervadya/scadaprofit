@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 
@@ -20,6 +20,7 @@ const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
 // exposed by the /jobs static file route.
 const LIBRARY_DIR = path.join(DATA, '.private');
 const LIBRARY_PATH = path.join(LIBRARY_DIR, 'address-library.json');
+const SCHEME_META_DIR = path.join(LIBRARY_DIR, 'schemes');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 2 700 000 мс = 45 минут, а не 2 700 000 секунд.
@@ -34,7 +35,12 @@ const UUID_PATTERN = JOB_ID_PATTERN;
 
 await mkdir(DATA, { recursive: true });
 await mkdir(LIBRARY_DIR, { recursive: true });
+await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
+
+// Analyses are intentionally queued one at a time: the target GTX 1060 has
+// limited VRAM, and concurrent Qwen requests would compete for the same GPU.
+const activeAnalyses = new Map();
 
 function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER }) {
   return new Promise((resolve, reject) => {
@@ -256,7 +262,13 @@ async function readAddressLibrary() {
           schemes: Array.isArray(building.schemes) ? building.schemes.filter(item => item && JOB_ID_PATTERN.test(String(item.jobId || ''))).map(item => ({
             jobId: String(item.jobId), title: cleanLabel(item.title || 'Схема', 140),
             createdAt: item.createdAt || null, uploadedBy: cleanLabel(item.uploadedBy || '', 80),
-            sourceName: cleanLabel(item.sourceName || '', 180)
+            sourceName: cleanLabel(item.sourceName || '', 180),
+            status: ['pending', 'processing', 'completed', 'failed'].includes(item.status)
+              ? item.status : 'completed',
+            originalName: cleanLabel(item.originalName || item.title || 'Эскиз', 180),
+            error: cleanLabel(item.error || '', 240),
+            updatedAt: item.updatedAt || item.createdAt || null,
+            completedAt: item.completedAt || null
           })) : []
         })) : []
       })) : []
@@ -301,6 +313,79 @@ function addSchemeToBuilding(library, street, building, scheme) {
   }
   building.schemes.unshift(scheme);
   building.schemes.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+function findScheme(library, jobId) {
+  for (const street of library.streets) {
+    for (const building of street.buildings) {
+      const scheme = building.schemes.find(item => item.jobId === jobId);
+      if (scheme) return { street, building, scheme };
+    }
+  }
+  return null;
+}
+
+function schemeMetaPath(jobId) {
+  return path.join(SCHEME_META_DIR, `${jobId}.json`);
+}
+
+async function writeSchemeMeta(jobId, meta) {
+  const target = schemeMetaPath(jobId);
+  const temporary = `${target}.tmp-${randomUUID()}`;
+  await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
+  await rename(temporary, target);
+}
+
+async function readSchemeMeta(jobId) {
+  try {
+    return JSON.parse(await readFile(schemeMetaPath(jobId), 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    const library = await readAddressLibrary();
+    const found = findScheme(library, jobId);
+    return found ? {
+      jobId, title: found.scheme.title, createdAt: found.scheme.createdAt,
+      uploadedBy: found.scheme.uploadedBy, sourceName: found.scheme.sourceName,
+      status: found.scheme.status || 'completed', originalName: found.scheme.originalName || found.scheme.title,
+      streetName: found.street.name, buildingName: found.building.name,
+      error: found.scheme.error || ''
+    } : null;
+  }
+}
+
+async function updateSchemeStatus(jobId, status, extra = {}) {
+  const existing = await readSchemeMeta(jobId) || { jobId };
+  const updated = { ...existing, ...extra, status, updatedAt: new Date().toISOString() };
+  await writeSchemeMeta(jobId, updated);
+  await updateAddressLibrary(library => {
+    const found = findScheme(library, jobId);
+    if (found) Object.assign(found.scheme, {
+      status, error: cleanLabel(updated.error || '', 240),
+      updatedAt: updated.updatedAt, completedAt: updated.completedAt || null
+    });
+  });
+  return updated;
+}
+
+async function runStoredSchemeAnalysis(jobId) {
+  const jobDir = path.join(DATA, jobId);
+  const meta = await readSchemeMeta(jobId);
+  if (!meta?.sourceName) throw new Error('Исходный эскиз не найден в папке дома.');
+  const sourcePath = path.join(jobDir, path.basename(meta.sourceName));
+  const progressPath = path.join(jobDir, 'progress.log');
+  await runPythonStreaming(
+    [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
+    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
+  );
+  const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
+  if (!graph || !graph.image || !Array.isArray(graph.edges)) {
+    throw new Error('Python обработчик создал неполный graph.json.');
+  }
+  await updateSchemeStatus(jobId, 'completed', {
+    completedAt: new Date().toISOString(), error: '',
+    graphSummary: graph.summary || null
+  });
+  return graph;
 }
 
 function nextManualEdgeId(edges) {
@@ -357,6 +442,150 @@ app.post('/api/library/buildings', async (req, res) => {
     return res.status(201).json({ ok: true, building });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || 'Не удалось создать дом.' });
+  }
+});
+
+// The fitter's workflow ends here: store the photo in the selected address
+// inbox. Do not start OCR/Qwen until a specialist explicitly opens the sketch.
+app.post('/api/library/schemes/upload', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
+  const streetId = String(req.body?.streetId || '');
+  const buildingId = String(req.body?.buildingId || '');
+  const uploadedBy = cleanLabel(req.body?.uploadedBy, 80);
+  const ext = path.extname(req.file.originalname || '').toLowerCase() || '.jpg';
+  const originalName = cleanLabel(path.basename(req.file.originalname || 'Эскиз'), 180) || 'Эскиз';
+  const title = cleanLabel(req.body?.title || path.basename(originalName, ext), 140) || 'Новый эскиз';
+
+  if (!UUID_PATTERN.test(streetId) || !UUID_PATTERN.test(buildingId)) {
+    await rm(req.file.path, { force: true }).catch(() => {});
+    return res.status(400).json({ error: 'Сначала найди улицу и выбери номер дома.' });
+  }
+
+  const jobId = randomUUID();
+  const jobDir = path.join(DATA, jobId);
+  const sourceName = `source${ext}`;
+  try {
+    const library = await readAddressLibrary();
+    const address = findBuilding(library, streetId, buildingId);
+    if (!address) {
+      await rm(req.file.path, { force: true }).catch(() => {});
+      return res.status(404).json({ error: 'Адрес не найден. Обнови поиск улиц и домов.' });
+    }
+    await mkdir(jobDir, { recursive: true });
+    await copyFile(req.file.path, path.join(jobDir, sourceName));
+    await rm(req.file.path, { force: true });
+
+    const meta = {
+      jobId, title, originalName, sourceName, uploadedBy,
+      streetId, streetName: address.street.name,
+      buildingId, buildingName: address.building.name,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      status: 'pending', error: ''
+    };
+    await writeSchemeMeta(jobId, meta);
+    await updateAddressLibrary(current => {
+      const target = findBuilding(current, streetId, buildingId);
+      if (!target) { const error = new Error('Адрес удалён во время отправки.'); error.status = 404; throw error; }
+      addSchemeToBuilding(current, target.street, target.building, {
+        jobId, title, originalName, createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt, uploadedBy, sourceName, status: 'pending', error: ''
+      });
+    });
+    return res.status(201).json({
+      ok: true, scheme: { ...meta, sourceUrl: `/jobs/${jobId}/${sourceName}` },
+      library: await readAddressLibrary()
+    });
+  } catch (error) {
+    await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+    return res.status(error.status || 500).json({ error: error.message || 'Не удалось отправить эскиз в папку дома.' });
+  } finally {
+    if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
+  }
+});
+
+app.get('/api/library/schemes/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
+  try {
+    const library = await readAddressLibrary();
+    const found = findScheme(library, jobId);
+    if (!found) return res.status(404).json({ error: 'Схема не найдена в библиотеке адресов.' });
+    const meta = await readSchemeMeta(jobId);
+    if (!meta?.sourceName) return res.status(404).json({ error: 'Исходная фотография не найдена.' });
+    const scheme = {
+      ...found.scheme,
+      streetName: found.street.name,
+      buildingName: found.building.name,
+      sourceUrl: `/jobs/${jobId}/${path.basename(meta.sourceName)}`,
+      progressUrl: `/jobs/${jobId}/progress.log`
+    };
+    return res.json({ ok: true, scheme });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Не удалось открыть схему.' });
+  }
+});
+
+app.get('/api/library/schemes/:jobId/status', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
+  try {
+    const library = await readAddressLibrary();
+    const found = findScheme(library, jobId);
+    if (!found) return res.status(404).json({ error: 'Схема не найдена.' });
+    const meta = await readSchemeMeta(jobId);
+    let progress = '';
+    try {
+      const raw = await readFile(path.join(DATA, jobId, 'progress.log'), 'utf8');
+      progress = raw.trim().split(/\r?\n/).slice(-1)[0] || '';
+    } catch { /* pending upload has no processing log yet */ }
+    return res.json({
+      ok: true, jobId, status: meta?.status || found.scheme.status || 'completed',
+      progress, error: meta?.error || found.scheme.error || '',
+      graphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Не удалось проверить состояние схемы.' });
+  }
+});
+
+app.post('/api/library/schemes/:jobId/analyze', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
+  try {
+    const library = await readAddressLibrary();
+    const found = findScheme(library, jobId);
+    if (!found) return res.status(404).json({ error: 'Сначала отправь эскиз в папку нужного дома.' });
+    const meta = await readSchemeMeta(jobId);
+    if (!meta?.sourceName) return res.status(404).json({ error: 'Исходная фотография не найдена.' });
+    if (meta.status === 'completed') return res.json({ ok: true, status: 'completed', jobId });
+    if (activeAnalyses.has(jobId)) return res.status(202).json({ ok: true, status: 'processing', jobId });
+    if (activeAnalyses.size > 0) {
+      const activeJobId = activeAnalyses.keys().next().value;
+      return res.status(409).json({
+        error: 'Сейчас уже обрабатывается другой чертёж. Дождись его завершения, чтобы не перегружать GTX 1060.',
+        status: 'busy', activeJobId
+      });
+    }
+
+    // Reserve the single Qwen slot synchronously before the first await so
+    // two simultaneous POSTs cannot both start expensive GPU jobs.
+    activeAnalyses.set(jobId, Promise.resolve());
+    try {
+      await updateSchemeStatus(jobId, 'processing', { error: '', startedAt: new Date().toISOString() });
+    } catch (statusError) {
+      activeAnalyses.delete(jobId);
+      throw statusError;
+    }
+    const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId)).catch(async error => {
+      console.error(`[JOB ${jobId.slice(0, 8)}] Stored scheme analysis failed:`, error?.stderr || error);
+      await updateSchemeStatus(jobId, 'failed', {
+        error: String(error?.stderr || error?.message || error).slice(-900)
+      }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
+    }).finally(() => activeAnalyses.delete(jobId));
+    activeAnalyses.set(jobId, task);
+    return res.status(202).json({ ok: true, status: 'processing', jobId });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Не удалось запустить преобразование схемы.' });
   }
 });
 
@@ -563,7 +792,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.11',
+    version: '4.3.14',
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
@@ -749,7 +978,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.11: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.12: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });

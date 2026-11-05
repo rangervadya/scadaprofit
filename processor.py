@@ -149,6 +149,19 @@ OCR_ROW_RESPONSE_SCHEMA: dict[str, Any] = {
     'properties': {
         'text': {'type': 'string'},
         'confidence': {'type': 'number'},
+        'cells': {
+            'type': 'array', 'maxItems': 16,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'text': {'type': 'string'},
+                    'bbox': {'type': 'array', 'minItems': 4, 'maxItems': 4,
+                             'items': {'type': 'number'}},
+                    'confidence': {'type': 'number'},
+                },
+                'required': ['text', 'bbox'],
+            },
+        },
     },
     'required': ['text', 'confidence'],
 }
@@ -163,6 +176,24 @@ OCR_ROWS_RESPONSE_SCHEMA: dict[str, Any] = {
                 'properties': {
                     'text': {'type': 'string'},
                     'confidence': {'type': 'number'},
+                    # Optional cell boxes are used for compact handwritten
+                    # tables. Coordinates refer to the exact image sent for
+                    # the paired-row request, not to the original page.
+                    'cells': {
+                        'type': 'array', 'maxItems': 16,
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'text': {'type': 'string'},
+                                'bbox': {
+                                    'type': 'array', 'minItems': 4, 'maxItems': 4,
+                                    'items': {'type': 'number'},
+                                },
+                                'confidence': {'type': 'number'},
+                            },
+                            'required': ['text', 'bbox'],
+                        },
+                    },
                 },
                 'required': ['text', 'confidence'],
             },
@@ -325,7 +356,76 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
             'block_line': True, 'row_index': row['row'],
         }
 
-    def single_row_read(row: dict[str, Any], *, batch_index: int, reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    def make_cell_results(row: dict[str, Any], cells: Any, *,
+                          crop_origin: tuple[int, int], coordinate_scale: float,
+                          sent_size: tuple[int, int], row_source_box: tuple[int, int, int, int],
+                          row_confidence: float) -> list[dict[str, Any]]:
+        if not isinstance(cells, list) or len(cells) < 2 or coordinate_scale <= 0:
+            return []
+        crop_left, crop_top = crop_origin
+        sent_width, sent_height = sent_size
+        row_left, row_top, row_right, row_bottom = row_source_box
+        output: list[dict[str, Any]] = []
+        for cell_index, cell in enumerate(cells[:16], 1):
+            if not isinstance(cell, dict):
+                continue
+            text = re.sub(r'\s+', ' ', str(cell.get('text') or '')).strip()
+            raw_box = cell.get('bbox') or cell.get('box')
+            if not text or not isinstance(raw_box, (list, tuple)) or len(raw_box) != 4:
+                continue
+            try:
+                x1, y1, x2, y2 = (float(value) for value in raw_box)
+                confidence = float(cell.get('confidence', row_confidence) or 0)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= confidence <= 1:
+                confidence *= 100.0
+            if not all(math.isfinite(value) for value in (x1, y1, x2, y2, confidence)):
+                continue
+            # Reject malformed boxes instead of allowing them to drift to a
+            # different part of the sheet during crop/resize coordinate mapping.
+            if (x2 <= x1 or y2 <= y1 or x1 < -2 or y1 < -2
+                    or x2 > sent_width + 2 or y2 > sent_height + 2):
+                continue
+            gx1 = crop_left + max(0.0, x1) / coordinate_scale
+            gy1 = crop_top + max(0.0, y1) / coordinate_scale
+            gx2 = crop_left + min(float(sent_width), x2) / coordinate_scale
+            gy2 = crop_top + min(float(sent_height), y2) / coordinate_scale
+            # A cell must belong to this row. This catches tile-relative or
+            # normalized boxes that were accidentally reported in another space.
+            if gy2 < row_top - 8 or gy1 > row_bottom + 8:
+                continue
+            gx1 = max(float(row_left), gx1)
+            gy1 = max(float(row_top), gy1)
+            gx2 = min(float(row_right), gx2)
+            gy2 = min(float(row_bottom), gy2)
+            bw, bh = gx2 - gx1, gy2 - gy1
+            if bw < 2 or bh < 3:
+                continue
+            has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
+            if not has_alnum:
+                continue
+            verified = confidence >= 58 and text != '?'
+            output.append({
+                'id': f'QBR{row["row"]}C{cell_index}', 'text': text,
+                'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                'bbox': {'x': round(gx1, 2), 'y': round(gy1, 2),
+                         'w': round(bw, 2), 'h': round(bh, 2)},
+                'verified': verified, 'include': verified,
+                'geometry_exclude': True, 'source': 'qwen3-vl-block',
+                'block_line': True, 'row_index': row['row'],
+                'table_cell': True,
+                'bbox_coordinate_space': 'original-image-pixels',
+                'bbox_source': 'paired-row-crop-cell',
+                'source_crop_xyxy': [int(crop_left), int(crop_top),
+                                     int(crop_left + round(sent_width / coordinate_scale)),
+                                     int(crop_top + round(sent_height / coordinate_scale))],
+                'source_row_bbox': {'x': int(row_left), 'y': int(row_top),
+                                    'w': int(row_right - row_left), 'h': int(row_bottom - row_top)},
+            })
+        return output
+
+    def single_row_read(row: dict[str, Any], *, batch_index: int, reason: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         box = row_box(row)
         left, top, right, bottom = box
         crop = image.crop((left, top, right, bottom)).convert('RGB')
@@ -344,31 +444,50 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
             'скобки и код в конце без исправления и перевода. Не описывай графику. '
             'Не добавляй невидимые слова. При частичной нечитаемости используй [?] только '
             'вместо нечитабельного фрагмента; если строка совсем не читается, text="?". '
-            'Верни строго JSON: {"text":"1) буквальный текст (0405)","confidence":65}. '
+            'Если строка — компактная таблица с раздельными колонками, добавь cells: '
+            'каждый элемент отдельно с tight bbox [x1,y1,x2,y2] в пикселях именно этого '
+            'отправленного изображения; не используй нормированные координаты 0..1000. '
+            'Для обычной текстовой строки cells не добавляй. '
+            'Верни строго JSON: {"text":"1) буквальный текст (0405)","confidence":65,"cells":[{"text":"1)","bbox":[5,5,20,25]}]}. '
             'confidence — число 0..100, не завышай уверенность.'
         )
         try:
             row_timeout = max(8.0, min(25.0, float(timeout) / max(1, len(rows))))
-            parsed, _resize_scale, sent_size = _qwen_call(
+            parsed, resize_scale, sent_size = _qwen_call(
                 crop, prompt, url=url, model=model, timeout=row_timeout,
-                max_edge=max_edge, num_predict=max(128, min(220, int(max_tokens))),
+                max_edge=max_edge, num_predict=max(128, min(320, int(max_tokens))),
                 diagnostics=diag, format_schema=OCR_ROW_RESPONSE_SCHEMA
             )
             diag['sent_size'] = list(sent_size)
-            result = make_result(row, box, parsed, diag=diag, fallback=True)
+            _row_text, row_confidence, row_verified = normalize(parsed)
+            cell_results = make_cell_results(
+                row, parsed.get('cells') if isinstance(parsed, dict) else None,
+                crop_origin=(left, top), coordinate_scale=scale * resize_scale,
+                sent_size=sent_size, row_source_box=box, row_confidence=row_confidence
+            ) if row_verified and row_confidence >= 70.0 else []
+            if len(cell_results) >= 2:
+                diag.update({'table_cells': len(cell_results), 'cell_boxes_used': True,
+                             'bbox_coordinate_space': 'original-image-pixels',
+                             'crop_origin': [left, top],
+                             'crop_coordinate_scale': round(float(scale * resize_scale), 6),
+                             'sent_size': list(sent_size)})
+                result = cell_results
+            else:
+                result = [make_result(row, box, parsed, diag=diag, fallback=True)]
         except Exception as error:
             diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
             diag['confidence'] = 0.0
             diag['accepted'] = False
             diag['verified'] = False
             diag['fallback_single_row'] = True
-            result = {
+            result = [{
                 'id': f'QBR{row["row"]}', 'text': '?', 'confidence': 0.0,
                 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
                 'verified': False, 'include': False, 'geometry_exclude': True,
                 'source': 'qwen3-vl-block', 'block_line': True, 'row_index': row['row'],
-            }
-        state = 'accepted' if result.get('verified') else ('failed' if diag.get('error') else 'review')
+            }]
+        accepted = bool(result) and all(item.get('verified') for item in result)
+        state = 'accepted' if accepted else ('failed' if diag.get('error') else 'review')
         _progress('OCR', f'Handwritten row {row["row"]} individual retry completed ({state})')
         return result, diag
 
@@ -400,21 +519,29 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
                 'Для каждой сохрани номер слева, кириллические и латинские буквы, цифры, знаки +, '
                 'скобки и коды в конце буквально, без исправлений и перевода. Не описывай графику, '
                 'не пропускай короткие цифры и не объединяй строки. Если фрагмент неразборчив, '
-                'поставь [?] только на его месте; не додумывай текст. Верни ровно два объекта '
+                'поставь [?] только на его месте; не додумывай текст. Если строка является '
+                'короткой таблицей с раздельными колонками (например, номер строки и несколько чисел), '
+                'добавь для неё cells: каждый номер/элемент отдельным объектом с tight bbox именно '
+                'в отправленном изображении пары строк: [x1,y1,x2,y2], начало координат слева сверху. '
+                'Не добавляй cells для обычного предложения или списка без колонок. Поле text всей строки '
+                'всё равно обязательно оставь как резервную расшифровку. Верни ровно два объекта '
                 'в массиве rows в том же порядке сверху вниз: '
-                '{"rows":[{"text":"1) текст (0405)","confidence":70},'
-                '{"text":"2) текст (0406)","confidence":65}]}. '
+                '{"rows":[{"text":"1) 1 2 3 4","confidence":75,"cells":['
+                '{"text":"1)","bbox":[12,8,26,28],"confidence":80},'
+                '{"text":"1","bbox":[48,8,58,28],"confidence":80}]},'
+                '{"text":"2) 5 6 7 8","confidence":75}]}. '
                 'confidence — число 0..100, не завышай уверенность. Только JSON.'
             )
-            batch_diag.update({'input_size': list(crop.size), 'request_mode': 'paired_rows'})
+            batch_diag.update({'input_size': list(crop.size), 'request_mode': 'paired_rows', 'crop_upscale': round(float(scale), 6)})
             try:
                 batch_timeout = max(12.0, min(35.0, float(timeout) / max(1, len(batches))))
-                parsed, _resize_scale, sent_size = _qwen_call(
+                parsed, batch_resize_scale, sent_size = _qwen_call(
                     crop, prompt, url=url, model=model, timeout=batch_timeout,
                     max_edge=max_edge, num_predict=max(256, min(440, int(max_tokens))),
                     diagnostics=batch_diag, format_schema=OCR_ROWS_RESPONSE_SCHEMA
                 )
                 batch_diag['sent_size'] = list(sent_size)
+                batch_coordinate_scale = scale * batch_resize_scale
                 value = parsed.get('rows') if isinstance(parsed, dict) else None
                 if isinstance(value, list) and len(value) == len(batch) and all(isinstance(item, dict) for item in value):
                     parsed_rows = value
@@ -439,6 +566,25 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
                 }
                 parsed_row = parsed_rows[index]
                 _text, _confidence, verified = normalize(parsed_row)
+                # A compact table needs cell-level positions. Keep these as
+                # separate OCR entities so 1/2/3/4 remain over their source
+                # columns instead of being printed as one centred sentence.
+                if verified and _confidence >= 70.0 and isinstance(parsed_row, dict) and parsed_row.get('cells'):
+                    cell_results = make_cell_results(
+                        row, parsed_row.get('cells'), crop_origin=(left, top),
+                        coordinate_scale=batch_coordinate_scale, sent_size=sent_size,
+                        row_source_box=box, row_confidence=_confidence
+                    )
+                    if len(cell_results) >= 2:
+                        results.extend(cell_results)
+                        row_diag.update({'table_cells': len(cell_results), 'cell_boxes_used': True,
+                                         'bbox_coordinate_space': 'original-image-pixels',
+                                         'crop_origin': [left, top],
+                                         'crop_coordinate_scale': round(float(batch_coordinate_scale), 6),
+                                         'sent_size': list(sent_size)})
+                        row_diags.append(row_diag)
+                        _progress('OCR', f'Handwritten row {row["row"]} completed (batched, {len(cell_results)} cells)')
+                        continue
                 # Batched reads are accepted only at a stronger confidence. Any
                 # borderline row gets the original single-row image/read path.
                 if verified and _confidence >= 70.0:
@@ -450,8 +596,8 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
                 reason = 'paired_low_confidence_or_unreadable'
             else:
                 reason = str(batch_diag.get('fallback_reason') or 'paired_response_unavailable')
-            result, row_diag = single_row_read(row, batch_index=batch_index, reason=reason)
-            results.append(result)
+            row_results, row_diag = single_row_read(row, batch_index=batch_index, reason=reason)
+            results.extend(row_results)
             row_diags.append(row_diag)
         _progress('OCR', f'Handwritten batch {batch_index}/{len(batches)} completed')
 
@@ -930,7 +1076,11 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'Границы bbox должны охватывать все штрихи надписи, включая длинные связные рукописные штрихи. '
             'bbox — массив [x1,y1,x2,y2] в пикселях отправленного изображения: левый верхний и правый нижний углы. '
             'Верни объект annotations как массив, даже если найден только один текст. '
-            'Не возвращай один объект text/bbox вместо массива. Никаких рассуждений и пояснений. '
+            'Не возвращай один объект text/bbox вместо массива. Если видишь таблицу или несколько колонок, '
+            'верни каждую ячейку отдельно: номер строки и каждое значение — отдельные annotations с тесным bbox. '
+            'Никогда не объединяй всю строку, таблицу или несколько разнесённых чисел в один bbox. '
+            'Координаты строго в пикселях именно этого отправленного фрагмента, от его левого верхнего угла; '
+            'не используй нормализацию 0..1000 и не пересчитывай координаты на весь лист. '
             'Пример формы: {"annotations":[{"text":"1500","bbox":[10,20,45,34],"confidence":72}]}. '
             'Максимум 64 текстовые области на фрагмент. Размер изображения: {width}x{height} px.'
         )
@@ -982,6 +1132,14 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     format_schema=OCR_RESPONSE_SCHEMA
                 )
                 coordinate_scale = crop_scale * resize_scale
+                sent_width, sent_height = sent_size
+                call_diagnostics.update({
+                    'source_crop_xyxy': [int(left), int(top), int(right), int(bottom)],
+                    'crop_upscale': round(float(crop_scale), 6),
+                    'request_resize_scale': round(float(resize_scale), 6),
+                    'sent_size': [int(sent_width), int(sent_height)],
+                    'bbox_coordinate_space': 'sent_tile_pixels_mapped_to_source_image_pixels',
+                })
                 calls_ok += 1
                 raw_items, annotation_key = _annotation_items_from_response(parsed)
                 call_diagnostics['annotation_key'] = annotation_key
@@ -1004,6 +1162,21 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                             continue
                     else:
                         continue
+                    # Reject model boxes that are clearly outside the crop it saw.
+                    # Small excursions are clipped below; grossly invalid boxes
+                    # are not allowed to migrate into the centre of the source page.
+                    raw_left, raw_top = float(box['x']), float(box['y'])
+                    raw_right = raw_left + float(box['w'])
+                    raw_bottom = raw_top + float(box['h'])
+                    if (raw_right <= 0 or raw_bottom <= 0 or raw_left >= sent_width * 1.08
+                            or raw_top >= sent_height * 1.08
+                            or raw_left < -sent_width * 0.08 or raw_top < -sent_height * 0.08):
+                        call_diagnostics['rejected_out_of_crop_boxes'] = int(call_diagnostics.get('rejected_out_of_crop_boxes', 0)) + 1
+                        continue
+                    box['x'] = max(0.0, min(float(sent_width), raw_left))
+                    box['y'] = max(0.0, min(float(sent_height), raw_top))
+                    box['w'] = max(0.0, min(float(sent_width) - box['x'], raw_right - box['x']))
+                    box['h'] = max(0.0, min(float(sent_height) - box['y'], raw_bottom - box['y']))
                     try:
                         confidence = float(raw.get('confidence', raw.get('score', 0)))
                     except (TypeError, ValueError):
@@ -1034,6 +1207,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                         'verified': accepted, 'include': accepted,
                         'geometry_exclude': geometry_exclude,
                         'source': 'qwen3-vl', 'tile': tile_index,
+                        'coordinate_space': 'source_image_px',
+                        'source_tile_xyxy': [int(left), int(top), int(right), int(bottom)],
                     })
                 call_diagnostics['accepted_annotations'] = len(items) - accepted_before
                 tile_diagnostics.append(call_diagnostics)
@@ -1866,7 +2041,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
     # only the same strict tangent + undilated-ink continuity checks can join it.
     # Without source pixels keep the old, shorter geometry-only limit.
     gap_radius = (
-        max(radius + 1.0, min(28.0, radius * 6.2))
+        max(radius + 1.0, min(48.0, radius * 10.5))
         if ink is not None else
         max(radius + 1.0, min(12.0, radius * 2.5))
     )
@@ -2951,14 +3126,69 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
     ]
     # The primary drawing must not depend on a vision model's incomplete or
     # geometrically degenerate route list. Use the detector graph after its
-    # topology/length/symbol-stub selection. Qwen suggestions remain available
-    # in graph.json and on the frozen QWEN_REVIEW DXF layer.
+    # topology/length/symbol-stub selection. Every usable Qwen trajectory also
+    # remains visible in the frozen QWEN_REVIEW layer, never silently promoted.
     clean_chains = _cad_edge_chains(edges)
     semantic_primary_chains = _primary_semantic_chains(primary_semantic_routes)
     for chain in clean_chains + semantic_primary_chains:
         pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
+    # Preserve every non-primary detector fragment on an explicit dashed layer.
+    # This does not claim that review fragments are connected pipe geometry.
+    review_chains = _cad_edge_chains([
+        {**edge, 'cad_include': True}
+        for edge in edges
+        if not edge.get('cad_include', edge.get('component_role') == 'line_structure')
+        and edge.get('cad_reason') != 'text-or-annotation'
+        and edge.get('component_role') != 'text_or_annotation'
+        and edge.get('suggested_role') != 'text_or_dimension'
+    ])
+    if review_chains:
+        out.append(f'<g data-layer="DETAIL_REVIEW" fill="none" stroke="#85919a" stroke-width="{max(0.14, line_width * 0.78):.4f}" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">')
+        for chain in review_chains:
+            pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
+            out.append(f'<polyline points="{pts}"/>')
+        out.append('</g>')
+    primary_route_ids = {str(route.get('id')) for route in (primary_semantic_routes or [])}
+    qwen_review_chains: list[list[list[float]]] = []
+    for route in (semantic_routes or []):
+        if not isinstance(route, dict) or str(route.get('id')) in primary_route_ids:
+            continue
+        # Even routes that Qwen itself marked uncertain/not-included are shown
+        # on a review-only layer. This increases visual recall without silently
+        # adding them to the main network or changing their validation status.
+        try:
+            confidence = float(route.get('confidence', 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 20:
+            continue
+        raw_points = route.get('points')
+        if not isinstance(raw_points, list) or len(raw_points) < 2:
+            continue
+        # Keep only traces located on the source page. Invalid coordinate
+        # spaces must not be exported around the centre of the CAD sheet.
+        valid_points = []
+        for point in raw_points[:160]:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                px, py = float(point[0]), float(point[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(px) and math.isfinite(py) and 0 <= px <= width and 0 <= py <= height:
+                valid_points.append([px, py])
+        if len(valid_points) < 2:
+            continue
+        display_route = {**route, 'points': valid_points, 'include': True, 'confidence': max(35.0, confidence)}
+        qwen_review_chains.extend(_semantic_route_chains([display_route]))
+    if qwen_review_chains:
+        out.append(f'<g data-layer="QWEN_REVIEW" fill="none" stroke="#9a7caf" stroke-width="{max(0.13, line_width * 0.72):.4f}" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">')
+        for chain in qwen_review_chains:
+            pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
+            out.append(f'<polyline points="{pts}"/>')
+        out.append('</g>')
     if not clean_chains and not semantic_primary_chains:
         out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ</text>')
         detail = (semantic_status or {}).get('error') or 'Проверьте исходное изображение и параметры выделения геометрии.'
@@ -2973,14 +3203,17 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         if not export_kind:
             continue
         box=annotation.get('bbox') or {}
-        x=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
-        y=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
+        # Row-level OCR annotations (e.g. a numbered table row) carry a bbox
+        # for the whole row. Centre anchoring shifts every value toward the
+        # middle of the row; keep the transcript anchored at its true left edge.
+        x=tx+float(box.get('x',0))*scale
+        y=ty+(float(box.get('y',0))+float(box.get('h',0)))*scale
         label=str(annotation['text'])
         label_width=max(24.0, min(220.0, len(label)*4.8+8.0))
         text_color = '#15191d' if export_kind == 'VERIFIED_TEXT' else '#8b6334'
         font_size = 8 if export_kind == 'VERIFIED_TEXT' else 7
         font_weight = '600' if export_kind == 'VERIFIED_TEXT' else '400'
-        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" font-weight="{font_weight}" text-anchor="middle" fill="{text_color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">{xml_escape(label)}</text>')
+        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" font-weight="{font_weight}" text-anchor="start" fill="{text_color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">{xml_escape(label)}</text>')
 
     out += [
         '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -3073,9 +3306,33 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     # They are therefore preserved on a separate frozen layer.
     primary_ids = {str(route.get('id')) for route in (primary_semantic_routes or [])}
     for route in (semantic_routes or []):
-        if str(route.get('id')) in primary_ids:
+        if not isinstance(route, dict) or str(route.get('id')) in primary_ids:
             continue
-        chain = _semantic_route_chains([route])
+        try:
+            confidence = float(route.get('confidence', 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 20:
+            continue
+        raw_points = route.get('points')
+        if not isinstance(raw_points, list) or len(raw_points) < 2:
+            continue
+        valid_points = []
+        for point in raw_points[:160]:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                px, py = float(point[0]), float(point[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(px) and math.isfinite(py) and 0 <= px <= width and 0 <= py <= height:
+                valid_points.append([px, py])
+        if len(valid_points) < 2:
+            continue
+        # Preserve uncertain Qwen trajectories as frozen review entities.
+        # They are deliberately not promoted to PIPE_MAIN here.
+        display_route = {**route, 'points': valid_points, 'include': True, 'confidence': max(35.0, confidence)}
+        chain = _semantic_route_chains([display_route])
         if not chain:
             continue
         page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain[0]]
@@ -3086,12 +3343,13 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
         if not export_kind:
             continue
         box=annotation.get('bbox') or {}
-        px=tx+(float(box.get('x',0))+float(box.get('w',0))/2.0)*scale
-        py=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
+        # DXF TEXT defaults to left/baseline alignment. Keep the insertion
+        # point at the source bbox left edge; subtracting an estimated string
+        # width was moving left-column digits toward the centre of the sheet.
+        px=tx+float(box.get('x',0))*scale
+        py=ty+(float(box.get('y',0))+float(box.get('h',0)))*scale
         x,y=page_to_mm((px,py))
         text=str(annotation['text'])
-        # TEXT is centre-aligned in the sheet; review labels are on a frozen layer.
-        x -= min(70.0, len(text)*1.65)
         d += dxf_text(export_kind,text,x,y,3.0 if export_kind == 'VERIFIED_TEXT' else 2.7)
 
     d += dxf_text('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',page_to_mm((40,52))[0],page_to_mm((40,52))[1],5.6)

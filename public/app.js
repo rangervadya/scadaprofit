@@ -15,6 +15,8 @@ let addressLibrary = { streets: [] };
 let selectedStreetId = null;
 let selectedBuildingId = null;
 let selectedJobId = null;
+let activeScheme = null;
+let schemePollToken = 0;
 let expandedStreetIds = new Set();
 let showReviewGeometry = true;
 let showReviewText = false;
@@ -74,8 +76,8 @@ function updateAnalyzeButton() {
   const label = analyzeBtn.querySelector('span:nth-child(2)');
   if (!label) return;
   if (!selectedBuildingId) label.textContent = 'Сначала выбери дом слева';
-  else if (!selectedFile) label.textContent = 'Выбери эскиз для загрузки';
-  else label.textContent = 'Распознать и сохранить в папку дома';
+  else if (!selectedFile) label.textContent = 'Выбери фото схемы';
+  else label.textContent = 'Отправить фото в выбранный дом';
 }
 
 function libraryBuildingContext(streetId, buildingId) {
@@ -96,11 +98,12 @@ function renderLibrary() {
   const query = String($('librarySearch')?.value || '').trim().toLocaleLowerCase('ru');
   const rows = [];
   for (const street of addressLibrary.streets || []) {
+    const streetMatches = Boolean(query) && street.name.toLocaleLowerCase('ru').includes(query);
     const visibleBuildings = (street.buildings || []).filter(building => {
-      const text = `${street.name} ${building.name} ${(building.schemes || []).map(item => item.title).join(' ')}`.toLocaleLowerCase('ru');
-      return !query || text.includes(query);
+      const text = `${building.name} ${(building.schemes || []).map(item => item.title).join(' ')}`.toLocaleLowerCase('ru');
+      return !query || streetMatches || text.includes(query);
     });
-    if (query && !visibleBuildings.length && !street.name.toLocaleLowerCase('ru').includes(query)) continue;
+    if (query && !visibleBuildings.length && !streetMatches) continue;
     const expanded = expandedStreetIds.has(street.id) || Boolean(query);
     const schemeCount = (street.buildings || []).reduce((sum, building) => sum + (building.schemes || []).length, 0);
     rows.push(`<div class="tree-group">
@@ -110,14 +113,19 @@ function renderLibrary() {
       <div class="tree-children" ${expanded ? '' : 'hidden'}>
         ${visibleBuildings.map(building => {
           const selected = selectedBuildingId === building.id;
-          const schemeList = (building.schemes || []).filter(item => !query || `${item.title} ${item.jobId}`.toLocaleLowerCase('ru').includes(query));
+          const buildingMatches = Boolean(query) && String(building.name).toLocaleLowerCase('ru').includes(query);
+          const schemeList = (building.schemes || []).filter(item => !query || streetMatches || buildingMatches || `${item.title} ${item.jobId}`.toLocaleLowerCase('ru').includes(query));
           const expandedBuilding = selected || Boolean(query);
           return `<div class="tree-building-group">
             <button type="button" class="tree-row tree-building ${selected ? 'is-selected' : ''}" data-building-id="${escapeHtml(building.id)}" data-parent-street="${escapeHtml(street.id)}" aria-expanded="${expandedBuilding}">
               <span class="tree-caret">${expandedBuilding ? '▾' : '▸'}</span><span class="tree-house" aria-hidden="true">⌂</span><span class="tree-name">Дом ${escapeHtml(building.name)}</span><span class="tree-count">${(building.schemes || []).length}</span>
             </button>
-            <div class="tree-schemes" ${expandedBuilding ? '' : 'hidden'}>
-              ${schemeList.length ? schemeList.map(item => `<button type="button" class="tree-row tree-scheme ${selectedJobId === item.jobId ? 'is-current' : ''}" data-open-job="${escapeHtml(item.jobId)}" title="Открыть исходный эскиз и векторный результат"><span class="tree-file" aria-hidden="true"></span><span class="tree-name">${escapeHtml(item.title)}</span><span class="tree-date">${formatLibraryDate(item.createdAt)}</span></button>`).join('') : '<div class="tree-empty-scheme">Пока нет схем</div>'}
+            <div class="tree-schemes" ${expandedBuilding ? '' : 'hidden'}><div class="tree-inbox-label">ВХОДЯЩИЕ СХЕМЫ</div>
+              ${schemeList.length ? schemeList.map(item => {
+                const status = ['pending', 'processing', 'completed', 'failed'].includes(item.status) ? item.status : 'completed';
+                const statusText = ({ pending: 'ВХОДЯЩАЯ', processing: 'В РАБОТЕ', completed: 'ГОТОВО', failed: 'ОШИБКА' })[status];
+                return `<button type="button" class="tree-row tree-scheme ${selectedJobId === item.jobId ? 'is-current' : ''}" data-open-job="${escapeHtml(item.jobId)}" title="Открыть входящий эскиз"><span class="tree-file" aria-hidden="true"></span><span class="tree-name">${escapeHtml(item.title)}</span><span class="scheme-status ${status}">${statusText}</span></button>`;
+              }).join('') : '<div class="tree-empty-scheme">Нет входящих эскизов</div>'}
             </div>
           </div>`;
         }).join('')}
@@ -125,21 +133,23 @@ function renderLibrary() {
       </div>
     </div>`);
   }
-  root.innerHTML = rows.join('') || `<div class="library-empty"><span class="empty-folder">▱</span><b>${addressLibrary.streets?.length ? 'Ничего не найдено' : 'Папки пока пусты'}</b><span>${addressLibrary.streets?.length ? 'Измени запрос поиска.' : 'Создай улицу, затем добавь дом и загрузи первую схему.'}</span></div>`;
+  root.innerHTML = rows.join('') || `<div class="library-empty"><span class="empty-folder">▱</span><b>${addressLibrary.streets?.length ? 'Ничего не найдено' : 'Папки пока пусты'}</b><span>${addressLibrary.streets?.length ? 'Измени запрос поиска.' : 'Создай улицу, затем добавь дом.'}</span></div>`;
   root.querySelectorAll('[data-street-id]').forEach(button => button.addEventListener('click', () => {
     const id = button.dataset.streetId;
     if (expandedStreetIds.has(id)) expandedStreetIds.delete(id); else expandedStreetIds.add(id);
     selectedStreetId = id;
     selectedBuildingId = null;
     renderLibrary(); updateLibrarySelection();
+    showAddressInbox(id, null);
   }));
   root.querySelectorAll('[data-building-id]').forEach(button => button.addEventListener('click', () => {
     selectedStreetId = button.dataset.parentStreet;
     selectedBuildingId = button.dataset.buildingId;
     expandedStreetIds.add(selectedStreetId);
     renderLibrary(); updateLibrarySelection();
+    showAddressInbox(selectedStreetId, selectedBuildingId);
   }));
-  root.querySelectorAll('[data-open-job]').forEach(button => button.addEventListener('click', () => openSavedJob(button.dataset.openJob)));
+  root.querySelectorAll('[data-open-job]').forEach(button => button.addEventListener('click', () => openLibraryScheme(button.dataset.openJob))); 
   const addBuilding = $('addBuildingBtn');
   if (addBuilding) addBuilding.disabled = !selectedStreetId;
 }
@@ -155,12 +165,35 @@ function updateLibrarySelection() {
   $('selectedLocation').textContent = selectedAddressText();
   $('selectedLocation').classList.toggle('has-address', Boolean(selectedBuildingId));
   updateAnalyzeButton();
-  const assign = $('assignCurrentJobBtn');
-  if (assign) {
-    const context = libraryBuildingContext(selectedStreetId, selectedBuildingId);
-    const alreadyThere = Boolean(context && graph?.jobId && context.building.schemes.some(item => item.jobId === graph.jobId));
-    assign.hidden = !graph?.jobId || !selectedBuildingId || alreadyThere;
-  }
+}
+
+function showAddressInbox(streetId, buildingId = null) {
+  const street = addressLibrary.streets.find(item => item.id === streetId);
+  const building = buildingId ? street?.buildings?.find(item => item.id === buildingId) : null;
+  if (!street) return;
+  schemePollToken += 1;
+  activeScheme = null;
+  graph = null;
+  selectedJobId = null;
+  clearJobAddress();
+  setPanelsVisible(false);
+  $('sourceImage').removeAttribute('src');
+  $('overlay').innerHTML = '';
+  $('imageFrame').hidden = true;
+  $('sourceEmpty').hidden = false;
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Выбери входящую схему</b><span>Слесарь отправляет фото в выбранный дом. Специалист открывает его и запускает преобразование отдельно.</span></div>';
+  $('diagnosticLinks').hidden = true;
+  $('processSchemeBtn').hidden = true;
+  $('processSchemeBtn').disabled = false;
+  $('mainTitle').textContent = building ? `Дом ${building.name}` : street.name;
+  $('activeSchemeStatus').textContent = building ? 'ВХОДЯЩИЕ СХЕМЫ' : 'УЛИЦА';
+  const count = building ? (building.schemes || []).length : (street.buildings || []).reduce((sum, item) => sum + (item.schemes || []).length, 0);
+  $('activeSchemeMeta').textContent = building
+    ? `${street.name} · ${count} ${count === 1 ? 'схема' : count >= 2 && count <= 4 ? 'схемы' : 'схем'} · отправка фото слева не запускает распознавание`
+    : `Выбери дом, чтобы открыть его входящие схемы. Всего схем по улице: ${count}.`;
+  $('canvasMeta').textContent = building ? 'Ожидает выбора входящей схемы' : 'Выбран адрес улицы';
+  $('previewMeta').textContent = 'Ожидает изображения';
+  setState(building ? 'ВХОДЯЩИЕ ДОМА' : 'ВЫБРАНА УЛИЦА');
 }
 
 async function loadAddressLibrary() {
@@ -226,35 +259,89 @@ $('libraryDialogForm').addEventListener('submit', async event => {
   }
 });
 
-$('assignCurrentJobBtn').addEventListener('click', async () => {
-  if (!graph?.jobId || !selectedStreetId || !selectedBuildingId) return;
-  const button = $('assignCurrentJobBtn');
-  button.disabled = true;
+function setPanelsVisible(visible) {
+  for (const id of ['statsPanel', 'edgePanel', 'nodePanel', 'textPanel']) $(id).hidden = !visible;
+  for (const id of ['exportSvg', 'exportDxf', 'exportJson', 'exportPdf']) $(id).disabled = !visible;
+}
+
+function schemeStatusText(status) {
+  return ({ pending: 'ВХОДЯЩИЙ ЭСКИЗ', processing: 'ИДЁТ ПРЕОБРАЗОВАНИЕ', completed: 'ПРЕОБРАЗОВАНО', failed: 'НЕ УДАЛОСЬ ОБРАБОТАТЬ' })[status] || 'ЭСКИЗ';
+}
+
+function showPendingScheme(scheme) {
+  activeScheme = scheme;
+  graph = null;
+  selectedJobId = scheme.jobId;
+  setJobAddress(scheme.jobId);
+  setPanelsVisible(false);
+  $('sourceEmpty').hidden = true;
+  $('imageFrame').hidden = false;
+  $('overlay').innerHTML = '';
+  $('sourceImage').onload = () => fitImageFrame();
+  $('sourceImage').onerror = () => setAlert('Не удалось открыть исходную фотографию.');
+  $('sourceImage').src = `${scheme.sourceUrl}?v=${Date.now()}`;
+  $('canvasMeta').textContent = `${scheme.originalName || scheme.title || 'Исходный эскиз'} · оригинал`;
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Вектор ещё не построен</b><span>Эскиз сохранён во входящих. Специалист может запустить преобразование.</span></div>';
+  $('diagnosticLinks').hidden = true;
+  $('mainTitle').textContent = scheme.title || scheme.originalName || 'Входящий эскиз';
+  $('activeSchemeStatus').textContent = schemeStatusText(scheme.status);
+  $('activeSchemeMeta').textContent = `${scheme.streetName || ''}${scheme.streetName ? ', ' : ''}дом ${scheme.buildingName || ''} · ${formatLibraryDate(scheme.createdAt)}${scheme.uploadedBy ? ` · отправил: ${scheme.uploadedBy}` : ''}`;
+  const process = $('processSchemeBtn');
+  process.hidden = scheme.status === 'completed';
+  process.disabled = scheme.status === 'processing';
+  process.textContent = scheme.status === 'failed' ? 'Повторить преобразование →' : 'Преобразовать в CAD →';
+  $('previewMeta').textContent = scheme.status === 'processing' ? 'Преобразование выполняется' : 'Фото сохранено в папке дома';
+  $('filePreview').hidden = true;
+  $('progressWrap').hidden = scheme.status !== 'processing';
+  setState(schemeStatusText(scheme.status), scheme.status === 'failed' ? 'error' : scheme.status === 'processing' ? 'busy' : 'ready');
+}
+
+async function openLibraryScheme(jobId) {
+  schemePollToken += 1;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    setAlert('У схемы некорректный ID.'); return;
+  }
+  setAlert('');
   try {
-    const response = await fetch(`/api/library/schemes/${encodeURIComponent(graph.jobId)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streetId: selectedStreetId, buildingId: selectedBuildingId, title: selectedFile?.name || `Схема ${graph.jobId.slice(0, 8)}` })
-    });
+    const response = await fetch(`/api/library/schemes/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'Не удалось добавить схему в дом.');
-    addressLibrary = data.library || addressLibrary;
-    renderLibrary(); updateLibrarySelection();
-    setAlert('Схема добавлена в выбранную папку дома.');
+    if (!response.ok) throw new Error(data.error || 'Не удалось открыть эскиз.');
+    const scheme = data.scheme;
+    const address = (addressLibrary.streets || []).map(street => ({ street, building: (street.buildings || []).find(building => (building.schemes || []).some(item => item.jobId === jobId)) })).find(item => item.building);
+    if (address) {
+      selectedStreetId = address.street.id;
+      selectedBuildingId = address.building.id;
+      expandedStreetIds.add(selectedStreetId);
+    }
+    selectedFile = null;
+    fileInput.value = '';
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $('filePreview').hidden = true;
+    $('fileName').textContent = 'Добавить фото схемы';
+    updateLibrarySelection();
+    renderLibrary();
+    if (scheme.status === 'completed') {
+      await openSavedJob(jobId);
+      return;
+    }
+    showPendingScheme(scheme);
+    if (scheme.status === 'processing') pollSchemeStatus(jobId);
   } catch (error) {
     setAlert(error.message);
-  } finally {
-    button.disabled = false;
+    setState('ОШИБКА ОТКРЫТИЯ', 'error');
   }
-});
+}
 
 async function openSavedJob(jobId) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
     setAlert('У схемы некорректный ID.'); return;
   }
-  setAlert(''); setState('ОТКРЫВАЮ СОХРАНЁННУЮ СХЕМУ', 'busy');
+  setAlert(''); setState('ОТКРЫВАЮ СХЕМУ', 'busy');
   try {
     await loadAddressLibrary();
     const savedAddress = (addressLibrary.streets || []).map(street => ({ street, building: (street.buildings || []).find(building => (building.schemes || []).some(item => item.jobId === jobId)) })).find(item => item.building);
+    const savedScheme = savedAddress?.building?.schemes?.find(item => item.jobId === jobId) || null;
     if (savedAddress) {
       selectedStreetId = savedAddress.street.id;
       selectedBuildingId = savedAddress.building.id;
@@ -264,21 +351,65 @@ async function openSavedJob(jobId) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     graph = normalizeGraph(data);
+    activeScheme = savedScheme ? { ...savedScheme, streetName: savedAddress.street.name, buildingName: savedAddress.building.name } : { jobId, title: 'Обработанная схема', status: 'completed' };
     selectedJobId = jobId;
     activeJoinId = null; activeJoinGroupNode = null; showAllSegments = false;
     connectMode = false; firstNode = null;
     selectedFile = null; fileInput.value = '';
-    $('filePreview').hidden = true; $('fileName').textContent = 'Перетащи фото сюда';
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $('filePreview').hidden = true; $('fileName').textContent = 'Добавить фото схемы';
     updateAnalyzeButton();
     setJobAddress(jobId);
+    $('processSchemeBtn').hidden = true;
+    $('mainTitle').textContent = activeScheme.title || 'Векторная схема';
+    $('activeSchemeStatus').textContent = 'ПРЕОБРАЗОВАНО · ПРОВЕРИТЬ';
+    $('activeSchemeMeta').textContent = `${activeScheme.streetName || ''}${activeScheme.streetName ? ', ' : ''}дом ${activeScheme.buildingName || ''} · ${formatLibraryDate(activeScheme.completedAt || activeScheme.createdAt)}`;
     showResult();
     $('previewMeta').textContent = 'Сохранённая схема открыта из папки дома';
     setState('СХЕМА ОТКРЫТА');
     updateLibrarySelection();
     renderLibrary();
-    $('mainTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (error) {
     setAlert(`Не удалось открыть схему: ${error.message}`); setState('ОШИБКА ОТКРЫТИЯ', 'error');
+  }
+}
+
+async function pollSchemeStatus(jobId) {
+  const token = ++schemePollToken;
+  const processButton = $('processSchemeBtn');
+  processButton.disabled = true;
+  $('progressWrap').hidden = false;
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  while (token === schemePollToken && activeScheme?.jobId === jobId) {
+    await delay(2500);
+    if (token !== schemePollToken || activeScheme?.jobId !== jobId) return;
+    try {
+      const response = await fetch(`/api/library/schemes/${encodeURIComponent(jobId)}/status`, { cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Не удалось проверить статус.');
+      activeScheme.status = data.status;
+      $('progressLabel').textContent = data.progress ? data.progress.replace(/^.*?\] /, '') : 'Подготовка обработки…';
+      $('activeSchemeStatus').textContent = schemeStatusText(data.status);
+      $('previewMeta').textContent = schemeStatusText(data.status);
+      if (data.status === 'completed' && data.graphReady) {
+        $('progressWrap').hidden = true;
+        await openSavedJob(jobId);
+        return;
+      }
+      if (data.status === 'failed') {
+        $('progressWrap').hidden = true;
+        processButton.disabled = false;
+        processButton.hidden = false;
+        processButton.textContent = 'Повторить преобразование →';
+        setAlert(data.error || 'Не удалось преобразовать эскиз.');
+        setState('ОШИБКА ПРЕОБРАЗОВАНИЯ', 'error');
+        await loadAddressLibrary();
+        return;
+      }
+    } catch (error) {
+      $('progressLabel').textContent = error.message;
+    }
   }
 }
 
@@ -300,6 +431,8 @@ dropzone.addEventListener('drop', event => setFile(event.dataTransfer?.files?.[0
 function setFile(file) {
   if (!file) return;
   clearJobAddress();
+  activeScheme = null;
+  $('processSchemeBtn').hidden = true;
   setAlert('');
   if (!supportedImage(file)) {
     setAlert('Формат файла не поддерживается. Выбери JPG, PNG, WEBP или TIFF.');
@@ -329,14 +462,16 @@ function setFile(file) {
   $('textPanel').hidden = true;
   $('sourceEmpty').hidden = false;
   $('imageFrame').hidden = true;
-  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Фото загружено — схема ещё не построена</b><span>Нажми «Распознать трубы и надписи».</span></div>';
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Фото готово к отправке</b><span>Сначала выбери адрес слева и отправь эскиз в папку дома.</span></div>';
   $('canvasMeta').textContent = `${file.name} · ${formatBytes(file.size)}`;
   $('previewMeta').textContent = `${formatBytes(file.size)} · готов к обработке`;
-  setState('ФОТО ЗАГРУЖЕНО');
+  setState('ФОТО ГОТОВО К ОТПРАВКЕ');
 }
 
 $('clearFile').addEventListener('click', () => {
   clearJobAddress();
+  activeScheme = null;
+  $('processSchemeBtn').hidden = true;
   selectedFile = null;
   selectedJobId = null;
   graph = null;
@@ -359,64 +494,82 @@ $('clearFile').addEventListener('click', () => {
 });
 
 analyzeBtn.addEventListener('click', async () => {
-  if (!selectedFile || !selectedBuildingId || analyzeBtn.disabled) return;
+  if (!selectedFile || !selectedStreetId || !selectedBuildingId || analyzeBtn.disabled) return;
   setAlert('');
   analyzeBtn.disabled = true;
   $('progressWrap').hidden = false;
-  $('progressLabel').textContent = 'Qwen: распознавание подписей и осевых трасс труб…';
-  $('progressPercent').textContent = 'В РАБОТЕ';
-  analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Анализирую изображение…';
-  setState('АНАЛИЗ ИЗОБРАЖЕНИЯ', 'busy');
-  $('previewMeta').textContent = 'Выполняется анализ…';
+  $('progressLabel').textContent = 'Отправляю фотографию в папку выбранного дома…';
+  $('progressPercent').textContent = 'ОТПРАВКА';
+  analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Отправляю…';
+  setState('ОТПРАВКА В АРХИВ', 'busy');
   try {
     const form = new FormData();
     form.append('image', selectedFile, selectedFile.name);
     form.append('streetId', selectedStreetId);
     form.append('buildingId', selectedBuildingId);
-    form.append('schemeTitle', selectedFile.name.replace(/\.[^.]+$/, ''));
-    const response = await fetch('/api/analyze', { method: 'POST', body: form });
-    const contentType = response.headers.get('content-type') || '';
-    const data = contentType.includes('application/json') ? await response.json() : { error: await response.text() };
-    if (!response.ok) {
-      const error = new Error(data.details || data.error || `Ошибка сервера ${response.status}`);
-      error.progressUrl = data.progressUrl || null;
-      throw error;
-    }
-    if (!data.image || !Array.isArray(data.edges) || !Array.isArray(data.nodes)) {
-      throw new Error('Сервер вернул неполный граф. Посмотри журнал приложения.');
-    }
-    graph = normalizeGraph(data);
-    selectedJobId = graph.jobId;
-    setJobAddress(graph.jobId);
-    activeJoinId = null;
-    activeJoinGroupNode = null;
-    showAllSegments = false;
-    connectMode = false;
-    firstNode = null;
-    edgePage = 1;
-    showResult();
+    form.append('title', selectedFile.name.replace(/\.[^.]+$/, ''));
+    const response = await fetch('/api/library/schemes/upload', { method: 'POST', body: form });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Ошибка сервера ${response.status}`);
+    const jobId = data.scheme?.jobId;
+    if (!jobId) throw new Error('Сервер сохранил файл, но не вернул номер схемы.');
+    const inboxStreetId = selectedStreetId;
+    const inboxBuildingId = selectedBuildingId;
+    selectedFile = null;
+    selectedJobId = null;
+    fileInput.value = '';
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $('filePreview').hidden = true;
+    $('fileName').textContent = 'Добавить фото схемы';
     await loadAddressLibrary();
-    setState(graph.librarySaved === false ? 'СХЕМА СОЗДАНА, НО НЕ СОХРАНЕНА В ПАПКУ' : 'АНАЛИЗ ЗАВЕРШЁН');
+    // Uploaders return to the selected house inbox. This endpoint stores the
+    // source photo only; a specialist explicitly opens and processes it later.
+    showAddressInbox(inboxStreetId, inboxBuildingId);
+    setAlert('Фото отправлено во входящие выбранного дома. Распознавание не запускалось.');
   } catch (error) {
-    console.error('Analysis failed', error);
-    setAlert(`Не удалось обработать изображение: ${error.message}`);
-    if (typeof error.progressUrl === 'string' && error.progressUrl.startsWith('/jobs/')) {
-      const link = document.createElement('a');
-      link.href = error.progressUrl;
-      link.target = '_blank';
-      link.rel = 'noreferrer';
-      link.textContent = 'Открыть журнал этапов';
-      $('inlineError').append(document.createTextNode(' '), link);
-    }
-    $('previewMeta').textContent = 'Обработка не завершилась';
-    setState('ОШИБКА АНАЛИЗА', 'error');
+    console.error('Upload failed', error);
+    setAlert(`Не удалось отправить эскиз: ${error.message}`);
+    setState('ОШИБКА ОТПРАВКИ', 'error');
   } finally {
     $('progressWrap').hidden = true;
+    analyzeBtn.disabled = false;
     updateAnalyzeButton();
   }
 });
 
+$('processSchemeBtn').addEventListener('click', async () => {
+  if (!activeScheme?.jobId || $('processSchemeBtn').disabled) return;
+  const jobId = activeScheme.jobId;
+  setAlert('');
+  $('processSchemeBtn').disabled = true;
+  $('processSchemeBtn').textContent = 'Запуск…';
+  $('progressWrap').hidden = false;
+  $('progressLabel').textContent = 'Ставлю схему в очередь обработки…';
+  $('progressPercent').textContent = 'В РАБОТЕ';
+  setState('ЗАПУСК ПРЕОБРАЗОВАНИЯ', 'busy');
+  try {
+    const response = await fetch(`/api/library/schemes/${encodeURIComponent(jobId)}/analyze`, { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Ошибка сервера ${response.status}`);
+    activeScheme.status = data.status || 'processing';
+    $('processSchemeBtn').hidden = true;
+    $('activeSchemeStatus').textContent = schemeStatusText(activeScheme.status);
+    setState('ПРЕОБРАЗОВАНИЕ ВЫПОЛНЯЕТСЯ', 'busy');
+    pollSchemeStatus(jobId);
+    loadAddressLibrary();
+  } catch (error) {
+    $('processSchemeBtn').disabled = false;
+    $('processSchemeBtn').textContent = 'Повторить преобразование →';
+    $('progressWrap').hidden = true;
+    setAlert(error.message);
+    setState('ОШИБКА ЗАПУСКА', 'error');
+  }
+});
+
 function showResult() {
+  $('processSchemeBtn').hidden = true;
+  $('activeSchemeStatus').textContent = 'ПРЕОБРАЗОВАНО · ПРОВЕРИТЬ';
   $('statsPanel').hidden = false;
   $('edgePanel').hidden = false;
   $('nodePanel').hidden = false;
@@ -481,9 +634,12 @@ function showResult() {
 }
 
 function fitImageFrame() {
-  if (!graph || $('imageFrame').hidden) return;
+  if ($('imageFrame').hidden) return;
   const stage = $('sourceStage');
-  const ratio = graph.image.width / graph.image.height;
+  const imageWidth = graph?.image?.width || $('sourceImage').naturalWidth;
+  const imageHeight = graph?.image?.height || $('sourceImage').naturalHeight;
+  if (!imageWidth || !imageHeight) return;
+  const ratio = imageWidth / imageHeight;
   const availableWidth = Math.max(120, stage.clientWidth - 34);
   const availableHeight = Math.max(160, Math.min(window.innerHeight * 0.68, 700) - 10);
   const width = Math.min(availableWidth, availableHeight * ratio);
@@ -1018,6 +1174,25 @@ function buildSheetSvg() {
     output.push(`<polyline data-layer="DETAIL_REVIEW" points="${points}"/>`);
   }
   output.push('</g>');
+  if (showReviewGeometry) {
+    const primaryRouteIds = new Set((graph.primarySemanticRoutes || []).map(route => String(route.id)));
+    const qwenReviewRoutes = (graph.semanticRoutes || []).filter(route =>
+      !route.primary_validated && !primaryRouteIds.has(String(route.id)) &&
+      Number(route.confidence ?? 0) >= 20 && Array.isArray(route.points) && route.points.length >= 2 &&
+      route.points.every(point => Array.isArray(point) && point.length >= 2 &&
+        Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])) &&
+        Number(point[0]) >= 0 && Number(point[0]) <= width &&
+        Number(point[1]) >= 0 && Number(point[1]) <= height)
+    );
+    if (qwenReviewRoutes.length) {
+      output.push(`<g data-layer="QWEN_REVIEW" transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#9678a9" stroke-width="${Math.max(.13, .34 / Math.max(scale, .001))}" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round">`);
+      for (const route of qwenReviewRoutes) {
+        const points = route.points.map(point => `${Number(point[0])},${Number(point[1])}`).join(' ');
+        if (points) output.push(`<polyline points="${points}"/>`);
+      }
+      output.push('</g>');
+    }
+  }
   output.push(`<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#17212b" stroke-width="${Math.max(.18, .62 / Math.max(scale, .001))}" stroke-linecap="round" stroke-linejoin="round">`);
   for (const chain of chains) {
     const points = chain.points.map(point => `${point[0]},${point[1]}`).join(' ');
@@ -1031,13 +1206,15 @@ function buildSheetSvg() {
   for (const annotation of graph.annotations.filter(item => annotationExportLayer(item))) {
     const layer = annotationExportLayer(annotation);
     const box = annotation.bbox;
-    const x = offsetX + (box.x + box.w / 2) * scale;
-    const y = offsetY + (box.y + box.h / 2) * scale;
+    // Block OCR boxes can span an entire handwritten row. Anchor at the
+    // original row's left edge so its numbers do not collapse toward centre.
+    const x = offsetX + box.x * scale;
+    const y = offsetY + (box.y + box.h) * scale;
     const labelWidth = Math.max(24, Math.min(220, String(annotation.text).length * 4.8 + 8));
     const color = layer === 'VERIFIED_TEXT' ? '#15191d' : '#8b6334';
     const fontSize = layer === 'VERIFIED_TEXT' ? 8 : 7;
     const weight = layer === 'VERIFIED_TEXT' ? '600' : '400';
-    output.push(`<text data-layer="${layer}" x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="${weight}" fill="${color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">${svgEscape(annotation.text)}</text>`);
+    output.push(`<text data-layer="${layer}" x="${x}" y="${y + 1}" text-anchor="start" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="${weight}" fill="${color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">${svgEscape(annotation.text)}</text>`);
   }
   output.push(
     '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -1055,7 +1232,7 @@ function renderClean() {
   if (!graph) return;
   const visible = shownEdges();
   const hasIncludedText = graph.annotations.some(item => annotationExportLayer(item));
-  const hasReviewGeometry = showReviewGeometry && graph.edges.some(edge => edge.visible !== false && !isPrimaryCadEdge(edge) && edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension');
+  const hasReviewGeometry = showReviewGeometry && (graph.edges.some(edge => edge.visible !== false && !isPrimaryCadEdge(edge) && edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension') || (graph.semanticRoutes || []).some(route => !route.primary_validated && Number(route.confidence ?? 0) >= 20 && Array.isArray(route.points) && route.points.length >= 2));
   if (!visible.length && !(graph.semanticRoutes || []).length && !hasIncludedText && !hasReviewGeometry) {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Нет выбранных линий</b><span>Включи «Показать все» или отметь кандидаты в списке слева.</span></div>';
     return;
@@ -1133,17 +1310,19 @@ function buildDxf() {
     addPolyline('DETAIL_REVIEW',points,false,9);
   }
   // Semantic routes that failed ink/text validation remain review-only.
-  for (const route of (graph.semanticRoutes || []).filter(item => item.include !== false && !item.primary_validated && Number(item.confidence ?? 60) >= 35)) {
+  for (const route of (graph.semanticRoutes || []).filter(item => !item.primary_validated && Number(item.confidence ?? 0) >= 20 && Array.isArray(item.points) && item.points.length >= 2 && item.points.every(point => Array.isArray(point) && point.length >= 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1])) && Number(point[0]) >= 0 && Number(point[0]) <= graph.image.width && Number(point[1]) >= 0 && Number(point[1]) <= graph.image.height))) {
     const points = (route.points || []).map(point => [offsetX + Number(point[0]) * scale, offsetY + Number(point[1]) * scale]);
     addPolyline('QWEN_REVIEW',points,false,9);
   }
   for (const annotation of graph.annotations.filter(item => annotationExportLayer(item))) {
     const layer = annotationExportLayer(annotation);
     const box = annotation.bbox;
-    const x = offsetX + (box.x + box.w / 2) * scale;
-    const y = offsetY + (box.y + box.h / 2) * scale;
+    // Block OCR boxes can span an entire handwritten row. Anchor at the
+    // original row's left edge so its numbers do not collapse toward centre.
+    const x = offsetX + box.x * scale;
+    const y = offsetY + (box.y + box.h) * scale;
     const widthMm = Math.min(70, String(annotation.text).length * 1.65);
-    addText(layer,annotation.text,pageToPagePointCentered(x,y,widthMm,scale),layer === 'VERIFIED_TEXT' ? 3.0 : 2.7);
+    addText(layer,annotation.text,[x,y],layer === 'VERIFIED_TEXT' ? 3.0 : 2.7);
   }
   addText('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',[40,52],5.6);
   addText('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',[40,68],2.6);
@@ -1157,11 +1336,6 @@ function buildDxf() {
   addText('NOTES','МАСШТАБ: НЕ ОПРЕДЕЛЁН - СТАТУС: ПРОВЕРИТЬ',[850,816],2.1);
   output.push('0','ENDSEC','0','EOF');
   return output.join('\n') + '\n';
-}
-function pageToPagePointCentered(x, y, widthMm) {
-  // Shift the left-aligned DXF TEXT insertion point so the label sits near its box centre.
-  const pageWidthPerMm = 1200 / 420;
-  return [x - (widthMm * pageWidthPerMm / 2), y];
 }
 $('exportSvg').addEventListener('click', () => downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml'));
 $('exportDxf').addEventListener('click', () => downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf'));
@@ -1185,7 +1359,7 @@ window.addEventListener('unhandledrejection', event => {
 async function restoreSavedJobFromUrl() {
   const jobId = new URLSearchParams(window.location.search).get('job');
   if (!jobId) return;
-  await openSavedJob(jobId);
+  await openLibraryScheme(jobId);
 }
 
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
