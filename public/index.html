@@ -3,50 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#101d27">
+  <meta name="theme-color" content="#f5f7f8">
   <meta name="description" content="Локальная реконструкция инженерных схем из фотографий и рукописных эскизов">
-  <title>CAD Reconstruction Engine · 4.3.9</title>
+  <title>Схемы объектов · 4.3.10</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.9">
-  <script src="/app.js?v=4.3.9" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.10">
+  <script src="/app.js?v=4.3.10" defer></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand-lockup">
-      <div class="brandmark"><span>CR</span><i></i></div>
+      <div class="brandmark" aria-hidden="true"><span></span></div>
       <div class="brand-copy">
-        <div class="brand-name">CAD <span>RECONSTRUCTION</span></div>
-        <div class="brand-caption">ENGINEERING DRAWING WORKSPACE</div>
+        <div class="brand-name">Схемы объектов</div>
+        <div class="brand-caption">Архив трубопроводных схем по адресам</div>
       </div>
     </div>
     <div class="topbar-right">
-      <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Локальная обработка</span></div>
-      <div class="version-pill">ENGINE <b>4.3.9</b></div>
+      <div class="local-pill"><span class="pulse-dot"></span><span id="serverState">Проверка Qwen…</span></div>
+      <div class="version-pill">Версия <b>4.3.10</b></div>
     </div>
   </header>
 
   <main class="app-shell">
     <section class="intro-row">
       <div>
-        <div class="eyebrow">РУКОПИСНЫЙ ЭСКИЗ → ВЕКТОРНАЯ ОСНОВА</div>
-        <h1>Из эскиза — в техническую схему</h1>
-        <p class="intro-copy">OCR отмечает подписи и читает плотные нумерованные заметки отдельными запросами для каждой строки. OpenCV собирает геометрический граф труб и сохраняет подтверждённые короткие ответвления, а трассы Qwen проверяются по исходным чернилам. Неуверенные надписи и линии остаются на отдельных слоях проверки.</p>
-      </div>
-      <div class="workflow" aria-label="Этапы обработки">
-        <div class="flow-step active"><span>01</span><b>Фото</b></div><div class="flow-line"></div>
-        <div class="flow-step"><span>02</span><b>Геометрия</b></div><div class="flow-line"></div>
-        <div class="flow-step"><span>03</span><b>Проверка</b></div><div class="flow-line"></div>
-        <div class="flow-step"><span>04</span><b>Экспорт</b></div>
+        <div class="eyebrow">ОБЩАЯ БИБЛИОТЕКА ДЛЯ СПЕЦИАЛИСТОВ</div>
+        <h1 id="mainTitle">Найди дом — открой его схему</h1>
+        <p class="intro-copy">Слесарь загружает фотографию в папку нужного адреса. Другой специалист открывает тот же эскиз из общей библиотеки и получает векторную схему с исходником, подписями и линиями на проверку.</p>
       </div>
     </section>
 
     <div class="workspace-grid">
       <aside class="sidebar">
+        <section class="card library-card" aria-label="Папки объектов">
+          <div class="library-heading">
+            <div><h2>Папки объектов</h2><p>Улица · дом · схемы</p></div>
+            <button class="icon-action" id="addStreetBtn" type="button" title="Добавить улицу" aria-label="Добавить улицу">＋</button>
+          </div>
+          <label class="library-search"><span aria-hidden="true">⌕</span><input id="librarySearch" type="search" placeholder="Найти улицу, дом или схему" aria-label="Поиск по папкам"></label>
+          <div class="library-tree" id="libraryTree"><div class="library-empty"><b>Загружаю папки…</b></div></div>
+          <div class="library-footer"><button class="secondary-button" id="addBuildingBtn" type="button" disabled>＋ Добавить дом</button></div>
+          <button class="assign-current-button" id="assignCurrentJobBtn" type="button" hidden>Переместить открытую схему в этот дом</button>
+        </section>
+
         <section class="card upload-card">
           <div class="card-heading">
-            <div><div class="step-label"><span>01</span> ИСХОДНЫЕ ДАННЫЕ</div><h2>Загрузить эскиз</h2></div>
+            <div><div class="step-label">НОВАЯ СХЕМА</div><h2>Загрузить эскиз</h2></div>
             <span class="soft-tag">JPG · PNG · WEBP</span>
           </div>
+          <div class="selected-location" id="selectedLocation">Выбери улицу и дом в папках слева</div>
           <label class="dropzone" id="dropzone" for="fileInput">
             <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff">
             <span class="drop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15.5v3A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-3"/></svg></span>
@@ -60,7 +66,7 @@
             <button class="icon-button" id="clearFile" type="button" aria-label="Убрать фотографию" title="Убрать фотографию">×</button>
           </div>
           <button class="primary-button" id="analyzeBtn" type="button" disabled>
-            <span class="button-icon">✳</span><span>Распознать трубы и надписи</span><span class="button-arrow">→</span>
+            <span class="button-icon">✳</span><span>Сначала выбери дом слева</span><span class="button-arrow">→</span>
           </button>
           <div class="progress-wrap" id="progressWrap" hidden>
             <div class="progress-head"><span id="progressLabel">Подготовка изображения…</span><b id="progressPercent">ОБРАБОТКА</b></div>
@@ -68,7 +74,7 @@
             <div class="progress-foot">OCR-маска · геометрия OpenCV · семантическая проверка Qwen</div>
           </div>
           <div class="inline-alert" id="inlineError" role="alert" hidden></div>
-          <div class="privacy-note"><span>⌁</span><span>Фотография обрабатывается локально на твоём сервере. Внешние API не используются.</span></div>
+          <div class="privacy-note"><span>i</span><span>Эскиз и результат сохраняются в общей папке выбранного дома.</span></div>
         </section>
 
         <section class="card stats-card" id="statsPanel" hidden>
@@ -105,7 +111,7 @@
       <section class="main-column">
         <section class="card canvas-card">
           <div class="canvas-header">
-            <div><div class="step-label"><span>02</span> РАСПОЗНАВАНИЕ</div><h2>Геометрия поверх оригинала</h2><p class="canvas-description">Сравни исходный эскиз с найденными отрезками и узлами.</p></div>
+            <div><div class="step-label"><span>02</span> РАСПОЗНАВАНИЕ</div><h2>Проверка исходного эскиза</h2><p class="canvas-description">OpenCV собирает геометрический граф по исходным штрихам; Qwen помогает проверить неоднозначные маршруты. Цветные линии показывают найденные сегменты, узлы и разрывы.</p></div>
             <div class="canvas-tools">
               <label class="check-control"><input type="checkbox" id="showNodes"><span class="check-ui"></span>Узлы</label>
               <label class="check-control"><input type="checkbox" id="showCrossings" checked><span class="check-ui"></span>Пересечения</label>
@@ -122,7 +128,11 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Очищенная техническая схема</h2><p class="canvas-description">Основной слой содержит связные маршруты OpenCV после исключения OCR-областей и проверки топологии. Одиночные длинные штрихи и неоднозначные группы не выдаются автоматически за трубы.</p></div>
+            <div><div class="step-label"><span>04</span> ВЕКТОРНЫЙ РЕЗУЛЬТАТ</div><h2>Векторная схема</h2><p class="canvas-description">Основные линии показаны сплошным контуром. Неоднозначные найденные штрихи можно показать пунктиром и проверить отдельно.</p></div>
+            <div class="output-tools">
+              <label class="check-control"><input type="checkbox" id="showReviewGeometry" checked><span class="check-ui"></span>Линии на проверку</label>
+              <label class="check-control"><input type="checkbox" id="showReviewText"><span class="check-ui"></span>Сомнительный текст</label>
+            </div>
             <div class="export-actions">
               <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
               <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
@@ -138,6 +148,16 @@
       </section>
     </div>
   </main>
-  <footer><span>CAD RECONSTRUCTION ENGINE 4.3.9</span><span>OFFLINE-FIRST · LOCAL COMPUTER VISION · SVG / DXF</span></footer>
+  <dialog class="library-dialog" id="libraryDialog">
+    <form id="libraryDialogForm" method="dialog">
+      <h2 id="libraryDialogTitle">Новая улица</h2>
+      <label class="dialog-label" id="libraryDialogLabel" for="libraryNameInput">Название</label>
+      <input id="libraryNameInput" maxlength="100" autocomplete="off" required>
+      <p id="libraryDialogHint">Папки будут доступны всем специалистам.</p>
+      <div class="library-dialog-error" id="libraryDialogError" hidden></div>
+      <div class="dialog-actions"><button class="secondary-button" id="cancelLibraryDialog" type="button">Отмена</button><button class="primary-button" id="saveLibraryDialog" type="submit">Сохранить</button></div>
+    </form>
+  </dialog>
+  <footer><span>СХЕМЫ ОБЪЕКТОВ · 4.3.10</span><span>ОБЩАЯ БИБЛИОТЕКА · SVG / DXF / PDF</span></footer>
 </body>
 </html>

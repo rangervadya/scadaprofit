@@ -984,6 +984,7 @@ class Recovery431RegressionTests(unittest.TestCase):
         svg = processor.build_clean_svg(300, 180, [], annotations)
         self.assertIn('data-layer="TEXT_REVIEW"', svg)
         self.assertIn('насос + клапан', svg)
+        self.assertNotIn('fill="#fff8ee"', svg)
         dxf = processor.build_dxf(300, 180, [], annotations)
         self.assertIn('TEXT_REVIEW', dxf)
         self.assertIn('насос + клапан', dxf)
@@ -1021,6 +1022,39 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertIn('строку целиком', call.call_args.args[1])
 
 
+
+    def test_numbered_left_margin_detector_finds_three_row_handwritten_table(self):
+        from PIL import Image as PILImage
+        # A compact 3-row address/equipment table: the first column contains
+        # row numbers, followed by several separated numeric fields.
+        canvas = np.full((180, 420, 3), 250, dtype=np.uint8)
+        pen = (74, 82, 132)
+        for y in (36, 82, 128):
+            cv2.line(canvas, (22, y + 15), (204, y + 15), pen, 1, cv2.LINE_AA)
+        rows = [('1)', '1', '2', '3', '4'), ('2)', '5', '6', '7', '8'), ('3)', '33', '34', '35', '36')]
+        for row_index, values in enumerate(rows):
+            y = 35 + row_index * 46
+            x = 24
+            for value in values:
+                cv2.putText(canvas, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX, .48, pen, 1, cv2.LINE_AA)
+                x += 34 if len(value) == 1 else 40
+        image = PILImage.fromarray(canvas)
+        blocks = processor._candidate_handwritten_text_blocks([], 420, 180, max_blocks=2, image=image)
+        self.assertTrue(blocks, 'three-row source-ink table should trigger a targeted OCR pass')
+        rows_found = processor._detect_handwritten_row_bands(image, blocks[0])
+        self.assertGreaterEqual(len(rows_found), 3)
+
+        # The newly detected 3-row table must use the focused per-row OCR path,
+        # not fall back to one small whole-block transcription.
+        fake_response = {'text': '1) Проверка', 'confidence': 82}
+        with patch('processor._qwen_call', return_value=(fake_response, 1.0, (420, 60))) as qwen:
+            lines, diagnostics = processor._run_handwritten_block_ocr(
+                image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=30, max_edge=1024, max_tokens=1200
+            )
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(qwen.call_count, 3)
+        self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
 
     def test_numbered_left_margin_detector_finds_all_ten_note_rows(self):
         from PIL import Image as PILImage

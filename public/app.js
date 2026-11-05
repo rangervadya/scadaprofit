@@ -11,6 +11,13 @@ let showAllSegments = false;
 let edgePage = 1;
 let activeJoinId = null;
 let activeJoinGroupNode = null;
+let addressLibrary = { streets: [] };
+let selectedStreetId = null;
+let selectedBuildingId = null;
+let selectedJobId = null;
+let expandedStreetIds = new Set();
+let showReviewGeometry = true;
+let showReviewText = false;
 const EDGE_PAGE_SIZE = 140;
 
 const fileInput = $('fileInput');
@@ -62,6 +69,219 @@ function supportedImage(file) {
   return nameOk || mimeOk;
 }
 
+function updateAnalyzeButton() {
+  analyzeBtn.disabled = !selectedFile || !selectedBuildingId;
+  const label = analyzeBtn.querySelector('span:nth-child(2)');
+  if (!label) return;
+  if (!selectedBuildingId) label.textContent = 'Сначала выбери дом слева';
+  else if (!selectedFile) label.textContent = 'Выбери эскиз для загрузки';
+  else label.textContent = 'Распознать и сохранить в папку дома';
+}
+
+function libraryBuildingContext(streetId, buildingId) {
+  const street = addressLibrary.streets.find(item => item.id === streetId);
+  const building = street?.buildings?.find(item => item.id === buildingId);
+  return street && building ? { street, building } : null;
+}
+
+function selectedAddressText() {
+  const context = libraryBuildingContext(selectedStreetId, selectedBuildingId);
+  if (!context) return 'Выбери улицу и дом в папках слева';
+  return `${context.street.name} · дом ${context.building.name}`;
+}
+
+function renderLibrary() {
+  const root = $('libraryTree');
+  if (!root) return;
+  const query = String($('librarySearch')?.value || '').trim().toLocaleLowerCase('ru');
+  const rows = [];
+  for (const street of addressLibrary.streets || []) {
+    const visibleBuildings = (street.buildings || []).filter(building => {
+      const text = `${street.name} ${building.name} ${(building.schemes || []).map(item => item.title).join(' ')}`.toLocaleLowerCase('ru');
+      return !query || text.includes(query);
+    });
+    if (query && !visibleBuildings.length && !street.name.toLocaleLowerCase('ru').includes(query)) continue;
+    const expanded = expandedStreetIds.has(street.id) || Boolean(query);
+    const schemeCount = (street.buildings || []).reduce((sum, building) => sum + (building.schemes || []).length, 0);
+    rows.push(`<div class="tree-group">
+      <button type="button" class="tree-row tree-street ${selectedStreetId === street.id ? 'is-selected' : ''}" data-street-id="${escapeHtml(street.id)}" aria-expanded="${expanded}">
+        <span class="tree-caret">${expanded ? '▾' : '▸'}</span><span class="tree-folder" aria-hidden="true"></span><span class="tree-name">${escapeHtml(street.name)}</span><span class="tree-count">${schemeCount}</span>
+      </button>
+      <div class="tree-children" ${expanded ? '' : 'hidden'}>
+        ${visibleBuildings.map(building => {
+          const selected = selectedBuildingId === building.id;
+          const schemeList = (building.schemes || []).filter(item => !query || `${item.title} ${item.jobId}`.toLocaleLowerCase('ru').includes(query));
+          const expandedBuilding = selected || Boolean(query);
+          return `<div class="tree-building-group">
+            <button type="button" class="tree-row tree-building ${selected ? 'is-selected' : ''}" data-building-id="${escapeHtml(building.id)}" data-parent-street="${escapeHtml(street.id)}" aria-expanded="${expandedBuilding}">
+              <span class="tree-caret">${expandedBuilding ? '▾' : '▸'}</span><span class="tree-house" aria-hidden="true">⌂</span><span class="tree-name">Дом ${escapeHtml(building.name)}</span><span class="tree-count">${(building.schemes || []).length}</span>
+            </button>
+            <div class="tree-schemes" ${expandedBuilding ? '' : 'hidden'}>
+              ${schemeList.length ? schemeList.map(item => `<button type="button" class="tree-row tree-scheme ${selectedJobId === item.jobId ? 'is-current' : ''}" data-open-job="${escapeHtml(item.jobId)}" title="Открыть исходный эскиз и векторный результат"><span class="tree-file" aria-hidden="true"></span><span class="tree-name">${escapeHtml(item.title)}</span><span class="tree-date">${formatLibraryDate(item.createdAt)}</span></button>`).join('') : '<div class="tree-empty-scheme">Пока нет схем</div>'}
+            </div>
+          </div>`;
+        }).join('')}
+        ${(street.buildings || []).length === 0 ? '<div class="tree-empty-scheme">Добавь дом в эту улицу</div>' : ''}
+      </div>
+    </div>`);
+  }
+  root.innerHTML = rows.join('') || `<div class="library-empty"><span class="empty-folder">▱</span><b>${addressLibrary.streets?.length ? 'Ничего не найдено' : 'Папки пока пусты'}</b><span>${addressLibrary.streets?.length ? 'Измени запрос поиска.' : 'Создай улицу, затем добавь дом и загрузи первую схему.'}</span></div>`;
+  root.querySelectorAll('[data-street-id]').forEach(button => button.addEventListener('click', () => {
+    const id = button.dataset.streetId;
+    if (expandedStreetIds.has(id)) expandedStreetIds.delete(id); else expandedStreetIds.add(id);
+    selectedStreetId = id;
+    selectedBuildingId = null;
+    renderLibrary(); updateLibrarySelection();
+  }));
+  root.querySelectorAll('[data-building-id]').forEach(button => button.addEventListener('click', () => {
+    selectedStreetId = button.dataset.parentStreet;
+    selectedBuildingId = button.dataset.buildingId;
+    expandedStreetIds.add(selectedStreetId);
+    renderLibrary(); updateLibrarySelection();
+  }));
+  root.querySelectorAll('[data-open-job]').forEach(button => button.addEventListener('click', () => openSavedJob(button.dataset.openJob)));
+  const addBuilding = $('addBuildingBtn');
+  if (addBuilding) addBuilding.disabled = !selectedStreetId;
+}
+
+function formatLibraryDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit' }).format(date);
+}
+
+function updateLibrarySelection() {
+  $('selectedLocation').textContent = selectedAddressText();
+  $('selectedLocation').classList.toggle('has-address', Boolean(selectedBuildingId));
+  updateAnalyzeButton();
+  const assign = $('assignCurrentJobBtn');
+  if (assign) {
+    const context = libraryBuildingContext(selectedStreetId, selectedBuildingId);
+    const alreadyThere = Boolean(context && graph?.jobId && context.building.schemes.some(item => item.jobId === graph.jobId));
+    assign.hidden = !graph?.jobId || !selectedBuildingId || alreadyThere;
+  }
+}
+
+async function loadAddressLibrary() {
+  try {
+    const response = await fetch('/api/library', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось загрузить папки объектов.');
+    addressLibrary = data.library || { streets: [] };
+    renderLibrary();
+    updateLibrarySelection();
+  } catch (error) {
+    $('libraryTree').innerHTML = `<div class="library-error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+let libraryDialogMode = 'street';
+function openLibraryDialog(mode) {
+  libraryDialogMode = mode;
+  const isStreet = mode === 'street';
+  $('libraryDialogTitle').textContent = isStreet ? 'Новая улица' : 'Новый дом';
+  $('libraryDialogLabel').textContent = isStreet ? 'Название улицы' : 'Номер дома';
+  $('libraryNameInput').placeholder = isStreet ? 'Например, Ленина' : 'Например, 12';
+  $('libraryNameInput').value = '';
+  $('libraryDialogError').textContent = '';
+  $('libraryDialogError').hidden = true;
+  $('libraryDialogHint').textContent = isStreet ? 'Улицы будут общими для всех специалистов.' : `Дом будет добавлен в папку «${libraryBuildingContext(selectedStreetId, selectedBuildingId)?.street.name || addressLibrary.streets.find(item => item.id === selectedStreetId)?.name || ''}».`;
+  $('libraryDialog').showModal();
+  $('libraryNameInput').focus();
+}
+
+$('addStreetBtn').addEventListener('click', () => openLibraryDialog('street'));
+$('addBuildingBtn').addEventListener('click', () => openLibraryDialog('building'));
+$('cancelLibraryDialog').addEventListener('click', () => $('libraryDialog').close());
+$('librarySearch').addEventListener('input', renderLibrary);
+$('libraryDialogForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const name = $('libraryNameInput').value.trim();
+  if (!name) return;
+  const button = $('saveLibraryDialog');
+  button.disabled = true;
+  try {
+    const endpoint = libraryDialogMode === 'street' ? '/api/library/streets' : '/api/library/buildings';
+    const payload = libraryDialogMode === 'street' ? { name } : { name, streetId: selectedStreetId };
+    const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Не удалось сохранить папку.');
+    $('libraryDialog').close();
+    if (libraryDialogMode === 'street') {
+      selectedStreetId = data.street.id;
+      selectedBuildingId = null;
+      expandedStreetIds.add(selectedStreetId);
+    } else {
+      selectedBuildingId = data.building.id;
+      expandedStreetIds.add(selectedStreetId);
+    }
+    await loadAddressLibrary();
+    renderLibrary(); updateLibrarySelection();
+  } catch (error) {
+    $('libraryDialogError').textContent = error.message;
+    $('libraryDialogError').hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('assignCurrentJobBtn').addEventListener('click', async () => {
+  if (!graph?.jobId || !selectedStreetId || !selectedBuildingId) return;
+  const button = $('assignCurrentJobBtn');
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/library/schemes/${encodeURIComponent(graph.jobId)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streetId: selectedStreetId, buildingId: selectedBuildingId, title: selectedFile?.name || `Схема ${graph.jobId.slice(0, 8)}` })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Не удалось добавить схему в дом.');
+    addressLibrary = data.library || addressLibrary;
+    renderLibrary(); updateLibrarySelection();
+    setAlert('Схема добавлена в выбранную папку дома.');
+  } catch (error) {
+    setAlert(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function openSavedJob(jobId) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    setAlert('У схемы некорректный ID.'); return;
+  }
+  setAlert(''); setState('ОТКРЫВАЮ СОХРАНЁННУЮ СХЕМУ', 'busy');
+  try {
+    await loadAddressLibrary();
+    const savedAddress = (addressLibrary.streets || []).map(street => ({ street, building: (street.buildings || []).find(building => (building.schemes || []).some(item => item.jobId === jobId)) })).find(item => item.building);
+    if (savedAddress) {
+      selectedStreetId = savedAddress.street.id;
+      selectedBuildingId = savedAddress.building.id;
+      expandedStreetIds.add(selectedStreetId);
+    }
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/graph`, { cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    graph = normalizeGraph(data);
+    selectedJobId = jobId;
+    activeJoinId = null; activeJoinGroupNode = null; showAllSegments = false;
+    connectMode = false; firstNode = null;
+    selectedFile = null; fileInput.value = '';
+    $('filePreview').hidden = true; $('fileName').textContent = 'Перетащи фото сюда';
+    updateAnalyzeButton();
+    setJobAddress(jobId);
+    showResult();
+    $('previewMeta').textContent = 'Сохранённая схема открыта из папки дома';
+    setState('СХЕМА ОТКРЫТА');
+    updateLibrarySelection();
+    renderLibrary();
+    $('mainTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (error) {
+    setAlert(`Не удалось открыть схему: ${error.message}`); setState('ОШИБКА ОТКРЫТИЯ', 'error');
+  }
+}
+
 fileInput.addEventListener('change', () => setFile(fileInput.files?.[0]));
 for (const eventName of ['dragenter', 'dragover']) {
   dropzone.addEventListener(eventName, event => {
@@ -90,6 +310,7 @@ function setFile(file) {
     return;
   }
   selectedFile = file;
+  selectedJobId = null;
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = URL.createObjectURL(file);
   $('fileName').textContent = file.name;
@@ -100,7 +321,7 @@ function setFile(file) {
   $('previewThumb').src = previewUrl;
   $('previewThumb').hidden = false;
   $('filePreview').hidden = false;
-  analyzeBtn.disabled = false;
+  updateAnalyzeButton();
   graph = null;
   $('statsPanel').hidden = true;
   $('edgePanel').hidden = true;
@@ -117,13 +338,14 @@ function setFile(file) {
 $('clearFile').addEventListener('click', () => {
   clearJobAddress();
   selectedFile = null;
+  selectedJobId = null;
   graph = null;
   fileInput.value = '';
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
   $('filePreview').hidden = true;
   $('fileName').textContent = 'Перетащи фото сюда';
-  analyzeBtn.disabled = true;
+  updateAnalyzeButton();
   $('sourceEmpty').hidden = false;
   $('imageFrame').hidden = true;
   $('statsPanel').hidden = true;
@@ -137,7 +359,7 @@ $('clearFile').addEventListener('click', () => {
 });
 
 analyzeBtn.addEventListener('click', async () => {
-  if (!selectedFile || analyzeBtn.disabled) return;
+  if (!selectedFile || !selectedBuildingId || analyzeBtn.disabled) return;
   setAlert('');
   analyzeBtn.disabled = true;
   $('progressWrap').hidden = false;
@@ -149,6 +371,9 @@ analyzeBtn.addEventListener('click', async () => {
   try {
     const form = new FormData();
     form.append('image', selectedFile, selectedFile.name);
+    form.append('streetId', selectedStreetId);
+    form.append('buildingId', selectedBuildingId);
+    form.append('schemeTitle', selectedFile.name.replace(/\.[^.]+$/, ''));
     const response = await fetch('/api/analyze', { method: 'POST', body: form });
     const contentType = response.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await response.json() : { error: await response.text() };
@@ -161,6 +386,7 @@ analyzeBtn.addEventListener('click', async () => {
       throw new Error('Сервер вернул неполный граф. Посмотри журнал приложения.');
     }
     graph = normalizeGraph(data);
+    selectedJobId = graph.jobId;
     setJobAddress(graph.jobId);
     activeJoinId = null;
     activeJoinGroupNode = null;
@@ -169,6 +395,8 @@ analyzeBtn.addEventListener('click', async () => {
     firstNode = null;
     edgePage = 1;
     showResult();
+    await loadAddressLibrary();
+    setState(graph.librarySaved === false ? 'СХЕМА СОЗДАНА, НО НЕ СОХРАНЕНА В ПАПКУ' : 'АНАЛИЗ ЗАВЕРШЁН');
   } catch (error) {
     console.error('Analysis failed', error);
     setAlert(`Не удалось обработать изображение: ${error.message}`);
@@ -184,8 +412,7 @@ analyzeBtn.addEventListener('click', async () => {
     setState('ОШИБКА АНАЛИЗА', 'error');
   } finally {
     $('progressWrap').hidden = true;
-    analyzeBtn.disabled = !selectedFile;
-    analyzeBtn.querySelector('span:nth-child(2)').textContent = 'Распознать трубы и надписи';
+    updateAnalyzeButton();
   }
 });
 
@@ -419,6 +646,8 @@ $('allEdges').addEventListener('click', () => { showAllSegments = true; renderOv
 $('longEdges').addEventListener('click', () => { showAllSegments = false; renderOverlay(); renderClean(); renderEdgeList(); });
 $('showNodes').addEventListener('change', renderOverlay);
 $('showCrossings').addEventListener('change', renderOverlay);
+$('showReviewGeometry').addEventListener('change', event => { showReviewGeometry = event.target.checked; renderClean(); });
+$('showReviewText').addEventListener('change', event => { showReviewText = event.target.checked; renderClean(); });
 
 function renderNodeList() {
   const important = [...graph.nodes].filter(node => node.degree !== 2).sort((a, b) => b.degree - a.degree).slice(0, 120);
@@ -747,7 +976,7 @@ function annotationExportLayer(item) {
   if (!item || !item.text || !item.bbox) return null;
   if ((item.include ?? item.verified) && item.verified) return 'VERIFIED_TEXT';
   const confidence = Number(item.confidence ?? 0);
-  if (item.source === 'qwen3-vl-block' || (confidence >= 38 && item.text !== '?')) return 'TEXT_REVIEW';
+  if (showReviewText && (item.source === 'qwen3-vl-block' || (confidence >= 38 && item.text !== '?'))) return 'TEXT_REVIEW';
   return null;
 }
 
@@ -763,6 +992,11 @@ function buildSheetSvg() {
   const offsetX = drawX + (drawW - width * scale) / 2;
   const offsetY = drawY + (drawH - height * scale) / 2;
   const chains = cleanCadChains();
+  const reviewEdges = showReviewGeometry ? graph.edges.filter(edge =>
+    edge.visible !== false && !isPrimaryCadEdge(edge) &&
+    edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension'
+  ) : [];
+  const reviewChains = reviewEdges.length ? buildChains(reviewEdges).map(chain => ({ ...chain, points: cleanCadPoints(chain.points) })) : [];
   const output = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 ${pageWidth} ${pageHeight}">`,
     '<rect width="1200" height="850" fill="#fff"/>',
@@ -777,8 +1011,14 @@ function buildSheetSvg() {
     '<text x="40" y="68" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ · ИСХОДНЫЙ МАСШТАБ НЕ КАЛИБРОВАН</text>',
     '<text x="1022" y="44" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ФОРМАТ</text>',
     '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
-    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#15191d" stroke-width="${Math.max(.18, .62 / Math.max(scale, .001))}" stroke-linecap="round" stroke-linejoin="round">`
+    `<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#b7c0c8" stroke-width="${Math.max(.14, .34 / Math.max(scale, .001))}" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round">`
   ];
+  for (const chain of reviewChains) {
+    const points = chain.points.map(point => `${point[0]},${point[1]}`).join(' ');
+    output.push(`<polyline data-layer="DETAIL_REVIEW" points="${points}"/>`);
+  }
+  output.push('</g>');
+  output.push(`<g transform="translate(${offsetX} ${offsetY}) scale(${scale})" fill="none" stroke="#17212b" stroke-width="${Math.max(.18, .62 / Math.max(scale, .001))}" stroke-linecap="round" stroke-linejoin="round">`);
   for (const chain of chains) {
     const points = chain.points.map(point => `${point[0]},${point[1]}`).join(' ');
     output.push(`<polyline points="${points}"/>`);
@@ -794,11 +1034,10 @@ function buildSheetSvg() {
     const x = offsetX + (box.x + box.w / 2) * scale;
     const y = offsetY + (box.y + box.h / 2) * scale;
     const labelWidth = Math.max(24, Math.min(220, String(annotation.text).length * 4.8 + 8));
-    const fill = layer === 'VERIFIED_TEXT' ? '#fff' : '#fff7eb';
-    const color = layer === 'VERIFIED_TEXT' ? '#15191d' : '#9b642d';
+    const color = layer === 'VERIFIED_TEXT' ? '#15191d' : '#8b6334';
     const fontSize = layer === 'VERIFIED_TEXT' ? 8 : 7;
-    output.push(`<rect x="${x - labelWidth / 2}" y="${y - 8.4}" width="${labelWidth}" height="13.2" fill="${fill}" stroke="none"/>`);
-    output.push(`<text data-layer="${layer}" x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" fill="${color}">${svgEscape(annotation.text)}</text>`);
+    const weight = layer === 'VERIFIED_TEXT' ? '600' : '400';
+    output.push(`<text data-layer="${layer}" x="${x}" y="${y + 1}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="${weight}" fill="${color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">${svgEscape(annotation.text)}</text>`);
   }
   output.push(
     '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -816,7 +1055,8 @@ function renderClean() {
   if (!graph) return;
   const visible = shownEdges();
   const hasIncludedText = graph.annotations.some(item => annotationExportLayer(item));
-  if (!visible.length && !(graph.semanticRoutes || []).length && !hasIncludedText) {
+  const hasReviewGeometry = showReviewGeometry && graph.edges.some(edge => edge.visible !== false && !isPrimaryCadEdge(edge) && edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension');
+  if (!visible.length && !(graph.semanticRoutes || []).length && !hasIncludedText && !hasReviewGeometry) {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Нет выбранных линий</b><span>Включи «Показать все» или отметь кандидаты в списке слева.</span></div>';
     return;
   }
@@ -945,30 +1185,7 @@ window.addEventListener('unhandledrejection', event => {
 async function restoreSavedJobFromUrl() {
   const jobId = new URLSearchParams(window.location.search).get('job');
   if (!jobId) return;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
-    setAlert('В адресе указан некорректный ID задания.');
-    return;
-  }
-  setAlert('');
-  setState('ВОССТАНОВЛЕНИЕ ЗАДАНИЯ', 'busy');
-  try {
-    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/graph`, { cache: 'no-store' });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    graph = normalizeGraph(data);
-    activeJoinId = null;
-    activeJoinGroupNode = null;
-    showAllSegments = false;
-    connectMode = false;
-    firstNode = null;
-    analyzeBtn.disabled = true;
-    showResult();
-    $('previewMeta').textContent = `Сохранённое задание восстановлено · ${graph.confirmedConnections.length} подтверждённых соединений`;
-    setState('СОХРАНЁННОЕ ЗАДАНИЕ ВОССТАНОВЛЕНО');
-  } catch (error) {
-    setAlert(`Не удалось восстановить задание: ${error.message}`);
-    setState('ОШИБКА ВОССТАНОВЛЕНИЯ', 'error');
-  }
+  await openSavedJob(jobId);
 }
 
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
@@ -987,4 +1204,5 @@ fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).th
   $('serverState').textContent = 'Проверить сервер';
 });
 
+loadAddressLibrary();
 restoreSavedJobFromUrl();

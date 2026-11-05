@@ -16,6 +16,10 @@ const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
 const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
+// Hidden metadata directory is inside the named cad_jobs volume, but is not
+// exposed by the /jobs static file route.
+const LIBRARY_DIR = path.join(DATA, '.private');
+const LIBRARY_PATH = path.join(LIBRARY_DIR, 'address-library.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 2 700 000 мс = 45 минут, а не 2 700 000 секунд.
@@ -26,8 +30,10 @@ const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout)
 
 const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = JOB_ID_PATTERN;
 
 await mkdir(DATA, { recursive: true });
+await mkdir(LIBRARY_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
 function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER }) {
@@ -232,6 +238,71 @@ function attachJobUrls(jobId, graph, sourceName = null) {
   return graph;
 }
 
+function cleanLabel(value, maxLength = 100) {
+  return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+async function readAddressLibrary() {
+  try {
+    const parsed = JSON.parse(await readFile(LIBRARY_PATH, 'utf8'));
+    return {
+      schemaVersion: 1,
+      streets: Array.isArray(parsed.streets) ? parsed.streets.map(street => ({
+        id: String(street.id || ''), name: cleanLabel(street.name),
+        createdAt: street.createdAt || null,
+        buildings: Array.isArray(street.buildings) ? street.buildings.map(building => ({
+          id: String(building.id || ''), name: cleanLabel(building.name),
+          createdAt: building.createdAt || null,
+          schemes: Array.isArray(building.schemes) ? building.schemes.filter(item => item && JOB_ID_PATTERN.test(String(item.jobId || ''))).map(item => ({
+            jobId: String(item.jobId), title: cleanLabel(item.title || 'Схема', 140),
+            createdAt: item.createdAt || null, uploadedBy: cleanLabel(item.uploadedBy || '', 80),
+            sourceName: cleanLabel(item.sourceName || '', 180)
+          })) : []
+        })) : []
+      })) : []
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { schemaVersion: 1, streets: [] };
+    throw error;
+  }
+}
+
+async function saveAddressLibrary(library) {
+  const tempPath = `${LIBRARY_PATH}.tmp-${randomUUID()}`;
+  await writeFile(tempPath, JSON.stringify(library, null, 2), 'utf8');
+  await rename(tempPath, LIBRARY_PATH);
+}
+
+let addressLibraryWriteQueue = Promise.resolve();
+function updateAddressLibrary(mutator) {
+  const task = addressLibraryWriteQueue.then(async () => {
+    const library = await readAddressLibrary();
+    const result = await mutator(library);
+    await saveAddressLibrary(library);
+    return result;
+  });
+  addressLibraryWriteQueue = task.catch(() => {});
+  return task;
+}
+
+function findBuilding(library, streetId, buildingId) {
+  const street = library.streets.find(item => item.id === streetId);
+  const building = street?.buildings.find(item => item.id === buildingId);
+  return street && building ? { street, building } : null;
+}
+
+function addSchemeToBuilding(library, street, building, scheme) {
+  // A job belongs to one address at a time. Moving it removes stale links
+  // from any previous building before the new reference is written.
+  for (const item of library.streets) {
+    for (const house of item.buildings) {
+      house.schemes = house.schemes.filter(existing => existing.jobId !== scheme.jobId);
+    }
+  }
+  building.schemes.unshift(scheme);
+  building.schemes.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
 function nextManualEdgeId(edges) {
   const maxId = (Array.isArray(edges) ? edges : []).reduce((max, edge) => {
     const match = /^E(\d+)$/i.exec(String(edge?.id || ''));
@@ -239,6 +310,85 @@ function nextManualEdgeId(edges) {
   }, 0);
   return `E${maxId + 1}`;
 }
+
+app.get('/api/library', async (_req, res) => {
+  try {
+    const library = await readAddressLibrary();
+    return res.json({ ok: true, library });
+  } catch (error) {
+    console.error('[LIBRARY] Cannot read address library:', error);
+    return res.status(500).json({ error: 'Не удалось прочитать папки объектов.' });
+  }
+});
+
+app.post('/api/library/streets', async (req, res) => {
+  const name = cleanLabel(req.body?.name, 100);
+  if (!name) return res.status(400).json({ error: 'Укажи название улицы.' });
+  try {
+    const street = await updateAddressLibrary(library => {
+      if (library.streets.some(item => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
+        const error = new Error('Такая улица уже есть в папках.'); error.status = 409; throw error;
+      }
+      const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), buildings: [] };
+      library.streets.push(created);
+      return created;
+    });
+    return res.status(201).json({ ok: true, street });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || 'Не удалось создать улицу.' });
+  }
+});
+
+app.post('/api/library/buildings', async (req, res) => {
+  const streetId = String(req.body?.streetId || '');
+  const name = cleanLabel(req.body?.name, 80);
+  if (!UUID_PATTERN.test(streetId) || !name) return res.status(400).json({ error: 'Выбери улицу и укажи номер дома.' });
+  try {
+    const building = await updateAddressLibrary(library => {
+      const street = library.streets.find(item => item.id === streetId);
+      if (!street) { const error = new Error('Улица не найдена. Обнови список папок.'); error.status = 404; throw error; }
+      if (street.buildings.some(item => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
+        const error = new Error('Такой дом уже есть в этой улице.'); error.status = 409; throw error;
+      }
+      const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), schemes: [] };
+      street.buildings.push(created);
+      return created;
+    });
+    return res.status(201).json({ ok: true, building });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || 'Не удалось создать дом.' });
+  }
+});
+
+app.post('/api/library/schemes/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  const streetId = String(req.body?.streetId || '');
+  const buildingId = String(req.body?.buildingId || '');
+  const title = cleanLabel(req.body?.title || 'Схема', 140) || 'Схема';
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
+  if (!UUID_PATTERN.test(streetId) || !UUID_PATTERN.test(buildingId)) return res.status(400).json({ error: 'Выбери улицу и дом.' });
+  try {
+    const jobDir = path.join(DATA, jobId);
+    const [graphRaw, entries] = await Promise.all([
+      readFile(path.join(jobDir, 'graph.json'), 'utf8'), readdir(jobDir)
+    ]);
+    const graph = JSON.parse(graphRaw);
+    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
+    if (!sourceName) return res.status(404).json({ error: 'Исходное изображение этой схемы не найдено.' });
+    await updateAddressLibrary(library => {
+      const context = findBuilding(library, streetId, buildingId);
+      if (!context) { const error = new Error('Указанная улица или дом не найдены.'); error.status = 404; throw error; }
+      addSchemeToBuilding(library, context.street, context.building, {
+        jobId, title, createdAt: graph.createdAt || graph.timestamp || new Date().toISOString(),
+        uploadedBy: cleanLabel(req.body?.uploadedBy, 80), sourceName
+      });
+    });
+    return res.json({ ok: true, library: await readAddressLibrary() });
+  } catch (error) {
+    const status = error.status || (error?.code === 'ENOENT' ? 404 : 500);
+    return res.status(status).json({ error: error.message || 'Не удалось добавить схему в папку дома.' });
+  }
+});
 
 app.get('/api/jobs/:jobId/graph', async (req, res) => {
   const { jobId } = req.params;
@@ -413,7 +563,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.9',
+    version: '4.3.10',
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
@@ -443,6 +593,25 @@ app.get('/api/health', async (_req, res) => {
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
 
+  const streetId = String(req.body?.streetId || '');
+  const buildingId = String(req.body?.buildingId || '');
+  let selectedAddress = null;
+  if (streetId || buildingId) {
+    try {
+      const library = await readAddressLibrary();
+      selectedAddress = findBuilding(library, streetId, buildingId);
+      if (!selectedAddress) {
+        const fs = await import('node:fs/promises');
+        await fs.rm(req.file.path, { force: true }).catch(() => {});
+        return res.status(400).json({ error: 'Выбранная улица или дом больше не существуют. Обнови папки объектов.' });
+      }
+    } catch (error) {
+      const fs = await import('node:fs/promises');
+      await fs.rm(req.file.path, { force: true }).catch(() => {});
+      return res.status(500).json({ error: 'Не удалось проверить папку выбранного дома.' });
+    }
+  }
+
   const id = randomUUID();
   const jobDir = path.join(DATA, id);
   await mkdir(jobDir, { recursive: true });
@@ -465,6 +634,25 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     attachJobUrls(id, graph, path.basename(sourcePath));
     graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
+    if (selectedAddress) {
+      const title = cleanLabel(req.body?.schemeTitle || path.basename(req.file.originalname || 'Схема', ext), 140) || 'Схема';
+      try {
+        await updateAddressLibrary(library => {
+          const context = findBuilding(library, streetId, buildingId);
+          if (!context) { const error = new Error('Выбранный дом удалён во время обработки.'); error.status = 404; throw error; }
+          addSchemeToBuilding(library, context.street, context.building, {
+            jobId: id, title, createdAt: new Date().toISOString(),
+            uploadedBy: cleanLabel(req.body?.uploadedBy, 80), sourceName: path.basename(sourcePath)
+          });
+        });
+        graph.librarySaved = true;
+        graph.libraryLocation = { streetId, streetName: selectedAddress.street.name, buildingId, buildingName: selectedAddress.building.name };
+      } catch (libraryError) {
+        graph.librarySaved = false;
+        graph.libraryError = String(libraryError?.message || libraryError).slice(0, 180);
+        console.error(`[JOB ${id.slice(0, 8)}] Processed but failed to add to address library:`, libraryError);
+      }
+    }
 
     // Все показатели берутся из graph.summary, который формирует processor.py.
     // Значение MISSING означает, что поле не было записано Python-процессором.
@@ -561,7 +749,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.9: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.10: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });

@@ -198,17 +198,30 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
             if all(abs(yy - old_y) >= min_spacing for _old_score, old_y in selected_peaks):
                 selected_peaks.append((score, yy))
         selected_peaks.sort(key=lambda item: item[1])
-        if not 5 <= len(selected_peaks) <= 18:
+        if not 3 <= len(selected_peaks) <= 18:
             return []
 
-        row_count = len(selected_peaks)
-        target_pitch = height / float(row_count + 1)
+        # The source-ink block detector estimates the number of actual text
+        # rows after joining glyphs. Trust that count when available: a ruled
+        # table can create extra local peaks that are not text rows.
+        row_hint = int(block.get('row_peaks', 0) or 0)
+        row_count = row_hint if 3 <= row_hint <= 18 else len(selected_peaks)
+        if row_count > len(selected_peaks):
+            row_count = len(selected_peaks)
+        hinted_rows = 3 <= row_hint <= 18
+        target_pitch = (height * 0.90 / float(max(1, row_count - 1))) if hinted_rows else height / float(row_count + 1)
         best = None
-        min_pitch = max(9.5, target_pitch * 0.78)
-        max_pitch = min(30.0, target_pitch * 1.24)
+        min_pitch = max(8.5, target_pitch * 0.76)
+        max_pitch = min(64.0, target_pitch * 1.24)
         for pitch in np.linspace(min_pitch, max_pitch, 85):
-            start_min = max(1.0, pitch * 0.32)
-            start_max = min(pitch * 1.55, height / max(1, row_count))
+            if hinted_rows:
+                start_min = max(1.0, pitch * 0.04)
+                start_max = min(pitch * 0.50, height - pitch * (row_count - 1))
+            else:
+                start_min = max(1.0, pitch * 0.32)
+                start_max = min(pitch * 1.55, height / max(1, row_count))
+            if start_max < start_min:
+                continue
             for row_start in np.linspace(start_min, start_max, 55):
                 centers = [row_start + i * pitch for i in range(row_count)]
                 if centers[-1] >= height - 1.0:
@@ -225,7 +238,7 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
             return []
         _score, pitch, _start, centers = best
         peak_floor = max(1.6, float(np.percentile(smooth, 72)) * 0.26)
-        if sum(float(np.max(smooth[max(0, int(c)-2):min(height, int(c)+3)])) >= peak_floor for c in centers) < max(4, int(row_count * 0.60)):
+        if sum(float(np.max(smooth[max(0, int(c)-2):min(height, int(c)+3)])) >= peak_floor for c in centers) < max(2, int(math.ceil(row_count * 0.60))):
             return []
 
         rows = []
@@ -240,7 +253,7 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
             rows.append({'x': x, 'y': y + top, 'w': width, 'h': bottom - top,
                          'row': index + 1, 'center_y': round(y + center, 1),
                          'pitch': round(pitch, 1), 'ink_peak': round(float(np.max(smooth[max(0, int(center)-2):min(height, int(center)+3)])), 2)})
-        return rows if len(rows) >= 5 else []
+        return rows if len(rows) >= 3 else []
     except Exception:
         return []
 
@@ -434,21 +447,25 @@ def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, 
                 ink = ((gray < 205) | ((hsv[:, :, 1] > 30) & (hsv[:, :, 2] < 250))).astype(np.uint8) * 255
                 # Remove only very long page rules; shorter handwritten rows
                 # must remain intact for the multi-line detector.
-                h_kernel = max(60, int(width * 0.55))
+                h_kernel = max(60, int(width * 0.42))
                 v_kernel = max(60, int(height * 0.55))
                 long_h = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, h_kernel), np.uint8))
                 long_v = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((v_kernel, 1), np.uint8))
                 text_ink = cv2.subtract(ink, cv2.bitwise_or(long_h, long_v))
-                join_w = max(14, int(min(width, height) * 0.018))
+                join_w = max(20, min(48, int(min(width, height) * 0.17)))
                 row_joined = cv2.morphologyEx(text_ink, cv2.MORPH_CLOSE, np.ones((1, join_w), np.uint8))
-                connected = cv2.dilate(row_joined, np.ones((3, 3), np.uint8), iterations=1)
+                # Join vertically separated text rows into one candidate block.
+                # This affects OCR-region detection only, never the pipe geometry mask.
+                vertical_join = max(10, min(40, int(height * 0.20)))
+                row_block = cv2.morphologyEx(row_joined, cv2.MORPH_CLOSE, np.ones((vertical_join, 1), np.uint8))
+                connected = cv2.dilate(row_block, np.ones((3, 3), np.uint8), iterations=1)
                 count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(connected, 8)
                 image_area = float(width * height)
                 for comp_index in range(1, count):
                     x, y, bw, bh, pixel_area = map(int, stats[comp_index])
                     if bw < max(70, int(width * 0.055)) or bh < max(45, int(height * 0.05)):
                         continue
-                    if bw > width * 0.78 or bh > height * 0.72 or pixel_area > image_area * 0.17:
+                    if bw > width * 0.78 or bh > height * 0.72 or pixel_area > image_area * 0.22:
                         continue
                     aspect = bw / max(1.0, bh)
                     if not 0.35 <= aspect <= 5.0:
@@ -465,7 +482,7 @@ def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, 
                             peaks.append(row)
                         elif smooth[row] > smooth[peaks[-1]]:
                             peaks[-1] = row
-                    if len(peaks) < 4:
+                    if len(peaks) < 3:
                         continue
                     # Extend to include OCR boxes in/near the pixel-derived block;
                     # this gives the line OCR pass a complete text region even if
@@ -530,7 +547,7 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
         diag: dict[str, Any] = {'block': block_index, 'bbox': {'x': left, 'y': top, 'w': right-left, 'h': bottom-top},
                                 'seed_boxes': block['source_boxes'], 'detection_source': block.get('detection_source'), 'row_peaks': block.get('row_peaks', 0)}
         row_bands = _detect_handwritten_row_bands(original, block)
-        if len(row_bands) >= 5:
+        if len(row_bands) >= 3:
             row_results, row_summary = _run_numbered_row_ocr(
                 original, block, row_bands, url=url, model=model, timeout=timeout,
                 max_edge=max_edge, max_tokens=max_tokens
@@ -2827,8 +2844,8 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         out.append(f'<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(detail)[:150])}</text>')
         out.append(f'<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(hint)[:150])}</text>')
 
-    # OCR output is rendered as typography with an opaque paper-colour mask;
-    # the handwritten glyph traces have already been filtered from geometry.
+    # OCR output is rendered as editable typography without a rectangular
+    # backplate; a thin white text stroke preserves legibility over linework.
     for annotation in annotations:
         export_kind = _annotation_export_kind(annotation)
         if not export_kind:
@@ -2838,11 +2855,10 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         y=ty+(float(box.get('y',0))+float(box.get('h',0))/2.0)*scale
         label=str(annotation['text'])
         label_width=max(24.0, min(220.0, len(label)*4.8+8.0))
-        fill = '#fff' if export_kind == 'VERIFIED_TEXT' else '#fff8ee'
-        text_color = '#15191d' if export_kind == 'VERIFIED_TEXT' else '#9b642d'
+        text_color = '#15191d' if export_kind == 'VERIFIED_TEXT' else '#8b6334'
         font_size = 8 if export_kind == 'VERIFIED_TEXT' else 7
-        out.append(f'<rect x="{x-label_width/2:.2f}" y="{y-8.4:.2f}" width="{label_width:.2f}" height="13.2" fill="{fill}" stroke="none"/>')
-        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" text-anchor="middle" fill="{text_color}">{xml_escape(label)}</text>')
+        font_weight = '600' if export_kind == 'VERIFIED_TEXT' else '400'
+        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" font-weight="{font_weight}" text-anchor="middle" fill="{text_color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">{xml_escape(label)}</text>')
 
     out += [
         '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
