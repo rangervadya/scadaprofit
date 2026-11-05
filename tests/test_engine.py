@@ -43,6 +43,49 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(edges[0]['to'], edges[1]['from'])
         self.assertTrue(any(node.get('auto_joined_collinear') for node in nodes))
 
+    def test_ink_supported_collinear_gap_up_to_28px_is_joined(self):
+        ink = np.zeros((100, 240), np.uint8)
+        # The detector ended both segments early, but the source stroke itself
+        # is continuous across the 26 px gap.
+        cv2.line(ink, (10, 50), (210, 50), 255, 2, cv2.LINE_AA)
+        segments = [
+            {"x1": 10.0, "y1": 50.0, "x2": 90.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 80, "angle": 0},
+            {"x1": 116.0, "y1": 50.0, "x2": 210.0, "y2": 50.0, "source": "HOUGH", "support": .9, "length": 94, "angle": 0},
+        ]
+        nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
+        self.assertEqual(edges[0]["to"], edges[1]["from"])
+        self.assertTrue(any(node.get("auto_joined_collinear") for node in nodes))
+
+    def test_larger_gap_without_source_ink_is_not_joined(self):
+        ink = np.zeros((100, 240), np.uint8)
+        cv2.line(ink, (10, 50), (90, 50), 255, 2, cv2.LINE_AA)
+        cv2.line(ink, (116, 50), (210, 50), 255, 2, cv2.LINE_AA)
+        segments = [
+            {"x1": 10.0, "y1": 50.0, "x2": 90.0, "y2": 50.0, "source": "LSD", "support": .9, "length": 80, "angle": 0},
+            {"x1": 116.0, "y1": 50.0, "x2": 210.0, "y2": 50.0, "source": "HOUGH", "support": .9, "length": 94, "angle": 0},
+        ]
+        _nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
+        self.assertNotEqual(edges[0]["to"], edges[1]["from"])
+
+    def test_endpoint_tangent_support_is_cached_and_bad_pairs_skip_gap_sampling(self):
+        ink = np.zeros((140, 160), np.uint8)
+        segments = []
+        for index in range(10):
+            y = 10 + index * 6
+            cv2.line(ink, (10, y), (100, y), 255, 2, cv2.LINE_AA)
+            segments.append({
+                "x1": 10.0, "y1": float(y), "x2": 100.0, "y2": float(y),
+                "source": "LSD", "support": .9, "length": 90.0,
+                "angle": 0.0, "ocr_overlap": 0.0,
+            })
+        # Nearby endpoints on parallel rows are not valid continuations. The
+        # support of each endpoint is sampled once, and no gap pixels need to
+        # be sampled after the tangent test rejects those pairs.
+        with patch('processor._sample_line_support', wraps=processor._sample_line_support) as sample:
+            _nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
+        self.assertEqual(len(edges), len(segments))
+        self.assertEqual(sample.call_count, len(segments) * 2)
+
     def test_unsupported_collinear_gap_is_not_joined(self):
         ink = np.zeros((100, 200), np.uint8)
         cv2.line(ink, (10, 50), (70, 50), 255, 2, cv2.LINE_AA)
@@ -237,9 +280,17 @@ class GraphTests(unittest.TestCase):
             {"x1": 10.0, "y1": 50.0, "x2": 90.0, "y2": 50.0, "source": "LSD", "support": .8, "length": 80, "angle": 0},
             {"x1": 50.0, "y1": 10.0, "x2": 50.0, "y2": 90.0, "source": "LSD", "support": .8, "length": 80, "angle": 90},
         ]
+        ink = np.zeros((100, 100), np.uint8)
+        cv2.line(ink, (10, 50), (90, 50), 255, 2, cv2.LINE_AA)
+        cv2.line(ink, (50, 10), (50, 90), 255, 2, cv2.LINE_AA)
         crossings = processor.detect_crossings(segments)
         self.assertEqual(len(crossings), 1)
         self.assertEqual(crossings[0]["status"], "needs_review")
+        _nodes, edges, _ = processor.endpoint_clusters(segments, ink=ink)
+        self.assertNotEqual(edges[0]["from"], edges[1]["from"])
+        self.assertNotEqual(edges[0]["from"], edges[1]["to"])
+        self.assertNotEqual(edges[0]["to"], edges[1]["from"])
+        self.assertNotEqual(edges[0]["to"], edges[1]["to"])
 
     def test_unconfirmed_ocr_box_keeps_underlying_line_candidate(self):
         gray = np.full((100, 160), 255, np.uint8)
@@ -702,6 +753,11 @@ class GraphTests(unittest.TestCase):
                     'available': True, 'routes': 0, 'raw_routes': 0,
                     'successful_tiles': 4, 'tiles': 4, 'error': 'empty in test'})):
                 graph = processor.analyze(str(source), str(out_dir))
+            self.assertIn('timings_ms', graph)
+            for stage in ('preprocessing', 'ocr', 'qwen_pipe_trace',
+                          'opencv_geometry_and_topology', 'drawing_export_and_candidates',
+                          'total_before_graph_json_write'):
+                self.assertGreaterEqual(graph['timings_ms'][stage], 0.0)
             self.assertEqual(graph['summary']['cad_primary_edges'], 3)
             self.assertEqual(graph['summary']['isolated_strokes_kept_for_review'], 1)
             self.assertEqual(graph['summary']['text_regions_used_for_geometry_mask'], 1)
@@ -762,11 +818,20 @@ class GraphTests(unittest.TestCase):
                 return json.dumps({'message': {'content': '{"ok":true}'}}).encode('utf-8')
         from PIL import Image as PILImage
         image = PILImage.new('RGB', (32, 24), 'white')
-        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+        original_save = PILImage.Image.save
+        save_options = {}
+        def capture_save(self, fp, *args, **kwargs):
+            save_options.update(kwargs)
+            return original_save(self, fp, *args, **kwargs)
+        with patch('processor.Image.Image.save', new=capture_save), \
+             patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
             processor._qwen_call(image, 'return json', url='http://ollama.test/api/chat',
                                   model='qwen3-vl:4b-instruct', timeout=10, max_edge=64, num_predict=777)
         payload = json.loads(mocked.call_args.args[0].data.decode('utf-8'))
         self.assertEqual(payload['options']['num_predict'], 777)
+        self.assertEqual(payload['keep_alive'], '10m')
+        self.assertEqual(save_options.get('quality'), 93)
+        self.assertIs(save_options.get('optimize'), False)
 
 
     def test_qwen_ocr_and_pipe_calls_use_required_structured_schemas(self):

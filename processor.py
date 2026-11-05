@@ -12,6 +12,7 @@ import math
 import os
 import re
 import sys
+import time
 import base64
 import urllib.request
 import urllib.error
@@ -648,11 +649,19 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
     resize_scale = min(1.0, max_edge / max(src_w, src_h))
     if resize_scale < 1.0:
         rgb = rgb.resize((max(1, round(src_w * resize_scale)), max(1, round(src_h * resize_scale))), Image.Resampling.LANCZOS)
+    total_started = time.perf_counter()
+    encode_started = time.perf_counter()
     image_buffer = BytesIO()
-    rgb.save(image_buffer, format='JPEG', quality=93, optimize=True)
+    # Huffman-table optimization adds CPU work but does not improve decoded
+    # image pixels. Keep quality=93 and skip only this lossless file-size pass.
+    rgb.save(image_buffer, format='JPEG', quality=93, optimize=False)
     encoded = base64.b64encode(image_buffer.getvalue()).decode('ascii')
+    encode_ms = (time.perf_counter() - encode_started) * 1000.0
     payload = {
         'model': model,
+        # Retain the model between nearby jobs to avoid an unnecessary cold load.
+        # This changes residency only, never model sampling or image quality.
+        'keep_alive': (os.getenv('QWEN_KEEP_ALIVE', '10m').strip() or '10m'),
         'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
         'stream': False,
         'format': format_schema or 'json',
@@ -662,6 +671,7 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
         headers={'Content-Type': 'application/json'}, method='POST'
     )
+    request_started = time.perf_counter()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode('utf-8'))
@@ -671,8 +681,10 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         except Exception:
             detail = ''
         raise RuntimeError(f'Ollama HTTP {error.code}: {detail or error.reason}') from error
+    request_ms = (time.perf_counter() - request_started) * 1000.0
     if body.get('error'):
         raise RuntimeError(str(body['error']))
+    parse_started = time.perf_counter()
     content = (body.get('message') or {}).get('content', '')
     if not content:
         raise ValueError('Ollama вернула пустое message.content; проверьте совместимость модели и /api/chat.')
@@ -688,6 +700,14 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
             'json_keys': sorted(str(key) for key in parsed.keys()),
             'annotations_key_count': next((len(parsed[key]) for key in ('annotations', 'texts', 'text_regions', 'labels', 'objects', 'items') if isinstance(parsed.get(key), list)), None),
             'routes_key_count': next((len(parsed[key]) for key in ('routes', 'pipes', 'pipe_routes', 'polylines', 'paths', 'traces') if isinstance(parsed.get(key), list)), None),
+            'jpeg_base64_encode_ms': round(encode_ms, 1),
+            'ollama_http_ms': round(request_ms, 1),
+            'json_parse_ms': round((time.perf_counter() - parse_started) * 1000.0, 1),
+            'request_total_ms': round((time.perf_counter() - total_started) * 1000.0, 1),
+            'ollama_load_ms': round(float(body['load_duration']) / 1_000_000.0, 1) if isinstance(body.get('load_duration'), (int, float)) else None,
+            'ollama_total_ms': round(float(body['total_duration']) / 1_000_000.0, 1) if isinstance(body.get('total_duration'), (int, float)) else None,
+            'ollama_prompt_eval_ms': round(float(body['prompt_eval_duration']) / 1_000_000.0, 1) if isinstance(body.get('prompt_eval_duration'), (int, float)) else None,
+            'ollama_eval_ms': round(float(body['eval_duration']) / 1_000_000.0, 1) if isinstance(body.get('eval_duration'), (int, float)) else None,
         })
     return parsed, resize_scale, rgb.size
 
@@ -1703,31 +1723,50 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         buckets.setdefault(key, []).append(index)
 
     # Then join tiny broken line ends only if there is strong collinear evidence.
-    gap_radius = max(radius + 1.0, min(19.0 if ink is not None else 12.0, radius * (4.2 if ink is not None else 2.5)))
+    # With source pixels available, allow a slightly larger detector gap, but
+    # only the same strict tangent + undilated-ink continuity checks can join it.
+    # Without source pixels keep the old, shorter geometry-only limit.
+    gap_radius = (
+        max(radius + 1.0, min(28.0, radius * 6.2))
+        if ink is not None else
+        max(radius + 1.0, min(12.0, radius * 2.5))
+    )
     ink_for_gap = cv2.dilate(ink, np.ones((5, 5), np.uint8), iterations=1) if ink is not None else None
     gap_cell = max(1, int(math.ceil(gap_radius)))
     gap_buckets: dict[tuple[int, int], list[int]] = {}
     auto_gap_pairs: list[tuple[int, int]] = []
+    # Each endpoint's tangent and ink support are invariant during this pass.
+    # Cache both valid vectors and rejected endpoints to avoid repeated sampling
+    # when several nearby endpoints are considered as possible partners.
+    inward_vector_cache: dict[int, np.ndarray | None] = {}
 
     def inward_vector(endpoint_index: int) -> np.ndarray | None:
+        if endpoint_index in inward_vector_cache:
+            return inward_vector_cache[endpoint_index]
         seg_index, side, _x, _y = endpoints[endpoint_index]
         seg = segments[seg_index]
         if seg.get('text_crossing') and ink_for_gap is None:
+            inward_vector_cache[endpoint_index] = None
             return None
         if float(seg.get('ocr_overlap', 0.0)) >= 0.35:
+            inward_vector_cache[endpoint_index] = None
             return None
         if ink_for_gap is not None:
             support = _sample_line_support(ink_for_gap, float(seg['x1']), float(seg['y1']),
                                            float(seg['x2']), float(seg['y2']))
             if support < 0.20:
+                inward_vector_cache[endpoint_index] = None
                 return None
         a = np.array([float(seg['x1']), float(seg['y1'])], dtype=float)
         b = np.array([float(seg['x2']), float(seg['y2'])], dtype=float)
         vector = (b - a) if side == 0 else (a - b)
         norm = float(np.linalg.norm(vector))
         if norm < 8.0:
+            inward_vector_cache[endpoint_index] = None
             return None
-        return vector / norm
+        unit_vector = vector / norm
+        inward_vector_cache[endpoint_index] = unit_vector
+        return unit_vector
 
     for index, (_seg_index, _side, x, y) in enumerate(endpoints):
         key = (int(x // gap_cell), int(y // gap_cell))
@@ -1743,11 +1782,26 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
                         distance = math.hypot(x - ox, y - oy)
                         if distance <= radius or distance > gap_radius:
                             continue
+                        vb = inward_vector(other)
+                        if vb is None:
+                            continue
+                        dot = float(np.dot(va, vb))
+                        gap = np.array([ox - x, oy - y], dtype=float)
+                        gap_norm = float(np.linalg.norm(gap))
+                        if gap_norm < 1e-6:
+                            continue
+                        gap_unit = gap / gap_norm
+                        # Reject incompatible tangent pairs before sampling the
+                        # source image. This is only a short-circuit: all original
+                        # geometric thresholds remain unchanged.
+                        cross_a = abs(float(va[0] * gap_unit[1] - va[1] * gap_unit[0]))
+                        if dot > -0.965 or float(np.dot(va, gap_unit)) > -0.92 or cross_a > 0.22:
+                            continue
                         if ink_for_gap is not None:
                             # Test the actual undilated pen pixels inside the gap. Using the
                             # dilated mask here lets the two segment endpoints
                             # overlap and falsely looks like continuous ink.
-                            gap_distance = math.hypot(ox - x, oy - y)
+                            gap_distance = gap_norm
                             gap_margin = min(3.0, gap_distance * 0.22)
                             gap_dx = (ox - x) / max(gap_distance, 1e-6)
                             gap_dy = (oy - y) / max(gap_distance, 1e-6)
@@ -1766,21 +1820,8 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
                                 gap_overlap, gap_through = _segment_text_mask_metrics((x, y, ox, oy), text_mask, ink_for_gap)
                                 if gap_overlap >= 0.08 and not gap_through:
                                     continue
-                        vb = inward_vector(other)
-                        if vb is None:
-                            continue
-                        dot = float(np.dot(va, vb))
-                        gap = np.array([ox - x, oy - y], dtype=float)
-                        gap_norm = float(np.linalg.norm(gap))
-                        if gap_norm < 1e-6:
-                            continue
-                        gap_unit = gap / gap_norm
-                        # Inward tangents must point away from the gap in
-                        # opposite directions, and the gap must lie on-axis.
-                        cross_a = abs(float(va[0] * gap_unit[1] - va[1] * gap_unit[0]))
-                        if dot <= -0.965 and float(np.dot(va, gap_unit)) <= -0.92 and cross_a <= 0.22:
-                            if union(index, other):
-                                auto_gap_pairs.append((index, other))
+                        if union(index, other):
+                            auto_gap_pairs.append((index, other))
         gap_buckets.setdefault(key, []).append(index)
 
     auto_joined_endpoint_ids = {value for pair in auto_gap_pairs for value in pair}
@@ -3155,19 +3196,28 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
     return candidates
 
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
+    job_started = time.perf_counter()
+    timings_ms: dict[str, float] = {}
     Path(out_dir).mkdir(parents=True,exist_ok=True)
     _progress('JOB', 'Image preprocessing started')
+    stage_started = time.perf_counter()
     bgr=load_image(input_path); h,w=bgr.shape[:2]
     gray,prep=normalize_document(bgr)
     ink=make_ink_mask(bgr,gray)
-    _progress('JOB', f'Image preprocessing completed: {w}x{h}')
+    timings_ms['preprocessing'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _progress('JOB', f'Image preprocessing completed: {w}x{h}; {timings_ms["preprocessing"]:.1f} ms')
     _progress('OCR', 'OCR pipeline started')
+    stage_started = time.perf_counter()
     annotations, ocr_status = ocr_annotations(input_path, gray)
-    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}')
+    timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
     _progress('PIPE', 'CAD pipe-route trace started')
+    stage_started = time.perf_counter()
     semantic_routes, route_status = _qwen_semantic_routes(input_path, w, h)
-    _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+    timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; {timings_ms["qwen_pipe_trace"]:.1f} ms')
     _progress('CAD', 'Graph construction started')
+    stage_started = time.perf_counter()
     # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
     # traces are retained as independent review suggestions and cannot erase
     # detector geometry when the vision model returns a sparse/degenerate list.
@@ -3192,7 +3242,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     crossings=detect_crossings(segments)
     ink_in_text_regions = cv2.bitwise_and(ink, text_mask)
     geometry_ink = cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
-    _progress('CAD', f'Graph construction completed: segments={len(segments)} nodes={len(nodes)} edges={len(edges)} crossings={len(crossings)}')
+    timings_ms['opencv_geometry_and_topology'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _progress('CAD', f'Graph construction completed: segments={len(segments)} nodes={len(nodes)} edges={len(edges)} crossings={len(crossings)}; {timings_ms["opencv_geometry_and_topology"]:.1f} ms')
+    stage_started = time.perf_counter()
 
     # The candidate overlay remains available for audit; the primary overlay
     # makes it immediately visible what will actually enter PIPE_MAIN.
@@ -3258,9 +3310,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     # same-edge, endpoint-to-interior, or laterally displaced connections.
     joins = _build_join_candidates(nodes, edges, image_size=(w, h))
     _progress('CAD', f'Endpoint continuation candidates: total={len(joins)} high={sum(1 for item in joins if item.get("priority")=="high")} review={sum(1 for item in joins if item.get("priority")!="high")}')
+    timings_ms['drawing_export_and_candidates'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
-           "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":19,
+           "timings_ms":timings_ms,
+           "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
@@ -3312,7 +3367,7 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
            "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
-                       "В 4.3.7 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
+                       "В 4.3.9 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
                        "Qwen-маршруты проходят проверку по исходным пикселям и добавляются в PIPE_MAIN только при подтверждении чернилами; остальные остаются в QWEN_REVIEW.",
                        "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
                        "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",

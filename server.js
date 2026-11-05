@@ -413,7 +413,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.7',
+    version: '4.3.9',
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
@@ -430,7 +430,8 @@ app.get('/api/health', async (_req, res) => {
       pipeUpscale: Number(process.env.QWEN_PIPE_UPSCALE || 1.8),
       pipeTileOverlap: Number(process.env.QWEN_PIPE_TILE_OVERLAP || 0.14),
       ocrTileGrid: Number(process.env.QWEN_OCR_TILE_GRID || 3),
-      ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2)
+      ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2),
+      modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
     },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
     ollamaRequiredForCleanCad: false,
@@ -560,7 +561,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.7: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.9: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });
