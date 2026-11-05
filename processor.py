@@ -1323,7 +1323,10 @@ def _merge_aligned_duplicate(a: dict[str, Any], b: dict[str, Any], ink: np.ndarr
     # Differentiate ordinary duplicate vectors from a short, noisy detector
     # fragment which follows the same continuous, thicker ink stroke.
     short_fragment = min(length_a, length_b) / max(length_a, length_b) < 0.35
-    if angle_delta > (15.0 if short_fragment else 3.0):
+    # Allow ordinary detector pairs a wider preliminary angle window.
+    # A mismatch above 3 degrees is still rejected below unless the source
+    # pixels prove that both paths belong to one continuous ink band.
+    if angle_delta > (15.0 if short_fragment else 20.0):
         return None
 
     ax, ay = a['x1'], a['y1']

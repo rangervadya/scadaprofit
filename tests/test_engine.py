@@ -598,6 +598,39 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertGreater(candidates[0]['length'], 200)
 
+    def test_angled_duplicate_segments_merge_only_with_continuous_ink_band(self):
+        # Two detectors can follow the same broad physical stroke at different
+        # angles. The source pixels, not geometric similarity alone, authorize
+        # the merge when the angle delta exceeds the strict 3-degree limit.
+        ink = np.zeros((120, 180), np.uint8)
+        cv2.line(ink, (10, 60), (160, 60), 255, 32, cv2.LINE_AA)
+        dilated = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
+        first = {
+            "x1": 10.0, "y1": 60.0, "x2": 160.0, "y2": 60.0,
+            "length": 150.0, "angle": 0.0, "source": "LSD",
+            "support": 0.9, "ocr_overlap": 0.0,
+        }
+        angled_repeat = {
+            "x1": 40.0, "y1": 50.0, "x2": 110.0, "y2": 72.0709,
+            "length": float(np.hypot(70.0, 22.0709)),
+            "angle": float(np.degrees(np.arctan2(22.0709, 70.0))),
+            "source": "HOUGH", "support": 0.85, "ocr_overlap": 0.0,
+        }
+        self.assertAlmostEqual(angled_repeat["angle"], 17.50, delta=0.05)
+
+        merged = processor._merge_aligned_duplicate(
+            first, angled_repeat, ink, dilated, continuity_gap=5
+        )
+        self.assertIsNotNone(merged)
+
+        # Identical geometry without a continuous source-ink band must not
+        # pass merely because the wider preliminary angle limit was allowed.
+        blank = np.zeros_like(ink)
+        blank_dilated = cv2.dilate(blank, np.ones((3, 3), np.uint8), iterations=1)
+        self.assertIsNone(processor._merge_aligned_duplicate(
+            first, angled_repeat, blank, blank_dilated, continuity_gap=5
+        ))
+
     def test_duplicate_segments_merge_but_separate_parallel_strokes_survive(self):
         ink = np.zeros((120, 180), np.uint8)
         cv2.line(ink, (10, 35), (160, 35), 255, 2)
