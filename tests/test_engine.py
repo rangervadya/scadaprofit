@@ -1035,6 +1035,31 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(prepared.shape[:2], (120, 60))
         self.assertEqual(diagnostics['rotation_degrees'], 90)
 
+    def test_document_preparation_preserves_orientation_when_osd_evidence_is_weak(self):
+        image = np.full((60, 120, 3), 255, np.uint8)
+        cv2.line(image, (10, 15), (100, 15), (0, 0, 0), 2)
+        with patch('processor._detect_page_quad', return_value=None), \
+             patch('processor._detect_text_rotation', return_value=(0, 4.43, 1.11)):
+            prepared, diagnostics = processor.prepare_document_image(image)
+        self.assertEqual(prepared.shape[:2], image.shape[:2])
+        self.assertEqual(diagnostics['rotation_degrees'], 0)
+        self.assertEqual(diagnostics['orientation_decision'], 'preserved_low_confidence')
+        self.assertEqual(diagnostics['orientation_confidence'], 4.43)
+        self.assertEqual(diagnostics['script_confidence'], 1.11)
+
+    def test_text_rotation_rejects_weak_orientation_and_script_confidence(self):
+        fake_osd = 'Rotate: 180\nOrientation confidence: 4.43\nScript: Arabic\nScript confidence: 1.11'
+        image = np.zeros((60, 120, 3), dtype=np.uint8)
+        fake_pytesseract = type('FakePytesseract', (), {
+            'image_to_osd': staticmethod(lambda *_args, **_kwargs: fake_osd)
+        })
+        with patch.dict(sys.modules, {'pytesseract': fake_pytesseract}), \
+             patch.dict(os.environ, {'OSD_MIN_ORIENTATION_CONFIDENCE': '8.0', 'OSD_MIN_SCRIPT_CONFIDENCE': '2.0'}):
+            rotation, orientation_confidence, script_confidence = processor._detect_text_rotation(image)
+        self.assertEqual(rotation, 0)
+        self.assertEqual(orientation_confidence, 4.43)
+        self.assertEqual(script_confidence, 1.11)
+
     def test_ink_layers_keep_blue_and_dark_separate(self):
         image = np.full((80, 160, 3), 255, np.uint8)
         cv2.line(image, (10, 20), (140, 20), (180, 40, 20), 3)
@@ -1260,16 +1285,37 @@ class GraphTests(unittest.TestCase):
         def capture_save(self, fp, *args, **kwargs):
             save_options.update(kwargs)
             return original_save(self, fp, *args, **kwargs)
+        diagnostics = {}
         with patch('processor.Image.Image.save', new=capture_save), \
              patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
             processor._qwen_call(image, 'return json', url='http://ollama.test/api/chat',
-                                  model='qwen3-vl:4b-instruct', timeout=10, max_edge=64, num_predict=777)
+                                  model='qwen3-vl:4b-instruct', timeout=10, max_edge=64, num_predict=777,
+                                  diagnostics=diagnostics)
         payload = json.loads(mocked.call_args.args[0].data.decode('utf-8'))
         self.assertEqual(payload['options']['num_predict'], 777)
         self.assertEqual(payload['keep_alive'], '10m')
         self.assertEqual(save_options.get('quality'), 93)
         self.assertIs(save_options.get('optimize'), False)
+        self.assertEqual(diagnostics.get('response_preview'), '{"ok":true}')
+        self.assertEqual(len(diagnostics.get('response_sha256', '')), 64)
 
+
+    def test_qwen_call_keeps_raw_response_preview_when_json_is_invalid(self):
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self):
+                return json.dumps({'message': {'content': '{"annotations":['}}).encode('utf-8')
+        from PIL import Image as PILImage
+        diagnostics = {}
+        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+            with self.assertRaises(ValueError):
+                processor._qwen_call(PILImage.new('RGB', (24, 24), 'white'), 'return json',
+                    url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                    timeout=10, max_edge=64, diagnostics=diagnostics)
+        self.assertEqual(diagnostics.get('response_preview'), '{"annotations":[')
+        self.assertIn('json_parse_error', diagnostics)
+        self.assertEqual(len(diagnostics.get('response_sha256', '')), 64)
 
     def test_qwen_ocr_and_pipe_calls_use_required_structured_schemas(self):
         with TemporaryDirectory() as temp:

@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
+import { createManualCadProject, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -25,6 +26,8 @@ const SCHEME_META_DIR = path.join(LIBRARY_DIR, 'schemes');
 // as the address library, not in /tmp and never inside an individual house job.
 const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
 const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
+// Manual CAD projects are isolated from automatic analysis jobs and from the VDGO app.
+const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 5 400 000 мс = 90 минут: OCR и Qwen-трассировка проходят двумя
@@ -42,6 +45,7 @@ await mkdir(DATA, { recursive: true });
 await mkdir(LIBRARY_DIR, { recursive: true });
 await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(TEMPLATE_DIR, { recursive: true });
+await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -247,6 +251,23 @@ const templateUpload = multer({
     cb(null, templateExtensions.has(ext));
   }
 });
+
+const manualSourceUpload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 18 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const extOk = /\.(jpe?g|png|webp|tiff?)$/i.test(file.originalname || '');
+    const mimeOk = /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
+    cb(null, extOk || mimeOk);
+  }
+});
+
+function manualProjectPath(id) {
+  return path.join(MANUAL_CAD_DIR, id, 'project.json');
+}
+function manualProjectResponse(project) {
+  return { ...project, sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null };
+}
 
 function attachJobUrls(jobId, graph, sourceName = null) {
   graph.jobId = jobId;
@@ -1035,7 +1056,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.18',
+    version: '4.3.20',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1206,6 +1227,144 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
   }
 });
 
+// Manual CAD editor API. This module only reads/writes DATA/.private/manual-cad;
+// it does not call, proxy, or modify any VDGO route, service, database, or file.
+app.get('/api/manual-cad/projects', async (_req, res) => {
+  try {
+    const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+    const projects = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+      try {
+        const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
+        projects.push({ id: project.id, title: project.title, updatedAt: project.updatedAt,
+          createdAt: project.createdAt, source: project.source || null,
+          pipeCount: Array.isArray(project.pipes) ? project.pipes.length : 0 });
+      } catch { /* ignore an incomplete project folder */ }
+    }
+    projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return res.json({ ok: true, projects });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Не удалось получить список ручных чертежей.' });
+  }
+});
+
+app.post('/api/manual-cad/projects', async (req, res) => {
+  const id = randomUUID();
+  const projectDir = path.join(MANUAL_CAD_DIR, id);
+  try {
+    await mkdir(projectDir, { recursive: true });
+    const project = createManualCadProject({ id, title: cleanLabel(req.body?.title || 'Новая схема', 140) });
+    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+    return res.status(201).json({ ok: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    return res.status(500).json({ error: error.message || 'Не удалось создать ручной чертёж.' });
+  }
+});
+
+app.get('/api/manual-cad/projects/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).json({ error: 'Некорректный ID проекта.' });
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    return res.json({ ok: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть ручной чертёж.' });
+  }
+});
+
+app.put('/api/manual-cad/projects/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).json({ error: 'Некорректный ID проекта.' });
+  try {
+    const current = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const input = req.body?.project && typeof req.body.project === 'object' ? req.body.project : req.body;
+    const project = normalizeManualCadProject(input, current);
+    project.source = current.source || null;
+    const target = manualProjectPath(id);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
+    await rename(temporary, target);
+    return res.json({ ok: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    const status = error?.code === 'ENOENT' ? 404 : 400;
+    return res.status(status).json({ error: error.message || 'Не удалось сохранить ручной чертёж.' });
+  }
+});
+
+app.post('/api/manual-cad/projects/:id/source', manualSourceUpload.single('source'), async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) {
+    if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
+    return res.status(400).json({ error: 'Некорректный ID проекта.' });
+  }
+  if (!req.file) return res.status(400).json({ error: 'Выбери JPG, PNG, WEBP или TIFF.' });
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
+    const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
+    if (!allowed.has(ext)) throw new Error('Неподдерживаемый формат изображения.');
+    const fileName = `source${ext}`;
+    const projectDir = path.dirname(manualProjectPath(id));
+    await rename(req.file.path, path.join(projectDir, fileName));
+    const width = Math.round(Math.max(100, Math.min(30000, Number(req.body?.width) || project.width || 1600)));
+    const height = Math.round(Math.max(100, Math.min(30000, Number(req.body?.height) || project.height || 1000)));
+    project.source = { fileName, originalName: cleanLabel(req.file.originalname, 180), size: req.file.size,
+      uploadedAt: new Date().toISOString() };
+    project.width = width;
+    project.height = height;
+    project.updatedAt = new Date().toISOString();
+    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+    return res.json({ ok: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
+    const status = error?.code === 'ENOENT' ? 404 : 400;
+    return res.status(status).json({ error: error.message || 'Не удалось загрузить исходный эскиз.' });
+  }
+});
+
+app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).end();
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const fileName = path.basename(String(project.source?.fileName || ''));
+    if (!fileName || !/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName)) return res.status(404).json({ error: 'Подложка не загружена.' });
+    return res.sendFile(path.join(path.dirname(manualProjectPath(id)), fileName));
+  } catch (error) {
+    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть подложку.' });
+  }
+});
+
+app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).end();
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const svg = renderManualCadSvg(project);
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.svg"`);
+    return res.send(svg);
+  } catch (error) {
+    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать SVG.' });
+  }
+});
+
+app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).end();
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const dxf = renderManualCadDxf(project);
+    res.setHeader('Content-Type', 'application/dxf; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.dxf"`);
+    return res.send(dxf);
+  } catch (error) {
+    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать DXF.' });
+  }
+});
+
 app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'), {
     headers: { 'Cache-Control': 'no-store, max-age=0' }
@@ -1227,7 +1386,8 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.18: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.20: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
+  console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
 });

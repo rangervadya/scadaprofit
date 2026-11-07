@@ -1,2 +1,2 @@
-CAD Reconstruction Engine 4.3.7
-See README-RU.md and INSTALL-4.3.7-RU.md.
+ScadaProfit CAD Reconstruction Engine 4.3.20
+See README-RU.md, MANUAL-CAD-USER-GUIDE-RU.md and UPGRADE-GIT-4.3.20-RU.md.

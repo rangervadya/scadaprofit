@@ -45,6 +45,8 @@ services:
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
+      OSD_MIN_ORIENTATION_CONFIDENCE: "${OSD_MIN_ORIENTATION_CONFIDENCE:-8.0}"
+      OSD_MIN_SCRIPT_CONFIDENCE: "${OSD_MIN_SCRIPT_CONFIDENCE:-2.0}"
       QWEN_KEEP_ALIVE: "${QWEN_KEEP_ALIVE:-10m}"
       QWEN_OCR_TIMEOUT: "180"
       QWEN_TILE_RETRY_BUDGET: "0"

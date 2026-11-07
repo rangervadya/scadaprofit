@@ -94,19 +94,30 @@ def _warp_page(bgr: np.ndarray, quad: np.ndarray) -> np.ndarray:
     return cv2.warpPerspective(bgr, transform, (target_w, target_h), borderValue=(255, 255, 255))
 
 
-def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float]:
-    """Use Tesseract OSD when it is confident; otherwise preserve orientation."""
+def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float, float]:
+    """Use Tesseract OSD only when both orientation and script evidence are strong.
+
+    Technical drawings contain sparse labels, symbols and dimension lines. OSD can
+    misclassify such pages (for example, report Arabic with very low script
+    confidence) and a weak 180-degree guess must not rotate the source image.
+    Thresholds are configurable for deployments with a validated document set.
+    """
+    min_orientation = max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0')))
+    min_script = max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0')))
     try:
         import pytesseract
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         result = pytesseract.image_to_osd(Image.fromarray(rgb), config='--psm 0')
         rotate_match = re.search(r'Rotate:\s*(0|90|180|270)', result)
         confidence_match = re.search(r'Orientation confidence:\s*([0-9.]+)', result)
+        script_confidence_match = re.search(r'Script confidence:\s*([0-9.]+)', result)
         rotation = int(rotate_match.group(1)) if rotate_match else 0
         confidence = float(confidence_match.group(1)) if confidence_match else 0.0
-        return (rotation, confidence) if confidence >= 3.0 else (0, confidence)
+        script_confidence = float(script_confidence_match.group(1)) if script_confidence_match else 0.0
+        trusted = confidence >= min_orientation and script_confidence >= min_script
+        return (rotation if trusted else 0, confidence, script_confidence)
     except Exception:
-        return 0, 0.0
+        return 0, 0.0, 0.0
 
 
 def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
@@ -115,9 +126,17 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
     quad = _detect_page_quad(bgr)
     prepared = _warp_page(bgr, quad) if quad is not None else bgr.copy()
     if rotation_degrees is None:
-        rotation_degrees, orientation_confidence = _detect_text_rotation(prepared)
+        rotation_degrees, orientation_confidence, script_confidence = _detect_text_rotation(prepared)
+        min_orientation = max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0')))
+        min_script = max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0')))
+        orientation_decision = 'auto_applied' if rotation_degrees else (
+            'preserved_low_confidence' if orientation_confidence < min_orientation or script_confidence < min_script
+            else 'preserved_no_rotation'
+        )
     else:
         orientation_confidence = 100.0
+        script_confidence = 100.0
+        orientation_decision = 'explicit_rotation'
     rotation_degrees = int(rotation_degrees or 0) % 360
     rotate_codes = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
     if rotation_degrees in rotate_codes:
@@ -128,6 +147,10 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
         "perspective_corrected": quad is not None,
         "rotation_degrees": rotation_degrees,
         "orientation_confidence": round(float(orientation_confidence), 2),
+        "script_confidence": round(float(script_confidence), 2),
+        "orientation_min_confidence": max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0'))),
+        "script_min_confidence": max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0'))),
+        "orientation_decision": orientation_decision,
         "prepared_width": int(prepared.shape[1]), "prepared_height": int(prepared.shape[0]),
     }
 
@@ -1238,8 +1261,9 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
     content = (body.get('message') or {}).get('content', '')
     if not content:
         raise ValueError('Ollama вернула пустое message.content; проверьте совместимость модели и /api/chat.')
-    parsed = _parse_json_object(content)
     if diagnostics is not None:
+        # Capture a bounded raw response before parsing. This preserves the
+        # evidence when a model emits malformed/truncated JSON and parsing fails.
         diagnostics.update({
             'done': body.get('done'),
             'done_reason': body.get('done_reason'),
@@ -1247,17 +1271,31 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
             'eval_count': body.get('eval_count'),
             'prompt_eval_count': body.get('prompt_eval_count'),
             'response_chars': len(content),
-            'json_keys': sorted(str(key) for key in parsed.keys()),
-            'annotations_key_count': next((len(parsed[key]) for key in ('annotations', 'texts', 'text_regions', 'labels', 'objects', 'items') if isinstance(parsed.get(key), list)), None),
-            'routes_key_count': next((len(parsed[key]) for key in ('routes', 'pipes', 'pipe_routes', 'polylines', 'paths', 'traces') if isinstance(parsed.get(key), list)), None),
+            'response_sha256': hashlib.sha256(content.encode('utf-8', errors='replace')).hexdigest(),
+            'response_preview': content[:2000],
+            'response_preview_truncated': len(content) > 2000,
             'jpeg_base64_encode_ms': round(encode_ms, 1),
             'ollama_http_ms': round(request_ms, 1),
-            'json_parse_ms': round((time.perf_counter() - parse_started) * 1000.0, 1),
-            'request_total_ms': round((time.perf_counter() - total_started) * 1000.0, 1),
             'ollama_load_ms': round(float(body['load_duration']) / 1_000_000.0, 1) if isinstance(body.get('load_duration'), (int, float)) else None,
             'ollama_total_ms': round(float(body['total_duration']) / 1_000_000.0, 1) if isinstance(body.get('total_duration'), (int, float)) else None,
             'ollama_prompt_eval_ms': round(float(body['prompt_eval_duration']) / 1_000_000.0, 1) if isinstance(body.get('prompt_eval_duration'), (int, float)) else None,
             'ollama_eval_ms': round(float(body['eval_duration']) / 1_000_000.0, 1) if isinstance(body.get('eval_duration'), (int, float)) else None,
+        })
+    try:
+        parsed = _parse_json_object(content)
+    except Exception as error:
+        if diagnostics is not None:
+            diagnostics['json_parse_error'] = (str(error).strip() or error.__class__.__name__)[:240]
+            diagnostics['json_parse_ms'] = round((time.perf_counter() - parse_started) * 1000.0, 1)
+            diagnostics['request_total_ms'] = round((time.perf_counter() - total_started) * 1000.0, 1)
+        raise
+    if diagnostics is not None:
+        diagnostics.update({
+            'json_keys': sorted(str(key) for key in parsed.keys()),
+            'annotations_key_count': next((len(parsed[key]) for key in ('annotations', 'texts', 'text_regions', 'labels', 'objects', 'items') if isinstance(parsed.get(key), list)), None),
+            'routes_key_count': next((len(parsed[key]) for key in ('routes', 'pipes', 'pipe_routes', 'polylines', 'paths', 'traces') if isinstance(parsed.get(key), list)), None),
+            'json_parse_ms': round((time.perf_counter() - parse_started) * 1000.0, 1),
+            'request_total_ms': round((time.perf_counter() - total_started) * 1000.0, 1),
         })
     return parsed, resize_scale, rgb.size
 
@@ -1450,6 +1488,10 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 call_diagnostics['annotation_key'] = annotation_key
                 call_diagnostics['raw_annotations'] = len(raw_items)
                 call_diagnostics['possibly_capped_at_schema_limit'] = len(raw_items) >= 64
+                call_diagnostics['raw_annotation_samples'] = []
+                call_diagnostics['rejected_out_of_crop_samples'] = []
+                call_diagnostics['rejected_invalid_bbox'] = 0
+                call_diagnostics['missing_confidence'] = 0
                 accepted_before = len(items)
                 for raw in raw_items:
                     if not isinstance(raw, dict):
@@ -1457,34 +1499,52 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     text_value = raw.get('text', raw.get('value', raw.get('label', raw.get('content', ''))))
                     text = re.sub(r'\s+', ' ', str(text_value)).strip()
                     bbox = raw.get('bbox') or raw.get('box') or raw.get('bbox_2d') or raw.get('box_2d')
-                    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-                        x1, y1, x2, y2 = map(float, bbox)
-                        box = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-                    elif isinstance(bbox, dict):
-                        try:
+                    try:
+                        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                            x1, y1, x2, y2 = map(float, bbox)
+                            box = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                        elif isinstance(bbox, dict):
                             box = {key: float(bbox[key]) for key in ('x', 'y', 'w', 'h')}
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                    else:
+                        else:
+                            raise ValueError('missing_or_malformed_bbox')
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        call_diagnostics['rejected_invalid_bbox'] = int(call_diagnostics.get('rejected_invalid_bbox', 0)) + 1
                         continue
+                    if len(call_diagnostics['raw_annotation_samples']) < 8:
+                        call_diagnostics['raw_annotation_samples'].append({
+                            'text': text[:120], 'bbox': bbox,
+                            'confidence': raw.get('confidence', raw.get('score')),
+                        })
                     # Reject model boxes that are clearly outside the crop it saw.
                     # Small excursions are clipped below; grossly invalid boxes
                     # are not allowed to migrate into the centre of the source page.
                     raw_left, raw_top = float(box['x']), float(box['y'])
                     raw_right = raw_left + float(box['w'])
                     raw_bottom = raw_top + float(box['h'])
-                    if (raw_right <= 0 or raw_bottom <= 0 or raw_left >= sent_width * 1.08
+                    if (not all(math.isfinite(value) for value in (raw_left, raw_top, raw_right, raw_bottom))
+                            or raw_right <= raw_left or raw_bottom <= raw_top
+                            or raw_right <= 0 or raw_bottom <= 0 or raw_left >= sent_width * 1.08
                             or raw_top >= sent_height * 1.08
                             or raw_left < -sent_width * 0.08 or raw_top < -sent_height * 0.08):
                         call_diagnostics['rejected_out_of_crop_boxes'] = int(call_diagnostics.get('rejected_out_of_crop_boxes', 0)) + 1
+                        if len(call_diagnostics['rejected_out_of_crop_samples']) < 8:
+                            call_diagnostics['rejected_out_of_crop_samples'].append({
+                                'text': text[:120], 'bbox': bbox,
+                                'sent_size': [int(sent_width), int(sent_height)],
+                            })
                         continue
                     box['x'] = max(0.0, min(float(sent_width), raw_left))
                     box['y'] = max(0.0, min(float(sent_height), raw_top))
                     box['w'] = max(0.0, min(float(sent_width) - box['x'], raw_right - box['x']))
                     box['h'] = max(0.0, min(float(sent_height) - box['y'], raw_bottom - box['y']))
+                    confidence_value = raw.get('confidence', raw.get('score'))
+                    if confidence_value is None:
+                        call_diagnostics['missing_confidence'] = int(call_diagnostics.get('missing_confidence', 0)) + 1
                     try:
-                        confidence = float(raw.get('confidence', raw.get('score', 0)))
-                    except (TypeError, ValueError):
+                        confidence = float(confidence_value) if confidence_value is not None else 0.0
+                    except (TypeError, ValueError, OverflowError):
+                        confidence = 0.0
+                    if not math.isfinite(confidence):
                         confidence = 0.0
                     if 0 <= confidence <= 1:
                         confidence *= 100

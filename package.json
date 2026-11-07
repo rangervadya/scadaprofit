@@ -1,6 +1,6 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.3.18",
+  "version": "4.3.20",
   "private": true,
   "description": "OCR-aware topology reconstruction of handwritten piping schematics",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && PYTHON_BIN=\"$(command -v python || command -v python3)\" && \"$PYTHON_BIN\" -m py_compile processor.py && \"$PYTHON_BIN\" -m unittest discover -s tests -p 'test_*.py'"
+    "check": "node --check server.js && node --check manual-cad-core.js && node --check public/app.js && node --check public/manual-cad.js && node --test tests/manual-cad.test.js && PYTHON_BIN=\"$(command -v python || command -v python3)\" && \"$PYTHON_BIN\" -m py_compile processor.py && \"$PYTHON_BIN\" -m unittest discover -s tests -p 'test_*.py'"
   },
   "dependencies": {
     "express": "^5.1.0",

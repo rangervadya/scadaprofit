@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f3f5f3">
+  <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
+  <title>Ручной CAD · ScadaProfit</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=1.0.0">
+  <script src="/manual-cad.js?v=1.0.0" defer></script>
+</head>
+<body class="manual-cad-page">
+  <nav class="mc-nav" aria-label="Разделы ScadaProfit">
+    <a href="/" class="mc-nav-link">Схемы домов</a>
+    <span class="mc-nav-current">Ручной CAD</span>
+    <a href="/vdgo/" class="mc-nav-link">Технические заключения ВДГО</a>
+  </nav>
+
+  <header class="mc-topbar">
+    <div class="mc-brand">
+      <div class="mc-brand-mark">SP</div>
+      <div><strong>ScadaProfit · Manual CAD</strong><small>Редактор трубопроводных схем</small></div>
+    </div>
+    <div class="mc-top-actions">
+      <span class="mc-save-state" id="saveState" aria-live="polite">Загружаю проекты…</span>
+      <button class="mc-button mc-button-primary" id="newProjectBtn" type="button">＋ Новый чертёж</button>
+    </div>
+  </header>
+
+  <main class="mc-shell">
+    <aside class="mc-projects-panel">
+      <div class="mc-panel-head"><div><b>Мои чертежи</b><small>Сохраняются на сервере</small></div><span id="projectCount" class="mc-count">0</span></div>
+      <div id="projectList" class="mc-project-list"><div class="mc-muted-block">Загружаю список…</div></div>
+      <div class="mc-project-help">
+        <b>Как работать</b>
+        <p>Загрузи фотографию как подложку. Обведи трубы инструментом «Труба», начинай ответвление прямо на существующей линии, добавляй символы и подписи. В DXF попадёт только построенная векторная схема.</p>
+      </div>
+    </aside>
+
+    <section class="mc-workspace">
+      <div class="mc-documentbar">
+        <div class="mc-document-name"><label for="projectTitle">Название чертежа</label><input id="projectTitle" maxlength="140" value="Новая схема" placeholder="Например, Газоснабжение · подъезд 2"></div>
+        <div class="mc-document-actions">
+          <label class="mc-button mc-button-light mc-file-button" for="sourceFile">Загрузить эскиз</label>
+          <input id="sourceFile" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff" hidden>
+          <button class="mc-button mc-button-light" id="toggleSourceBtn" type="button" disabled>Скрыть подложку</button>
+          <a class="mc-button mc-button-export" id="exportSvgBtn" href="#" aria-disabled="true">Экспорт SVG</a>
+          <a class="mc-button mc-button-export" id="exportDxfBtn" href="#" aria-disabled="true">Экспорт DXF</a>
+        </div>
+      </div>
+
+      <div class="mc-toolbar" role="toolbar" aria-label="Инструменты черчения">
+        <div class="mc-toolgroup">
+          <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
+          <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
+          <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
+          <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
+          <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
+          <button class="mc-tool" type="button" data-tool="dimension" title="Поставить размер между двумя точками">↔ <span>Размер</span></button>
+        </div>
+        <div class="mc-toolgroup mc-toolgroup-right">
+          <button class="mc-button mc-button-light" id="finishRouteBtn" type="button" disabled>Завершить линию ↵</button>
+          <button class="mc-icon-button" id="undoBtn" type="button" title="Отменить Ctrl+Z" disabled>↶</button>
+          <button class="mc-icon-button" id="redoBtn" type="button" title="Повторить Ctrl+Y" disabled>↷</button>
+          <button class="mc-icon-button mc-danger" id="deleteBtn" type="button" title="Удалить выбранный элемент" disabled>⌫</button>
+        </div>
+      </div>
+
+      <div class="mc-propertybar">
+        <div class="mc-prop mc-prop-route"><label for="pipeName">Обозначение трубы</label><input id="pipeName" maxlength="80" placeholder="Например, Т-1"></div>
+        <div class="mc-prop mc-prop-route"><label for="pipeDiameter">Диаметр / DN</label><input id="pipeDiameter" maxlength="32" placeholder="Например, 25"></div>
+        <div class="mc-prop mc-prop-label" hidden><label for="labelText">Текст подписи</label><input id="labelText" maxlength="180" placeholder="Номер, адрес, примечание"></div>
+        <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option></select></div>
+        <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
+        <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выключена</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
+        <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Подложка</span></label>
+        <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
+      </div>
+
+      <div class="mc-canvas-wrap">
+        <div class="mc-canvas-head"><span id="canvasHint">Выбери инструмент или загрузи рукописный эскиз</span><span id="canvasDimensions">1600 × 1000 px</span></div>
+        <div class="mc-canvas-scroll" id="canvasScroll">
+          <svg id="cadCanvas" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-label="Редактор инженерной схемы" tabindex="0">
+            <defs><pattern id="mcGrid" width="25" height="25" patternUnits="userSpaceOnUse"><path d="M 25 0 L 0 0 0 25" fill="none" stroke="#dce4de" stroke-width="1"/></pattern></defs>
+            <rect width="1600" height="1000" fill="#fff"/><rect width="1600" height="1000" fill="url(#mcGrid)"/>
+            <text x="800" y="490" text-anchor="middle" fill="#9aa69d" font-size="30">Загрузи исходный эскиз или начни чертить</text>
+          </svg>
+        </div>
+        <div class="mc-canvas-foot"><span id="cursorPosition">X: — · Y: —</span><span id="draftStatus">Нет незавершённых линий</span></div>
+      </div>
+
+      <div class="mc-lowerbar">
+        <div class="mc-settings">
+          <div class="mc-prop"><label for="pageOrientation">Лист экспорта</label><select id="pageOrientation"><option value="portrait">A4 · книжный</option><option value="landscape">A4 · альбомный</option></select></div>
+          <div class="mc-prop"><label for="preparedBy">Исполнитель</label><input id="preparedBy" maxlength="100" placeholder="ФИО / организация"></div>
+          <div class="mc-prop mc-notes-prop"><label for="drawingNotes">Примечание в штампе</label><input id="drawingNotes" maxlength="300" placeholder="Например, по результатам обследования"></div>
+        </div>
+        <div class="mc-lower-actions"><button class="mc-button mc-button-primary" id="saveNowBtn" type="button">Сохранить</button></div>
+      </div>
+      <div class="mc-status-note" id="statusNote" role="status" aria-live="polite">Совет: двойной щелчок или Enter завершает построение трубы. Esc отменяет текущую линию.</div>
+    </section>
+
+    <aside class="mc-inspector">
+      <div class="mc-panel-head"><div><b>Свойства</b><small>Выбранный элемент</small></div><span class="mc-count" id="selectionType">—</span></div>
+      <div id="selectionEmpty" class="mc-empty-properties"><div class="mc-empty-icon">⌖</div><b>Ничего не выбрано</b><p>Выбери трубу, символ или подпись на листе. В режиме выбора можно перетаскивать вершины линии.</p></div>
+      <div id="selectionProperties" hidden>
+        <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
+        <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
+        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolLabel">Подпись символа</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <div class="mc-property-help" id="selectedHelp">Измени свойства, затем они автоматически сохранятся.</div>
+      </div>
+      <div class="mc-statistics" id="drawingStats"><div><span>Трубы</span><b>0</b></div><div><span>Узлы</span><b>0</b></div><div><span>Символы</span><b>0</b></div><div><span>Подписи</span><b>0</b></div></div>
+      <div class="mc-symbol-legend"><b>Библиотека символов</b><div><span class="mc-legend-symbol">◇</span>Кран / клапан</div><div><span class="mc-legend-symbol">◉</span>Счётчик газа</div><div><span class="mc-legend-symbol">□</span>Регулятор</div><div><span class="mc-legend-symbol">│</span>Стояк</div><div><span class="mc-legend-symbol">○</span>Потребитель</div></div>
+    </aside>
+  </main>
+  <div id="mcToast" class="mc-toast" role="status" aria-live="polite"></div>
+</body>
+</html>
