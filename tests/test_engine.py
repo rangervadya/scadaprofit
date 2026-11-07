@@ -2,6 +2,7 @@ import sys
 import unittest
 import json
 import os
+import time
 from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1077,6 +1078,30 @@ class GraphTests(unittest.TestCase):
             self.assertIn('PIPE_MAIN', dxf)
             self.assertIn('DETAIL_REVIEW', dxf)
 
+    def test_incomplete_ocr_defers_qwen_pipe_and_still_exports_review_graph(self):
+        with TemporaryDirectory() as temp:
+            source = Path(temp) / 'source.png'
+            out_dir = Path(temp) / 'job'
+            image = np.full((640, 900, 3), 255, np.uint8)
+            cv2.line(image, (80, 220), (800, 220), (35, 45, 60), 3, cv2.LINE_AA)
+            cv2.imwrite(str(source), image)
+            qwen_status = {
+                'available': True, 'complete': False, 'tiles': 9,
+                'successful_tiles': 3, 'failed_tiles': [2, 4, 5, 6, 7, 8],
+                'annotations': 0, 'tile_diagnostics': [],
+            }
+            with patch.object(processor, 'ocr_annotations', return_value=([], {
+                'qwen': qwen_status, 'tesseract': {'annotations': 0}
+            })), patch.object(processor, '_qwen_semantic_routes', side_effect=AssertionError('PIPE must wait for complete OCR')):
+                graph = processor.analyze(str(source), str(out_dir))
+
+            self.assertFalse(graph['complete'])
+            self.assertEqual(graph['analysisStatus'], 'incomplete')
+            self.assertTrue(graph['semanticTrace']['deferred_due_to_ocr_incomplete'])
+            self.assertTrue((out_dir / 'graph.json').is_file())
+            self.assertTrue((out_dir / 'clean.svg').is_file())
+            self.assertTrue((out_dir / 'drawing.dxf').is_file())
+
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
         annotations = [{"verified": True, "text": "DN50", "bbox": {"x": 12, "y": 15, "w": 25, "h": 9}}]
@@ -2059,6 +2084,73 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                     stage='PIPE', tile_index=3
                 )
         self.assertEqual(len(calls), 1, 'A permanent model-not-found response must not be retried')
+
+    def test_ocr_tile_retry_budget_is_independent_for_each_tile(self):
+        from PIL import Image as PILImage
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            calls = []
+
+            def fail_once_per_tile(_image, _prompt, **kwargs):
+                calls.append(kwargs['timeout'])
+                # Every tile's first request fails transiently; its own retry succeeds.
+                if len(calls) % 2 == 1:
+                    raise TimeoutError('synthetic transient timeout')
+                return {'annotations': []}, 1.0, (32, 24)
+
+            env = {
+                'QWEN_OCR_TILE_GRID': '2',
+                'QWEN_TILE_RETRY_BUDGET': '1',
+                'QWEN_RETRY_TIMEOUT_FACTOR': '1.6',
+                'QWEN_RETRY_BACKOFF_SECONDS': '0',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+            }
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=fail_once_per_tile):
+                _, status = processor._qwen_annotations(str(image_path), 1000, 800, Path(temp) / '.checkpoints')
+
+            self.assertTrue(status['complete'])
+            self.assertEqual(status['successful_tiles'], 4)
+            self.assertEqual(len(calls), 8, 'Each of the four tiles must receive its own retry; one tile must not consume the stage budget')
+            self.assertTrue(all(item.get('attempts') == 2 for item in status['tile_diagnostics']))
+
+    def test_pipe_tile_retry_budget_is_independent_for_each_tile(self):
+        from PIL import Image as PILImage
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+            calls = []
+
+            def fail_once_per_tile(_image, _prompt, **kwargs):
+                calls.append(kwargs['timeout'])
+                if len(calls) % 2 == 1:
+                    raise TimeoutError('synthetic transient timeout')
+                return {'routes': []}, 1.0, _image.size
+
+            env = {
+                'QWEN_PIPE_TILE_GRID': '2',
+                'QWEN_TILE_RETRY_BUDGET': '1',
+                'QWEN_RETRY_TIMEOUT_FACTOR': '1.6',
+                'QWEN_RETRY_BACKOFF_SECONDS': '0',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+            }
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=fail_once_per_tile):
+                _, status = processor._qwen_semantic_routes(str(image_path), 1000, 800, Path(temp) / '.checkpoints')
+
+            self.assertTrue(status['complete'])
+            self.assertEqual(status['successful_tiles'], 4)
+            self.assertEqual(len(calls), 8, 'Each PIPE tile must receive its own retry')
+            self.assertTrue(all(item.get('attempts') == 2 for item in status['tile_diagnostics']))
+
+    def test_analysis_deadline_reserves_time_for_partial_graph_export(self):
+        previous_deadline = processor._ANALYSIS_HARD_DEADLINE
+        try:
+            processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 1.0
+            self.assertFalse(processor._analysis_has_qwen_budget(180, 1, 720))
+            processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600.0
+            self.assertTrue(processor._analysis_has_qwen_budget(180, 1, 720))
+        finally:
+            processor._ANALYSIS_HARD_DEADLINE = previous_deadline
 
     def test_qwen_stage_completeness_requires_every_declared_tile(self):
         self.assertTrue(processor._qwen_stage_is_complete({'tiles': 9, 'successful_tiles': 9}))

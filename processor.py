@@ -1018,6 +1018,24 @@ PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 
+# Reserve time before the Node worker's hard timeout so a partial graph can be
+# built/exported instead of the Python process being SIGTERM-killed mid-request.
+_ANALYSIS_HARD_DEADLINE: float | None = None
+
+def _qwen_attempt_worst_case_seconds(timeout: float, retry_budget: int) -> float:
+    factor = max(1.0, min(2.0, float(os.getenv('QWEN_RETRY_TIMEOUT_FACTOR', '1.6'))))
+    max_timeout = max(timeout, min(600.0, float(os.getenv('QWEN_RETRY_TIMEOUT_MAX', '360'))))
+    attempts = max(0, min(3, int(retry_budget))) + 1
+    return sum(min(max_timeout, timeout * (factor ** index)) for index in range(attempts))
+
+def _analysis_has_qwen_budget(timeout: float, retry_budget: int, reserve_seconds: float) -> bool:
+    deadline = _ANALYSIS_HARD_DEADLINE
+    if deadline is None:
+        return True
+    required = _qwen_attempt_worst_case_seconds(timeout, retry_budget) + max(0.0, reserve_seconds)
+    return time.monotonic() + required <= deadline
+
+
 CHECKPOINT_VERSION = 1
 
 
@@ -1112,11 +1130,11 @@ def _qwen_call_with_retry(rgb: Image.Image, prompt: str, *, url: str, model: str
                           max_edge: int, num_predict: int, diagnostics: dict[str, Any],
                           format_schema: dict[str, Any] | None, retry_state: dict[str, int],
                           stage: str, tile_index: int) -> tuple[dict[str, Any], float, tuple[int, int]]:
-    """Retry transient model failures with a bounded stage-wide budget and audit trail."""
+    """Retry transient model failures with a bounded per-tile budget and audit trail."""
     attempt = 0
     errors: list[str] = []
     history: list[dict[str, Any]] = []
-    factor = max(1.0, min(2.0, float(os.getenv('QWEN_RETRY_TIMEOUT_FACTOR', '1.25'))))
+    factor = max(1.0, min(2.0, float(os.getenv('QWEN_RETRY_TIMEOUT_FACTOR', '1.6'))))
     max_timeout = max(timeout, min(600.0, float(os.getenv('QWEN_RETRY_TIMEOUT_MAX', '360'))))
     backoff = max(0.0, min(5.0, float(os.getenv('QWEN_RETRY_BACKOFF_SECONDS', '1'))))
     retry_budget_at_start = max(0, int(retry_state.get('remaining', 0) or 0))
@@ -1312,7 +1330,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
         timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
         max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
-        retry_state = {'remaining': max(0, min(3, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '2'))))}
+        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '1'))))
         image_sha256 = _sha256_file(image_path)
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
@@ -1363,7 +1381,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         items: list[dict[str, Any]] = []
         tile_errors = []
         tile_diagnostics: list[dict[str, Any]] = []
-        _progress('OCR', f'Image OCR started: {len(regions)} tiles ({grid}x{grid}); retry_budget={retry_state["remaining"]}')
+        _progress('OCR', f'Image OCR started: {len(regions)} tiles ({grid}x{grid}); retry_budget_per_tile={retry_budget_per_tile}')
         for tile_index, (left, top, right, bottom) in enumerate(regions, 1):
             _progress('OCR', f'Tile {tile_index}/{len(regions)} started')
             crop = original.crop((left, top, right, bottom))
@@ -1396,12 +1414,25 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 tile_diagnostics.append(cached_diag)
                 _progress('OCR', f'Tile {tile_index}/{len(regions)} restored from checkpoint; annotations={len(cached_items)}')
                 continue
+            reserve_seconds = max(480.0, min(900.0, float(os.getenv('QWEN_OCR_EXPORT_RESERVE_SECONDS', '720'))))
+            if not _analysis_has_qwen_budget(timeout, retry_budget_per_tile, reserve_seconds):
+                call_diagnostics.update({
+                    'tile_status': 'deferred',
+                    'error': 'Отложено: оставлено время для рукописного OCR, Tesseract и экспорта частичного результата.',
+                    'attempts': 0,
+                    'deferred_for_job_deadline': True,
+                })
+                tile_diagnostics.append(call_diagnostics)
+                tile_errors.append(f'плитка {tile_index} отложена до следующего запуска')
+                _progress('OCR', f'Tile {tile_index}/{len(regions)} deferred to preserve time for OCR post-processing and graph export')
+                continue
+            tile_retry_state = {'remaining': retry_budget_per_tile}
             tile_item_start = len(items)
             try:
                 parsed, resize_scale, sent_size = _qwen_call_with_retry(
                     crop, prompt, url=url, model=model, timeout=timeout,
                     max_edge=max_edge, num_predict=max_output_tokens, diagnostics=call_diagnostics,
-                    format_schema=OCR_RESPONSE_SCHEMA, retry_state=retry_state,
+                    format_schema=OCR_RESPONSE_SCHEMA, retry_state=tile_retry_state,
                     stage='OCR', tile_index=tile_index
                 )
                 coordinate_scale = crop_scale * resize_scale
@@ -1564,7 +1595,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         for index, item in enumerate(deduped, 1):
             item['id'] = f'Q{index}'
             item.pop('tile', None)
-        failed_tiles = [int(item.get('tile', 0)) for item in tile_diagnostics if item.get('tile_status') == 'failed']
+        failed_tiles = [int(item.get('tile', 0)) for item in tile_diagnostics if item.get('tile_status') not in {'completed', 'completed_empty'}]
         complete = calls_ok == len(regions)
         return deduped, {
             'available': calls_ok > 0, 'complete': complete, 'model': model, 'annotations': len(deduped),
@@ -1624,7 +1655,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
-        retry_state = {'remaining': max(0, min(3, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '2'))))}
+        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '1'))))
         image_sha256 = _sha256_file(image_path)
         grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
@@ -1637,7 +1668,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         min_confidence = float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '35'))
         result: list[dict[str, Any]] = []
         total_tiles = grid * grid
-        _progress('PIPE', f'Pipe tracing started: {total_tiles} tiles ({grid}x{grid}); retry_budget={retry_state["remaining"]}')
+        _progress('PIPE', f'Pipe tracing started: {total_tiles} tiles ({grid}x{grid}); retry_budget_per_tile={retry_budget_per_tile}')
         for row in range(grid):
             core_top = round(row * original_height / grid)
             core_bottom = round((row + 1) * original_height / grid)
@@ -1703,6 +1734,18 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     raw_count += int(diag.get('raw_routes', 0) or 0)
                     _progress('PIPE', f'Tile {tile_index}/{total_tiles} restored from checkpoint; routes={len(cached_routes)}')
                     continue
+                reserve_seconds = max(120.0, min(240.0, float(os.getenv('QWEN_PIPE_EXPORT_RESERVE_SECONDS', '180'))))
+                if not _analysis_has_qwen_budget(timeout, retry_budget_per_tile, reserve_seconds):
+                    diag.update({
+                        'tile_status': 'deferred',
+                        'error': 'Отложено: оставлено время для построения графа и экспорта частичного результата.',
+                        'attempts': 0,
+                        'deferred_for_job_deadline': True,
+                    })
+                    tile_diagnostics.append(diag)
+                    _progress('PIPE', f'Tile {tile_index}/{total_tiles} deferred to preserve time for graph export')
+                    continue
+                tile_retry_state = {'remaining': retry_budget_per_tile}
                 route_item_start = len(result)
                 tile_raw_before = raw_count
                 tile_low_before = rejected_low_confidence
@@ -1712,7 +1755,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     parsed, resize_scale, sent_size = _qwen_call_with_retry(
                         crop, prompt, url=url, model=model, timeout=timeout,
                         max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag,
-                        format_schema=PIPE_RESPONSE_SCHEMA, retry_state=retry_state,
+                        format_schema=PIPE_RESPONSE_SCHEMA, retry_state=tile_retry_state,
                         stage='PIPE', tile_index=tile_index
                     )
                     raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('pipe_routes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', []))))))
@@ -3928,7 +3971,10 @@ def _qwen_stage_is_complete(status: dict[str, Any] | None) -> bool:
 
 
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
+    global _ANALYSIS_HARD_DEADLINE
     job_started = time.perf_counter()
+    configured_job_ms = max(60_000.0, float(os.getenv('PYTHON_JOB_TIMEOUT_MS', '2700000')))
+    _ANALYSIS_HARD_DEADLINE = time.monotonic() + configured_job_ms / 1000.0
     timings_ms: dict[str, float] = {}
     Path(out_dir).mkdir(parents=True,exist_ok=True)
     _progress('JOB', 'Image preprocessing started')
@@ -3951,12 +3997,32 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     annotations, ocr_status = ocr_annotations(prepared_input_path, gray, checkpoint_dir=checkpoint_dir)
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
-    _progress('PIPE', 'CAD pipe-route trace started')
-    stage_started = time.perf_counter()
-    semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-    timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
-    _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; {timings_ms["qwen_pipe_trace"]:.1f} ms')
     ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
+    stage_started = time.perf_counter()
+    if not ocr_complete:
+        # OCR supplies the text mask used by geometric validation. Defer the
+        # expensive Qwen pipe pass until OCR coverage is complete; export a
+        # clearly-marked review-only graph now and resume from OCR checkpoints.
+        pipe_grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
+        if w < 640 or h < 480:
+            pipe_grid = 1
+        pipe_total = pipe_grid * pipe_grid
+        semantic_routes = []
+        route_status = {
+            'available': False, 'complete': False, 'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
+            'routes': 0, 'raw_routes': 0, 'tiles': pipe_total, 'successful_tiles': 0,
+            'failed_tiles': list(range(1, pipe_total + 1)), 'tile_diagnostics': [],
+            'deferred_due_to_ocr_incomplete': True,
+            'error': 'Трассировка Qwen отложена: OCR обработал не все плитки.',
+            'hint': 'Повторите обработку этой же схемы. Успешные OCR-плитки восстановятся из .checkpoints; после полного OCR запустится трассировка труб.',
+            'incomplete_reason': 'PIPE отложен до завершения OCR, чтобы не тратить время и не строить трубные маски по неполной карте текста.',
+        }
+        _progress('PIPE', f'CAD pipe-route trace deferred: OCR completed {ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)} tiles; exporting review-only graph')
+    else:
+        _progress('PIPE', 'CAD pipe-route trace started')
+        semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
+        _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+    timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     pipe_complete = _qwen_stage_is_complete(route_status)
     processing_complete = ocr_complete and pipe_complete
     incomplete_reasons = []

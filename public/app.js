@@ -353,7 +353,10 @@ async function openSavedJob(jobId) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     graph = normalizeGraph(data);
-    activeScheme = savedScheme ? { ...savedScheme, streetName: savedAddress.street.name, buildingName: savedAddress.building.name } : { jobId, title: 'Обработанная схема', status: 'completed' };
+    const partialResult = graph.complete === false || graph.analysisStatus === 'incomplete';
+    activeScheme = savedScheme
+      ? { ...savedScheme, status: partialResult ? 'failed' : 'completed', streetName: savedAddress.street.name, buildingName: savedAddress.building.name }
+      : { jobId, title: partialResult ? 'Частично обработанная схема' : 'Обработанная схема', status: partialResult ? 'failed' : 'completed' };
     selectedJobId = jobId;
     activeJoinId = null; activeJoinGroupNode = null; showAllSegments = false;
     connectMode = false; firstNode = null;
@@ -363,13 +366,23 @@ async function openSavedJob(jobId) {
     $('filePreview').hidden = true; $('fileName').textContent = 'Добавить фото схемы';
     updateAnalyzeButton();
     setJobAddress(jobId);
-    $('processSchemeBtn').hidden = true;
     $('mainTitle').textContent = activeScheme.title || 'Векторная схема';
-    $('activeSchemeStatus').textContent = 'ПРЕОБРАЗОВАНО · ПРОВЕРИТЬ';
     $('activeSchemeMeta').textContent = `${activeScheme.streetName || ''}${activeScheme.streetName ? ', ' : ''}дом ${activeScheme.buildingName || ''} · ${formatLibraryDate(activeScheme.completedAt || activeScheme.createdAt)}`;
     showResult();
-    $('previewMeta').textContent = 'Сохранённая схема открыта из папки дома';
-    setState('СХЕМА ОТКРЫТА');
+    if (partialResult) {
+      $('processSchemeBtn').hidden = false;
+      $('processSchemeBtn').disabled = false;
+      $('processSchemeBtn').textContent = 'Повторить недостающие участки →';
+      $('activeSchemeStatus').textContent = 'ЧАСТИЧНЫЙ РЕЗУЛЬТАТ · REVIEW';
+      $('previewMeta').textContent = 'Показана неполная схема для проверки. Недостающие плитки можно обработать повторно.';
+      setAlert('Это промежуточный результат: не все плитки Qwen обработаны. Не используй его как окончательный чертёж. Нажми «Повторить недостающие участки», чтобы продолжить с сохранённых checkpoint-файлов.');
+      setState('НЕПОЛНЫЙ ЧЕРТЁЖ · ТРЕБУЕТСЯ ПРОВЕРКА', 'error');
+    } else {
+      $('processSchemeBtn').hidden = true;
+      $('activeSchemeStatus').textContent = 'ПРЕОБРАЗОВАНО · ПРОВЕРИТЬ';
+      $('previewMeta').textContent = 'Сохранённая схема открыта из папки дома';
+      setState('СХЕМА ОТКРЫТА');
+    }
     updateLibrarySelection();
     renderLibrary();
   } catch (error) {
@@ -401,12 +414,21 @@ async function pollSchemeStatus(jobId) {
       }
       if (data.status === 'failed') {
         $('progressWrap').hidden = true;
-        processButton.disabled = false;
-        processButton.hidden = false;
-        processButton.textContent = 'Повторить преобразование →';
-        setAlert(data.error || 'Не удалось преобразовать эскиз. Повтори запуск: ранее сохранённые участки будут восстановлены, если они есть.');
-        setState('ОШИБКА ПРЕОБРАЗОВАНИЯ', 'error');
         await loadAddressLibrary();
+        if (data.graphReady) {
+          await openSavedJob(jobId);
+          $('processSchemeBtn').hidden = false;
+          $('processSchemeBtn').disabled = false;
+          $('processSchemeBtn').textContent = 'Повторить недостающие участки →';
+          if (data.error) setAlert(`${data.error} Показанный результат неполный и предназначен только для проверки.`);
+          setState('НЕПОЛНЫЙ ЧЕРТЁЖ · ТРЕБУЕТСЯ ПРОВЕРКА', 'error');
+        } else {
+          processButton.disabled = false;
+          processButton.hidden = false;
+          processButton.textContent = 'Повторить преобразование →';
+          setAlert(data.error || 'Не удалось преобразовать эскиз. Повтори запуск: ранее сохранённые участки будут восстановлены, если они есть.');
+          setState('ОШИБКА ПРЕОБРАЗОВАНИЯ', 'error');
+        }
         return;
       }
     } catch (error) {
