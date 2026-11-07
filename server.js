@@ -27,11 +27,12 @@ const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
 const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
-// 2 700 000 мс = 45 минут, а не 2 700 000 секунд.
-const configuredPythonTimeout = Number(process.env.PYTHON_JOB_TIMEOUT_MS || 2_700_000);
+// 5 400 000 мс = 90 минут: OCR и Qwen-трассировка проходят двумя
+// последовательными сетками 3x3; успешные плитки сохраняются в checkpoint.
+const configuredPythonTimeout = Number(process.env.PYTHON_JOB_TIMEOUT_MS || 5_400_000);
 const PYTHON_TIMEOUT_MS = Number.isFinite(configuredPythonTimeout)
   ? Math.max(60_000, configuredPythonTimeout)
-  : 2_700_000;
+  : 5_400_000;
 
 const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -287,6 +288,22 @@ async function readTemplateMeta() {
   }
 }
 
+// Pin the selected reference sheet into each job folder so a later retry uses
+// the same page profile even if the global template is replaced in settings.
+async function pinTemplateReference(jobDir) {
+  // Keep the original reference used by a job even after a global replacement.
+  const existing = (await readdir(jobDir)).find(name => /^\.drawing-template-reference\.[a-z0-9]+$/i.test(name));
+  if (existing) return path.join(jobDir, existing);
+  const meta = await readTemplateMeta();
+  if (!meta) return null;
+  const extension = path.extname(meta.storageName).toLowerCase() || '.bin';
+  const snapshotName = `.drawing-template-reference${extension}`;
+  const snapshotPath = path.join(jobDir, snapshotName);
+  const sourcePath = path.join(TEMPLATE_DIR, meta.storageName);
+  await copyFile(sourcePath, snapshotPath);
+  return snapshotPath;
+}
+
 async function saveTemplateMeta(meta) {
   const temporary = `${TEMPLATE_META_PATH}.tmp-${randomUUID()}`;
   await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
@@ -429,8 +446,11 @@ async function runStoredSchemeAnalysis(jobId) {
   if (!meta?.sourceName) throw new Error('Исходный эскиз не найден в папке дома.');
   const sourcePath = path.join(jobDir, path.basename(meta.sourceName));
   const progressPath = path.join(jobDir, 'progress.log');
+  const templatePath = await pinTemplateReference(jobDir);
+  const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
+  if (templatePath) processorArgs.push('--template', templatePath);
   await runPythonStreaming(
-    [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
+    processorArgs,
     { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
   );
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
@@ -1015,7 +1035,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.17',
+    version: '4.3.18',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1024,6 +1044,7 @@ app.get('/api/health', async (_req, res) => {
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
+      tileRetryBudget: Number(process.env.QWEN_TILE_RETRY_BUDGET || 0),
       ocrMaxTokens: Number(process.env.QWEN_OCR_MAX_TOKENS || 2048),
       ocrBlockMaxTokens: Number(process.env.QWEN_OCR_BLOCK_MAX_TOKENS || 1536),
       ocrRowMaxTokens: 220,
@@ -1079,8 +1100,11 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     await fs.rm(req.file.path, { force: true });
 
     const progressPath = path.join(jobDir, 'progress.log');
+    const templatePath = await pinTemplateReference(jobDir);
+    const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
+    if (templatePath) processorArgs.push('--template', templatePath);
     await runPythonStreaming(
-      [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir],
+      processorArgs,
       { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
     );
 
@@ -1203,7 +1227,7 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.17: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.18: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });

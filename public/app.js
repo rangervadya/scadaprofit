@@ -592,8 +592,11 @@ $('processSchemeBtn').addEventListener('click', async () => {
 });
 
 function showResult() {
-  $('processSchemeBtn').hidden = true;
-  $('activeSchemeStatus').textContent = 'ПРЕОБРАЗОВАНО · ПРОВЕРИТЬ';
+  const processingComplete = graph.complete !== false && graph.analysisStatus !== 'incomplete';
+  $('processSchemeBtn').hidden = processingComplete;
+  $('processSchemeBtn').disabled = false;
+  $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
+  $('activeSchemeStatus').textContent = processingComplete ? 'ОБРАБОТКА ЗАВЕРШЕНА · ПРОВЕРИТЬ' : 'ЧАСТИЧНЫЙ РЕЗУЛЬТАТ · НУЖНО ПРОДОЛЖИТЬ';
   $('statsPanel').hidden = false;
   $('edgePanel').hidden = false;
   $('nodePanel').hidden = false;
@@ -620,9 +623,11 @@ function showResult() {
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;
   }
-  $('previewMeta').textContent = graph.confirmedConnections.length
-    ? `Анализ завершён · подтверждённых соединений: ${graph.confirmedConnections.length}`
-    : 'Анализ завершён · можно редактировать';
+  $('previewMeta').textContent = processingComplete
+    ? (graph.confirmedConnections.length
+      ? `Обработка завершена · соединений, требующих проверки: ${graph.confirmedConnections.length}`
+      : 'Обработка завершена · инженерная проверка обязательна')
+    : 'Частичный результат · только для проверки; повтори обработку для продолжения';
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
@@ -634,7 +639,7 @@ function showResult() {
   const structuredRouteComponents = Number(summary.structured_route_components || 0);
   const textBlockCount = Number(summary.text_block_annotations || 0);
   const textReviewCount = Number(summary.text_review_annotations || 0);
-  const traceState = `Основных CAD-путей: ${primaryPathCount} (Qwen, подтверждённых чернилами: ${qwenPrimaryCount}). Остальные маршруты Qwen: ${qwenRouteCount - qwenPrimaryCount}. Структурных компонентов: ${structuredRouteComponents}; многоветвевых сетей: ${topologyNetworkComponents} (${topologyNetworkEdges} рёбер в PIPE_MAIN). Строк из рукописных блоков: ${textBlockCount}; текст на ручную проверку: ${textReviewCount}. Изолированных штрихов на проверке: ${isolatedReview}. `;
+  const traceState = `Геометрических CAD-кандидатов: ${primaryPathCount} (Qwen, подтверждённых чернилами: ${qwenPrimaryCount}); это не число инженерно проверенных трубопроводов. Остальные маршруты Qwen: ${qwenRouteCount - qwenPrimaryCount}. Структурных компонентов: ${structuredRouteComponents}; многоветвевых сетей: ${topologyNetworkComponents} (${topologyNetworkEdges} рёбер в PIPE_MAIN). Строк из рукописных блоков: ${textBlockCount}; текст на ручную проверку: ${textReviewCount}. Изолированных штрихов на проверке: ${isolatedReview}. `;
   $('statusline').textContent = traceState + graph.warnings.join(' ');
   const stats = [
     [summary.segment_candidates ?? graph.edges.length, 'отрезков-кандидатов'],
@@ -642,7 +647,7 @@ function showResult() {
     [summary.edges ?? graph.edges.length, 'связей'],
     [summary.crossings_to_review ?? graph.crossings.length, 'пересечений на проверку'],
     [summary.ocr_annotations ?? graph.annotations.length, 'OCR-подписей'],
-    [primaryPathCount, 'основных CAD-путей']
+    [primaryPathCount, 'CAD-кандидатов трасс']
   ];
   $('stats').innerHTML = stats.map(([value, label]) => `<div class="stat"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('edgeCount').textContent = graph.edges.length.toLocaleString('ru-RU');
@@ -655,8 +660,14 @@ function showResult() {
   renderTextList();
   renderJoinList();
   renderReviewList();
-  for (const id of ['exportSvg', 'exportDxf', 'exportJson', 'exportPdf']) $(id).disabled = false;
-  setState('ГРАФ ПОСТРОЕН · НУЖНА ПРОВЕРКА');
+  for (const id of ['exportSvg', 'exportDxf', 'exportPdf']) $(id).disabled = !processingComplete;
+  $('exportJson').disabled = false;
+  if (!processingComplete) {
+    setAlert('Распознаны не все плитки OCR/трассировки. SVG, DXF и PDF отключены, чтобы частичную геометрию нельзя было принять за готовую схему. Сохрани JSON для диагностики и повтори преобразование: checkpoint сохранит успешные плитки.');
+  } else {
+    setAlert('');
+  }
+  setState(processingComplete ? 'ОБРАБОТКА ЗАВЕРШЕНА · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА' : 'ЧАСТИЧНЫЙ ГРАФ · ТОЛЬКО ПРОВЕРКА', processingComplete ? 'ready' : 'error');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
 }
 
@@ -1224,42 +1235,72 @@ function svgEscape(value) {
 function buildCleanLayoutSvg(layout) {
   const template = layout.template || {};
   const fields = template.fields || {};
+  const page = layout.page || {};
+  const pageWidth = Number(page.width || 850);
+  const pageHeight = Number(page.height || 1200);
+  const widthMm = Number(page.widthMm || 210);
+  const heightMm = Number(page.heightMm || 297);
+  const center = pageWidth / 2;
+  const right = pageWidth - 32;
   const output = [
-    '<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 1200 850">',
-    '<rect width="1200" height="850" fill="#fff"/>',
-    '<g fill="none" stroke="#15191d" stroke-width="1"><rect x="24" y="24" width="1152" height="802"/><path d="M36 78H1164 M36 88H1164 M36 740H1164 M24 760H1176 M830 760V826"/><rect x="36" y="88" width="1128" height="652" stroke="#aeb5bb" stroke-width=".55"/></g>',
-    `<text x="600" y="45" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold">${svgEscape(fields.title || 'ТРУБОПРОВОДНАЯ СХЕМА')}</text>`,
-    `<text x="600" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="9">${svgEscape(fields.subtitle || 'ЧИСТОВАЯ КОМПОНОВКА')}</text>`,
-    `<text x="600" y="77" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">${svgEscape(fields.address || 'Адрес: требуется заполнить')}</text>`,
-    '<g data-layer="PIPE_MAIN" fill="none" stroke="#17212b" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">'
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${pageWidth} ${pageHeight}">`,
+    `<rect width="${pageWidth}" height="${pageHeight}" fill="#fff"/>`
   ];
+  const addSheetText = (value, x, y, anchor = 'start', size = 8, bold = false) => {
+    if (!String(value || '').trim()) return;
+    output.push(`<text data-layer="SHEET" x="${x.toFixed(2)}" y="${y.toFixed(2)}" text-anchor="${anchor}" font-family="Arial,sans-serif" font-size="${size}"${bold ? ' font-weight="bold"' : ''} fill="#15191d">${svgEscape(value)}</text>`);
+  };
+  addSheetText(fields.documentTitle, center, 24, 'middle', 9.2, true);
+  addSheetText(fields.appendix, right, 53, 'end', 12, true);
+  addSheetText(fields.title, center, 115, 'middle', 15);
+  addSheetText(fields.subtitle, center, 137, 'middle', 11);
+  if (fields.address) addSheetText(`по адресу: ${fields.address}`, center, 159, 'middle', 9);
+
+  (template.legend || []).forEach((item, index) => {
+    const y = pageHeight - 222 + index * 18;
+    addSheetText(item.code || '—', pageWidth - 322, y, 'start', 8);
+    addSheetText(item.label || '', pageWidth - 292, y, 'start', 7.4);
+  });
+  addSheetText(fields.preparedBy ? `Схему составил: ${fields.preparedBy}` : 'Схему составил', pageWidth - 322, pageHeight - 75, 'start', 8);
+  addSheetText(fields.drawnBy ? `Схему начертил: ${fields.drawnBy}` : 'Схему начертил', pageWidth - 322, pageHeight - 36, 'start', 8);
+
+  output.push('<g data-layer="PIPE_MAIN" fill="none" stroke="#15191d" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round">');
   for (const pipe of (layout.pipes || [])) {
     const points = (pipe.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     if (points) output.push(`<polyline data-id="${svgEscape(pipe.id || '')}" points="${points}"/>`);
   }
-  output.push('</g><g data-layer="SYMBOLS" fill="none" stroke="#111" stroke-width="1.25" stroke-linejoin="round">');
+  output.push('</g>');
+  if (showReviewGeometry) {
+    output.push('<g data-layer="DETAIL_REVIEW" fill="none" stroke="#9ba3aa" stroke-width=".75" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round">');
+    for (const pipe of (layout.reviewPipes || [])) {
+      const points = (pipe.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
+      if (points) output.push(`<polyline data-id="${svgEscape(pipe.id || '')}" points="${points}"/>`);
+    }
+    output.push('</g>');
+  }
+  output.push('<g data-layer="SYMBOLS" fill="none" stroke="#111" stroke-width="1" stroke-linejoin="round">');
   for (const symbol of (layout.symbols || [])) for (const primitive of (symbol.primitives || [])) {
     if (primitive.kind === 'line') output.push(`<line x1="${primitive.from[0]}" y1="${primitive.from[1]}" x2="${primitive.to[0]}" y2="${primitive.to[1]}"/>`);
-    if (primitive.kind === 'polyline') output.push(`<polyline points="${primitive.points.map(point => point.join(',')).join(' ')}"/>`);
-    if (primitive.kind === 'circle') output.push(`<circle cx="${primitive.center[0]}" cy="${primitive.center[1]}" r="${primitive.radius}"/>`);
+    else if (primitive.kind === 'polyline') output.push(`<polyline points="${primitive.points.map(point => point.join(',')).join(' ')}"/>`);
+    else if (primitive.kind === 'circle') output.push(`<circle cx="${primitive.center[0]}" cy="${primitive.center[1]}" r="${primitive.radius}"/>`);
   }
   output.push('</g>');
   for (const dimension of (layout.dimensions || [])) {
     const position = dimension.position || [0, 0];
-    output.push(`<text data-layer="DIMENSIONS" x="${position[0]}" y="${position[1]}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" style="paint-order:stroke;stroke:#fff;stroke-width:2px">${svgEscape(dimension.rawText ?? dimension.value ?? '')}</text>`);
+    output.push(`<text data-layer="DIMENSIONS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8.5" fill="#111">${svgEscape(dimension.rawText ?? dimension.value ?? '')}</text>`);
   }
   for (const label of (layout.labels || [])) {
     const position = label.position || [0, 0];
-    output.push(`<text data-layer="LABELS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8" style="paint-order:stroke;stroke:#fff;stroke-width:2px">${svgEscape(label.text || '')}</text>`);
+    output.push(`<text data-layer="LABELS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8.5" fill="#20262b">${svgEscape(label.text || '')}</text>`);
   }
-  const legend = template.legend || [];
-  output.push('<g data-layer="LEGEND"><rect x="810" y="535" width="330" height="185" fill="none" stroke="#777" stroke-width=".7"/><text x="820" y="553" font-family="Arial,sans-serif" font-size="8" font-weight="bold">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ</text>');
-  legend.forEach((item, index) => output.push(`<text x="822" y="${573 + index * 22}" font-family="Arial,sans-serif" font-size="9">${svgEscape(item.code || '')}</text><text x="848" y="${573 + index * 22}" font-family="Arial,sans-serif" font-size="7">${svgEscape(item.label || '')}</text>`));
-  output.push('</g>', `<text x="820" y="758" font-family="Arial,sans-serif" font-size="7">Схему составил: ${svgEscape(fields.preparedBy || '____________')}</text>`, `<text x="820" y="780" font-family="Arial,sans-serif" font-size="7">Схему проверил: ${svgEscape(fields.checkedBy || '____________')}</text>`, '</svg>');
+  if (layout.reviewOnly) {
+    addSheetText('НЕПОЛНЫЙ РЕЗУЛЬТАТ — ТОЛЬКО ПРОВЕРКА', center, pageHeight - 12, 'middle', 11, true);
+  }
+  output.push('</svg>');
   return output.join('\n');
 }
 function buildSheetSvg() {
-  if (graph.cleanLayout?.schema === 'cad-clean-layout/1.0') return buildCleanLayoutSvg(graph.cleanLayout);
+  if (['cad-clean-layout/1.0', 'cad-clean-layout/1.1'].includes(graph.cleanLayout?.schema)) return buildCleanLayoutSvg(graph.cleanLayout);
   const width = graph.image.width;
   const height = graph.image.height;
   const pageWidth = 1200, pageHeight = 850;
@@ -1457,18 +1498,32 @@ function buildDxf() {
   output.push('0','ENDSEC','0','EOF');
   return output.join('\n') + '\n';
 }
-$('exportSvg').addEventListener('click', () => downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml'));
+function finalExportAllowed() {
+  return Boolean(graph && graph.complete !== false && graph.analysisStatus !== 'incomplete');
+}
+function rejectPartialExport() {
+  setAlert('Экспорт SVG/DXF/PDF запрещён: обработка неполная. Повтори преобразование, чтобы продолжить с сохранённых checkpoint. JSON остаётся доступен для диагностики.');
+}
+$('exportSvg').addEventListener('click', () => {
+  if (!finalExportAllowed()) return rejectPartialExport();
+  downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml');
+});
 $('exportDxf').addEventListener('click', () => {
+  if (!finalExportAllowed()) return rejectPartialExport();
   if (graph?.dxfUrl && graph?.cleanLayout) {
     const link = document.createElement('a'); link.href = graph.dxfUrl; link.download = 'reconstructed-scheme.dxf'; document.body.appendChild(link); link.click(); link.remove();
   } else downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf');
 });
 $('exportJson').addEventListener('click', () => downloadFile('reconstruction-graph.json', JSON.stringify(graph, null, 2), 'application/json'));
 $('exportPdf').addEventListener('click', () => {
+  if (!finalExportAllowed()) return rejectPartialExport();
   const popup = window.open('', '_blank');
   if (!popup) { setAlert('Разреши всплывающие окна, чтобы открыть печать в PDF.'); return; }
   popup.document.open();
-  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Трубопроводная схема</title><style>@page{size:A3 landscape;margin:0}html,body{margin:0;padding:0;width:420mm;height:297mm}svg{display:block;width:420mm;height:297mm}</style></head><body>${buildSheetSvg()}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  const page = graph.cleanLayout?.page || {};
+  const widthMm = Number(page.widthMm || 297);
+  const heightMm = Number(page.heightMm || 210);
+  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Схема ВДГО</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}svg{display:block;width:${widthMm}mm;height:${heightMm}mm}</style></head><body>${buildSheetSvg()}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
   popup.document.close();
 });
 

@@ -42,6 +42,17 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
         {'id':'exports-created','passed':all(item['exists'] and item['bytes']>0 for item in artifacts if item['name'] in {'clean.svg','drawing.dxf'}),
          'value':{item['name']:item['bytes'] for item in artifacts if item['name'] in {'clean.svg','drawing.dxf'}}},
     ]
+    processing_complete = graph.get('complete') is not False and graph.get('analysisStatus') != 'incomplete'
+    if not processing_complete:
+        gates.append({
+            'id': 'all-qwen-tiles-complete', 'passed': False,
+            'value': {
+                'ocr': graph.get('ocr', {}).get('qwen', {}).get('successful_tiles', 0),
+                'ocrTiles': graph.get('ocr', {}).get('qwen', {}).get('tiles', 0),
+                'pipe': graph.get('semanticTrace', {}).get('successful_tiles', 0),
+                'pipeTiles': graph.get('semanticTrace', {}).get('tiles', 0),
+            },
+        })
     blocking = [item['id'] for item in gates if not item['passed']]
     stages = {
         'geometry':{'segments':segment_count,'primaryPipes':len(primary_pipes),'nodes':len(model.get('nodes') or [])},

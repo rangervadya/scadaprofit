@@ -223,7 +223,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(report["networkComponents"], 2)
         self.assertEqual({item["code"] for item in report["findings"]}, {"disconnected_network", "duplicate_number"})
 
-    def test_clean_layout_snaps_near_horizontal_pipe_without_breaking_endpoints(self):
+    def test_clean_layout_preserves_detected_pipe_geometry_without_snapping(self):
         model = {
             "nodes": [
                 {"id": "N1", "position": [10, 20]},
@@ -233,8 +233,9 @@ class GraphTests(unittest.TestCase):
             "symbols": [], "dimensions": [], "labels": [],
         }
         layout, diagnostics = build_clean_layout(model)
-        self.assertEqual(diagnostics["snappedHorizontalPipes"], 1)
-        self.assertEqual(layout["nodes"][0]["position"][1], layout["nodes"][1]["position"][1])
+        self.assertEqual(diagnostics["snappedHorizontalPipes"], 0)
+        self.assertEqual(diagnostics["snappedVerticalPipes"], 0)
+        self.assertNotEqual(layout["nodes"][0]["position"][1], layout["nodes"][1]["position"][1])
         self.assertEqual(layout["pipes"][0]["geometry"][0], layout["nodes"][0]["position"])
         self.assertEqual(layout["pipes"][0]["geometry"][-1], layout["nodes"][1]["position"])
 
@@ -244,7 +245,7 @@ class GraphTests(unittest.TestCase):
             "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[0, 0], [100, 0]], "state": "primary"}],
             "symbols": [],
             "dimensions": [{"id": "D1", "targetId": "E1", "value": 1500, "state": "primary"}],
-            "labels": [{"id": "A1", "text": "участок 1", "targetId": "E1", "role": "pipe_label", "state": "primary"}],
+            "labels": [{"id": "A1", "text": "1", "bbox": {"x": 44, "y": 6, "w": 8, "h": 12}, "targetId": "E1", "role": "section_number", "state": "primary"}],
         }
         layout, diagnostics = build_clean_layout(model)
         self.assertEqual(len(layout["dimensions"]), 1)
@@ -257,7 +258,7 @@ class GraphTests(unittest.TestCase):
             "pipes": [{"id": "E1", "geometry": [[100, 200], [300, 200]]}],
             "symbols": [{"id": "S1", "primitives": [{"kind": "circle", "center": [200, 200], "radius": 8}]}],
             "dimensions": [{"id": "D1", "rawText": "1500", "position": [200, 180]}],
-            "labels": [{"id": "A1", "text": "участок 1", "position": [210, 220]}],
+            "labels": [{"id": "A1", "text": "1", "position": [210, 220]}],
         }
         svg = build_layout_svg(layout)
         dxf = build_layout_dxf(layout)
@@ -271,10 +272,96 @@ class GraphTests(unittest.TestCase):
         template = build_drawing_template({"address": "г. Казань, ул. Тестовая, 1", "preparedBy": "А.А. Автор"})
         layout, _ = build_clean_layout({"nodes": [], "pipes": [], "symbols": [], "dimensions": [], "labels": []}, template=template)
         svg = build_layout_svg(layout)
-        self.assertIn('Схема неразрушающего контроля', svg)
+        self.assertIn('>Схема</text>', svg)
+        self.assertIn('неразрушающего контроля внутридомового газового оборудования', svg)
         self.assertIn('г. Казань, ул. Тестовая, 1', svg)
-        self.assertIn('УСЛОВНЫЕ ОБОЗНАЧЕНИЯ', svg)
+        self.assertIn('расположение контролируемого участка', svg)
         self.assertIn('А.А. Автор', svg)
+
+    def test_a4_portrait_template_maps_entire_source_page_and_preserves_aspect(self):
+        template = build_drawing_template()
+        source = {
+            "width": 648, "height": 918,
+            "nodes": [
+                {"id": "N1", "position": [0, 0]},
+                {"id": "N2", "position": [648, 918]},
+            ],
+            "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2",
+                       "geometry": [[0, 0], [648, 918]], "state": "primary"}],
+            "symbols": [], "dimensions": [], "labels": [],
+        }
+        layout, diagnostics = build_clean_layout(source, template=template)
+        self.assertEqual(layout["page"]["format"], "A4")
+        self.assertEqual(layout["page"]["orientation"], "portrait")
+        self.assertEqual(layout["page"]["widthMm"], 210)
+        self.assertEqual(layout["page"]["heightMm"], 297)
+        self.assertTrue(layout["coordinateTransform"]["preservesSourcePageCoordinates"])
+        self.assertEqual(layout["pipes"][0]["geometry"][0], layout["nodes"][0]["position"])
+        self.assertEqual(layout["pipes"][0]["geometry"][-1], layout["nodes"][1]["position"])
+        self.assertEqual(diagnostics["pageOrientation"], "portrait")
+
+    def test_uploaded_raster_template_is_used_as_page_profile_not_underlay(self):
+        from PIL import Image as PILImage
+        with TemporaryDirectory() as temp:
+            reference = Path(temp) / "reference.jpg"
+            PILImage.new("RGB", (648, 918), "white").save(reference)
+            template = build_drawing_template(reference_path=reference)
+            self.assertEqual(template["reference"]["imageWidth"], 648)
+            self.assertEqual(template["reference"]["imageHeight"], 918)
+            self.assertFalse(template["reference"]["rasterUnderlay"])
+            self.assertEqual(template["page"]["orientation"], "portrait")
+            layout, _ = build_clean_layout({"nodes": [], "pipes": [], "symbols": [], "dimensions": [], "labels": []}, template=template)
+            svg = build_layout_svg(layout)
+            self.assertNotIn("reference.jpg", svg)
+            self.assertNotIn("<image", svg)
+
+    def test_clean_layout_exports_only_primary_numeric_labels(self):
+        model = {
+            "sourceImage": {"width": 100, "height": 80},
+            "nodes": [], "pipes": [], "symbols": [], "dimensions": [],
+            "labels": [
+                {"id": "A1", "text": "15", "state": "primary", "bbox": {"x": 20, "y": 10, "w": 10, "h": 6}},
+                {"id": "A2", "text": "участок 15", "state": "primary", "bbox": {"x": 30, "y": 10, "w": 50, "h": 8}},
+                {"id": "A3", "text": "18", "state": "review", "bbox": {"x": 40, "y": 10, "w": 10, "h": 6}},
+            ],
+        }
+        layout, _ = build_clean_layout(model)
+        self.assertEqual([item["id"] for item in layout["labels"]], ["A1"])
+
+    def test_partial_clean_export_is_watermarked_in_svg_and_dxf(self):
+        layout = {
+            "page": {"width": 850, "height": 1200, "widthMm": 210, "heightMm": 297},
+            "reviewOnly": True, "pipes": [], "symbols": [], "dimensions": [], "labels": [],
+        }
+        svg = build_layout_svg(layout)
+        dxf = build_layout_dxf(layout)
+        self.assertIn("НЕПОЛНЫЙ РЕЗУЛЬТАТ", svg)
+        self.assertIn("НЕПОЛНЫЙ РЕЗУЛЬТАТ", dxf)
+        self.assertIn('width="210mm" height="297mm"', svg)
+
+    def test_incomplete_ocr_defers_expensive_handwritten_block_pass(self):
+        from PIL import Image as PILImage
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / "source.png"
+            PILImage.new("RGB", (1000, 800), "white").save(image_path)
+            previous_deadline = processor._ANALYSIS_HARD_DEADLINE
+            try:
+                processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600
+                env = {
+                    "QWEN_OCR_TILE_GRID": "2", "QWEN_OCR_TIMEOUT": "20",
+                    "QWEN_TILE_RETRY_BUDGET": "0", "QWEN_RETRY_BACKOFF_SECONDS": "0",
+                    "OLLAMA_CHAT_URL": "http://ollama.test/api/chat",
+                }
+                with patch.dict(os.environ, env, clear=False), \
+                     patch("processor._qwen_call", side_effect=TimeoutError("synthetic timeout")), \
+                     patch("processor._run_handwritten_block_ocr") as block_ocr:
+                    _, status = processor._qwen_annotations(str(image_path), 1000, 800)
+                self.assertFalse(status["complete"])
+                self.assertTrue(status["block_pass_deferred"])
+                self.assertEqual(status["block_passes"], 0)
+                block_ocr.assert_not_called()
+            finally:
+                processor._ANALYSIS_HARD_DEADLINE = previous_deadline
 
     def test_pipeline_diagnostics_reports_quality_gates_and_artifacts(self):
         with TemporaryDirectory() as temporary:
@@ -294,6 +381,23 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(diagnostics['stages']['geometry']['primaryPipes'], 1)
             self.assertTrue(all(item['passed'] for item in diagnostics['qualityGates']))
             self.assertEqual(len(diagnostics['source']['sha256']), 64)
+
+    def test_pipeline_diagnostics_blocks_incomplete_qwen_coverage(self):
+        with TemporaryDirectory() as temporary:
+            source = Path(temporary, 'source.png')
+            source.write_bytes(b'input')
+            Path(temporary, 'clean.svg').write_text('<svg/>', encoding='utf-8')
+            Path(temporary, 'drawing.dxf').write_text('0\nEOF\n', encoding='utf-8')
+            graph = {
+                'complete': False, 'analysisStatus': 'incomplete',
+                'ocr': {'qwen': {'successful_tiles': 3, 'tiles': 9}, 'tesseract': {'available': True}},
+                'semanticTrace': {'successful_tiles': 0, 'tiles': 9},
+                'summary': {}, 'documentModel': {'nodes': [], 'pipes': [], 'labels': [], 'symbols': [], 'dimensions': [], 'reviewTasks': [], 'validationFindings': []},
+                'warnings': ['partial'],
+            }
+            diagnostics = build_pipeline_diagnostics(str(source), temporary, graph)
+            self.assertEqual(diagnostics['status'], 'blocked')
+            self.assertIn('all-qwen-tiles-complete', diagnostics['blockingGates'])
 
     def test_near_endpoints_are_snapped_to_same_node(self):
         segments = [

@@ -1330,7 +1330,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
         timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
         max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
-        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '1'))))
+        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
@@ -1536,12 +1536,17 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         # as whole rows instead of independent glyph boxes. This is especially
         # useful for the numbered handwritten list at the right of the drawing.
         block_tokens = max(768, min(2048, int(os.getenv('QWEN_OCR_BLOCK_MAX_TOKENS', '1536'))))
-        _progress('OCR', 'Handwritten note OCR pass started')
-        block_items, block_diagnostics = _run_handwritten_block_ocr(
-            original, items, url=url, model=model, timeout=timeout,
-            max_edge=max_edge, max_tokens=block_tokens
-        ) if calls_ok > 0 else ([], [])
-        _progress('OCR', f'Handwritten note OCR pass completed; blocks={len(block_diagnostics)} rows={sum(int(item.get("rows_returned", 0) or 0) for item in block_diagnostics)}')
+        block_pass_deferred = calls_ok != len(regions)
+        if not block_pass_deferred and calls_ok > 0:
+            _progress('OCR', 'Handwritten note OCR pass started after full tile coverage')
+            block_items, block_diagnostics = _run_handwritten_block_ocr(
+                original, items, url=url, model=model, timeout=timeout,
+                max_edge=max_edge, max_tokens=block_tokens
+            )
+            _progress('OCR', f'Handwritten note OCR pass completed; blocks={len(block_diagnostics)} rows={sum(int(item.get("rows_returned", 0) or 0) for item in block_diagnostics)}')
+        else:
+            block_items, block_diagnostics = [], []
+            _progress('OCR', 'Handwritten note OCR pass deferred until all OCR tiles are complete')
         # Prefer a full-row transcription over tiny OCR fragments inside it.
         for block_item in block_items:
             bb = block_item['bbox']
@@ -1604,6 +1609,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
             'block_passes': len(block_diagnostics), 'block_diagnostics': block_diagnostics,
+            'block_pass_deferred': bool(block_pass_deferred),
             'block_annotations': sum(1 for item in deduped if item.get('source') == 'qwen3-vl-block'),
             'recognized_anything': bool(deduped),
             'empty_result': calls_ok > 0 and not deduped,
@@ -1655,7 +1661,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
-        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '1'))))
+        retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
         grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
@@ -3970,10 +3976,10 @@ def _qwen_stage_is_complete(status: dict[str, Any] | None) -> bool:
     return bool(status.get('available'))
 
 
-def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
+def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> dict[str, Any]:
     global _ANALYSIS_HARD_DEADLINE
     job_started = time.perf_counter()
-    configured_job_ms = max(60_000.0, float(os.getenv('PYTHON_JOB_TIMEOUT_MS', '2700000')))
+    configured_job_ms = max(60_000.0, float(os.getenv('PYTHON_JOB_TIMEOUT_MS', '5400000')))
     _ANALYSIS_HARD_DEADLINE = time.monotonic() + configured_job_ms / 1000.0
     timings_ms: dict[str, float] = {}
     Path(out_dir).mkdir(parents=True,exist_ok=True)
@@ -4140,12 +4146,15 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     document_model, topology_diagnostics = attach_pipes_to_symbols(document_model)
     document_model, annotation_linking_diagnostics = link_annotations(document_model)
     document_model, engineering_validation = validate_engineering_model(document_model)
-    drawing_template = build_drawing_template()
-    clean_layout, clean_layout_diagnostics = build_clean_layout(document_model, template=drawing_template)
+    drawing_template = build_drawing_template(reference_path=template_path)
+    clean_layout, clean_layout_diagnostics = build_clean_layout(
+        document_model, template=drawing_template, review_only=not processing_complete
+    )
     Path(out_dir,'clean.svg').write_text(build_layout_svg(clean_layout), encoding='utf-8')
     Path(out_dir,'drawing.dxf').write_text(build_layout_dxf(clean_layout), encoding='utf-8')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","analysisStatus":"complete" if processing_complete else "incomplete","complete":processing_complete,"incompleteReasons":incomplete_reasons,
            "checkpointing":{"enabled":True,"directory":".checkpoints","resumeBehavior":"successful OCR/PIPE tiles are restored; failed tiles are retried on the next analysis run"},
+           "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","engineeringApprovalRequired":True},
            "image":{"width":w,"height":h},
            "documentModel":document_model,
            "recognitionChannels":recognition_channels,
@@ -4244,7 +4253,12 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
 
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--input',required=True); ap.add_argument('--out',required=True)
-    args=ap.parse_args(); result=analyze(args.input,args.out); print(json.dumps(result,ensure_ascii=False))
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--input', required=True)
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--template', default=None, help='Optional reference sheet file; raster is used for page profile only')
+    args = ap.parse_args()
+    result = analyze(args.input, args.out, template_path=args.template)
+    print(json.dumps(result, ensure_ascii=False))
 
 if __name__=='__main__': main()
