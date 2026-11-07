@@ -437,9 +437,25 @@ async function runStoredSchemeAnalysis(jobId) {
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
     throw new Error('Python обработчик создал неполный graph.json.');
   }
+  if (graph.complete === false || graph.analysisStatus === 'incomplete') {
+    const reasons = Array.isArray(graph.incompleteReasons) ? graph.incompleteReasons : [];
+    const message = [
+      'Обработка завершилась частично: не все плитки Qwen были обработаны.',
+      ...reasons.map(value => String(value)).filter(Boolean),
+      'Успешные плитки сохранены. Нажми «Повторить преобразование»: будут обработаны только отсутствующие плитки.'
+    ].join(' ');
+    await updateSchemeStatus(jobId, 'failed', {
+      error: message.slice(0, 900),
+      graphSummary: graph.summary || null,
+      partialGraphReady: true,
+      completedAt: null
+    });
+    return graph;
+  }
   await updateSchemeStatus(jobId, 'completed', {
     completedAt: new Date().toISOString(), error: '',
-    graphSummary: graph.summary || null
+    graphSummary: graph.summary || null,
+    partialGraphReady: false
   });
   return graph;
 }
@@ -704,7 +720,10 @@ app.post('/api/library/schemes/:jobId/analyze', async (req, res) => {
     // two simultaneous POSTs cannot both start expensive GPU jobs.
     activeAnalyses.set(jobId, Promise.resolve());
     try {
-      await updateSchemeStatus(jobId, 'processing', { error: '', startedAt: new Date().toISOString() });
+      await updateSchemeStatus(jobId, 'processing', {
+        error: '', startedAt: new Date().toISOString(), completedAt: null,
+        partialGraphReady: false
+      });
     } catch (statusError) {
       activeAnalyses.delete(jobId);
       throw statusError;
@@ -712,7 +731,9 @@ app.post('/api/library/schemes/:jobId/analyze', async (req, res) => {
     const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId)).catch(async error => {
       console.error(`[JOB ${jobId.slice(0, 8)}] Stored scheme analysis failed:`, error?.stderr || error);
       await updateSchemeStatus(jobId, 'failed', {
-        error: String(error?.stderr || error?.message || error).slice(-900)
+        error: `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(-900),
+        partialGraphReady: false,
+        completedAt: null
       }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
     }).finally(() => activeAnalyses.delete(jobId));
     activeAnalyses.set(jobId, task);

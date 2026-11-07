@@ -14,6 +14,8 @@ import re
 import sys
 import time
 import base64
+import hashlib
+import socket
 import urllib.request
 import urllib.error
 from io import BytesIO
@@ -1016,6 +1018,161 @@ PIPE_RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 
+CHECKPOINT_VERSION = 1
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tile_checkpoint_signature(image_sha256: str, stage: str, tile_index: int,
+                               settings: dict[str, Any]) -> str:
+    identity = {
+        'version': CHECKPOINT_VERSION,
+        'image_sha256': image_sha256,
+        'stage': stage,
+        'tile': int(tile_index),
+        'settings': settings,
+    }
+    encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _tile_checkpoint_path(checkpoint_dir: str | Path | None, stage: str, tile_index: int) -> Path | None:
+    if not checkpoint_dir:
+        return None
+    return Path(checkpoint_dir) / f'{stage}-tile-{int(tile_index):02d}.json'
+
+
+def _load_tile_checkpoint(checkpoint_dir: str | Path | None, stage: str, tile_index: int,
+                          signature: str) -> dict[str, Any] | None:
+    path = _tile_checkpoint_path(checkpoint_dir, stage, tile_index)
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        if (payload.get('version') != CHECKPOINT_VERSION
+                or payload.get('signature') != signature
+                or payload.get('stage') != stage
+                or int(payload.get('tile', 0)) != int(tile_index)
+                or payload.get('status') not in {'completed', 'completed_empty'}):
+            return None
+        if not isinstance(payload.get('items'), list) or not isinstance(payload.get('diagnostics'), dict):
+            return None
+        return payload
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _save_tile_checkpoint(checkpoint_dir: str | Path | None, stage: str, tile_index: int,
+                          signature: str, items: list[dict[str, Any]],
+                          diagnostics: dict[str, Any]) -> None:
+    path = _tile_checkpoint_path(checkpoint_dir, stage, tile_index)
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'version': CHECKPOINT_VERSION,
+        'signature': signature,
+        'stage': stage,
+        'tile': int(tile_index),
+        'status': 'completed' if items else 'completed_empty',
+        'saved_at': time.time(),
+        'items': items,
+        'diagnostics': diagnostics,
+    }
+    temporary = path.with_name(path.name + f'.{os.getpid()}.tmp')
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _is_retryable_qwen_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, socket.timeout, ConnectionResetError, BrokenPipeError)):
+        return True
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 425, 429, 500, 502, 503, 504}
+    if isinstance(error, urllib.error.URLError):
+        reason = getattr(error, 'reason', None)
+        return isinstance(reason, (TimeoutError, socket.timeout, ConnectionResetError, OSError))
+    message = str(error).lower()
+    return bool(re.search(r'ollama http (?:408|425|429|500|502|503|504)\b', message)) or 'timed out' in message or 'timeout' in message
+
+
+def _qwen_call_with_retry(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
+                          max_edge: int, num_predict: int, diagnostics: dict[str, Any],
+                          format_schema: dict[str, Any] | None, retry_state: dict[str, int],
+                          stage: str, tile_index: int) -> tuple[dict[str, Any], float, tuple[int, int]]:
+    """Retry transient model failures with a bounded stage-wide budget and audit trail."""
+    attempt = 0
+    errors: list[str] = []
+    history: list[dict[str, Any]] = []
+    factor = max(1.0, min(2.0, float(os.getenv('QWEN_RETRY_TIMEOUT_FACTOR', '1.25'))))
+    max_timeout = max(timeout, min(600.0, float(os.getenv('QWEN_RETRY_TIMEOUT_MAX', '360'))))
+    backoff = max(0.0, min(5.0, float(os.getenv('QWEN_RETRY_BACKOFF_SECONDS', '1'))))
+    retry_budget_at_start = max(0, int(retry_state.get('remaining', 0) or 0))
+    while True:
+        attempt += 1
+        attempt_diag: dict[str, Any] = {}
+        attempt_timeout = min(max_timeout, timeout * (factor ** (attempt - 1)))
+        attempt_started = time.perf_counter()
+        try:
+            parsed, resize_scale, sent_size = _qwen_call(
+                rgb, prompt, url=url, model=model, timeout=attempt_timeout,
+                max_edge=max_edge, num_predict=num_predict,
+                diagnostics=attempt_diag, format_schema=format_schema
+            )
+            elapsed_ms = round((time.perf_counter() - attempt_started) * 1000.0, 1)
+            history.append({
+                'attempt': attempt, 'timeout_seconds': round(attempt_timeout, 1),
+                'status': 'completed', 'elapsed_ms': elapsed_ms,
+                'ollama_total_ms': attempt_diag.get('ollama_total_ms'),
+                'eval_count': attempt_diag.get('eval_count'),
+            })
+            diagnostics.update(attempt_diag)
+            diagnostics['attempts'] = attempt
+            diagnostics['retry_count'] = max(0, attempt - 1)
+            diagnostics['retry_budget_at_start'] = retry_budget_at_start
+            diagnostics['attempt_history'] = history
+            if errors:
+                diagnostics['previous_attempt_errors'] = errors[-2:]
+            return parsed, resize_scale, sent_size
+        except Exception as error:
+            elapsed_ms = round((time.perf_counter() - attempt_started) * 1000.0, 1)
+            message = (str(error).strip() or error.__class__.__name__)[:220]
+            errors.append(message)
+            history.append({
+                'attempt': attempt, 'timeout_seconds': round(attempt_timeout, 1),
+                'status': 'failed', 'elapsed_ms': elapsed_ms,
+                'error': message,
+                'ollama_total_ms': attempt_diag.get('ollama_total_ms'),
+                'eval_count': attempt_diag.get('eval_count'),
+            })
+            diagnostics.update(attempt_diag)
+            if retry_state.get('remaining', 0) > 0 and _is_retryable_qwen_error(error):
+                retry_state['remaining'] -= 1
+                next_timeout = min(max_timeout, attempt_timeout * factor)
+                _progress(stage, f'Tile {tile_index}: transient error on attempt {attempt}; retrying attempt {attempt + 1} with timeout={next_timeout:.0f}s; retries_left={retry_state["remaining"]}')
+                if backoff:
+                    time.sleep(backoff)
+                continue
+            diagnostics['attempts'] = attempt
+            diagnostics['retry_count'] = max(0, attempt - 1)
+            diagnostics['retry_budget_at_start'] = retry_budget_at_start
+            diagnostics['attempt_history'] = history
+            diagnostics['attempt_errors'] = errors[-3:]
+            raise
+
+
 def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: float,
                max_edge: int, num_predict: int = 1536, diagnostics: dict[str, Any] | None = None,
                format_schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], float, tuple[int, int]]:
@@ -1145,7 +1302,7 @@ def _clip_polyline_to_rect(points: list[list[float]], rect: tuple[float, float, 
     return fragments
 
 
-def _qwen_annotations(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _qwen_annotations(image_path: str, original_width: int, original_height: int, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR handwriting in overlapping enlarged tiles; keep low-confidence boxes as geometry masks."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
@@ -1155,6 +1312,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
         timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
         max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
+        retry_state = {'remaining': max(0, min(3, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '2'))))}
+        image_sha256 = _sha256_file(image_path)
         upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
@@ -1204,7 +1363,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         items: list[dict[str, Any]] = []
         tile_errors = []
         tile_diagnostics: list[dict[str, Any]] = []
-        _progress('OCR', f'Image OCR started: {len(regions)} tiles ({grid}x{grid})')
+        _progress('OCR', f'Image OCR started: {len(regions)} tiles ({grid}x{grid}); retry_budget={retry_state["remaining"]}')
         for tile_index, (left, top, right, bottom) in enumerate(regions, 1):
             _progress('OCR', f'Tile {tile_index}/{len(regions)} started')
             crop = original.crop((left, top, right, bottom))
@@ -1219,11 +1378,31 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             prompt_height = max(1, round(crop.height * sent_scale))
             prompt = prompt_template.replace('{width}', str(prompt_width)).replace('{height}', str(prompt_height))
             call_diagnostics: dict[str, Any] = {'tile': tile_index, 'crop_size': list(crop.size)}
+            checkpoint_settings = {
+                'prompt_version': 3, 'model': model, 'grid': grid,
+                'region': [int(left), int(top), int(right), int(bottom)],
+                'crop_scale': round(float(crop_scale), 6), 'max_edge': max_edge,
+                'max_output_tokens': max_output_tokens, 'upscale': upscale,
+            }
+            checkpoint_signature = _tile_checkpoint_signature(image_sha256, 'ocr', tile_index, checkpoint_settings)
+            cached = _load_tile_checkpoint(checkpoint_dir, 'ocr', tile_index, checkpoint_signature)
+            if cached is not None:
+                cached_items = cached['items']
+                items.extend(cached_items)
+                calls_ok += 1
+                cached_diag = dict(cached['diagnostics'])
+                cached_diag.update({'tile': tile_index, 'tile_status': cached.get('status'), 'resumed_from_checkpoint': True})
+                cached_diag['accepted_annotations'] = len(cached_items)
+                tile_diagnostics.append(cached_diag)
+                _progress('OCR', f'Tile {tile_index}/{len(regions)} restored from checkpoint; annotations={len(cached_items)}')
+                continue
+            tile_item_start = len(items)
             try:
-                parsed, resize_scale, sent_size = _qwen_call(
+                parsed, resize_scale, sent_size = _qwen_call_with_retry(
                     crop, prompt, url=url, model=model, timeout=timeout,
                     max_edge=max_edge, num_predict=max_output_tokens, diagnostics=call_diagnostics,
-                    format_schema=OCR_RESPONSE_SCHEMA
+                    format_schema=OCR_RESPONSE_SCHEMA, retry_state=retry_state,
+                    stage='OCR', tile_index=tile_index
                 )
                 coordinate_scale = crop_scale * resize_scale
                 sent_width, sent_height = sent_size
@@ -1234,8 +1413,9 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     'sent_size': [int(sent_width), int(sent_height)],
                     'bbox_coordinate_space': 'sent_tile_pixels_mapped_to_source_image_pixels',
                 })
-                calls_ok += 1
                 raw_items, annotation_key = _annotation_items_from_response(parsed)
+                if annotation_key is None:
+                    raise ValueError('Qwen OCR ответ не содержит массива annotations.')
                 call_diagnostics['annotation_key'] = annotation_key
                 call_diagnostics['raw_annotations'] = len(raw_items)
                 call_diagnostics['possibly_capped_at_schema_limit'] = len(raw_items) >= 64
@@ -1304,15 +1484,22 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                         'coordinate_space': 'source_image_px',
                         'source_tile_xyxy': [int(left), int(top), int(right), int(bottom)],
                     })
-                call_diagnostics['accepted_annotations'] = len(items) - accepted_before
+                calls_ok += 1
+                tile_items = items[tile_item_start:]
+                call_diagnostics['accepted_annotations'] = len(tile_items)
+                call_diagnostics['tile_status'] = 'completed' if tile_items else 'completed_empty'
+                _save_tile_checkpoint(checkpoint_dir, 'ocr', tile_index, checkpoint_signature, tile_items, call_diagnostics)
                 tile_diagnostics.append(call_diagnostics)
                 _progress('OCR', f'Tile {tile_index}/{len(regions)} completed; annotations={call_diagnostics["accepted_annotations"]}')
             except Exception as error:
-                message = str(error).strip()[:150] or error.__class__.__name__
+                del items[tile_item_start:]
+                message = str(error).strip()[:180] or error.__class__.__name__
                 tile_errors.append(message)
                 call_diagnostics['error'] = message
+                call_diagnostics['tile_status'] = 'failed'
+                call_diagnostics['attempts'] = int(call_diagnostics.get('attempts', 1) or 1)
                 tile_diagnostics.append(call_diagnostics)
-                _progress('OCR', f'Tile {tile_index}/{len(regions)} failed: {message}')
+                _progress('OCR', f'Tile {tile_index}/{len(regions)} failed after {call_diagnostics["attempts"]} attempt(s): {message}')
 
         # A second, line-oriented OCR pass reads dense handwritten note blocks
         # as whole rows instead of independent glyph boxes. This is especially
@@ -1377,11 +1564,11 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         for index, item in enumerate(deduped, 1):
             item['id'] = f'Q{index}'
             item.pop('tile', None)
-        if calls_ok == 0:
-            raise RuntimeError(tile_errors[0] if tile_errors else 'Qwen не вернул OCR-разметку.')
+        failed_tiles = [int(item.get('tile', 0)) for item in tile_diagnostics if item.get('tile_status') == 'failed']
+        complete = calls_ok == len(regions)
         return deduped, {
-            'available': True, 'model': model, 'annotations': len(deduped),
-            'tiles': len(regions), 'successful_tiles': calls_ok,
+            'available': calls_ok > 0, 'complete': complete, 'model': model, 'annotations': len(deduped),
+            'tiles': len(regions), 'successful_tiles': calls_ok, 'failed_tiles': failed_tiles,
             'tiles_with_annotations': sum(1 for item in tile_diagnostics if item.get('accepted_annotations', 0) > 0),
             'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
@@ -1390,10 +1577,14 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'recognized_anything': bool(deduped),
             'empty_result': calls_ok > 0 and not deduped,
             'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else (('OCR-ответы достигли лимита токенов.' if any(item.get('truncated') for item in tile_diagnostics) else 'Все плитки обработаны, но Qwen не вернула распознанных надписей.') if calls_ok > 0 and not deduped else None)),
+            'incomplete_reason': (f'Не обработаны OCR-плитки: {failed_tiles}' if failed_tiles else None),
         }
     except Exception as error:
         reason = str(error).strip() or error.__class__.__name__
-        return [], {'available': False, 'model': model, 'annotations': 0, 'tiles': 0, 'error': reason[:220]}
+        return [], {'available': False, 'complete': False, 'model': model, 'annotations': 0,
+                    'tiles': len(tile_diagnostics) if 'tile_diagnostics' in locals() else 0,
+                    'successful_tiles': calls_ok, 'tile_diagnostics': tile_diagnostics if 'tile_diagnostics' in locals() else [],
+                    'error': reason[:220]}
 
 
 def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
@@ -1413,7 +1604,7 @@ def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
     if 'timed out' in lower or 'timeout' in lower or 'time-out' in lower:
         return (
             f"Qwen не успел обработать изображение: {message[:180]}",
-            "Увеличьте QWEN_PIPE_TRACE_TIMEOUT до 300–480 секунд или используйте более производительную GPU."
+            "Успешные плитки сохраняются в .checkpoints. Повторите обработку того же задания: будут запрошены только неготовые плитки. Если тайм-ауты повторяются, проверьте журнал Ollama и фактическую загрузку GPU."
         )
     if 'json' in lower or 'routes' in lower or 'полилини' in lower:
         return (
@@ -1423,7 +1614,7 @@ def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
     return (f"Ошибка Qwen/Ollama: {message[:200]}", "Проверьте Ollama, доступность модели и журнал контейнера ollama.")
 
 
-def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Trace pipe centre-lines tile-by-tile so a small model does not need to parse a full sheet at once."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
@@ -1433,6 +1624,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
         timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
         max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
+        retry_state = {'remaining': max(0, min(3, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '2'))))}
+        image_sha256 = _sha256_file(image_path)
         grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
@@ -1444,7 +1637,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         min_confidence = float(os.getenv('QWEN_PIPE_MIN_CONFIDENCE', '35'))
         result: list[dict[str, Any]] = []
         total_tiles = grid * grid
-        _progress('PIPE', f'Pipe tracing started: {total_tiles} tiles ({grid}x{grid})')
+        _progress('PIPE', f'Pipe tracing started: {total_tiles} tiles ({grid}x{grid}); retry_budget={retry_state["remaining"]}')
         for row in range(grid):
             core_top = round(row * original_height / grid)
             core_bottom = round((row + 1) * original_height / grid)
@@ -1491,12 +1684,36 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'core': {'x': core_left, 'y': core_top, 'w': core_w, 'h': core_h},
                     'crop': {'x': left, 'y': top, 'w': right - left, 'h': bottom - top},
                 }
+                checkpoint_settings = {
+                    'prompt_version': 3, 'model': model, 'grid': grid,
+                    'core': [core_left, core_top, core_right, core_bottom],
+                    'crop': [left, top, right, bottom], 'upscale': upscale,
+                    'overlap': overlap, 'max_edge': max_edge,
+                    'max_output_tokens': max_output_tokens, 'min_confidence': min_confidence,
+                }
+                checkpoint_signature = _tile_checkpoint_signature(image_sha256, 'pipe', tile_index, checkpoint_settings)
+                cached = _load_tile_checkpoint(checkpoint_dir, 'pipe', tile_index, checkpoint_signature)
+                if cached is not None:
+                    cached_routes = cached['items']
+                    result.extend(cached_routes)
+                    diag = dict(cached['diagnostics'])
+                    diag.update({'tile': tile_index, 'tile_status': 'ok', 'resumed_from_checkpoint': True})
+                    diag['accepted_routes'] = len(cached_routes)
+                    tile_diagnostics.append(diag)
+                    raw_count += int(diag.get('raw_routes', 0) or 0)
+                    _progress('PIPE', f'Tile {tile_index}/{total_tiles} restored from checkpoint; routes={len(cached_routes)}')
+                    continue
+                route_item_start = len(result)
+                tile_raw_before = raw_count
+                tile_low_before = rejected_low_confidence
+                tile_invalid_before = rejected_invalid
                 _progress('PIPE', f'Tile {tile_index}/{total_tiles} started')
                 try:
-                    parsed, resize_scale, sent_size = _qwen_call(
+                    parsed, resize_scale, sent_size = _qwen_call_with_retry(
                         crop, prompt, url=url, model=model, timeout=timeout,
                         max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag,
-                        format_schema=PIPE_RESPONSE_SCHEMA
+                        format_schema=PIPE_RESPONSE_SCHEMA, retry_state=retry_state,
+                        stage='PIPE', tile_index=tile_index
                     )
                     raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('pipe_routes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', []))))))
                     if not isinstance(raw_routes, list):
@@ -1571,11 +1788,18 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                                 'needs_review': confidence < 60,
                                 'source': 'qwen3-vl-semantic-tiled', 'tile': tile_index, 'include': True,
                             })
-                    diag['accepted_routes'] = len(result) - accepted_before
+                    tile_routes = result[route_item_start:]
+                    diag['accepted_routes'] = len(tile_routes)
                     diag['tile_status'] = 'ok'
+                    _save_tile_checkpoint(checkpoint_dir, 'pipe', tile_index, checkpoint_signature, tile_routes, diag)
                 except Exception as error:
+                    del result[route_item_start:]
+                    raw_count = tile_raw_before
+                    rejected_low_confidence = tile_low_before
+                    rejected_invalid = tile_invalid_before
                     diag['tile_status'] = 'error'
                     diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
+                    diag['attempts'] = int(diag.get('attempts', 1) or 1)
                 tile_diagnostics.append(diag)
                 if diag.get('tile_status') == 'ok':
                     _progress('PIPE', f'Tile {tile_index}/{total_tiles} completed; routes={diag.get("accepted_routes", 0)}')
@@ -1583,16 +1807,19 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     _progress('PIPE', f'Tile {tile_index}/{total_tiles} failed: {diag.get("error", "unknown error")}')
 
         successful_tiles = sum(1 for item in tile_diagnostics if item.get('tile_status') == 'ok')
+        failed_tiles = [int(item.get('tile', 0)) for item in tile_diagnostics if item.get('tile_status') != 'ok']
+        complete = successful_tiles == total_tiles
         status = {
-            'available': successful_tiles > 0, 'model': model,
+            'available': successful_tiles > 0, 'complete': complete, 'model': model,
             'routes': len(result), 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
-            'tiles': len(tile_diagnostics), 'successful_tiles': successful_tiles,
+            'tiles': total_tiles, 'successful_tiles': successful_tiles, 'failed_tiles': failed_tiles,
             'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
             'error': None, 'hint': None,
             'image_size': {'width': original_width, 'height': original_height},
             'strategy': 'overlapping semantic tiles clipped to non-overlapping cores',
+            'incomplete_reason': (f'Не обработаны PIPE-плитки: {failed_tiles}' if failed_tiles else None),
         }
         if not result:
             if successful_tiles == 0 and tile_diagnostics:
@@ -1613,7 +1840,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
     except Exception as error:
         message, hint = _semantic_error_hint(error, model)
         return [], {
-            'available': False, 'model': model, 'routes': 0, 'raw_routes': raw_count,
+            'available': False, 'complete': False, 'model': model, 'routes': 0, 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
             'tiles': len(tile_diagnostics), 'successful_tiles': sum(1 for item in tile_diagnostics if item.get('tile_status') == 'ok'),
             'tile_diagnostics': tile_diagnostics,
@@ -1630,10 +1857,10 @@ def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def ocr_annotations(image_path: str, gray: np.ndarray) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run Qwen first, then use Tesseract as a fallback/supplement."""
     h, w = gray.shape[:2]
-    qwen_items, qwen_status = _qwen_annotations(image_path, w, h)
+    qwen_items, qwen_status = _qwen_annotations(image_path, w, h, checkpoint_dir=checkpoint_dir)
     tesseract_items: list[dict[str, Any]] = []
     tesseract_error = None
     _progress('OCR', 'Tesseract OCR started')
@@ -3685,6 +3912,21 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
         candidate['id'] = f'J{index}'
     return candidates
 
+def _qwen_stage_is_complete(status: dict[str, Any] | None) -> bool:
+    status = status or {}
+    if 'complete' in status:
+        return bool(status.get('complete'))
+    try:
+        tiles = int(status.get('tiles', 0) or 0)
+        successful = int(status.get('successful_tiles', 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if tiles > 0:
+        return successful == tiles
+    # Compatibility for injected/test providers that expose availability only.
+    return bool(status.get('available'))
+
+
 def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     job_started = time.perf_counter()
     timings_ms: dict[str, float] = {}
@@ -3704,14 +3946,29 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     _progress('JOB', f'Image preprocessing completed: {w}x{h}; {timings_ms["preprocessing"]:.1f} ms')
     _progress('OCR', 'OCR pipeline started')
     stage_started = time.perf_counter()
-    annotations, ocr_status = ocr_annotations(prepared_input_path, gray)
+    checkpoint_dir = Path(out_dir) / '.checkpoints'
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    annotations, ocr_status = ocr_annotations(prepared_input_path, gray, checkpoint_dir=checkpoint_dir)
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
     _progress('PIPE', 'CAD pipe-route trace started')
     stage_started = time.perf_counter()
-    semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h)
+    semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
     timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; {timings_ms["qwen_pipe_trace"]:.1f} ms')
+    ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
+    pipe_complete = _qwen_stage_is_complete(route_status)
+    processing_complete = ocr_complete and pipe_complete
+    incomplete_reasons = []
+    if not ocr_complete:
+        qwen_ocr_status = ocr_status.get('qwen', {})
+        incomplete_reasons.append(qwen_ocr_status.get('incomplete_reason') or qwen_ocr_status.get('error') or 'OCR Qwen обработала не все плитки.')
+    if not pipe_complete:
+        incomplete_reasons.append(route_status.get('incomplete_reason') or route_status.get('error') or 'Трассировка труб Qwen обработала не все плитки.')
+    if processing_complete:
+        _progress('JOB', 'All Qwen OCR and PIPE tiles completed; full analysis can be marked complete')
+    else:
+        _progress('JOB', f'Analysis incomplete; OCR={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; PIPE={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; per-tile checkpoints saved for retry')
     _progress('CAD', 'Graph construction started')
     stage_started = time.perf_counter()
     # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
@@ -3821,7 +4078,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     clean_layout, clean_layout_diagnostics = build_clean_layout(document_model, template=drawing_template)
     Path(out_dir,'clean.svg').write_text(build_layout_svg(clean_layout), encoding='utf-8')
     Path(out_dir,'drawing.dxf').write_text(build_layout_dxf(clean_layout), encoding='utf-8')
-    graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","image":{"width":w,"height":h},
+    graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","analysisStatus":"complete" if processing_complete else "incomplete","complete":processing_complete,"incompleteReasons":incomplete_reasons,
+           "checkpointing":{"enabled":True,"directory":".checkpoints","resumeBehavior":"successful OCR/PIPE tiles are restored; failed tiles are retried on the next analysis run"},
+           "image":{"width":w,"height":h},
            "documentModel":document_model,
            "recognitionChannels":recognition_channels,
            "symbolCatalog":catalog_manifest(),
@@ -3835,7 +4094,10 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
-           "summary":{"segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
+           "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":ocr_complete,"pipe_tiles_complete":pipe_complete,
+                      "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
+                      "pipe_tiles_successful":route_status.get("successful_tiles", 0),"pipe_tiles_total":route_status.get("tiles", 0),
+                      "segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
                       "semantic_routes":len(semantic_routes),
                       "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
@@ -3892,6 +4154,9 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
                        "Подтверждённые подписи экспортируются как VERIFIED_TEXT; сомнительные OCR-чтения выводятся отдельно на замороженный TEXT_REVIEW.",
                        "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
+    if not processing_complete:
+        graph['warnings'].append('РЕЗУЛЬТАТ НЕПОЛНЫЙ: не все плитки Qwen обработаны. Не используйте этот SVG/DXF как окончательный чертёж. Успешные плитки сохранены в .checkpoints; повторный запуск того же задания продолжит только необработанные плитки.')
+        graph['warnings'].extend(str(reason) for reason in incomplete_reasons if reason)
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
     if not route_status.get('available') or not semantic_routes:
@@ -3904,8 +4169,11 @@ def analyze(input_path:str,out_dir:str) -> dict[str,Any]:
     graph['diagnostics'] = diagnostics
     Path(out_dir,'diagnostics.json').write_text(json.dumps(diagnostics,ensure_ascii=False,indent=2),encoding='utf-8')
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
-    _progress('EXPORT', 'graph.json written; all output files completed')
-    _progress('JOB', 'Analysis completed successfully')
+    _progress('EXPORT', 'graph.json written; intermediate checkpoints retained')
+    if processing_complete:
+        _progress('JOB', 'Analysis completed successfully; all Qwen tiles completed')
+    else:
+        _progress('JOB', 'Analysis INCOMPLETE; partial exports are review-only. Re-run this job to resume failed tiles from checkpoints.')
     return graph
 
 

@@ -1885,5 +1885,187 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertEqual(processor._build_join_candidates(nodes, edges), [])
 
 
+class TileCheckpointRecoveryTests(unittest.TestCase):
+    def _image(self, path: Path, size=(1000, 800)):
+        from PIL import Image as PILImage
+        PILImage.new('RGB', size, 'white').save(path)
+
+    def test_checkpoint_is_atomic_readable_and_signature_bound(self):
+        with TemporaryDirectory() as temp:
+            checkpoint_dir = Path(temp) / '.checkpoints'
+            signature = processor._tile_checkpoint_signature('abc123', 'ocr', 2, {'grid': 3})
+            items = [{'text': 'DN50', 'bbox': {'x': 10, 'y': 20, 'w': 30, 'h': 10}}]
+            diagnostics = {'tile': 2, 'tile_status': 'completed'}
+            processor._save_tile_checkpoint(checkpoint_dir, 'ocr', 2, signature, items, diagnostics)
+            restored = processor._load_tile_checkpoint(checkpoint_dir, 'ocr', 2, signature)
+            self.assertEqual(restored['items'], items)
+            self.assertEqual(restored['status'], 'completed')
+            self.assertIsNone(processor._load_tile_checkpoint(
+                checkpoint_dir, 'ocr', 2,
+                processor._tile_checkpoint_signature('changed-image', 'ocr', 2, {'grid': 3})
+            ))
+            self.assertFalse(any(path.name.endswith('.tmp') for path in checkpoint_dir.iterdir()))
+
+    def test_ocr_resume_skips_successful_and_successfully_empty_tiles(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_path = root / 'source.png'
+            checkpoint_dir = root / '.checkpoints'
+            self._image(image_path)
+            calls = []
+
+            def first_run(image, prompt, **kwargs):
+                calls.append(image.size)
+                if len(calls) == 2:
+                    raise RuntimeError('synthetic non-retryable parser error')
+                if len(calls) == 3:
+                    return {'annotations': [
+                        {'text': 'DN50', 'bbox': [20, 20, 60, 42], 'confidence': 88}
+                    ]}, 1.0, image.size
+                return {'annotations': []}, 1.0, image.size
+
+            env = {
+                'QWEN_OCR_TILE_GRID': '2', 'QWEN_OCR_UPSCALE': '1',
+                'QWEN_MAX_IMAGE_EDGE': '1200', 'QWEN_OCR_TIMEOUT': '20',
+                'QWEN_TILE_RETRY_BUDGET': '0', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
+                'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=first_run):
+                first_items, first_status = processor._qwen_annotations(str(image_path), 1000, 800, checkpoint_dir)
+            self.assertFalse(first_status['complete'])
+            self.assertEqual(first_status['successful_tiles'], 3)
+            self.assertEqual(first_status['failed_tiles'], [2])
+            self.assertTrue(any(item['text'] == 'DN50' for item in first_items))
+            self.assertEqual(len(list(checkpoint_dir.glob('ocr-tile-*.json'))), 3)
+
+            second_calls = []
+            def resumed_run(image, prompt, **kwargs):
+                second_calls.append(image.size)
+                return {'annotations': []}, 1.0, image.size
+
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=resumed_run):
+                second_items, second_status = processor._qwen_annotations(str(image_path), 1000, 800, checkpoint_dir)
+            self.assertTrue(second_status['complete'])
+            self.assertEqual(second_status['successful_tiles'], 4)
+            self.assertEqual(len(second_calls), 1, 'Only the failed tile should be sent to Qwen again')
+            self.assertTrue(any(item['text'] == 'DN50' for item in second_items),
+                            'Annotations from already completed tiles must survive resume')
+            self.assertEqual(sum(1 for item in second_status['tile_diagnostics'] if item.get('resumed_from_checkpoint')), 3)
+
+    def test_pipe_resume_skips_completed_tiles_and_restores_routes(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_path = root / 'source.png'
+            checkpoint_dir = root / '.checkpoints'
+            self._image(image_path)
+            calls = []
+
+            def first_run(image, prompt, **kwargs):
+                calls.append(image.size)
+                if len(calls) == 2:
+                    raise RuntimeError('synthetic non-retryable route parser error')
+                return {'routes': [{
+                    'id': f'R{len(calls)}', 'points': [[10, 100], [430, 100]], 'confidence': 85
+                }]}, 1.0, image.size
+
+            env = {
+                'QWEN_PIPE_TILE_GRID': '2', 'QWEN_PIPE_UPSCALE': '1',
+                'QWEN_PIPE_TILE_OVERLAP': '0.14', 'QWEN_PIPE_MAX_IMAGE_EDGE': '1200',
+                'QWEN_PIPE_TRACE_TIMEOUT': '20', 'QWEN_TILE_RETRY_BUDGET': '0',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
+            }
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=first_run):
+                first_routes, first_status = processor._qwen_semantic_routes(str(image_path), 1000, 800, checkpoint_dir)
+            self.assertFalse(first_status['complete'])
+            self.assertEqual(first_status['successful_tiles'], 3)
+            self.assertEqual(first_status['failed_tiles'], [2])
+            self.assertEqual(len(first_routes), 3)
+
+            second_calls = []
+            def resumed_run(image, prompt, **kwargs):
+                second_calls.append(image.size)
+                return {'routes': []}, 1.0, image.size
+
+            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=resumed_run):
+                second_routes, second_status = processor._qwen_semantic_routes(str(image_path), 1000, 800, checkpoint_dir)
+            self.assertTrue(second_status['complete'])
+            self.assertEqual(second_status['successful_tiles'], 4)
+            self.assertEqual(len(second_calls), 1, 'Only the failed PIPE tile should be sent to Qwen again')
+            self.assertEqual(len(second_routes), 3, 'Routes from previous successful tiles must be restored')
+            self.assertEqual(sum(1 for item in second_status['tile_diagnostics'] if item.get('resumed_from_checkpoint')), 3)
+
+    def test_qwen_retry_is_bounded_and_uses_a_longer_timeout(self):
+        from PIL import Image as PILImage
+        image = PILImage.new('RGB', (32, 24), 'white')
+        calls = []
+
+        def transient_then_success(_image, _prompt, **kwargs):
+            calls.append(kwargs['timeout'])
+            if len(calls) == 1:
+                raise TimeoutError('read timed out')
+            return {'annotations': []}, 1.0, (32, 24)
+
+        diagnostics = {}
+        with patch.dict(os.environ, {'QWEN_RETRY_TIMEOUT_FACTOR': '1.25', 'QWEN_RETRY_BACKOFF_SECONDS': '0'}, clear=False), \
+             patch('processor._qwen_call', side_effect=transient_then_success):
+            parsed, scale, size = processor._qwen_call_with_retry(
+                image, 'test', url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=20, max_edge=1024, num_predict=500, diagnostics=diagnostics,
+                format_schema=processor.OCR_RESPONSE_SCHEMA, retry_state={'remaining': 1},
+                stage='OCR', tile_index=1
+            )
+        self.assertEqual(parsed, {'annotations': []})
+        self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(calls[1], 25.0)
+        self.assertEqual(diagnostics['attempts'], 2)
+        self.assertTrue(diagnostics['previous_attempt_errors'])
+
+    def test_qwen_http_500_is_retried_but_missing_model_is_not(self):
+        from PIL import Image as PILImage
+        image = PILImage.new('RGB', (32, 24), 'white')
+        calls = []
+
+        def server_error_then_success(_image, _prompt, **kwargs):
+            calls.append(kwargs['timeout'])
+            if len(calls) == 1:
+                raise RuntimeError('Ollama HTTP 500: request context canceled')
+            return {'routes': []}, 1.0, (32, 24)
+
+        diagnostics = {}
+        with patch.dict(os.environ, {'QWEN_RETRY_TIMEOUT_FACTOR': '1.25', 'QWEN_RETRY_BACKOFF_SECONDS': '0'}, clear=False), \
+             patch('processor._qwen_call', side_effect=server_error_then_success):
+            result, _, _ = processor._qwen_call_with_retry(
+                image, 'test', url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
+                timeout=40, max_edge=1024, num_predict=300, diagnostics=diagnostics,
+                format_schema=processor.PIPE_RESPONSE_SCHEMA, retry_state={'remaining': 1},
+                stage='PIPE', tile_index=3
+            )
+        self.assertEqual(result, {'routes': []})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([item['status'] for item in diagnostics['attempt_history']], ['failed', 'completed'])
+        self.assertEqual(diagnostics['retry_count'], 1)
+
+        calls.clear()
+        def missing_model(_image, _prompt, **kwargs):
+            calls.append(kwargs['timeout'])
+            raise RuntimeError("Ollama HTTP 404: model 'missing' not found")
+
+        with patch('processor._qwen_call', side_effect=missing_model):
+            with self.assertRaisesRegex(RuntimeError, '404'):
+                processor._qwen_call_with_retry(
+                    image, 'test', url='http://ollama.test/api/chat', model='missing',
+                    timeout=40, max_edge=1024, num_predict=300, diagnostics={},
+                    format_schema=processor.PIPE_RESPONSE_SCHEMA, retry_state={'remaining': 2},
+                    stage='PIPE', tile_index=3
+                )
+        self.assertEqual(len(calls), 1, 'A permanent model-not-found response must not be retried')
+
+    def test_qwen_stage_completeness_requires_every_declared_tile(self):
+        self.assertTrue(processor._qwen_stage_is_complete({'tiles': 9, 'successful_tiles': 9}))
+        self.assertFalse(processor._qwen_stage_is_complete({'tiles': 9, 'successful_tiles': 8}))
+        self.assertTrue(processor._qwen_stage_is_complete({'available': True}))
+        self.assertFalse(processor._qwen_stage_is_complete({'available': False}))
+
+
 if __name__ == "__main__":
     unittest.main()

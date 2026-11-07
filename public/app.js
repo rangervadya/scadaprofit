@@ -292,7 +292,7 @@ function showPendingScheme(scheme) {
   process.hidden = scheme.status === 'completed';
   process.disabled = scheme.status === 'processing';
   process.textContent = scheme.status === 'failed' ? 'Повторить преобразование →' : 'Преобразовать в CAD →';
-  $('previewMeta').textContent = scheme.status === 'processing' ? 'Преобразование выполняется' : 'Фото сохранено в папке дома';
+  $('previewMeta').textContent = scheme.status === 'processing' ? 'Преобразование выполняется' : scheme.status === 'failed' ? 'Преобразование не завершено. При повторе сохранённые участки будут использованы, а недостающие — обработаны заново.' : 'Фото сохранено в папке дома';
   $('filePreview').hidden = true;
   $('progressWrap').hidden = scheme.status !== 'processing';
   setState(schemeStatusText(scheme.status), scheme.status === 'failed' ? 'error' : scheme.status === 'processing' ? 'busy' : 'ready');
@@ -404,7 +404,7 @@ async function pollSchemeStatus(jobId) {
         processButton.disabled = false;
         processButton.hidden = false;
         processButton.textContent = 'Повторить преобразование →';
-        setAlert(data.error || 'Не удалось преобразовать эскиз.');
+        setAlert(data.error || 'Не удалось преобразовать эскиз. Повтори запуск: ранее сохранённые участки будут восстановлены, если они есть.');
         setState('ОШИБКА ПРЕОБРАЗОВАНИЯ', 'error');
         await loadAddressLibrary();
         return;
