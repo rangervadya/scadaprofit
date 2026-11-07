@@ -1015,7 +1015,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.15',
+    version: '4.3.16',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1203,7 +1203,7 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.15: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.16: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
 });
