@@ -31,6 +31,8 @@ const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
 // API credentials live in the existing private cad_jobs volume; no compose or .env changes are required.
 const OPENROUTER_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'openrouter-ai-settings.json');
 const OPENROUTER_FREE_MODEL = 'nvidia/nemotron-3.5-super-vl:free';
+const MOSS_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'moss-ai-settings.json');
+const MOSS_MODEL = 'moss-vl-1.0';
 const LEGACY_YANDEX_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
@@ -97,6 +99,49 @@ async function saveOpenRouterSettings(settings) {
   await chmod(temporary, 0o600).catch(() => {});
   await rename(temporary, OPENROUTER_AI_CONFIG_PATH);
   await chmod(OPENROUTER_AI_CONFIG_PATH, 0o600).catch(() => {});
+}
+
+async function readMossSettings() {
+  try {
+    const value = JSON.parse(await readFile(MOSS_AI_CONFIG_PATH, 'utf8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    console.error('[AI] Cannot read private MOSS settings:', error?.message || error);
+    return {};
+  }
+}
+
+function publicMossSettings(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim());
+  return {
+    configured,
+    enabled: configured && settings.enabled === true,
+    model: MOSS_MODEL,
+    ocrEnabled: settings.ocrEnabled !== false,
+    pipeEnabled: settings.pipeEnabled !== false,
+    keyStored: configured,
+  };
+}
+
+function mossPythonEnvironment(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim());
+  const enabled = configured && settings.enabled === true;
+  return {
+    MOSS_API_KEY: enabled ? String(settings.apiKey).trim() : '',
+    MOSS_MODEL,
+    MOSS_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
+    MOSS_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
+  };
+}
+
+async function saveMossSettings(settings) {
+  await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
+  const temporary = `${MOSS_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
+  await writeFile(temporary, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await chmod(temporary, 0o600).catch(() => {});
+  await rename(temporary, MOSS_AI_CONFIG_PATH);
+  await chmod(MOSS_AI_CONFIG_PATH, 0o600).catch(() => {});
 }
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -1226,6 +1271,78 @@ app.post('/api/openrouter-settings/test', async (req, res) => {
   }
 });
 
+
+app.get('/api/moss-settings', async (_req, res) => {
+  const settings = await readMossSettings();
+  return res.json({ ok: true, moss: publicMossSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
+});
+
+app.put('/api/moss-settings', async (req, res) => {
+  try {
+    const current = await readMossSettings();
+    const apiKey = String(req.body?.apiKey || current.apiKey || '').trim();
+    if (apiKey.length > 2000 || (apiKey && /\s/.test(apiKey))) {
+      return res.status(400).json({ error: 'Проверь API-ключ MOSS: он должен быть одной строкой без пробелов.' });
+    }
+    const enabled = req.body?.enabled === true;
+    if (enabled && !apiKey) {
+      return res.status(400).json({ error: 'Для включения MOSS нужен API-ключ.' });
+    }
+    const next = {
+      apiKey, model: MOSS_MODEL, enabled,
+      ocrEnabled: req.body?.ocrEnabled !== false,
+      pipeEnabled: req.body?.pipeEnabled !== false,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveMossSettings(next);
+    return res.json({ ok: true, moss: publicMossSettings(next), message: 'Настройки MOSS сохранены в закрытой папке данных ScadaProfit.' });
+  } catch (error) {
+    console.error('[AI] Cannot save MOSS settings:', error?.message || error);
+    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки MOSS.' });
+  }
+});
+
+app.delete('/api/moss-settings', async (_req, res) => {
+  try {
+    await rm(MOSS_AI_CONFIG_PATH, { force: true });
+    return res.json({ ok: true, moss: publicMossSettings({}), message: 'Настройки MOSS удалены. Локальные Qwen и Tesseract продолжают работать.' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Не удалось удалить настройки MOSS.' });
+  }
+});
+
+app.post('/api/moss-settings/test', async (req, res) => {
+  const jobId = String(req.body?.jobId || '');
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала выбери и открой фотографию схемы, которую нужно проверить.' });
+  const settings = await readMossSettings();
+  if (!publicMossSettings(settings).configured || settings.enabled !== true) {
+    return res.status(409).json({ error: 'Сначала сохрани API-ключ и включи MOSS.' });
+  }
+  const jobDir = path.join(DATA, jobId);
+  try {
+    const names = await readdir(jobDir);
+    const sourceName = names.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
+    if (!sourceName) return res.status(404).json({ error: 'В выбранном задании нет исходной фотографии.' });
+    const sourcePath = path.join(jobDir, sourceName);
+    const tempLog = path.join(LIBRARY_DIR, `moss-test-${randomUUID()}.log`);
+    try {
+      const run = await runPythonStreaming(
+        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-moss'],
+        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: mossPythonEnvironment(settings) }
+      );
+      let result;
+      try { result = JSON.parse(run.stdout.trim()); }
+      catch { throw new Error('Тест MOSS завершился без корректного JSON-отчёта.'); }
+      return res.json({ ok: Boolean(result.ok), result });
+    } finally {
+      await rm(tempLog, { force: true }).catch(() => {});
+    }
+  } catch (error) {
+    console.error(`[AI TEST ${jobId.slice(0, 8)}] MOSS test failed:`, error?.stderr || error?.message || error);
+    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить MOSS.').slice(-900) });
+  }
+});
+
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
   const tagsUrl = process.env.OLLAMA_TAGS_URL ||
@@ -1258,14 +1375,15 @@ app.get('/api/health', async (_req, res) => {
   }
 
   const openrouterSettings = publicOpenRouterSettings(await readOpenRouterSettings());
+  const mossSettings = publicMossSettings(await readMossSettings());
   res.json({
     ok: true,
-    version: '4.3.28',
+    version: '4.3.29',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
-    ocr: 'OpenRouter multimodal OCR first when enabled; local Qwen3-VL tiled OCR is fallback when cloud OCR is disabled, fails, or returns no annotations; Tesseract supplements both',
+    ocr: 'MOSS-VL multimodal OCR first when enabled; local Qwen3-VL is fallback when MOSS is disabled, fails, or returns no annotations; Tesseract supplements both',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
@@ -1283,6 +1401,7 @@ app.get('/api/health', async (_req, res) => {
       modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
     },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
+    mossAI: mossSettings,
     openrouterAI: openrouterSettings,
     ollamaRequiredForCleanCad: false,
     ollamaRequired: false,
@@ -1330,9 +1449,10 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
     const aiSettings = await readOpenRouterSettings();
+    const mossSettings = await readMossSettings();
     await runPythonStreaming(
       processorArgs,
-      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: openRouterPythonEnvironment(aiSettings) }
+      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: { ...openRouterPythonEnvironment(aiSettings), ...mossPythonEnvironment(mossSettings) } }
     );
 
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));

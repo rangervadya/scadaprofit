@@ -1176,12 +1176,12 @@ function renderReviewList() {
 }
 
 function renderTextList() {
-  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract', 'openrouter-vision-ocr'].includes(item.source) && item.text);
+  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract', 'openrouter-vision-ocr', 'moss-vl-ocr'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
     <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Заменить рукописную надпись CAD-текстом" aria-label="Заменить рукописную надпись ${escapeHtml(annotation.id)} CAD-текстом">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : annotation.source === 'openrouter-vision-ocr' ? 'OpenRouter OCR' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL, OpenRouter OCR и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : annotation.source === 'openrouter-vision-ocr' ? 'OpenRouter OCR' : annotation.source === 'moss-vl-ocr' ? 'MOSS-VL OCR' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL, OpenRouter OCR и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
@@ -1776,6 +1776,125 @@ if (templateFileInput) {
 }
 
 
+// MOSS-VL is the primary cloud provider. Its key is write-only in the browser
+// and is stored in the existing private app data volume; Qwen/Tesseract remain fallbacks.
+const mossApiKeyInput = $('mossApiKey');
+const mossModelInput = $('mossModel');
+const mossEnabledInput = $('mossEnabled');
+const mossOcrEnabledInput = $('mossOcrEnabled');
+const mossPipeEnabledInput = $('mossPipeEnabled');
+const mossSaveBtn = $('mossSaveBtn');
+const mossTestBtn = $('mossTestBtn');
+const mossClearBtn = $('mossClearBtn');
+
+function setMossStatus(message, kind = '') {
+  const box = $('mossStatus');
+  if (!box) return;
+  box.textContent = message;
+  box.dataset.kind = kind;
+}
+
+async function loadMossSettings() {
+  try {
+    const response = await fetch('/api/moss-settings', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки MOSS.');
+    const cfg = data.moss || {};
+    mossModelInput.value = cfg.model || 'moss-vl-1.0';
+    mossEnabledInput.checked = Boolean(cfg.enabled);
+    mossOcrEnabledInput.checked = cfg.ocrEnabled !== false;
+    mossPipeEnabledInput.checked = cfg.pipeEnabled !== false;
+    mossClearBtn.hidden = !cfg.configured;
+    setMossStatus(cfg.configured
+      ? `Ключ сохранён · ${cfg.enabled ? 'MOSS-VL включён' : 'MOSS-VL выключен'} · модель ${cfg.model}. Qwen и Tesseract сохранены.`
+      : 'API-ключ MOSS ещё не настроен. Локальные Qwen и Tesseract работают как раньше.');
+  } catch (error) {
+    setMossStatus(error.message || 'Не удалось загрузить настройки MOSS.', 'error');
+  }
+}
+
+if (mossSaveBtn) {
+  mossSaveBtn.addEventListener('click', async () => {
+    mossSaveBtn.disabled = true;
+    setMossStatus('Сохраняю настройки на сервере…');
+    try {
+      const response = await fetch('/api/moss-settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: mossApiKeyInput.value,
+          model: mossModelInput.value.trim() || 'moss-vl-1.0',
+          enabled: mossEnabledInput.checked,
+          ocrEnabled: mossOcrEnabledInput.checked,
+          pipeEnabled: mossPipeEnabledInput.checked,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить настройки MOSS.');
+      mossApiKeyInput.value = '';
+      mossClearBtn.hidden = !data.moss?.configured;
+      setMossStatus(`Настройки сохранены. ${data.moss?.enabled ? 'MOSS будет использоваться для новых схем.' : 'MOSS выключен.'} Qwen и Tesseract не изменены.`, 'success');
+    } catch (error) {
+      setMossStatus(error.message || 'Ошибка сохранения настроек MOSS.', 'error');
+    } finally {
+      mossSaveBtn.disabled = false;
+    }
+  });
+}
+
+if (mossTestBtn) {
+  mossTestBtn.addEventListener('click', async () => {
+    if (!selectedJobId) {
+      setMossStatus('Сначала создай тестовую схему и открой её исходную фотографию. Тест использует именно открытое изображение.');
+      return;
+    }
+    mossTestBtn.disabled = true;
+    mossTestBtn.textContent = 'Тестирую…';
+    setMossStatus('Отправляю открытую фотографию в MOSS-VL. Проверяются OCR и трассировка труб; существующий чертёж не изменяется.');
+    try {
+      const response = await fetch('/api/moss-settings/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: selectedJobId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Тест MOSS не выполнен.');
+      const ocr = data.result?.ocr || {};
+      const vision = data.result?.vision || {};
+      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} подписей` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
+      const visionText = vision.ok ? `Vision: ${vision.routes} маршрутов труб` : `Vision: ошибка — ${vision.error || 'неизвестно'}`;
+      setMossStatus(`${data.ok ? 'Оба теста завершились успешно.' : 'Проверка завершилась частично или с ошибкой.'} ${ocrText}. ${visionText}. Тест не изменил существующий чертёж.`, data.ok ? 'success' : 'error');
+    } catch (error) {
+      setMossStatus(error.message || 'Не удалось выполнить тест MOSS.', 'error');
+    } finally {
+      mossTestBtn.disabled = false;
+      mossTestBtn.textContent = 'Проверить открытую схему';
+    }
+  });
+}
+
+if (mossClearBtn) {
+  mossClearBtn.addEventListener('click', async () => {
+    if (!window.confirm('Удалить только сохранённый API-ключ и настройки MOSS? Локальные Qwen и Tesseract останутся без изменений.')) return;
+    mossClearBtn.disabled = true;
+    try {
+      const response = await fetch('/api/moss-settings', { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось удалить настройки MOSS.');
+      mossApiKeyInput.value = '';
+      mossEnabledInput.checked = false;
+      mossOcrEnabledInput.checked = true;
+      mossPipeEnabledInput.checked = true;
+      mossClearBtn.hidden = true;
+      setMossStatus('Настройки MOSS удалены. Локальные Qwen и Tesseract продолжают работать.', 'success');
+    } catch (error) {
+      setMossStatus(error.message || 'Не удалось удалить настройки MOSS.', 'error');
+    } finally {
+      mossClearBtn.disabled = false;
+    }
+  });
+}
+
+loadMossSettings();
+
 // Optional OpenRouter multimodal integration. The API key is write-only in
 // the browser and stored in the private app data volume; local Qwen/Tesseract stay live.
 const openrouterApiKeyInput = $('openrouterApiKey');
@@ -1844,7 +1963,7 @@ if (openrouterSaveBtn) {
 if (openrouterTestBtn) {
   openrouterTestBtn.addEventListener('click', async () => {
     if (!selectedJobId) {
-      setOpenRouterStatus('Сначала открой во входящих фотографию схемы дома. Тест отправит именно её в OpenRouter OCR и Vision.');
+      setOpenRouterStatus('Сначала выбери и открой фотографию схемы, которую нужно проверить.');
       return;
     }
     openrouterTestBtn.disabled = true;

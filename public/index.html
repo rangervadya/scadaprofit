@@ -77,8 +77,26 @@
           </div>
         </details>
 
+        <details class="card openrouter-settings-card moss-settings-card" id="mossSettings" open>
+          <summary class="template-settings-summary"><span><strong>Облачный AI · MOSS-VL</strong><small>Мультимодальная модель для фотографий и рукописных схем</small></span><span class="template-settings-caret">▾</span></summary>
+          <div class="template-settings-body openrouter-settings-body">
+            <div class="openrouter-provider-status" id="mossStatus" role="status">Проверяю настройки MOSS…</div>
+            <label class="openrouter-field"><span>API-ключ MOSS</span><input id="mossApiKey" type="password" autocomplete="new-password" placeholder="Вставь ключ MOSS (сохраняется только на сервере)"></label>
+            <label class="openrouter-field"><span>Мультимодальная модель</span><input id="mossModel" type="text" value="moss-vl-1.0" spellcheck="false" readonly></label>
+            <label class="openrouter-check"><input id="mossEnabled" type="checkbox"><span>Включить MOSS-VL для новых схем</span></label>
+            <label class="openrouter-check"><input id="mossOcrEnabled" type="checkbox" checked><span>Использовать MOSS для распознавания подписей</span></label>
+            <label class="openrouter-check"><input id="mossPipeEnabled" type="checkbox" checked><span>Использовать MOSS для трассировки труб</span></label>
+            <div class="openrouter-actions">
+              <button class="secondary-button" id="mossSaveBtn" type="button">Сохранить настройки</button>
+              <button class="secondary-button" id="mossTestBtn" type="button">Проверить открытую схему</button>
+            </div>
+            <button class="tiny-button openrouter-clear" id="mossClearBtn" type="button" hidden>Удалить только ключ и настройки MOSS</button>
+            <p class="template-note">Модель moss-vl-1.0 сейчас указана MOSS как временно бесплатная (0 кредитов); условия могут измениться. Фотография передаётся в MOSS API как временный файл и удаляется после каждого запроса. Не отправляй персональные или конфиденциальные схемы. Если MOSS не ответит или не распознает текст, ScadaProfit использует локальные Qwen и Tesseract. Ключ хранится только в закрытой папке данных сервера и не возвращается в браузер.</p>
+          </div>
+        </details>
+
         <details class="card openrouter-settings-card" id="openrouterSettings">
-          <summary class="template-settings-summary"><span><strong>Облачный AI · OpenRouter</strong><small>Бесплатная мультимодальная модель для тестирования</small></span><span class="template-settings-caret">▾</span></summary>
+          <summary class="template-settings-summary"><span><strong>Дополнительный провайдер · OpenRouter</strong><small>Не используется, когда включён MOSS-VL</small></span><span class="template-settings-caret">▾</span></summary>
           <div class="template-settings-body openrouter-settings-body">
             <div class="openrouter-provider-status" id="openrouterStatus" role="status">Проверяю настройки OpenRouter…</div>
             <label class="openrouter-field"><span>API-ключ OpenRouter</span><input id="openrouterApiKey" type="password" autocomplete="new-password" placeholder="sk-or-v1-… (сохраняется на сервере)"></label>

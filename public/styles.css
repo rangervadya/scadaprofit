@@ -261,3 +261,6 @@ body{background:var(--page);color:var(--ink);font-size:14px}
 .openrouter-actions{display:flex;flex-wrap:wrap;gap:6px}
 .openrouter-actions .secondary-button{min-height:29px;padding:0 8px;font-size:9px}
 .openrouter-clear{align-self:flex-start;color:#9b4e47}
+
+/* 4.3.29 — primary MOSS-VL provider shares the compact AI settings controls. */
+.moss-settings-card{border-color:#d9e8df}
