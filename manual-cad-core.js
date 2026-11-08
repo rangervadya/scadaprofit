@@ -73,27 +73,159 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   const height = Math.round(Math.max(100, Math.min(30000, num(sourceSize.height, 1000))));
   const base = createManualCadProject({ id, title });
   const rawEdges = Array.isArray(graph?.edges) ? graph.edges : [];
-  // Only selected CAD paths and explicitly user-confirmed edges are imported.
-  // Review-only strokes and crossings are intentionally not promoted.
+  const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const nodeById = new Map(rawNodes.filter(node => node?.id != null).map(node => [String(node.id), node]));
+  // Import only selected CAD geometry and explicit manual links. The graph may
+  // contain thousands of short segments; join degree-2 chains into continuous
+  // editable polylines. A geometric crossing does not join unless both edges
+  // share the same graph node ID.
+  const hasTopologyHints = rawEdges.some(edge => typeof edge?.topology_network_candidate === 'boolean');
   const selectedEdges = rawEdges.filter(edge =>
-    edge && (edge.cad_include === true || (edge.source === 'manual' && edge.detector === 'MANUAL'))
+    edge && (
+      (edge.cad_include === true && edge.component_role !== 'ambiguous' && (!hasTopologyHints || edge.topology_network_candidate === true)) ||
+      (edge.source === 'manual' && edge.detector === 'MANUAL')
+    )
   );
-  const pipes = [];
-  const pipeIdsByNode = new Map();
-  for (const edge of selectedEdges) {
+  const edgeRecords = [];
+  const adjacency = new Map();
+  const addAdjacent = (nodeId, edgeIndex) => {
+    if (!adjacency.has(nodeId)) adjacency.set(nodeId, []);
+    adjacency.get(nodeId).push(edgeIndex);
+  };
+  const distance2d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  for (let index = 0; index < selectedEdges.length; index += 1) {
+    const edge = selectedEdges[index];
     const points = (Array.isArray(edge.geometry) ? edge.geometry : [])
       .map(raw => Array.isArray(raw) && raw.length >= 2 ? [num(raw[0], NaN), num(raw[1], NaN)] : null)
-      .filter(point => point && point.every(Number.isFinite));
+      .filter(raw => raw && raw.every(Number.isFinite));
     if (points.length < 2) continue;
-    const pipeId = safeId(edge.id, `pipe_${pipes.length + 1}`);
-    const edgeKind = ['branch', 'riser'].includes(String(edge.kind || edge.cad_kind || ''))
-      ? String(edge.kind || edge.cad_kind) : 'pipe';
-    pipes.push({ id: pipeId, name: '', diameter: '', kind: edgeKind, points, visible: true });
-    for (const nodeId of [edge.from, edge.to]) {
-      if (!nodeId) continue;
-      if (!pipeIdsByNode.has(String(nodeId))) pipeIdsByNode.set(String(nodeId), []);
-      pipeIdsByNode.get(String(nodeId)).push(pipeId);
+    const fromId = edge.from != null ? String(edge.from) : `__edge_${index}_from`;
+    const toId = edge.to != null ? String(edge.to) : `__edge_${index}_to`;
+    const fromNode = nodeById.get(fromId);
+    const toNode = nodeById.get(toId);
+    if (fromNode && toNode && Number.isFinite(Number(fromNode.x)) && Number.isFinite(Number(toNode.x))) {
+      const forwardScore = distance2d(points[0], [Number(fromNode.x), Number(fromNode.y)]) + distance2d(points.at(-1), [Number(toNode.x), Number(toNode.y)]);
+      const reverseScore = distance2d(points.at(-1), [Number(fromNode.x), Number(fromNode.y)]) + distance2d(points[0], [Number(toNode.x), Number(toNode.y)]);
+      if (reverseScore + 0.01 < forwardScore) points.reverse();
     }
+    const edgeIndex = edgeRecords.length;
+    edgeRecords.push({ edge, points, fromId, toId });
+    addAdjacent(fromId, edgeIndex);
+    addAdjacent(toId, edgeIndex);
+  }
+
+  const pipes = [];
+  const pipeIdsByNode = new Map();
+  const usedEdges = new Set();
+  const usedPipeIds = new Set();
+  const registerNodePipe = (nodeId, pipeId) => {
+    if (!pipeIdsByNode.has(nodeId)) pipeIdsByNode.set(nodeId, []);
+    if (!pipeIdsByNode.get(nodeId).includes(pipeId)) pipeIdsByNode.get(nodeId).push(pipeId);
+  };
+  const buildRoute = (startNodeId, firstEdgeIndex) => {
+    let currentNodeId = startNodeId;
+    let edgeIndex = firstEdgeIndex;
+    const routePoints = [];
+    const routeNodeIds = [startNodeId];
+    const routeEdges = [];
+    while (edgeIndex != null && !usedEdges.has(edgeIndex)) {
+      usedEdges.add(edgeIndex);
+      const record = edgeRecords[edgeIndex];
+      const forward = record.fromId === currentNodeId;
+      const oriented = forward ? record.points : [...record.points].reverse();
+      if (!routePoints.length) routePoints.push(...oriented.map(point => [...point]));
+      else {
+        const gap = distance2d(routePoints.at(-1), oriented[0]);
+        // Preserve the node topology while avoiding a visible hairline gap if
+        // neighboring detector segments have slightly different endpoints.
+        if (gap > 0.75) routePoints.push([...oriented[0]]);
+        routePoints.push(...oriented.slice(1).map(point => [...point]));
+      }
+      routeEdges.push(record.edge);
+      const nextNodeId = forward ? record.toId : record.fromId;
+      routeNodeIds.push(nextNodeId);
+      if ((adjacency.get(nextNodeId) || []).length !== 2) break;
+      const continuation = (adjacency.get(nextNodeId) || []).find(candidate => !usedEdges.has(candidate));
+      if (continuation == null) break;
+      currentNodeId = nextNodeId;
+      edgeIndex = continuation;
+    }
+    if (routePoints.length < 2) return;
+    const firstEdge = routeEdges[0] || {};
+    const baseId = safeId(firstEdge.id, `pipe_${pipes.length + 1}`);
+    let pipeId = baseId;
+    let suffix = 2;
+    while (usedPipeIds.has(pipeId)) pipeId = `${baseId}_${suffix++}`;
+    usedPipeIds.add(pipeId);
+    const kindCounts = new Map();
+    for (const edge of routeEdges) {
+      const kind = ['branch', 'riser'].includes(String(edge.kind || edge.cad_kind || '')) ? String(edge.kind || edge.cad_kind) : 'pipe';
+      kindCounts.set(kind, (kindCounts.get(kind) || 0) + 1);
+    }
+    const kind = [...kindCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'pipe';
+    const nameEdge = routeEdges.find(edge => text(edge.name || edge.label, 80));
+    const diameterEdge = routeEdges.find(edge => text(edge.diameter || edge.dn, 32));
+    const routeLength = routePoints.slice(1).reduce((sum, current, index) => sum + distance2d(routePoints[index], current), 0);
+    const hasBranchNode = routeNodeIds.some(nodeId => (adjacency.get(nodeId) || []).length >= 3);
+    const shortIsolated = routeLength < Math.max(16, Math.min(24, Math.min(width, height) * 0.025)) && !hasBranchNode;
+    const routeHasTopologySupport = routeEdges.some(edge => edge.topology_network_candidate === true);
+    const topologyNeedsReview = hasTopologyHints && !routeHasTopologySupport && !routeEdges.every(edge => edge.source === 'manual' && edge.detector === 'MANUAL');
+    const reviewOnly = shortIsolated || topologyNeedsReview;
+    pipes.push({
+      id: pipeId,
+      name: text(nameEdge?.name || nameEdge?.label, 80),
+      diameter: text(diameterEdge?.diameter || diameterEdge?.dn, 32),
+      kind,
+      points: routePoints,
+      visible: true,
+      reviewOnly,
+      reviewReason: shortIsolated
+        ? 'Короткий изолированный штрих: подтвердите, что это участок газопровода.'
+        : topologyNeedsReview ? 'Маршрут не включён анализатором в подтверждённую топологическую сеть. Сверьте его с оригиналом.' : ''
+    });
+    if (!reviewOnly) {
+      for (const nodeId of routeNodeIds) registerNodePipe(nodeId, pipeId);
+    }
+  };
+
+  // Start routes at terminals and branch nodes. At degree-2 nodes we continue
+  // through the next edge; at degree-3+ nodes we stop and preserve a real
+  // explicit junction. This removes segmentation noise without inventing joins.
+  for (const [nodeId, incident] of adjacency.entries()) {
+    if (incident.length === 2) continue;
+    for (const edgeIndex of incident) {
+      if (!usedEdges.has(edgeIndex)) buildRoute(nodeId, edgeIndex);
+    }
+  }
+  // Pure loops have no terminal or branch node. Trace any still-unused cycle.
+  for (let edgeIndex = 0; edgeIndex < edgeRecords.length; edgeIndex += 1) {
+    if (!usedEdges.has(edgeIndex)) buildRoute(edgeRecords[edgeIndex].fromId, edgeIndex);
+  }
+
+  // Ambiguous detector edges are retained as orange, review-only candidates.
+  // They never join the primary topology and are excluded from SVG/DXF until
+  // an operator explicitly accepts them in the editor.
+  const reviewEdges = rawEdges.filter(edge => edge?.cad_include === true && (
+    edge.component_role === 'ambiguous' ||
+    (hasTopologyHints && edge.component_role !== 'ambiguous' && edge.topology_network_candidate !== true)
+  ));
+  for (const edge of reviewEdges.slice(0, 700)) {
+    const points = (Array.isArray(edge.geometry) ? edge.geometry : [])
+      .map(raw => Array.isArray(raw) && raw.length >= 2 ? [num(raw[0], NaN), num(raw[1], NaN)] : null)
+      .filter(raw => raw && raw.every(Number.isFinite));
+    if (points.length < 2) continue;
+    const baseId = safeId(edge.id, `review_${pipes.length + 1}`);
+    let pipeId = `review_${baseId}`;
+    let suffix = 2;
+    while (usedPipeIds.has(pipeId)) pipeId = `review_${baseId}_${suffix++}`;
+    usedPipeIds.add(pipeId);
+    pipes.push({
+      id: pipeId, name: '', diameter: '', kind: 'pipe', points,
+      visible: true, reviewOnly: true,
+      reviewReason: edge.component_role === 'ambiguous'
+        ? 'Автоматически выделенный неоднозначный штрих. Проверьте по исходной фотографии.'
+        : 'Линия не включена анализатором в подтверждённую топологическую сеть. Проверьте и при необходимости подтвердите вручную.'
+    });
   }
 
   // Qwen routes are added only from the server's separately validated set.
@@ -106,24 +238,23 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
       .filter(raw => raw && raw.every(Number.isFinite));
     if (points.length < 2) continue;
     const routeId = safeId(`qwen_${route.id || pipes.length + 1}`, `qwen_${pipes.length + 1}`);
-    if (pipes.some(pipe => pipe.id === routeId)) continue;
+    if (usedPipeIds.has(routeId)) continue;
+    usedPipeIds.add(routeId);
     pipes.push({
       id: routeId, name: text(route.name || route.label, 80), diameter: '',
       kind: ['branch', 'riser'].includes(String(route.kind || '')) ? String(route.kind) : 'pipe',
-      points, visible: true, source: 'qwen-ink-validated'
+      points, visible: true, source: 'qwen-ink-validated', reviewOnly: false
     });
   }
 
-  const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const junctions = [];
-  for (const node of rawNodes) {
-    const connected = [...new Set(pipeIdsByNode.get(String(node?.id || '')) || [])];
-    // A visible junction is created only for a primary node with >=3 connected
-    // edges. A geometric line crossing alone never appears in this node map.
-    if (node?.review === true || Number(node?.degree || 0) < 3 || connected.length < 2) continue;
+  for (const [nodeId, connectedPipeIds] of pipeIdsByNode.entries()) {
+    const node = nodeById.get(nodeId);
+    const connected = [...new Set(connectedPipeIds)];
+    if (!node || node.review === true || (adjacency.get(nodeId) || []).length < 3 || connected.length < 3) continue;
     const x = num(node.x, NaN), y = num(node.y, NaN);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    junctions.push({ id: safeId(`junction_${node.id}`, 'junction'), x, y, pipeIds: connected });
+    junctions.push({ id: safeId(`junction_${nodeId}`, 'junction'), x, y, pipeIds: connected });
   }
 
   const labels = [];
@@ -168,7 +299,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
 
   const incomplete = graph?.complete === false || graph?.analysisStatus === 'incomplete';
   const noteParts = [
-    'Автоматический черновик по подготовленному изображению. Геометрия перенесена только из основных CAD-линий и явно подтверждённых соединений.',
+    `Автоматический черновик по подготовленному изображению. Основных непрерывных маршрутов: ${pipes.filter(pipe => !pipe.reviewOnly).length}; кандидатов для ручной проверки: ${pipes.filter(pipe => pipe.reviewOnly).length}. При наличии топологических меток основной слой ограничен подтверждённой сетью; неоднозначные, непроверенные и короткие изолированные штрихи сохранены отдельно и не попадут в чистовой экспорт без подтверждения.`,
     'Пересечения автоматически не соединяются. OCR-подписи не проверены; числовые значения сохранены как текст, не как размеры. Неизвестные символы не классифицированы.',
     incomplete ? 'Исходная автоматическая обработка НЕ ЗАВЕРШЕНА. Восстановление неполное; проверьте и дополните по подложке.' : 'Обработка завершена вычислительно, но чертёж всё равно требует инженерной проверки.'
   ];
@@ -235,7 +366,9 @@ export function normalizeManualCadProject(input, existing = null) {
       diameter: text(raw.diameter, 32),
       kind: ['branch', 'riser'].includes(raw.kind) ? raw.kind : 'pipe',
       points,
-      visible: raw.visible !== false
+      visible: raw.visible !== false,
+      reviewOnly: raw.reviewOnly === true,
+      reviewReason: text(raw.reviewReason, 240)
     });
   }
 
@@ -290,7 +423,7 @@ function esc(value) {
 function fmt(value) { return (Math.round(Number(value) * 1000) / 1000).toString(); }
 function collectBounds(project) {
   const pts = [];
-  for (const pipe of project.pipes) pts.push(...pipe.points);
+  for (const pipe of project.pipes) if (pipe.reviewOnly !== true) pts.push(...pipe.points);
   for (const item of project.symbols) pts.push([item.x, item.y]);
   for (const item of project.labels) pts.push([item.x, item.y]);
   for (const item of project.dimensions) pts.push(item.a, item.b);
@@ -368,7 +501,7 @@ export function renderManualCadSvg(rawProject) {
   parts.push(`<rect x="5" y="5" width="${pageW - 10}" height="${pageH - 10}" fill="none" stroke="#111" stroke-width="0.35"/>`);
   parts.push('<g id="PIPE_MAIN" fill="none" stroke="#111" stroke-width="0.62" stroke-linecap="round" stroke-linejoin="round">');
   for (const pipe of project.pipes) {
-    if (pipe.visible === false) continue;
+    if (pipe.visible === false || pipe.reviewOnly) continue;
     const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
     parts.push(`<polyline id="${esc(pipe.id)}" points="${points}"/>`);
   }
@@ -427,7 +560,7 @@ function renderLpgCadR1Svg(project) {
   for (const [kind, layer, strokeWidth] of [['pipe','PIPE_MAIN',0.52],['branch','BRANCH',0.48],['riser','RISERS',0.62]]) {
     parts.push(`<g id="${layer}" fill="none" stroke="#111" stroke-width="${fmt(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
     for (const pipe of project.pipes) {
-      if (pipe.visible === false || pipe.kind !== kind) continue;
+      if (pipe.visible === false || pipe.reviewOnly || pipe.kind !== kind) continue;
       const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
       parts.push(`<polyline id="${esc(pipe.id)}" points="${points}"/>`);
     }
@@ -452,7 +585,7 @@ function renderLpgCadR1Svg(project) {
     parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(Math.max(1.7, label.size * 0.105))}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
   }
   for (const pipe of project.pipes) {
-    if (pipe.visible === false || (!pipe.name && !pipe.diameter)) continue;
+    if (pipe.visible === false || pipe.reviewOnly || (!pipe.name && !pipe.diameter)) continue;
     const [x, y] = map(pipe.points[Math.floor((pipe.points.length - 1) / 2)]);
     parts.push(`<text x="${fmt(x + 1.2)}" y="${fmt(y - 1.0)}" font-size="1.9">${esc([pipe.name, pipe.diameter ? `DN ${pipe.diameter}` : ''].filter(Boolean).join(' · '))}</text>`);
   }
@@ -554,7 +687,7 @@ export function renderManualCadDxf(rawProject) {
   }
   out.push('0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES');
   for (const pipe of project.pipes) {
-    if (pipe.visible === false) continue;
+    if (pipe.visible === false || pipe.reviewOnly) continue;
     for (let i = 1; i < pipe.points.length; i++) addDxfLine(out, 'PIPE_MAIN', dxfPoint(pipe.points[i - 1]), dxfPoint(pipe.points[i]));
     if (pipe.name || pipe.diameter) {
       const p = dxfPoint(pipe.points[Math.floor((pipe.points.length - 1) / 2)]);
@@ -617,7 +750,7 @@ function renderLpgCadR1Dxf(project) {
   addPolyline('SHEET', [[area.x,area.y],[area.x+area.w,area.y],[area.x+area.w,area.y+area.h],[area.x,area.y+area.h]], true);
   const addTextAtPage = (layer, value, p, height = 2.4) => addDxfText(out, layer, value, [p[0], pageH - p[1]], height);
   for (const pipe of project.pipes) {
-    if (pipe.visible === false) continue;
+    if (pipe.visible === false || pipe.reviewOnly) continue;
     const layer = pipe.kind === 'riser' ? 'RISERS' : pipe.kind === 'branch' ? 'BRANCH' : 'PIPE_MAIN';
     const points = pipe.points.map(toDxf);
     for (let i = 1; i < points.length; i++) addDxfLine(out, layer, points[i - 1], points[i]);

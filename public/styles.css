@@ -246,3 +246,18 @@ body{background:var(--page);color:var(--ink);font-size:14px}
   .clean-stage.manual-cad-preview { min-height: 260px; padding: 5px; }
   .manual-cad-preview-image { max-height: 65vh; }
 }
+
+
+/* 4.3.25 — optional Yandex AI provider configuration (local Qwen/Tesseract stay enabled). */
+.yandex-settings-card{padding:9px 10px}
+.yandex-settings-body{display:flex;flex-direction:column;gap:8px}
+.yandex-provider-status{padding:7px 8px;border:1px solid #edf0ed;border-radius:5px;background:#fbfcfb;color:#68766e;font-size:9px;line-height:1.45}
+.yandex-provider-status[data-kind="success"]{border-color:#cfe5d6;background:#f4faf5;color:#28734c}
+.yandex-provider-status[data-kind="error"]{border-color:#efcfca;background:#fff7f6;color:#a5443d}
+.yandex-field{display:flex;flex-direction:column;gap:4px;color:#606d65;font-size:9px}
+.yandex-field input{width:100%;height:32px;padding:0 8px;border:1px solid #dfe5e0;border-radius:5px;background:#fff;color:#25342b;font:inherit;font-size:10px;box-sizing:border-box}
+.yandex-check{display:flex;align-items:flex-start;gap:7px;color:#5d6a62;font-size:9px;line-height:1.35}
+.yandex-check input{margin:1px 0 0;flex:none}
+.yandex-actions{display:flex;flex-wrap:wrap;gap:6px}
+.yandex-actions .secondary-button{min-height:29px;padding:0 8px;font-size:9px}
+.yandex-clear{align-self:flex-start;color:#9b4e47}

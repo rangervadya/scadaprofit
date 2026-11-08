@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
-  <title>Схемы домов · 4.3.23</title>
+  <title>Схемы домов · 4.3.25</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.23">
-  <script src="/app.js?v=4.3.23" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.25">
+  <script src="/app.js?v=4.3.25" defer></script>
 </head>
 <body>
   <nav class="product-switcher" aria-label="Разделы приложения">
@@ -74,6 +74,25 @@
             </div>
             <div class="template-message" id="templateMessage" role="status" aria-live="polite"></div>
             <p class="template-note">Файл хранится отдельно от входящих схем. Для изображения используется профиль листа и ориентация; заполненный скан не подкладывается фоном, чтобы не дублировать линии и надписи. Система переносит распознанную геометрию и подтверждённые числовые метки в координаты страницы; сомнительный текст остаётся на проверке.</p>
+          </div>
+        </details>
+
+        <details class="card yandex-settings-card" id="yandexAiSettings">
+          <summary class="template-settings-summary"><span><strong>Облачный AI · Yandex</strong><small>Дополнительное распознавание для проверки</small></span><span class="template-settings-caret">▾</span></summary>
+          <div class="template-settings-body yandex-settings-body">
+            <div class="yandex-provider-status" id="yandexStatus" role="status">Проверяю настройки Yandex AI…</div>
+            <label class="yandex-field"><span>API-ключ Yandex AI Studio</span><input id="yandexApiKey" type="password" autocomplete="new-password" placeholder="Вставь API-ключ (сохраняется на сервере)"></label>
+            <label class="yandex-field"><span>Folder ID</span><input id="yandexFolderId" type="text" autocomplete="off" placeholder="Идентификатор каталога Yandex Cloud"></label>
+            <label class="yandex-field"><span>Мультимодальная модель</span><input id="yandexModel" type="text" value="qwen3.6-35b-a3b" spellcheck="false"></label>
+            <label class="yandex-check"><input id="yandexEnabled" type="checkbox"><span>Включить Yandex AI для новых схем</span></label>
+            <label class="yandex-check"><input id="yandexOcrEnabled" type="checkbox" checked><span>Использовать Vision OCR для рукописных подписей</span></label>
+            <label class="yandex-check"><input id="yandexPipeEnabled" type="checkbox" checked><span>Пробовать Qwen3.6 для трассировки труб</span></label>
+            <div class="yandex-actions">
+              <button class="secondary-button" id="yandexSaveBtn" type="button">Сохранить настройки</button>
+              <button class="secondary-button" id="yandexTestBtn" type="button">Проверить на открытой схеме</button>
+            </div>
+            <button class="tiny-button yandex-clear" id="yandexClearBtn" type="button" hidden>Удалить только настройки Yandex</button>
+            <p class="template-note">Qwen на сервере и Tesseract не отключаются и остаются резервными. При включении фотография отправляется в облако Yandex AI Studio; использование API тарифицируется отдельно. Ключ сохраняется в закрытой папке тома данных ScadaProfit и не возвращается в браузер.</p>
           </div>
         </details>
 

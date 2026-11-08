@@ -185,7 +185,7 @@ function showAddressInbox(streetId, buildingId = null) {
   $('imageFrame').hidden = true;
   $('sourceEmpty').hidden = false;
   $('cleanStage').classList.remove('manual-cad-preview');
-  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Выбери входящую схему</b><span>Слесарь отправляет фото в выбранный дом. Специалист открывает его и запускает преобразование отдельно.</span></div>';
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Выбери входящую схему</b><span>После отправки фото автоматически ставится в очередь преобразования. Специалист проверяет результат и при необходимости исправляет его в CAD-редакторе.</span></div>';
   $('diagnosticLinks').hidden = true;
   $('processSchemeBtn').hidden = true;
   $('processSchemeBtn').disabled = false;
@@ -193,7 +193,7 @@ function showAddressInbox(streetId, buildingId = null) {
   $('activeSchemeStatus').textContent = building ? 'ВХОДЯЩИЕ СХЕМЫ' : 'УЛИЦА';
   const count = building ? (building.schemes || []).length : (street.buildings || []).reduce((sum, item) => sum + (item.schemes || []).length, 0);
   $('activeSchemeMeta').textContent = building
-    ? `${street.name} · ${count} ${count === 1 ? 'схема' : count >= 2 && count <= 4 ? 'схемы' : 'схем'} · отправка фото слева не запускает распознавание`
+    ? `${street.name} · ${count} ${count === 1 ? 'схема' : count >= 2 && count <= 4 ? 'схемы' : 'схем'} · новые фото автоматически поступают в очередь преобразования`
     : `Выбери дом, чтобы открыть его входящие схемы. Всего схем по улице: ${count}.`;
   $('canvasMeta').textContent = building ? 'Ожидает выбора входящей схемы' : 'Выбран адрес улицы';
   $('previewMeta').textContent = 'Ожидает изображения';
@@ -270,7 +270,7 @@ function setPanelsVisible(visible) {
 }
 
 function schemeStatusText(status) {
-  return ({ pending: 'ВХОДЯЩИЙ ЭСКИЗ', processing: 'ИДЁТ ПРЕОБРАЗОВАНИЕ', completed: 'ПРЕОБРАЗОВАНО', failed: 'НЕ УДАЛОСЬ ОБРАБОТАТЬ' })[status] || 'ЭСКИЗ';
+  return ({ pending: 'ВХОДЯЩИЙ ЭСКИЗ', queued: 'В ОЧЕРЕДИ НА ПРЕОБРАЗОВАНИЕ', processing: 'ИДЁТ ПРЕОБРАЗОВАНИЕ', completed: 'ПРЕОБРАЗОВАНО', failed: 'НЕ УДАЛОСЬ ОБРАБОТАТЬ' })[status] || 'ЭСКИЗ';
 }
 
 function showPendingScheme(scheme) {
@@ -287,16 +287,22 @@ function showPendingScheme(scheme) {
   $('sourceImage').src = `${scheme.sourceUrl}?v=${Date.now()}`;
   $('canvasMeta').textContent = `${scheme.originalName || scheme.title || 'Исходный эскиз'} · оригинал`;
   $('cleanStage').classList.remove('manual-cad-preview');
-  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Вектор ещё не построен</b><span>Эскиз сохранён во входящих. Специалист может запустить преобразование.</span></div>';
+  $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Вектор ещё не построен</b><span>Фотография автоматически поставлена в очередь. После обработки результат можно исправить в CAD-редакторе.</span></div>';
   $('diagnosticLinks').hidden = true;
+  const manualButton = $('openManualCadBtn');
+  manualButton.hidden = false;
+  manualButton.disabled = false;
+  manualButton.dataset.projectId = '';
+  manualButton.innerHTML = '<b>CAD</b><span>Начертить вручную</span>';
+  manualButton.title = 'Открыть редактор по исходной фотографии даже если автоматическое распознавание не завершилось';
   $('mainTitle').textContent = scheme.title || scheme.originalName || 'Входящий эскиз';
   $('activeSchemeStatus').textContent = schemeStatusText(scheme.status);
   $('activeSchemeMeta').textContent = `${scheme.streetName || ''}${scheme.streetName ? ', ' : ''}дом ${scheme.buildingName || ''} · ${formatLibraryDate(scheme.createdAt)}${scheme.uploadedBy ? ` · отправил: ${scheme.uploadedBy}` : ''}`;
   const process = $('processSchemeBtn');
-  process.hidden = scheme.status === 'completed';
-  process.disabled = scheme.status === 'processing';
+  process.hidden = ['queued', 'processing', 'completed'].includes(scheme.status);
+  process.disabled = ['queued', 'processing'].includes(scheme.status);
   process.textContent = scheme.status === 'failed' ? 'Повторить преобразование →' : 'Преобразовать в чистовой чертёж →';
-  $('previewMeta').textContent = scheme.status === 'processing' ? 'Преобразование выполняется' : scheme.status === 'failed' ? 'Преобразование не завершено. При повторе сохранённые участки будут использованы, а недостающие — обработаны заново.' : 'Фото сохранено в папке дома';
+  $('previewMeta').textContent = scheme.status === 'queued' ? 'Фото в очереди. Обработка начнётся автоматически после завершения предыдущей схемы.' : scheme.status === 'processing' ? 'Преобразование выполняется автоматически' : scheme.status === 'failed' ? 'Преобразование не завершено. При повторе сохранённые участки будут использованы, а недостающие — обработаны заново.' : 'Фото сохранено в папке дома';
   $('filePreview').hidden = true;
   $('progressWrap').hidden = scheme.status !== 'processing';
   setState(schemeStatusText(scheme.status), scheme.status === 'failed' ? 'error' : scheme.status === 'processing' ? 'busy' : 'ready');
@@ -327,12 +333,16 @@ async function openLibraryScheme(jobId) {
     $('fileName').textContent = 'Добавить фото схемы';
     updateLibrarySelection();
     renderLibrary();
-    if (scheme.status === 'completed') {
-      await openSavedJob(jobId);
-      return;
+    if (scheme.status === 'completed' || scheme.status === 'failed') {
+      const statusResponse = await fetch(`/api/library/schemes/${encodeURIComponent(jobId)}/status`, { cache: 'no-store' });
+      const statusData = await statusResponse.json().catch(() => ({}));
+      if (statusData.graphReady) {
+        await openSavedJob(jobId);
+        return;
+      }
     }
     showPendingScheme(scheme);
-    if (scheme.status === 'processing') pollSchemeStatus(jobId);
+    if (['queued', 'processing'].includes(scheme.status)) pollSchemeStatus(jobId);
   } catch (error) {
     setAlert(error.message);
     setState('ОШИБКА ОТКРЫТИЯ', 'error');
@@ -407,18 +417,20 @@ function renderHouseSchemeCadPreview(project) {
   button.innerHTML = '<b>CAD</b><span>Редактировать</span>';
   button.title = 'Открыть этот чертёж в ручном CAD; изменения сохраняются в проекте дома';
   const previewUrl = `${graph.manualCadPreviewUrl}?v=${encodeURIComponent(project.updatedAt || Date.now())}`;
-  const pipeCount = Number(project.pipes?.length || 0);
-  const completeness = pipeCount === 0 ? 'ГЕОМЕТРИЯ НЕ РАСПОЗНАНА · ЧЕРТЁЖ НЕ ГОТОВ' : project.analysisComplete === false ? 'НЕПОЛНЫЙ ЧЕРНОВИК · ТОЛЬКО ПРОВЕРКА' : 'ЧИСТОВОЙ ЛИСТ · ТРЕБУЕТСЯ ПРОВЕРКА СПЕЦИАЛИСТОМ';
+  const pipes = Array.isArray(project.pipes) ? project.pipes : [];
+  const pipeCount = pipes.filter(pipe => pipe.reviewOnly !== true).length;
+  const reviewCount = pipes.filter(pipe => pipe.reviewOnly === true).length;
+  const completeness = pipeCount === 0 ? 'ПОДТВЕРЖДЁННАЯ ГЕОМЕТРИЯ НЕ НАЙДЕНА · НУЖНА РУЧНАЯ ТРАССИРОВКА' : project.analysisComplete === false ? 'НЕПОЛНЫЙ CAD-ЧЕРНОВИК · ТОЛЬКО ПРОВЕРКА' : 'АВТОМАТИЧЕСКИЙ CAD-ЧЕРНОВИК · ПРОВЕРИТЬ В РЕДАКТОРЕ';
   $('cleanStage').classList.add('manual-cad-preview');
-  $('cleanStage').innerHTML = `<img class="manual-cad-preview-image" src="${escapeHtml(previewUrl)}" alt="Чистовой лист LPGCad R1 для ${escapeHtml(project.title || 'схемы дома')}" loading="eager"><div class="manual-cad-preview-caption"><b>${escapeHtml(completeness)}</b><span>${escapeHtml(project.siteAddress || activeScheme?.streetName || 'Адрес из папки дома')} · ${Number(project.pipes?.length || 0)} векторных трасс · ${Number(project.labels?.length || 0)} подписей</span></div>`;
+  $('cleanStage').innerHTML = `<img class="manual-cad-preview-image" src="${escapeHtml(previewUrl)}" alt="Предварительный CAD-лист LPGCad R1 для ${escapeHtml(project.title || 'схемы дома')}" loading="eager"><div class="manual-cad-preview-caption"><b>${escapeHtml(completeness)}</b><span>${escapeHtml(project.siteAddress || activeScheme?.streetName || 'Адрес из папки дома')} · ${pipeCount} основных трасс · ${reviewCount} кандидатов на проверку · ${Number(project.labels?.length || 0)} подписей</span></div>`;
   $('cleanStage').querySelector('img')?.addEventListener('error', () => {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось показать чистовой лист</b><span>Проект CAD сохранён. Открой его кнопкой «Редактировать».</span></div>';
   }, { once: true });
   $('previewMeta').textContent = pipeCount === 0
-    ? 'Не найдено подтверждённых трубных трасс. CAD-лист создан как заготовка с исходной подложкой; проверь распознавание и при необходимости начерти линии вручную.'
+    ? 'Не найдено подтверждённых трубных трасс. Проект создан с исходной подложкой: начерти маршруты вручную в CAD-редакторе.'
     : project.analysisComplete === false
-      ? 'Показан неполный CAD-черновик. Продолжи преобразование и сверь все элементы с исходником.'
-      : 'Чистовой лист LPGCad R1 сформирован из результата преобразования. Перед использованием проверь геометрию, символы и подписи.';
+      ? 'Показан неполный CAD-черновик. Доступные линии можно исправить, а недостающие маршруты начертить по подложке.'
+      : 'Показан предварительный CAD-черновик. Проверь линии, соединения и кандидаты на проверку; вручную добавь оборудование, подписи и размеры. Чистовой экспорт делай после сверки с оригиналом.';
 }
 
 async function ensureHouseSchemeCadProject(jobId) {
@@ -463,7 +475,7 @@ async function pollSchemeStatus(jobId) {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Не удалось проверить статус.');
       activeScheme.status = data.status;
-      $('progressLabel').textContent = data.progress ? data.progress.replace(/^.*?\] /, '') : 'Подготовка обработки…';
+      $('progressLabel').textContent = data.progress ? data.progress.replace(/^.*?\] /, '') : data.status === 'queued' ? `В очереди на GTX 1060${data.queuePosition ? ` · позиция ${data.queuePosition}` : ''}…` : 'Подготовка обработки…';
       $('activeSchemeStatus').textContent = schemeStatusText(data.status);
       $('previewMeta').textContent = schemeStatusText(data.status);
       if (data.status === 'completed' && data.graphReady) {
@@ -598,8 +610,6 @@ analyzeBtn.addEventListener('click', async () => {
     if (!response.ok) throw new Error(data.error || `Ошибка сервера ${response.status}`);
     const jobId = data.scheme?.jobId;
     if (!jobId) throw new Error('Сервер сохранил файл, но не вернул номер схемы.');
-    const inboxStreetId = selectedStreetId;
-    const inboxBuildingId = selectedBuildingId;
     selectedFile = null;
     selectedJobId = null;
     fileInput.value = '';
@@ -608,10 +618,26 @@ analyzeBtn.addEventListener('click', async () => {
     $('filePreview').hidden = true;
     $('fileName').textContent = 'Добавить фото схемы';
     await loadAddressLibrary();
-    // Uploaders return to the selected house inbox. This endpoint stores the
-    // source photo only; a specialist explicitly opens and processes it later.
-    showAddressInbox(inboxStreetId, inboxBuildingId);
-    setAlert('Фото отправлено во входящие выбранного дома. Распознавание не запускалось.');
+    const savedAddress = (addressLibrary.streets || []).map(street => ({
+      street, building: (street.buildings || []).find(building => (building.schemes || []).some(item => item.jobId === jobId))
+    })).find(item => item.building);
+    if (savedAddress) {
+      selectedStreetId = savedAddress.street.id;
+      selectedBuildingId = savedAddress.building.id;
+      expandedStreetIds.add(selectedStreetId);
+      renderLibrary();
+      updateLibrarySelection();
+    }
+    activeScheme = {
+      ...data.scheme,
+      streetName: savedAddress?.street?.name || '',
+      buildingName: savedAddress?.building?.name || ''
+    };
+    showPendingScheme(activeScheme);
+    setAlert(activeScheme.status === 'queued'
+      ? 'Фото отправлено. Оно автоматически поставлено в очередь преобразования.'
+      : 'Фото отправлено. Автоматическое преобразование запущено.');
+    if (['queued', 'processing'].includes(activeScheme.status)) pollSchemeStatus(jobId);
   } catch (error) {
     console.error('Upload failed', error);
     setAlert(`Не удалось отправить эскиз: ${error.message}`);
@@ -1150,12 +1176,12 @@ function renderReviewList() {
 }
 
 function renderTextList() {
-  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract'].includes(item.source) && item.text);
+  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract', 'yandex-vision-ocr'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
     <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Заменить рукописную надпись CAD-текстом" aria-label="Заменить рукописную надпись ${escapeHtml(annotation.id)} CAD-текстом">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : annotation.source === 'yandex-vision-ocr' ? 'Yandex OCR' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL, Yandex OCR и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
@@ -1578,18 +1604,43 @@ function finalExportAllowed() {
 function rejectPartialExport() {
   setAlert('Экспорт SVG/DXF/PDF запрещён: обработка неполная. Повтори преобразование, чтобы продолжить с сохранённых checkpoint. JSON остаётся доступен для диагностики.');
 }
+async function ensureSourceOnlyHouseCadProject(jobId) {
+  const response = await fetch(`/api/library/schemes/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Не удалось получить исходную фотографию.');
+  const image = new Image();
+  image.src = `${data.scheme.sourceUrl}?dimensions=${Date.now()}`;
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error('Не удалось определить размер исходной фотографии.'));
+  });
+  const createResponse = await fetch(`/api/manual-cad/import-source-job/${encodeURIComponent(jobId)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: activeScheme?.title || data.scheme.title || 'Схема дома',
+      width: image.naturalWidth, height: image.naturalHeight
+    })
+  });
+  const projectData = await createResponse.json().catch(() => ({}));
+  if (!createResponse.ok) throw new Error(projectData.error || 'Не удалось создать ручной CAD-проект.');
+  return projectData.project;
+}
+
 $('openManualCadBtn').addEventListener('click', async () => {
-  if (!graph?.jobId) return;
+  const jobId = graph?.jobId || activeScheme?.jobId;
+  if (!jobId) return;
   const button = $('openManualCadBtn');
   button.disabled = true;
   button.innerHTML = '<b>CAD</b><span>Открываю…</span>';
   try {
-    let projectId = graph.manualCadProjectId || button.dataset.projectId;
+    let projectId = graph?.manualCadProjectId || button.dataset.projectId;
     if (!projectId) {
-      const project = await ensureHouseSchemeCadProject(graph.jobId);
+      const project = graph
+        ? await ensureHouseSchemeCadProject(jobId)
+        : await ensureSourceOnlyHouseCadProject(jobId);
       projectId = project?.id;
     }
-    if (!projectId) throw new Error('CAD-проект для этой схемы пока не создан. Повтори преобразование.');
+    if (!projectId) throw new Error('Не удалось подготовить CAD-проект по этой фотографии.');
     window.location.href = `/manual-cad.html?project=${encodeURIComponent(projectId)}`;
   } catch (error) {
     setAlert(`Не удалось открыть CAD-редактор: ${error.message}`);
@@ -1723,6 +1774,130 @@ if (templateFileInput) {
     }
   });
 }
+
+
+// Optional Yandex AI Studio integration. The API key is write-only from the
+// browser: GET endpoints never return the secret, and Qwen/Tesseract stay live.
+const yandexApiKeyInput = $('yandexApiKey');
+const yandexFolderIdInput = $('yandexFolderId');
+const yandexModelInput = $('yandexModel');
+const yandexEnabledInput = $('yandexEnabled');
+const yandexOcrEnabledInput = $('yandexOcrEnabled');
+const yandexPipeEnabledInput = $('yandexPipeEnabled');
+const yandexSaveBtn = $('yandexSaveBtn');
+const yandexTestBtn = $('yandexTestBtn');
+const yandexClearBtn = $('yandexClearBtn');
+
+function setYandexStatus(message, kind = '') {
+  const box = $('yandexStatus');
+  if (!box) return;
+  box.textContent = message;
+  box.dataset.kind = kind;
+}
+
+async function loadYandexAiSettings() {
+  try {
+    const response = await fetch('/api/ai-settings', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки Yandex AI.');
+    const cfg = data.yandex || {};
+    yandexFolderIdInput.value = cfg.folderId || '';
+    yandexModelInput.value = cfg.model || 'qwen3.6-35b-a3b';
+    yandexEnabledInput.checked = Boolean(cfg.enabled);
+    yandexOcrEnabledInput.checked = cfg.ocrEnabled !== false;
+    yandexPipeEnabledInput.checked = cfg.pipeEnabled !== false;
+    yandexClearBtn.hidden = !cfg.configured;
+    setYandexStatus(cfg.configured
+      ? `Ключ сохранён · ${cfg.enabled ? 'Yandex AI включён' : 'Yandex AI выключен'} · модель ${cfg.model}. Qwen и Tesseract сохранены.`
+      : 'API-ключ ещё не настроен. Qwen и Tesseract работают как раньше.');
+  } catch (error) {
+    setYandexStatus(error.message || 'Не удалось загрузить настройки Yandex AI.', 'error');
+  }
+}
+
+if (yandexSaveBtn) {
+  yandexSaveBtn.addEventListener('click', async () => {
+    yandexSaveBtn.disabled = true;
+    setYandexStatus('Сохраняю настройки на сервере…');
+    try {
+      const response = await fetch('/api/ai-settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: yandexApiKeyInput.value,
+          folderId: yandexFolderIdInput.value.trim(),
+          model: yandexModelInput.value.trim() || 'qwen3.6-35b-a3b',
+          enabled: yandexEnabledInput.checked,
+          ocrEnabled: yandexOcrEnabledInput.checked,
+          pipeEnabled: yandexPipeEnabledInput.checked,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить настройки.');
+      yandexApiKeyInput.value = '';
+      yandexClearBtn.hidden = !data.yandex?.configured;
+      setYandexStatus(`Настройки сохранены. ${data.yandex?.enabled ? 'Yandex AI будет использоваться для новых обработок.' : 'Yandex AI выключен.'} Qwen и Tesseract не изменены.`, 'success');
+    } catch (error) {
+      setYandexStatus(error.message || 'Ошибка сохранения настроек.', 'error');
+    } finally {
+      yandexSaveBtn.disabled = false;
+    }
+  });
+}
+
+if (yandexTestBtn) {
+  yandexTestBtn.addEventListener('click', async () => {
+    if (!selectedJobId) {
+      setYandexStatus('Сначала открой во входящих фотографию схемы дома. Тест отправит именно её в Yandex OCR и Qwen3.6 Vision.');
+      return;
+    }
+    yandexTestBtn.disabled = true;
+    yandexTestBtn.textContent = 'Тестирую…';
+    setYandexStatus('Отправляю открытую фотографию в Yandex Vision OCR и мультимодальную Qwen3.6. Запросы тарифицируются.');
+    try {
+      const response = await fetch('/api/ai-settings/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: selectedJobId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Тест Yandex AI не выполнен.');
+      const ocr = data.result?.ocr || {};
+      const vision = data.result?.vision || {};
+      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} строк` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
+      const visionText = vision.ok ? `Vision: ${vision.routes} маршрутов труб` : `Vision: ошибка — ${vision.error || 'неизвестно'}`;
+      setYandexStatus(`${data.ok ? 'Тест API пройден частично или полностью.' : 'Оба теста не прошли.'} ${ocrText}. ${visionText}. Результат пока тестовый — существующий чертёж не изменён.`, data.ok ? 'success' : 'error');
+    } catch (error) {
+      setYandexStatus(error.message || 'Не удалось выполнить тест Yandex AI.', 'error');
+    } finally {
+      yandexTestBtn.disabled = false;
+      yandexTestBtn.textContent = 'Проверить на открытой схеме';
+    }
+  });
+}
+
+if (yandexClearBtn) {
+  yandexClearBtn.addEventListener('click', async () => {
+    if (!window.confirm('Удалить только сохранённый API-ключ и настройки Yandex AI? Qwen и Tesseract останутся без изменений.')) return;
+    yandexClearBtn.disabled = true;
+    try {
+      const response = await fetch('/api/ai-settings', { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось удалить настройки.');
+      yandexApiKeyInput.value = '';
+      yandexFolderIdInput.value = '';
+      yandexEnabledInput.checked = false;
+      yandexOcrEnabledInput.checked = true;
+      yandexPipeEnabledInput.checked = true;
+      yandexClearBtn.hidden = true;
+      setYandexStatus('Настройки Yandex AI удалены. Локальные Qwen и Tesseract по-прежнему включены.', 'success');
+    } catch (error) {
+      setYandexStatus(error.message || 'Не удалось удалить настройки.', 'error');
+    } finally {
+      yandexClearBtn.disabled = false;
+    }
+  });
+}
+
+loadYandexAiSettings();
 
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
   const ollama = health.ollama || {};

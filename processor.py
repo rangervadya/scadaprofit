@@ -36,6 +36,10 @@ from clean_layout import build_clean_layout
 from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
 from pipeline_diagnostics import build_pipeline_diagnostics
+from yandex_ai import (
+    DEFAULT_VISION_MODEL, YandexAIError, test_yandex_ai,
+    yandex_ocr_annotations, yandex_semantic_routes,
+)
 
 
 def _progress(stage: str, message: str) -> None:
@@ -2167,9 +2171,36 @@ def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 
 def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Run Qwen first, then use Tesseract as a fallback/supplement."""
+    """Run local Qwen + optional Yandex Vision OCR + Tesseract; never remove a local engine."""
     h, w = gray.shape[:2]
     qwen_items, qwen_status = _qwen_annotations(image_path, w, h, checkpoint_dir=checkpoint_dir)
+    yandex_items: list[dict[str, Any]] = []
+    yandex_status: dict[str, Any] = {
+        'available': False, 'complete': False, 'model': 'vision-ocr-handwritten',
+        'annotations': 0, 'tiles': 0, 'successful_tiles': 0, 'failed_tiles': [],
+        'disabled': os.getenv('YANDEX_OCR_ENABLED', '0').strip().lower() not in {'1', 'true', 'yes', 'on'},
+    }
+    if not yandex_status['disabled']:
+        _progress('OCR', 'Yandex Vision OCR started (local Qwen and Tesseract remain enabled)')
+        try:
+            yandex_items, yandex_status = yandex_ocr_annotations(
+                image_path,
+                os.getenv('YANDEX_API_KEY', '').strip(),
+                os.getenv('YANDEX_FOLDER_ID', '').strip(),
+                timeout=max(15.0, float(os.getenv('YANDEX_OCR_TIMEOUT', '90'))),
+            )
+            _progress('OCR', f'Yandex Vision OCR completed: annotations={len(yandex_items)}')
+        except Exception as error:
+            yandex_status.update({
+                'available': False, 'complete': False, 'error': str(error)[:260],
+                'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
+            })
+            _progress('OCR', f'Yandex Vision OCR failed: {str(error)[:220]}')
+    # Keep the preferred local Qwen candidate when two engines cover the same text box.
+    yandex_items = [
+        item for item in yandex_items
+        if not any(_boxes_overlap(item.get('bbox') or {}, qwen.get('bbox') or {}) >= 0.22 for qwen in qwen_items)
+    ]
     tesseract_items: list[dict[str, Any]] = []
     tesseract_error = None
     _progress('OCR', 'Tesseract OCR started')
@@ -2193,7 +2224,7 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
                 continue
             box = {'x': x, 'y': y, 'w': bw, 'h': bh}
             # Prefer the vision model when two OCR engines refer to the same mark.
-            if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in qwen_items):
+            if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in (qwen_items + yandex_items)):
                 continue
             has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
             accepted = confidence >= 68 and has_alnum
@@ -2209,11 +2240,12 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
 
     _progress('OCR', f'Tesseract OCR completed: annotations={len(tesseract_items)}')
     # Stable, unique IDs across both OCR engines.
-    items = qwen_items + tesseract_items
+    items = qwen_items + yandex_items + tesseract_items
     for index, item in enumerate(items, 1):
         item['id'] = f'A{index}'
     status = {
         'qwen': qwen_status,
+        'yandex': yandex_status,
         'tesseract': {'available': tesseract_error is None, 'annotations': len(tesseract_items), 'error': tesseract_error}
     }
     return items, status
@@ -4262,8 +4294,14 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     annotations, ocr_status = ocr_annotations(prepared_input_path, gray, checkpoint_dir=checkpoint_dir)
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
-    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen tiles={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
-    ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
+    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; Qwen={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; Yandex={ocr_status.get("yandex", {}).get("successful_tiles", 0)}/{ocr_status.get("yandex", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
+    qwen_ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
+    yandex_ocr_complete = _qwen_stage_is_complete(ocr_status.get('yandex'))
+    # A complete Yandex Vision OCR pass can unblock PIPE while local Qwen is
+    # still retained as a parallel source and checkpointed for future retries.
+    ocr_complete = qwen_ocr_complete or yandex_ocr_complete
+    yandex_pipe_enabled = os.getenv('YANDEX_PIPE_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+    yandex_pipe_status: dict[str, Any] | None = None
     stage_started = time.perf_counter()
     if not ocr_complete:
         # OCR supplies the text mask used by geometric validation. Defer the
@@ -4279,28 +4317,62 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
             'routes': 0, 'raw_routes': 0, 'tiles': pipe_total, 'successful_tiles': 0,
             'failed_tiles': list(range(1, pipe_total + 1)), 'tile_diagnostics': [],
             'deferred_due_to_ocr_incomplete': True,
-            'error': 'Трассировка Qwen отложена: OCR обработал не все плитки.',
-            'hint': 'Повторите обработку этой же схемы. Успешные OCR-плитки восстановятся из .checkpoints; после полного OCR запустится трассировка труб.',
+            'error': 'Трассировка труб отложена: ни Qwen OCR, ни Yandex Vision OCR не завершили полный проход.',
+            'hint': 'Проверьте доступность выбранных OCR-провайдеров и повторите обработку. Успешные локальные Qwen-плитки сохраняются в .checkpoints.',
             'incomplete_reason': 'PIPE отложен до завершения OCR, чтобы не тратить время и не строить трубные маски по неполной карте текста.',
         }
-        _progress('PIPE', f'CAD pipe-route trace deferred: OCR completed {ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)} tiles; exporting review-only graph')
+        _progress('PIPE', 'CAD pipe-route trace deferred: neither Qwen OCR nor Yandex Vision OCR completed; exporting review-only graph')
     else:
         _progress('PIPE', 'CAD pipe-route trace started')
-        semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-        _progress('PIPE', f'CAD pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
-    timings_ms['qwen_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+        if yandex_pipe_enabled:
+            _progress('PIPE', 'Yandex Qwen3.6 multimodal pipe tracing requested')
+            try:
+                yandex_routes, yandex_pipe_status = yandex_semantic_routes(
+                    prepared_input_path,
+                    os.getenv('YANDEX_API_KEY', '').strip(),
+                    os.getenv('YANDEX_FOLDER_ID', '').strip(),
+                    os.getenv('YANDEX_VISION_MODEL', DEFAULT_VISION_MODEL),
+                    timeout=max(30.0, float(os.getenv('YANDEX_PIPE_TIMEOUT', '240'))),
+                )
+            except Exception as error:
+                yandex_routes = []
+                yandex_pipe_status = {
+                    'available': False, 'complete': False, 'model': os.getenv('YANDEX_VISION_MODEL', DEFAULT_VISION_MODEL),
+                    'provider': 'yandex-cloud', 'routes': 0, 'raw_routes': 0,
+                    'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
+                    'error': str(error)[:260], 'hint': 'Проверьте API-ключ, Folder ID, квоты и доступность модели Yandex AI Studio.',
+                }
+            if yandex_routes:
+                semantic_routes, route_status = yandex_routes, yandex_pipe_status
+                route_status['fallback_used'] = False
+                _progress('PIPE', f'Yandex Qwen3.6 returned routes={len(semantic_routes)}; ink/topology checks will run next')
+            else:
+                _progress('PIPE', 'Yandex returned no usable routes; falling back to local Qwen3-VL')
+                semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
+                route_status['yandex_attempt'] = yandex_pipe_status
+                route_status['fallback_used'] = True
+        else:
+            semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
+        _progress('PIPE', f'CAD pipe-route trace completed: provider={route_status.get("provider", "ollama-qwen")}; routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+    timings_ms['semantic_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    timings_ms['qwen_pipe_trace'] = timings_ms['semantic_pipe_trace']  # legacy diagnostic key retained for existing reports/tests
     pipe_complete = _qwen_stage_is_complete(route_status)
     processing_complete = ocr_complete and pipe_complete
     incomplete_reasons = []
     if not ocr_complete:
-        qwen_ocr_status = ocr_status.get('qwen', {})
-        incomplete_reasons.append(qwen_ocr_status.get('incomplete_reason') or qwen_ocr_status.get('error') or 'OCR Qwen обработала не все плитки.')
+        for provider_name, provider_label in (('yandex', 'Yandex Vision OCR'), ('qwen', 'локальный Qwen OCR')):
+            provider_status = ocr_status.get(provider_name, {})
+            if provider_status.get('error') or provider_status.get('incomplete_reason'):
+                incomplete_reasons.append(f'{provider_label}: ' + str(provider_status.get('incomplete_reason') or provider_status.get('error'))[:240])
+        if not incomplete_reasons:
+            incomplete_reasons.append('Ни один OCR-провайдер не завершил полный проход.')
     if not pipe_complete:
         incomplete_reasons.append(route_status.get('incomplete_reason') or route_status.get('error') or 'Трассировка труб Qwen обработала не все плитки.')
     if processing_complete:
-        _progress('JOB', 'All Qwen OCR and PIPE tiles completed; full analysis can be marked complete')
+        _progress('JOB', f'Analysis completed; OCR provider={"Yandex Vision" if yandex_ocr_complete else "local Qwen"}; PIPE provider={route_status.get("provider", "local Qwen")}')
     else:
-        _progress('JOB', f'Analysis incomplete; OCR={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; PIPE={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; per-tile checkpoints saved for retry')
+        active_ocr_status = ocr_status.get('yandex', {}) if yandex_ocr_complete else ocr_status.get('qwen', {})
+        _progress('JOB', f'Analysis incomplete; OCR={active_ocr_status.get("successful_tiles", 0)}/{active_ocr_status.get("tiles", 0)}; PIPE={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; checkpoints saved for retry')
     _progress('CAD', 'Graph construction started')
     stage_started = time.perf_counter()
     # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
@@ -4314,6 +4386,24 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
     )
+    # If the cloud model proposed routes but none survived source-ink validation,
+    # give the preserved local Qwen one fallback attempt before retaining only review geometry.
+    if (not primary_semantic_routes and yandex_pipe_enabled and yandex_pipe_status
+            and yandex_pipe_status.get('available') and semantic_routes
+            and route_status.get('provider') == 'yandex-cloud'):
+        _progress('PIPE', 'Yandex routes did not pass source-ink validation; trying preserved local Qwen fallback')
+        local_routes, local_status = _qwen_semantic_routes(
+            prepared_input_path, w, h, checkpoint_dir=checkpoint_dir
+        )
+        if local_routes:
+            semantic_routes = semantic_routes + local_routes
+            local_status['yandex_attempt'] = yandex_pipe_status
+            local_status['fallback_used'] = True
+            local_status['yandex_routes_rejected_by_ink_validation'] = len(semantic_routes) - len(local_routes)
+            route_status = local_status
+            primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
+                semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
+            )
     _progress('CAD', f'Graph construction in progress: segments={len(segments)} nodes={len(nodes)} edges={len(edges)}')
     primary_semantic_ids = {str(route.get('id')) for route in primary_semantic_routes}
     for route in semantic_routes:
@@ -4430,7 +4520,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":ocr_complete,"pipe_tiles_complete":pipe_complete,
-                      "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
+                      "ocr_tiles_successful":(ocr_status.get("qwen", {}).get("successful_tiles", 0) if qwen_ocr_complete else ocr_status.get("yandex", {}).get("successful_tiles", 0)),"ocr_tiles_total":(ocr_status.get("qwen", {}).get("tiles", 0) if qwen_ocr_complete else ocr_status.get("yandex", {}).get("tiles", 0)),
                       "pipe_tiles_successful":route_status.get("successful_tiles", 0),"pipe_tiles_total":route_status.get("tiles", 0),
                       "segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
@@ -4442,6 +4532,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                       "semantic_validation":semantic_validation,
                       "primary_geometry_source":"opencv-selected-graph+ink-validated-qwen",
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
+                      "yandex_ocr_annotations":len([a for a in annotations if a.get('source')=='yandex-vision-ocr']),
                       "geometry_excluded_text_regions":len(_confirmed_text_boxes(annotations)),
                       "tesseract_annotations":len([a for a in annotations if a.get('source')=='tesseract']),
                       "verified_annotations":len([a for a in annotations if a.get('verified') and a.get('text')]),
@@ -4490,12 +4581,12 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                        "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not processing_complete:
-        graph['warnings'].append('РЕЗУЛЬТАТ НЕПОЛНЫЙ: не все плитки Qwen обработаны. Не используйте этот SVG/DXF как окончательный чертёж. Успешные плитки сохранены в .checkpoints; повторный запуск того же задания продолжит только необработанные плитки.')
+        graph['warnings'].append('РЕЗУЛЬТАТ НЕПОЛНЫЙ: не завершён полный проход OCR и/или трассировки труб. Не используйте этот SVG/DXF как окончательный чертёж. Успешные локальные Qwen-плитки сохранены в .checkpoints; повторный запуск того же задания повторит незавершённые этапы.')
         graph['warnings'].extend(str(reason) for reason in incomplete_reasons if reason)
     if not ocr_status.get('qwen', {}).get('available'):
-        graph['warnings'].append('Qwen OCR недоступен; использован Tesseract, если он установлен. Проверьте Ollama и модель Qwen3-VL.')
+        graph['warnings'].append('Локальный Qwen OCR недоступен; сохранён резервный Tesseract и/или Yandex Vision OCR, если он включён. Проверьте Ollama и модель Qwen3-VL.')
     if not route_status.get('available') or not semantic_routes:
-        graph['warnings'].append('Qwen не предоставила семантические маршруты для дополнительной проверки. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте Ollama и модель.'))
+        graph['warnings'].append('Семантический vision-провайдер не предоставил пригодные маршруты. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте настройки Yandex AI или Ollama.'))
     if not _cad_edge_chains(edges):
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
@@ -4506,9 +4597,9 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     _progress('EXPORT', 'graph.json written; intermediate checkpoints retained')
     if processing_complete:
-        _progress('JOB', 'Analysis completed successfully; all Qwen tiles completed')
+        _progress('JOB', 'Analysis completed successfully; selected OCR and pipe-tracing providers completed')
     else:
-        _progress('JOB', 'Analysis INCOMPLETE; partial exports are review-only. Re-run this job to resume failed tiles from checkpoints.')
+        _progress('JOB', 'Analysis INCOMPLETE; partial exports are review-only. Re-run this job to retry incomplete providers and resume local Qwen checkpoints.')
     return graph
 
 
@@ -4517,7 +4608,17 @@ def main():
     ap.add_argument('--input', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--template', default=None, help='Optional reference sheet file; raster is used for page profile only')
+    ap.add_argument('--test-yandex', action='store_true', help='Run an explicit Yandex OCR + multimodal vision smoke test on the source image')
     args = ap.parse_args()
+    if args.test_yandex:
+        result = test_yandex_ai(
+            args.input,
+            os.getenv('YANDEX_API_KEY', '').strip(),
+            os.getenv('YANDEX_FOLDER_ID', '').strip(),
+            os.getenv('YANDEX_VISION_MODEL', DEFAULT_VISION_MODEL),
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return
     result = analyze(args.input, args.out, template_path=args.template)
     print(json.dumps(result, ensure_ascii=False))
 

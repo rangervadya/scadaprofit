@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
-  <title>Ручной CAD · ScadaProfit 4.3.23</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=4.3.23">
-  <script src="/manual-cad.js?v=4.3.23" defer></script>
+  <title>Ручной CAD · ScadaProfit 4.3.25</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.25">
+  <script src="/manual-cad.js?v=4.3.25" defer></script>
 </head>
 <body class="manual-cad-page">
   <nav class="mc-nav" aria-label="Разделы ScadaProfit">
@@ -90,6 +90,7 @@
         <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option></select></div>
         <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
         <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выключена</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
+        <label class="mc-check" id="reviewCandidatesLabel" hidden title="Показывает линии, которые не включены в чистовой экспорт"><input id="showReviewCandidates" type="checkbox"><span>Кандидаты на проверку: <b id="reviewCandidatesCount">0</b></span></label>
         <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Подложка</span></label>
         <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
       </div>
@@ -124,6 +125,7 @@
         <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
         <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
         <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolLabel">Подпись символа</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <button class="mc-button mc-button-primary mc-accept-review" id="acceptReviewPipeBtn" type="button" hidden>Подтвердить линию и включить в чертёж</button>
         <div class="mc-property-help" id="selectedHelp">Измени свойства, затем они автоматически сохранятся.</div>
       </div>
       <div class="mc-statistics" id="drawingStats"><div><span>Трубы</span><b>0</b></div><div><span>Узлы</span><b>0</b></div><div><span>Символы</span><b>0</b></div><div><span>Подписи</span><b>0</b></div></div>

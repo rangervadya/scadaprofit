@@ -4,7 +4,7 @@ const svg = $('cadCanvas');
 const state = {
   projects: [], project: null, tool: 'select', selected: null,
   draft: [], draftStart: null, draftEnd: null, dimensionStart: null,
-  sourceVisible: true, saveTimer: null, saveChain: Promise.resolve(),
+  sourceVisible: true, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
   undo: [], redo: [], drag: null, justDragged: false, lastSaved: null, toastTimer: null
 };
 
@@ -33,6 +33,7 @@ function ensureProjectDefaults(project) {
   project.width = Math.max(100, safeNum(project.width, 1600));
   project.height = Math.max(100, safeNum(project.height, 1000));
   project.pipes ||= []; project.junctions ||= []; project.symbols ||= []; project.labels ||= []; project.dimensions ||= [];
+  project.pipes.forEach(pipe => { pipe.reviewOnly = pipe.reviewOnly === true; pipe.reviewReason ||= ''; });
   project.page = project.page === 'landscape' ? 'landscape' : 'portrait';
   project.paperSize = project.paperSize === 'A3' ? 'A3' : 'A4';
   project.drawingStyle = project.drawingStyle === 'lpgcad-r1' ? 'lpgcad-r1' : 'standard';
@@ -72,7 +73,7 @@ async function createProject(showToast=true) {
   try {
     const data = await api('/api/manual-cad/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: 'Новая схема' }) });
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; clearDraft();
+    state.undo = []; state.redo = []; state.selected = null; clearDraft(); state.showReviewCandidates = false;
     await refreshProjectList();
     syncControls(); renderAll();
     if (showToast) toast('Создан новый чертёж. Загрузи исходный эскиз или начни строить схему.');
@@ -88,7 +89,7 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; clearDraft(); state.sourceVisible = true;
+    state.undo = []; state.redo = []; state.selected = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = false;
     syncControls(); renderAll(); setSaveState('Сохранено', 'saved'); await refreshProjectList();
   } catch (error) { toast(error.message); }
 }
@@ -138,7 +139,7 @@ async function saveProject() {
       else setSaveState('Есть новые изменения…', 'dirty');
     }
     const item=state.projects.find(entry=>entry.id===snapshot.id);
-    if(item){item.title=snapshot.title;item.updatedAt=data.project.updatedAt;item.pipeCount=snapshot.pipes.length;renderProjectList();}
+    if(item){item.title=snapshot.title;item.updatedAt=data.project.updatedAt;item.pipeCount=snapshot.pipes.filter(pipe=>pipe.reviewOnly!==true).length;renderProjectList();}
   }).catch(error => { setSaveState('Ошибка сохранения', 'error'); toast(error.message); });
   return state.saveChain;
 }
@@ -170,6 +171,10 @@ function syncControls() {
   $('sourceOpacity').disabled = !hasSource;
   $('sourceVisible').checked = state.sourceVisible;
   $('toggleSourceBtn').textContent = state.sourceVisible ? 'Скрыть подложку' : 'Показать подложку';
+  const reviewCount = p.pipes.filter(pipe => pipe.reviewOnly === true).length;
+  $('reviewCandidatesLabel').hidden = reviewCount === 0;
+  $('showReviewCandidates').checked = state.showReviewCandidates;
+  $('reviewCandidatesCount').textContent = String(reviewCount);
   $('exportSvgBtn').href = `/api/manual-cad/projects/${p.id}/export.svg`;
   $('exportDxfBtn').href = `/api/manual-cad/projects/${p.id}/export.dxf`;
   $('exportSvgBtn').setAttribute('aria-disabled', 'false'); $('exportDxfBtn').setAttribute('aria-disabled', 'false');
@@ -220,7 +225,7 @@ function nearestPipeProjection(point) {
   if (limit <= 0) return null;
   let best = null;
   for (const pipe of state.project.pipes) {
-    if (pipe.visible === false) continue;
+    if (pipe.visible === false || (pipe.reviewOnly === true && !state.showReviewCandidates)) continue;
     for (let i=1;i<pipe.points.length;i++) {
       const a={x:pipe.points[i-1][0],y:pipe.points[i-1][1]}, b={x:pipe.points[i][0],y:pipe.points[i][1]};
       const dx=b.x-a.x, dy=b.y-a.y, length2=dx*dx+dy*dy;
@@ -338,7 +343,8 @@ function renderCanvas() {
     if(pipe.visible===false)return '';
     const points=pipe.points.map(pair=>`${safeNum(pair[0])},${safeNum(pair[1])}`).join(' ');
     const selected=state.selected?.type==='pipe'&&state.selected.id===pipe.id;
-    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="8"/>`).join(''):''}</g>`;
+    const reviewClass = pipe.reviewOnly === true ? 'mc-pipe-review' : '';
+    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${reviewClass} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="8"/>`).join(''):''}</g>`;
   }).join('');
   const junctions=p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('');
   const symbols=p.symbols.map(symbolSvg).join('');
@@ -353,7 +359,9 @@ function renderCanvas() {
 }
 function updateStatistics() {
   const p=state.project;
-  $('drawingStats').innerHTML=`<div><span>Трубы</span><b>${p.pipes.length}</b></div><div><span>Узлы</span><b>${p.junctions.length}</b></div><div><span>Символы</span><b>${p.symbols.length}</b></div><div><span>Подписи</span><b>${p.labels.length+p.dimensions.length}</b></div>`;
+  const primaryCount=p.pipes.filter(pipe=>pipe.reviewOnly!==true).length;
+  const reviewCount=p.pipes.filter(pipe=>pipe.reviewOnly===true).length;
+  $('drawingStats').innerHTML=`<div><span>Основные трубы</span><b>${primaryCount}</b></div><div><span>На проверку</span><b>${reviewCount}</b></div><div><span>Узлы</span><b>${p.junctions.length}</b></div><div><span>Символы</span><b>${p.symbols.length}</b></div><div><span>Подписи / размеры</span><b>${p.labels.length+p.dimensions.length}</b></div>`;
 }
 function selectedItem() {
   if(!state.selected||!state.project)return null;
@@ -371,7 +379,8 @@ function renderProperties() {
   $('selectedDiameterWrap').hidden=state.selected.type!=='pipe';
   $('selectedSymbolWrap').hidden=state.selected.type!=='symbol';
   $('selectedSymbolLabel').value=item.label||'';
-  $('selectedHelp').textContent=state.selected.type==='pipe'?'В режиме «Выбор» перетаскивай круглые маркеры вершин на линии. Ответвления соединяются только в точке привязки.':'Перетаскивай элемент мышью, чтобы изменить положение.';
+  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'В режиме «Выбор» перетаскивай круглые маркеры вершин на линии. Ответвления соединяются только в точке привязки.'):'Перетаскивай элемент мышью, чтобы изменить положение.';
+  $('acceptReviewPipeBtn').hidden=!(state.selected.type==='pipe' && item.reviewOnly===true);
   updateDeleteButton();
 }
 function renderAll(){syncControls();renderCanvas();renderProjectList();}
@@ -506,6 +515,14 @@ $('selectedName').addEventListener('change',event=>{
 });
 $('selectedDiameter').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.diameter=event.target.value;renderCanvas();scheduleSave();});
 $('selectedSymbolLabel').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.label=event.target.value;renderCanvas();scheduleSave();});
+$('showReviewCandidates').addEventListener('change',event=>{state.showReviewCandidates=event.target.checked;renderCanvas();});
+$('acceptReviewPipeBtn').addEventListener('click',()=>{
+  const item=selectedItem();
+  if(!item||state.selected?.type!=='pipe'||item.reviewOnly!==true)return;
+  pushUndo();item.reviewOnly=false;item.reviewReason='';
+  state.showReviewCandidates=true;renderAll();scheduleSave();
+  toast('Линия подтверждена и включена в чистовой чертёж. Проверь её соединения и назначение.');
+});
 
 window.addEventListener('beforeunload',event=>{
   if(state.saveTimer){event.preventDefault();event.returnValue='';}

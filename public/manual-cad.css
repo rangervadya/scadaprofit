@@ -24,3 +24,5 @@
 @media(max-width:560px){.mc-engineering-fields{grid-template-columns:1fr}.mc-prop-inspection,.mc-prop-subtitle{grid-column:auto}.mc-engineering-panel{padding:8px}}
 
 .mc-prop-riser-groups{grid-column:1/-1}.mc-prop-riser-groups textarea{width:100%;min-height:58px;resize:vertical;border:1px solid #e0e7e1;border-radius:5px;background:#fff;padding:7px 8px;font:10px/1.5 Arial,sans-serif;color:#35443a}.mc-prop-riser-groups small{display:block;margin-top:4px;color:#859188;font-size:9px;line-height:1.4}
+
+.mc-pipe-review{stroke:#d97706!important;stroke-dasharray:7 5!important;opacity:.88}.mc-accept-review{width:100%;margin-top:10px;white-space:normal;height:auto;min-height:34px}.mc-statistics{grid-template-columns:1fr 1fr}

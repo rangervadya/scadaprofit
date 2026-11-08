@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
@@ -28,6 +28,8 @@ const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
 const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
 // Manual CAD projects are isolated from automatic analysis jobs and from the VDGO app.
 const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
+// API credentials live in the existing private cad_jobs volume; no compose or .env changes are required.
+const YANDEX_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 5 400 000 мс = 90 минут: OCR и Qwen-трассировка проходят двумя
@@ -42,20 +44,72 @@ const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]
 const UUID_PATTERN = JOB_ID_PATTERN;
 
 await mkdir(DATA, { recursive: true });
-await mkdir(LIBRARY_DIR, { recursive: true });
+await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
+await chmod(LIBRARY_DIR, 0o700).catch(() => {});
 await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
+async function readYandexAiSettings() {
+  try {
+    const value = JSON.parse(await readFile(YANDEX_AI_CONFIG_PATH, 'utf8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    console.error('[AI] Cannot read private Yandex settings:', error?.message || error);
+    return {};
+  }
+}
+
+function publicYandexAiSettings(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim() && String(settings.folderId || '').trim());
+  return {
+    configured,
+    enabled: configured && settings.enabled === true,
+    folderId: String(settings.folderId || ''),
+    model: String(settings.model || 'qwen3.6-35b-a3b'),
+    ocrEnabled: settings.ocrEnabled !== false,
+    pipeEnabled: settings.pipeEnabled !== false,
+    keyStored: Boolean(String(settings.apiKey || '').trim()),
+  };
+}
+
+function yandexPythonEnvironment(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim() && String(settings.folderId || '').trim());
+  const enabled = configured && settings.enabled === true;
+  return {
+    YANDEX_API_KEY: enabled ? String(settings.apiKey).trim() : '',
+    YANDEX_FOLDER_ID: enabled ? String(settings.folderId).trim() : '',
+    YANDEX_VISION_MODEL: String(settings.model || 'qwen3.6-35b-a3b'),
+    YANDEX_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
+    YANDEX_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
+  };
+}
+
+async function saveYandexAiSettings(settings) {
+  await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
+  const temporary = `${YANDEX_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
+  await writeFile(temporary, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await chmod(temporary, 0o600).catch(() => {});
+  await rename(temporary, YANDEX_AI_CONFIG_PATH);
+  await chmod(YANDEX_AI_CONFIG_PATH, 0o600).catch(() => {});
+}
+
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
 // limited VRAM, and concurrent Qwen requests would compete for the same GPU.
 const activeAnalyses = new Map();
+const analysisQueue = [];
+const queuedAnalysisIds = new Set();
+let analysisQueueRunning = false;
 
-function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER }) {
+function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER, env = null }) {
   return new Promise((resolve, reject) => {
     const shortId = String(jobId).slice(0, 8);
-    const child = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(PYTHON, args, {
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      env: env ? { ...process.env, ...env } : process.env
+    });
     const progressFile = createWriteStream(progressPath, { flags: 'a' });
     let stdout = '';
     let stdoutBytes = 0;
@@ -375,7 +429,7 @@ async function readAddressLibrary() {
             jobId: String(item.jobId), title: cleanLabel(item.title || 'Схема', 140),
             createdAt: item.createdAt || null, uploadedBy: cleanLabel(item.uploadedBy || '', 80),
             sourceName: cleanLabel(item.sourceName || '', 180),
-            status: ['pending', 'processing', 'completed', 'failed'].includes(item.status)
+            status: ['pending', 'queued', 'processing', 'completed', 'failed'].includes(item.status)
               ? item.status : 'completed',
             originalName: cleanLabel(item.originalName || item.title || 'Эскиз', 180),
             error: cleanLabel(item.error || '', 240),
@@ -488,9 +542,10 @@ async function runStoredSchemeAnalysis(jobId) {
   const templatePath = await pinTemplateReference(jobDir);
   const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
+  const aiSettings = await readYandexAiSettings();
   await runPythonStreaming(
     processorArgs,
-    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
+    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: yandexPythonEnvironment(aiSettings) }
   );
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
@@ -499,9 +554,9 @@ async function runStoredSchemeAnalysis(jobId) {
   if (graph.complete === false || graph.analysisStatus === 'incomplete') {
     const reasons = Array.isArray(graph.incompleteReasons) ? graph.incompleteReasons : [];
     const message = [
-      'Обработка завершилась частично: не все плитки Qwen были обработаны.',
+      'Обработка завершилась частично: не все этапы OCR или трассировки труб были завершены.',
       ...reasons.map(value => String(value)).filter(Boolean),
-      'Успешные плитки сохранены. Нажми «Повторить преобразование»: будут обработаны только отсутствующие плитки.'
+      'Успешные локальные Qwen-плитки сохранены. Нажми «Повторить преобразование», чтобы повторить незавершённые этапы.'
     ].join(' ');
     await updateSchemeStatus(jobId, 'failed', {
       error: message.slice(0, 900),
@@ -517,6 +572,85 @@ async function runStoredSchemeAnalysis(jobId) {
     partialGraphReady: false
   });
   return graph;
+}
+
+async function markStoredAnalysisFailed(jobId, error) {
+  console.error(`[JOB ${jobId.slice(0, 8)}] Stored scheme analysis failed:`, error?.stderr || error);
+  await updateSchemeStatus(jobId, 'failed', {
+    error: `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(-900),
+    partialGraphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false),
+    completedAt: null
+  }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
+}
+
+async function drainAnalysisQueue() {
+  if (analysisQueueRunning) return;
+  analysisQueueRunning = true;
+  try {
+    while (analysisQueue.length) {
+      const jobId = analysisQueue.shift();
+      queuedAnalysisIds.delete(jobId);
+      // Reserve the GPU slot before awaiting metadata writes. Only one Qwen job
+      // can run at a time on the target GTX 1060.
+      activeAnalyses.set(jobId, Promise.resolve());
+      try {
+        await updateSchemeStatus(jobId, 'processing', {
+          error: '', startedAt: new Date().toISOString(), completedAt: null,
+          partialGraphReady: false, queuePosition: null
+        });
+        const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId))
+          .catch(error => markStoredAnalysisFailed(jobId, error));
+        activeAnalyses.set(jobId, task);
+        await task;
+      } catch (error) {
+        await markStoredAnalysisFailed(jobId, error);
+      } finally {
+        activeAnalyses.delete(jobId);
+      }
+    }
+  } finally {
+    analysisQueueRunning = false;
+    // A request can enqueue a new item while the final status write is pending.
+    if (analysisQueue.length) void drainAnalysisQueue();
+  }
+}
+
+async function enqueueStoredSchemeAnalysis(jobId) {
+  if (activeAnalyses.has(jobId)) return 'processing';
+  if (queuedAnalysisIds.has(jobId)) return 'queued';
+  const willStartNow = !analysisQueueRunning && activeAnalyses.size === 0 && analysisQueue.length === 0;
+  analysisQueue.push(jobId);
+  queuedAnalysisIds.add(jobId);
+  if (willStartNow) {
+    void drainAnalysisQueue();
+    return 'processing';
+  }
+  const queuePosition = analysisQueue.length;
+  await updateSchemeStatus(jobId, 'queued', {
+    error: '', queuePosition, queuedAt: new Date().toISOString(), completedAt: null
+  });
+  return 'queued';
+}
+
+async function resumeStoredAnalysisQueue() {
+  try {
+    const library = await readAddressLibrary();
+    const interrupted = [];
+    for (const street of (library.streets || [])) {
+      for (const building of (street.buildings || [])) {
+        for (const scheme of (building.schemes || [])) {
+          if (!['queued', 'processing'].includes(String(scheme.status || ''))) continue;
+          if (!JOB_ID_PATTERN.test(String(scheme.jobId || ''))) continue;
+          const meta = await readSchemeMeta(scheme.jobId);
+          if (meta?.sourceName) interrupted.push(scheme.jobId);
+        }
+      }
+    }
+    for (const jobId of interrupted) await enqueueStoredSchemeAnalysis(jobId);
+    if (interrupted.length) console.log(`[QUEUE] Resumed ${interrupted.length} interrupted house-scheme job(s)`);
+  } catch (error) {
+    console.error('[QUEUE] Could not restore interrupted house-scheme jobs:', error);
+  }
 }
 
 function nextManualEdgeId(edges) {
@@ -653,8 +787,8 @@ app.post('/api/library/buildings', async (req, res) => {
   }
 });
 
-// The fitter's workflow ends here: store the photo in the selected address
-// inbox. Do not start OCR/Qwen until a specialist explicitly opens the sketch.
+// Upload stores the original in the selected house and automatically queues
+// its reconstruction. The GPU queue serializes Qwen jobs to protect VRAM.
 app.post('/api/library/schemes/upload', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
   const streetId = String(req.body?.streetId || '');
@@ -699,8 +833,10 @@ app.post('/api/library/schemes/upload', upload.single('image'), async (req, res)
         updatedAt: meta.updatedAt, uploadedBy, sourceName, status: 'pending', error: ''
       });
     });
+    const analysisStatus = await enqueueStoredSchemeAnalysis(jobId);
     return res.status(201).json({
-      ok: true, scheme: { ...meta, sourceUrl: `/jobs/${jobId}/${sourceName}` },
+      ok: true,
+      scheme: { ...meta, status: analysisStatus, sourceUrl: `/jobs/${jobId}/${sourceName}` },
       library: await readAddressLibrary()
     });
   } catch (error) {
@@ -748,7 +884,7 @@ app.get('/api/library/schemes/:jobId/status', async (req, res) => {
     } catch { /* pending upload has no processing log yet */ }
     return res.json({
       ok: true, jobId, status: meta?.status || found.scheme.status || 'completed',
-      progress, error: meta?.error || found.scheme.error || '',
+      progress, error: meta?.error || found.scheme.error || '', queuePosition: meta?.queuePosition || null,
       graphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false)
     });
   } catch (error) {
@@ -766,37 +902,8 @@ app.post('/api/library/schemes/:jobId/analyze', async (req, res) => {
     const meta = await readSchemeMeta(jobId);
     if (!meta?.sourceName) return res.status(404).json({ error: 'Исходная фотография не найдена.' });
     if (meta.status === 'completed') return res.json({ ok: true, status: 'completed', jobId });
-    if (activeAnalyses.has(jobId)) return res.status(202).json({ ok: true, status: 'processing', jobId });
-    if (activeAnalyses.size > 0) {
-      const activeJobId = activeAnalyses.keys().next().value;
-      return res.status(409).json({
-        error: 'Сейчас уже обрабатывается другой чертёж. Дождись его завершения, чтобы не перегружать GTX 1060.',
-        status: 'busy', activeJobId
-      });
-    }
-
-    // Reserve the single Qwen slot synchronously before the first await so
-    // two simultaneous POSTs cannot both start expensive GPU jobs.
-    activeAnalyses.set(jobId, Promise.resolve());
-    try {
-      await updateSchemeStatus(jobId, 'processing', {
-        error: '', startedAt: new Date().toISOString(), completedAt: null,
-        partialGraphReady: false
-      });
-    } catch (statusError) {
-      activeAnalyses.delete(jobId);
-      throw statusError;
-    }
-    const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId)).catch(async error => {
-      console.error(`[JOB ${jobId.slice(0, 8)}] Stored scheme analysis failed:`, error?.stderr || error);
-      await updateSchemeStatus(jobId, 'failed', {
-        error: `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(-900),
-        partialGraphReady: false,
-        completedAt: null
-      }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
-    }).finally(() => activeAnalyses.delete(jobId));
-    activeAnalyses.set(jobId, task);
-    return res.status(202).json({ ok: true, status: 'processing', jobId });
+    const status = await enqueueStoredSchemeAnalysis(jobId);
+    return res.status(202).json({ ok: true, status, jobId });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Не удалось запустить преобразование схемы.' });
   }
@@ -1041,6 +1148,83 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
   }
 });
 
+app.get('/api/ai-settings', async (_req, res) => {
+  const settings = await readYandexAiSettings();
+  return res.json({ ok: true, yandex: publicYandexAiSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
+});
+
+app.put('/api/ai-settings', async (req, res) => {
+  try {
+    const current = await readYandexAiSettings();
+    const apiKey = String(req.body?.apiKey || current.apiKey || '').trim();
+    const folderId = String(req.body?.folderId ?? current.folderId ?? '').trim();
+    const model = String(req.body?.model || current.model || 'qwen3.6-35b-a3b').trim();
+    if (apiKey.length > 1000 || !/^[A-Za-z0-9_-]{3,100}$/.test(folderId)) {
+      return res.status(400).json({ error: 'Проверь API-ключ и Folder ID Yandex Cloud.' });
+    }
+    if (!/^[A-Za-z0-9._-]{2,100}$/.test(model)) {
+      return res.status(400).json({ error: 'Название мультимодальной модели содержит недопустимые символы.' });
+    }
+    const enabled = req.body?.enabled !== false;
+    if (enabled && (!apiKey || !folderId)) {
+      return res.status(400).json({ error: 'Для включения Yandex AI нужны API-ключ и Folder ID.' });
+    }
+    const next = {
+      apiKey, folderId, model, enabled,
+      ocrEnabled: req.body?.ocrEnabled !== false,
+      pipeEnabled: req.body?.pipeEnabled !== false,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveYandexAiSettings(next);
+    return res.json({ ok: true, yandex: publicYandexAiSettings(next), message: 'Настройки сохранены в закрытой папке данных ScadaProfit.' });
+  } catch (error) {
+    console.error('[AI] Cannot save Yandex settings:', error?.message || error);
+    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки Yandex AI.' });
+  }
+});
+
+app.delete('/api/ai-settings', async (_req, res) => {
+  try {
+    await rm(YANDEX_AI_CONFIG_PATH, { force: true });
+    return res.json({ ok: true, yandex: publicYandexAiSettings({}), message: 'Настройки Yandex AI удалены. Qwen и Tesseract продолжают работать.' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Не удалось удалить настройки Yandex AI.' });
+  }
+});
+
+app.post('/api/ai-settings/test', async (req, res) => {
+  const jobId = String(req.body?.jobId || '');
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала открой существующую загруженную схему, на которой нужно проверить Yandex AI.' });
+  const settings = await readYandexAiSettings();
+  if (!publicYandexAiSettings(settings).configured || settings.enabled !== true) {
+    return res.status(409).json({ error: 'Сначала сохрани и включи API-ключ и Folder ID Yandex AI.' });
+  }
+  const jobDir = path.join(DATA, jobId);
+  let sourcePath = null;
+  try {
+    const names = await readdir(jobDir);
+    const sourceName = names.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
+    if (!sourceName) return res.status(404).json({ error: 'В выбранном задании нет исходной фотографии.' });
+    sourcePath = path.join(jobDir, sourceName);
+    const tempLog = path.join(LIBRARY_DIR, `yandex-test-${randomUUID()}.log`);
+    try {
+      const run = await runPythonStreaming(
+        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-yandex'],
+        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: yandexPythonEnvironment(settings) }
+      );
+      let result;
+      try { result = JSON.parse(run.stdout.trim()); }
+      catch { throw new Error('Тест Yandex AI завершился без корректного JSON-отчёта.'); }
+      return res.json({ ok: Boolean(result.ok), result });
+    } finally {
+      await rm(tempLog, { force: true }).catch(() => {});
+    }
+  } catch (error) {
+    console.error(`[AI TEST ${jobId.slice(0, 8)}] Yandex test failed:`, error?.stderr || error?.message || error);
+    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить Yandex AI.').slice(-900) });
+  }
+});
+
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
   const tagsUrl = process.env.OLLAMA_TAGS_URL ||
@@ -1072,9 +1256,10 @@ app.get('/api/health', async (_req, res) => {
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
 
+  const yandexSettings = publicYandexAiSettings(await readYandexAiSettings());
   res.json({
     ok: true,
-    version: '4.3.23',
+    version: '4.3.25',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1097,6 +1282,7 @@ app.get('/api/health', async (_req, res) => {
       modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
     },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
+    yandexAI: yandexSettings,
     ollamaRequiredForCleanCad: false,
     ollamaRequired: false,
     ollama
@@ -1142,9 +1328,10 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const templatePath = await pinTemplateReference(jobDir);
     const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
+    const aiSettings = await readYandexAiSettings();
     await runPythonStreaming(
       processorArgs,
-      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER }
+      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: yandexPythonEnvironment(aiSettings) }
     );
 
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
@@ -1324,6 +1511,68 @@ app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
   }
 });
 
+// Source-only CAD fallback: a stored house photo can still be traced manually
+// even when OCR/Qwen failed before graph.json or prepared-input.png was written.
+// This route touches only the primary app's DATA/.private/manual-cad directory.
+app.post('/api/manual-cad/import-source-job/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+  let projectDir = null;
+  try {
+    const library = await readAddressLibrary();
+    const address = findScheme(library, jobId);
+    if (!address) return res.status(404).json({ error: 'Схема больше не привязана к папке улицы и дома.' });
+    const existing = await findManualCadProjectForJob(jobId);
+    if (existing) return res.json({ ok: true, reused: true, project: manualProjectResponse(existing) });
+
+    const meta = await readSchemeMeta(jobId);
+    if (!meta?.sourceName) return res.status(404).json({ error: 'Исходная фотография не найдена.' });
+    const sourceName = path.basename(String(meta.sourceName));
+    if (!/^source\.(?:jpe?g|png|webp|tiff?)$/i.test(sourceName)) {
+      return res.status(400).json({ error: 'Недопустимое имя исходного файла.' });
+    }
+    const sourcePath = path.join(DATA, jobId, sourceName);
+    const sourceBytes = await readFile(sourcePath);
+    const extension = path.extname(sourceName).toLowerCase();
+    const width = Math.round(Math.max(100, Math.min(30000, Number(req.body?.width) || 1600)));
+    const height = Math.round(Math.max(100, Math.min(30000, Number(req.body?.height) || 1000)));
+    const projectId = randomUUID();
+    projectDir = path.join(MANUAL_CAD_DIR, projectId);
+    const project = createManualCadProject({
+      id: projectId,
+      title: cleanLabel(req.body?.title || meta.title || address.scheme.title || 'Чертёж дома', 140)
+    });
+    project.width = width;
+    project.height = height;
+    project.page = width > height ? 'landscape' : 'portrait';
+    project.paperSize = 'A4';
+    project.drawingStyle = 'lpgcad-r1';
+    project.siteAddress = `${address.street.name}, дом ${address.building.name}`;
+    project.sourceJobId = jobId;
+    project.sourceStreetId = address.street.id;
+    project.sourceBuildingId = address.building.id;
+    project.analysisComplete = false;
+    project.notes = 'Ручная трассировка по исходной фотографии: автоматическая геометрия не была доступна. Начертите фактические трубопроводы, ответвления и оборудование по подложке; не используйте предположительные размеры или соединения.';
+    project.source = {
+      fileName: `source${extension}`,
+      originalName: cleanLabel(meta.originalName || sourceName, 180),
+      size: sourceBytes.length,
+      uploadedAt: new Date().toISOString()
+    };
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
+    await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
+    console.log(`[CAD] Created source-only manual project ${projectId.slice(0, 8)} for failed/unavailable job ${jobId.slice(0, 8)}`);
+    return res.status(201).json({ ok: true, reused: false, sourceOnly: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
+      await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    }
+    const status = error?.code === 'ENOENT' ? 404 : 400;
+    return res.status(status).json({ error: status === 404 ? 'Исходная фотография не найдена. Повтори загрузку схемы.' : (error.message || 'Не удалось создать CAD-проект по исходной фотографии.') });
+  }
+});
+
 app.get('/api/manual-cad/projects', async (_req, res) => {
   try {
     const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
@@ -1334,7 +1583,7 @@ app.get('/api/manual-cad/projects', async (_req, res) => {
         const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
         projects.push({ id: project.id, title: project.title, updatedAt: project.updatedAt,
           createdAt: project.createdAt, source: project.source || null, sourceJobId: project.sourceJobId || null,
-          siteAddress: project.siteAddress || '', pipeCount: Array.isArray(project.pipes) ? project.pipes.length : 0 });
+          siteAddress: project.siteAddress || '', pipeCount: Array.isArray(project.pipes) ? project.pipes.filter(pipe => pipe.reviewOnly !== true).length : 0 });
       } catch { /* ignore an incomplete project folder */ }
     }
     projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
@@ -1495,8 +1744,9 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.23: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
-  console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
+  console.log(`CAD Reconstruction Engine 4.3.25: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
   console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
+  void resumeStoredAnalysisQueue();
 });

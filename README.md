@@ -1,9 +1,7 @@
-# ScadaProfit + VDGO — combined Docker stack
+# ScadaProfit 4.3.25
 
-ScadaProfit 4.3.22 adds an LPGCad R1-style engineering sheet profile to Manual CAD. Automatic recognition drafts can be opened in Manual CAD; source geometry is preserved and uncertain elements remain subject to operator review. Explicit riser group labels and apartment numbers can be entered and rendered into an editable SVG/DXF lower-sheet block.
+The 4.3.25 update is cumulative from the supplied 4.3.23 project. It retains the 4.3.24 house-scheme queue, topology-aware cleanup, review-only candidates, and editable Manual CAD, and adds an optional Yandex Cloud AI provider for handwritten OCR and multimodal pipeline-route proposals.
 
-The supplied stack remains a two-application deployment: ScadaProfit at `/`, VDGO at `/vdgo/`. This update does not alter `vdgo/`, `compose.yaml`, Nginx routing, PostgreSQL or Docker volumes.
+Local Qwen3-VL and Tesseract remain installed and active. Yandex is opt-in and disabled until configured. Cloud routes are still checked against original image ink and OpenCV geometry; unverified text and uncertain topology remain review items. The Yandex API key is stored in the existing private ScadaProfit data volume, not in the browser, Compose, or Git.
 
-The Qwen default tag is `qwen3-vl:4b-instruct`; verify the model is actually installed in Ollama on the target server before running the pipeline.
-
-See `README-RU.md`, `MANUAL-CAD-USER-GUIDE-RU.md` and `UPGRADE-GIT-4.3.22-RU.md`.
+This package changes only the primary ScadaProfit files listed in `UPDATE-MANIFEST-4.3.25.txt`. `vdgo/`, Compose, Nginx, PostgreSQL, and their volumes are not modified. Follow `UPGRADE-GIT-4.3.25-RU.md`. Real Yandex API calls and server-side Docker validation require testing after installation with the user's Yandex Cloud credentials.

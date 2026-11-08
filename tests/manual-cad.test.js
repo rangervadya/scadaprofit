@@ -74,19 +74,29 @@ test('DXF export has separate engineering layers and editable entities', () => {
 });
 
 
-test('imports only primary CAD paths and explicit joins into a reviewable draft', () => {
+test('merges continuous primary segments while leaving crossings unconnected', () => {
   const graph = {
     image: { width: 1200, height: 800 }, complete: false, analysisStatus: 'incomplete',
     nodes: [
-      { id: 'N1', x: 300, y: 200, degree: 3, review: false },
-      { id: 'N2', x: 600, y: 200, degree: 1, review: false },
-      { id: 'N3', x: 300, y: 450, degree: 1, review: false },
-      { id: 'N4', x: 900, y: 200, degree: 1, review: true }
+      { id: 'N0', x: 100, y: 100, degree: 1, review: false },
+      { id: 'N1', x: 200, y: 100, degree: 2, review: false },
+      { id: 'N2', x: 300, y: 100, degree: 3, review: false },
+      { id: 'N3', x: 300, y: 220, degree: 1, review: false },
+      { id: 'N4', x: 420, y: 100, degree: 1, review: false },
+      { id: 'M1', x: 200, y: 300, degree: 1, review: false },
+      { id: 'M2', x: 400, y: 300, degree: 1, review: false },
+      { id: 'M3', x: 300, y: 200, degree: 1, review: false },
+      { id: 'M4', x: 300, y: 400, degree: 1, review: false },
+      { id: 'N5', x: 900, y: 100, degree: 1, review: true }
     ],
     edges: [
-      { id: 'E1', from: 'N1', to: 'N2', cad_include: true, geometry: [[300, 200], [450, 200], [600, 200]] },
-      { id: 'E2', from: 'N1', to: 'N3', source: 'manual', detector: 'MANUAL', geometry: [[300, 200], [300, 450]] },
-      { id: 'E3', from: 'N1', to: 'N4', cad_include: false, geometry: [[300, 200], [900, 200]] }
+      { id: 'E1', from: 'N0', to: 'N1', cad_include: true, geometry: [[100, 100], [150, 100], [200, 100]] },
+      { id: 'E2', from: 'N1', to: 'N2', cad_include: true, geometry: [[300, 100], [250, 100], [200, 100]] },
+      { id: 'E3', from: 'N2', to: 'N3', cad_include: true, kind: 'branch', geometry: [[300, 100], [300, 160], [300, 220]] },
+      { id: 'E4', from: 'N2', to: 'N4', source: 'manual', detector: 'MANUAL', geometry: [[300, 100], [420, 100]] },
+      { id: 'C1', from: 'M1', to: 'M2', cad_include: true, geometry: [[200, 300], [400, 300]] },
+      { id: 'C2', from: 'M3', to: 'M4', cad_include: true, geometry: [[300, 200], [300, 400]] },
+      { id: 'E5', from: 'N2', to: 'N5', cad_include: false, geometry: [[300, 100], [900, 100]] }
     ],
     crossings: [{ edge_ids: ['E1', 'E3'], x: 600, y: 200 }],
     confirmedConnections: [{ edgeId: 'E2', confirmation: 'explicit-user-action' }],
@@ -105,10 +115,16 @@ test('imports only primary CAD paths and explicit joins into a reviewable draft'
   assert.equal(project.height, 800);
   assert.equal(project.drawingStyle, 'lpgcad-r1');
   assert.equal(project.paperSize, 'A4');
-  assert.equal(project.pipes.length, 2);
-  assert.deepEqual(project.pipes.map(pipe => pipe.id), ['E1', 'E2']);
+  assert.equal(project.pipes.length, 5);
+  assert.deepEqual(new Set(project.pipes.map(pipe => pipe.id)), new Set(['E1', 'E3', 'E4', 'C1', 'C2']));
+  const mergedMain = project.pipes.find(pipe => pipe.id === 'E1');
+  assert.equal(mergedMain.points.length, 5, 'two segments through a degree-2 node become one route');
+  assert.deepEqual(mergedMain.points[0], [100, 100]);
+  assert.deepEqual(mergedMain.points.at(-1), [300, 100]);
   assert.equal(project.junctions.length, 1);
-  assert.deepEqual(new Set(project.junctions[0].pipeIds), new Set(['E1', 'E2']));
+  assert.deepEqual(new Set(project.junctions[0].pipeIds), new Set(['E1', 'E3', 'E4']));
+  assert.equal(project.junctions[0].x, 300);
+  assert.equal(project.junctions[0].y, 100);
   assert.equal(project.labels.length, 2);
   assert.equal(project.labels[0].text, 'DN 25?');
   assert.equal(project.labels[1].text, '1500');
@@ -117,6 +133,65 @@ test('imports only primary CAD paths and explicit joins into a reviewable draft'
   assert.equal(project.dimensions.length, 0, 'dimension values without measured endpoints stay text labels');
   assert.match(project.notes, /НЕ ЗАВЕРШЕНА/);
   assert.match(project.notes, /Пересечения автоматически не соединяются/);
+});
+
+test('uncertain and short isolated segments stay review-only and are excluded from clean exports until accepted', () => {
+  const graph = {
+    image: { width: 500, height: 400 }, complete: true,
+    nodes: [
+      { id: 'A', x: 30, y: 40 }, { id: 'B', x: 180, y: 40 },
+      { id: 'C', x: 220, y: 140 }, { id: 'D', x: 225, y: 140 },
+      { id: 'E', x: 250, y: 250 }, { id: 'F', x: 410, y: 250 }
+    ],
+    edges: [
+      { id: 'MAIN', from: 'A', to: 'B', cad_include: true, component_role: 'line_structure', geometry: [[30,40],[180,40]] },
+      { id: 'TICK', from: 'C', to: 'D', cad_include: true, component_role: 'line_structure', geometry: [[220,140],[225,140]] },
+      { id: 'AMB', from: 'E', to: 'F', cad_include: true, component_role: 'ambiguous', geometry: [[250,250],[330,250],[410,250]] }
+    ],
+    documentModel: { labels: [], symbols: [] }
+  };
+  const project = createManualCadProjectFromGraph(graph);
+  assert.equal(project.pipes.filter(pipe => pipe.reviewOnly !== true).length, 1);
+  assert.equal(project.pipes.filter(pipe => pipe.reviewOnly === true).length, 2);
+  const svg = renderManualCadSvg(project);
+  assert.match(svg, /id="MAIN"/);
+  assert.doesNotMatch(svg, /id="TICK"/);
+  assert.doesNotMatch(svg, /id="review_AMB"/);
+  const dxf = renderManualCadDxf(project);
+  assert.match(dxf, /MAIN/);
+  assert.doesNotMatch(dxf, /review_AMB/);
+  const accepted = normalizeManualCadProject({
+    ...project,
+    pipes: project.pipes.map(pipe => pipe.id === 'review_AMB' ? { ...pipe, reviewOnly: false, reviewReason: '' } : pipe)
+  }, project);
+  assert.equal(accepted.pipes.find(pipe => pipe.id === 'review_AMB').reviewOnly, false);
+  assert.match(renderManualCadSvg(accepted), /review_AMB/);
+});
+
+test('topology-supported edges form the main layer while other selected edges are retained for review', () => {
+  const graph = {
+    image: { width: 600, height: 400 }, complete: true,
+    nodes: [
+      { id: 'A', x: 20, y: 40 }, { id: 'B', x: 280, y: 40 },
+      { id: 'C', x: 40, y: 160 }, { id: 'D', x: 220, y: 160 },
+      { id: 'E', x: 300, y: 300 }, { id: 'F', x: 500, y: 300 }
+    ],
+    edges: [
+      { id: 'NETWORK', from: 'A', to: 'B', cad_include: true, component_role: 'line_structure', topology_network_candidate: true, geometry: [[20,40],[280,40]] },
+      { id: 'UNVERIFIED', from: 'C', to: 'D', cad_include: true, component_role: 'line_structure', topology_network_candidate: false, geometry: [[40,160],[220,160]] },
+      { id: 'AMBIGUOUS', from: 'E', to: 'F', cad_include: true, component_role: 'ambiguous', topology_network_candidate: false, geometry: [[300,300],[500,300]] }
+    ]
+  };
+  const project = createManualCadProjectFromGraph(graph);
+  assert.equal(project.pipes.filter(pipe => pipe.reviewOnly !== true).length, 1);
+  assert.equal(project.pipes.filter(pipe => pipe.reviewOnly === true).length, 2);
+  assert.equal(project.pipes.find(pipe => pipe.id === 'NETWORK').reviewOnly, false);
+  assert.ok(project.pipes.find(pipe => pipe.id === 'review_UNVERIFIED').reviewOnly);
+  assert.ok(project.pipes.find(pipe => pipe.id === 'review_AMBIGUOUS').reviewOnly);
+  const svg = renderManualCadSvg(project);
+  assert.match(svg, /id="NETWORK"/);
+  assert.doesNotMatch(svg, /UNVERIFIED/);
+  assert.doesNotMatch(svg, /AMBIGUOUS/);
 });
 
 test('LPGCad R1 profile keeps source geometry editable and adds an engineering sheet header and legend', () => {

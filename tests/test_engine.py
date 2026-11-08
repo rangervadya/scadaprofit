@@ -1398,18 +1398,20 @@ class BrowserExportRegressionTests(unittest.TestCase):
         self.assertIn("addPolyline('QWEN_REVIEW',points,false,9);", app_js)
         self.assertNotIn('if (Array.isArray(graph?.semanticRoutes)) {', app_js)
 
-    def test_fitter_upload_stays_in_house_inbox_until_specialist_opens_it(self):
+    def test_fitter_upload_stays_in_house_and_automatically_queues_conversion(self):
         app_js = (ROOT / 'public' / 'app.js').read_text(encoding='utf-8')
+        server_js = (ROOT / 'server.js').read_text(encoding='utf-8')
         upload_start = app_js.index("analyzeBtn.addEventListener('click'")
         upload_end = app_js.index("$('processSchemeBtn').addEventListener('click'", upload_start)
         upload_handler = app_js[upload_start:upload_end]
         self.assertIn("fetch('/api/library/schemes/upload'", upload_handler)
-        self.assertIn('showAddressInbox(inboxStreetId, inboxBuildingId)', upload_handler)
-        self.assertNotIn('openLibraryScheme(jobId)', upload_handler)
-        self.assertIn('showAddressInbox(inboxStreetId, inboxBuildingId)', upload_handler)
-        self.assertIn('Специалист открывает его и запускает преобразование отдельно', app_js)
+        self.assertIn('showPendingScheme(activeScheme)', upload_handler)
+        self.assertIn("pollSchemeStatus(jobId)", upload_handler)
+        self.assertNotIn('showAddressInbox(inboxStreetId, inboxBuildingId)', upload_handler)
+        self.assertIn('enqueueStoredSchemeAnalysis(jobId)', server_js)
+        self.assertIn('Автоматическое преобразование запущено', upload_handler)
         self.assertIn('streetMatches || buildingMatches', app_js)
-        self.assertIn('Специалист открывает его и запускает преобразование отдельно', app_js)
+        self.assertIn('Кандидаты на проверку', (ROOT / 'public' / 'manual-cad.html').read_text(encoding='utf-8'))
         css = (ROOT / 'public' / 'styles.css').read_text(encoding='utf-8')
         self.assertIn('.library-heading p,', css)
         self.assertIn('.source-title .scheme-status-label', css)
