@@ -15,10 +15,9 @@ class OpenRouterOcrPriorityTests(unittest.TestCase):
             'source': 'openrouter-vision-ocr',
         }]
 
-    @patch.object(processor, 'pytesseract', create=True)
     @patch.object(processor, '_qwen_annotations')
     @patch.object(processor, 'openrouter_ocr_annotations')
-    def test_openrouter_success_skips_local_qwen(self, cloud, qwen, _tesseract):
+    def test_openrouter_success_skips_local_qwen(self, cloud, qwen):
         cloud.return_value = (self.annotations.copy(), {
             'available': True, 'complete': True, 'annotations': 1,
             'tiles': 1, 'successful_tiles': 1, 'failed_tiles': [],
@@ -27,7 +26,7 @@ class OpenRouterOcrPriorityTests(unittest.TestCase):
         with patch.dict(os.environ, {
             'OPENROUTER_OCR_ENABLED': '1', 'OPENROUTER_API_KEY': 'test-key',
             'OPENROUTER_MODEL': 'nvidia/nemotron-3.5-super-vl:free',
-        }, clear=False), patch('pytesseract.image_to_data', side_effect=RuntimeError('not installed'), create=True):
+        }, clear=False):
             items, status = processor.ocr_annotations('unused.jpg', __import__('numpy').zeros((100, 120), dtype='uint8'))
         cloud.assert_called_once()
         qwen.assert_not_called()
@@ -45,7 +44,7 @@ class OpenRouterOcrPriorityTests(unittest.TestCase):
         })
         with patch.dict(os.environ, {
             'OPENROUTER_OCR_ENABLED': '1', 'OPENROUTER_API_KEY': 'test-key',
-        }, clear=False), patch('pytesseract.image_to_data', side_effect=RuntimeError('not installed'), create=True):
+        }, clear=False):
             _, status = processor.ocr_annotations('unused.jpg', __import__('numpy').zeros((100, 120), dtype='uint8'))
         cloud.assert_called_once()
         qwen.assert_called_once()
@@ -65,7 +64,7 @@ class OpenRouterOcrPriorityTests(unittest.TestCase):
         })
         with patch.dict(os.environ, {
             'OPENROUTER_OCR_ENABLED': '1', 'OPENROUTER_API_KEY': 'test-key',
-        }, clear=False), patch('pytesseract.image_to_data', side_effect=RuntimeError('not installed'), create=True):
+        }, clear=False):
             _, status = processor.ocr_annotations('unused.jpg', __import__('numpy').zeros((100, 120), dtype='uint8'))
         cloud.assert_called_once()
         qwen.assert_called_once()
@@ -79,8 +78,7 @@ class OpenRouterOcrPriorityTests(unittest.TestCase):
             'available': True, 'complete': True, 'annotations': 0,
             'tiles': 1, 'successful_tiles': 1, 'failed_tiles': [],
         })
-        with patch.dict(os.environ, {'OPENROUTER_OCR_ENABLED': '0', 'OPENROUTER_API_KEY': ''}, clear=False), \
-             patch('pytesseract.image_to_data', side_effect=RuntimeError('not installed'), create=True):
+        with patch.dict(os.environ, {'OPENROUTER_OCR_ENABLED': '0', 'OPENROUTER_API_KEY': ''}, clear=False):
             _, status = processor.ocr_annotations('unused.jpg', __import__('numpy').zeros((100, 120), dtype='uint8'))
         cloud.assert_not_called()
         qwen.assert_called_once()
