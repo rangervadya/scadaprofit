@@ -266,7 +266,25 @@ function manualProjectPath(id) {
   return path.join(MANUAL_CAD_DIR, id, 'project.json');
 }
 function manualProjectResponse(project) {
-  return { ...project, sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null };
+  return {
+    ...project,
+    sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null,
+    previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg`,
+    editUrl: `/manual-cad.html?project=${encodeURIComponent(project.id)}`,
+    returnUrl: project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
+  };
+}
+
+async function findManualCadProjectForJob(jobId) {
+  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+    try {
+      const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
+      if (project.sourceJobId === jobId && project.id === entry.name) return project;
+    } catch { /* ignore incomplete project folders */ }
+  }
+  return null;
 }
 
 function attachJobUrls(jobId, graph, sourceName = null) {
@@ -1056,7 +1074,7 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.22',
+    version: '4.3.23',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1232,23 +1250,57 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
-  const jobDir = path.join(DATA, jobId);
-  const projectId = randomUUID();
-  const projectDir = path.join(MANUAL_CAD_DIR, projectId);
+  let projectDir = null;
   try {
-    const [rawGraph, preparedImage] = await Promise.all([
-      readFile(path.join(jobDir, 'graph.json'), 'utf8'),
+    const [rawGraph, preparedImage, library] = await Promise.all([
+      readFile(path.join(DATA, jobId, 'graph.json'), 'utf8'),
       // The prepared image is in the exact coordinate space of graph.image.
       // Do not fall back to the unrotated upload: that would misalign geometry.
-      readFile(path.join(jobDir, 'prepared-input.png'))
+      readFile(path.join(DATA, jobId, 'prepared-input.png')),
+      readAddressLibrary()
     ]);
     const graph = JSON.parse(rawGraph);
     if (!graph?.image?.width || !graph?.image?.height) {
       return res.status(409).json({ error: 'В графе нет размеров подготовленного изображения. Повторно обработай схему перед переносом в CAD.' });
     }
+    const address = findScheme(library, jobId);
+    if (!address) return res.status(404).json({ error: 'Схема больше не привязана к папке улицы и дома.' });
+    const schemeMeta = await readSchemeMeta(jobId);
+    const title = cleanLabel(req.body?.title || schemeMeta?.title || address.scheme.title || 'Чертёж дома', 140);
+    const siteAddress = `${address.street.name}, дом ${address.building.name}`;
+    const existing = await findManualCadProjectForJob(jobId);
+
+    // Re-open the same CAD project for this house scheme. If nobody has edited
+    // it yet, a retry of an incomplete Qwen job may refresh the imported draft.
+    // Once a user edits the CAD project, never overwrite those manual changes.
+    if (existing) {
+      if (Number(existing.manualEditRevision || 0) === 0) {
+        const refreshed = createManualCadProjectFromGraph(graph, {
+          id: existing.id, title, siteAddress,
+          sourceJobId: jobId, sourceStreetId: address.street.id,
+          sourceBuildingId: address.building.id
+        });
+        refreshed.createdAt = existing.createdAt || refreshed.createdAt;
+        refreshed.source = {
+          fileName: 'source.png', originalName: 'Подготовленное изображение автообработки',
+          size: preparedImage.length, uploadedAt: new Date().toISOString()
+        };
+        refreshed.manualEditRevision = 0;
+        projectDir = path.join(MANUAL_CAD_DIR, existing.id);
+        await writeFile(path.join(projectDir, 'source.png'), preparedImage);
+        await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(refreshed, null, 2), 'utf8');
+        console.log(`[CAD] Refreshed unedited house project ${existing.id.slice(0, 8)} from job ${jobId.slice(0, 8)}`);
+        return res.json({ ok: true, reused: true, refreshed: true, project: manualProjectResponse(refreshed) });
+      }
+      return res.json({ ok: true, reused: true, preservedManualEdits: true, project: manualProjectResponse(existing) });
+    }
+
+    const projectId = randomUUID();
+    projectDir = path.join(MANUAL_CAD_DIR, projectId);
     const project = createManualCadProjectFromGraph(graph, {
-      id: projectId,
-      title: cleanLabel(req.body?.title || 'Черновик автообработки', 140)
+      id: projectId, title, siteAddress,
+      sourceJobId: jobId, sourceStreetId: address.street.id,
+      sourceBuildingId: address.building.id
     });
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, 'source.png'), preparedImage);
@@ -1256,16 +1308,18 @@ app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
       fileName: 'source.png', originalName: 'Подготовленное изображение автообработки',
       size: preparedImage.length, uploadedAt: new Date().toISOString()
     };
-    await writeFile(manualProjectPath(projectId), JSON.stringify(project, null, 2), 'utf8');
-    console.log(`[CAD] Imported job ${jobId.slice(0, 8)} into manual project ${projectId.slice(0, 8)}: pipes=${project.pipes.length}, labels=${project.labels.length}, symbols=${project.symbols.length}`);
-    return res.status(201).json({ ok: true, project: manualProjectResponse(project) });
+    await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
+    console.log(`[CAD] Created house project ${projectId.slice(0, 8)} for job ${jobId.slice(0, 8)}: pipes=${project.pipes.length}, labels=${project.labels.length}, symbols=${project.symbols.length}`);
+    return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
-    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
+      await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    }
     const status = error?.code === 'ENOENT' ? 404 : 400;
     return res.status(status).json({
       error: status === 404
-        ? 'Подготовленное изображение или граф задания не найдены. Повтори обработку схемы и попробуй снова.'
-        : (error.message || 'Не удалось перенести черновик в ручной CAD.')
+        ? 'Подготовленное изображение, граф задания или папка дома не найдены. Повтори обработку схемы и попробуй снова.'
+        : (error.message || 'Не удалось подготовить чистовой CAD-лист.')
     });
   }
 });
@@ -1279,8 +1333,8 @@ app.get('/api/manual-cad/projects', async (_req, res) => {
       try {
         const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
         projects.push({ id: project.id, title: project.title, updatedAt: project.updatedAt,
-          createdAt: project.createdAt, source: project.source || null,
-          pipeCount: Array.isArray(project.pipes) ? project.pipes.length : 0 });
+          createdAt: project.createdAt, source: project.source || null, sourceJobId: project.sourceJobId || null,
+          siteAddress: project.siteAddress || '', pipeCount: Array.isArray(project.pipes) ? project.pipes.length : 0 });
       } catch { /* ignore an incomplete project folder */ }
     }
     projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
@@ -1323,6 +1377,7 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
     const input = req.body?.project && typeof req.body.project === 'object' ? req.body.project : req.body;
     const project = normalizeManualCadProject(input, current);
     project.source = current.source || null;
+    project.manualEditRevision = Math.max(0, Number(current.manualEditRevision || 0)) + 1;
     const target = manualProjectPath(id);
     const temporary = `${target}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
@@ -1378,6 +1433,19 @@ app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
   }
 });
 
+app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).end();
+  try {
+    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(renderManualCadSvg(project));
+  } catch (error) {
+    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать предпросмотр CAD.' });
+  }
+});
+
 app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
@@ -1427,7 +1495,7 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.22: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.23: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
   console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);

@@ -146,6 +146,11 @@ async function saveProject() {
 function syncControls() {
   const p = state.project; if (!p) return;
   $('projectTitle').value = p.title || '';
+  const backToScheme = $('mcBackToSchemeLink');
+  if (backToScheme) {
+    backToScheme.href = p.sourceJobId ? `/?job=${encodeURIComponent(p.sourceJobId)}` : '/';
+    backToScheme.textContent = p.sourceJobId ? '← Вернуться к схеме дома' : '← Схемы домов';
+  }
   $('pageOrientation').value = p.page || 'portrait';
   $('paperSize').value = p.paperSize || 'A4';
   $('drawingStyle').value = p.drawingStyle || 'standard';

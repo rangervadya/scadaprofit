@@ -173,6 +173,7 @@ function showAddressInbox(streetId, buildingId = null) {
   const street = addressLibrary.streets.find(item => item.id === streetId);
   const building = buildingId ? street?.buildings?.find(item => item.id === buildingId) : null;
   if (!street) return;
+  clearJobAddress();
   schemePollToken += 1;
   activeScheme = null;
   graph = null;
@@ -183,6 +184,7 @@ function showAddressInbox(streetId, buildingId = null) {
   $('overlay').innerHTML = '';
   $('imageFrame').hidden = true;
   $('sourceEmpty').hidden = false;
+  $('cleanStage').classList.remove('manual-cad-preview');
   $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Выбери входящую схему</b><span>Слесарь отправляет фото в выбранный дом. Специалист открывает его и запускает преобразование отдельно.</span></div>';
   $('diagnosticLinks').hidden = true;
   $('processSchemeBtn').hidden = true;
@@ -284,6 +286,7 @@ function showPendingScheme(scheme) {
   $('sourceImage').onerror = () => setAlert('Не удалось открыть исходную фотографию.');
   $('sourceImage').src = `${scheme.sourceUrl}?v=${Date.now()}`;
   $('canvasMeta').textContent = `${scheme.originalName || scheme.title || 'Исходный эскиз'} · оригинал`;
+  $('cleanStage').classList.remove('manual-cad-preview');
   $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Вектор ещё не построен</b><span>Эскиз сохранён во входящих. Специалист может запустить преобразование.</span></div>';
   $('diagnosticLinks').hidden = true;
   $('mainTitle').textContent = scheme.title || scheme.originalName || 'Входящий эскиз';
@@ -292,7 +295,7 @@ function showPendingScheme(scheme) {
   const process = $('processSchemeBtn');
   process.hidden = scheme.status === 'completed';
   process.disabled = scheme.status === 'processing';
-  process.textContent = scheme.status === 'failed' ? 'Повторить преобразование →' : 'Преобразовать в CAD →';
+  process.textContent = scheme.status === 'failed' ? 'Повторить преобразование →' : 'Преобразовать в чистовой чертёж →';
   $('previewMeta').textContent = scheme.status === 'processing' ? 'Преобразование выполняется' : scheme.status === 'failed' ? 'Преобразование не завершено. При повторе сохранённые участки будут использованы, а недостающие — обработаны заново.' : 'Фото сохранено в папке дома';
   $('filePreview').hidden = true;
   $('progressWrap').hidden = scheme.status !== 'processing';
@@ -386,8 +389,63 @@ async function openSavedJob(jobId) {
     }
     updateLibrarySelection();
     renderLibrary();
+    await ensureHouseSchemeCadProject(jobId);
   } catch (error) {
     setAlert(`Не удалось открыть схему: ${error.message}`); setState('ОШИБКА ОТКРЫТИЯ', 'error');
+  }
+}
+
+function renderHouseSchemeCadPreview(project) {
+  if (!graph || !project?.id) return;
+  graph.manualCadProjectId = project.id;
+  graph.manualCadPreviewUrl = project.previewUrl || `/api/manual-cad/projects/${encodeURIComponent(project.id)}/preview.svg`;
+  graph.manualCadEditUrl = project.editUrl || `/manual-cad.html?project=${encodeURIComponent(project.id)}`;
+  const button = $('openManualCadBtn');
+  button.hidden = false;
+  button.disabled = false;
+  button.dataset.projectId = project.id;
+  button.innerHTML = '<b>CAD</b><span>Редактировать</span>';
+  button.title = 'Открыть этот чертёж в ручном CAD; изменения сохраняются в проекте дома';
+  const previewUrl = `${graph.manualCadPreviewUrl}?v=${encodeURIComponent(project.updatedAt || Date.now())}`;
+  const pipeCount = Number(project.pipes?.length || 0);
+  const completeness = pipeCount === 0 ? 'ГЕОМЕТРИЯ НЕ РАСПОЗНАНА · ЧЕРТЁЖ НЕ ГОТОВ' : project.analysisComplete === false ? 'НЕПОЛНЫЙ ЧЕРНОВИК · ТОЛЬКО ПРОВЕРКА' : 'ЧИСТОВОЙ ЛИСТ · ТРЕБУЕТСЯ ПРОВЕРКА СПЕЦИАЛИСТОМ';
+  $('cleanStage').classList.add('manual-cad-preview');
+  $('cleanStage').innerHTML = `<img class="manual-cad-preview-image" src="${escapeHtml(previewUrl)}" alt="Чистовой лист LPGCad R1 для ${escapeHtml(project.title || 'схемы дома')}" loading="eager"><div class="manual-cad-preview-caption"><b>${escapeHtml(completeness)}</b><span>${escapeHtml(project.siteAddress || activeScheme?.streetName || 'Адрес из папки дома')} · ${Number(project.pipes?.length || 0)} векторных трасс · ${Number(project.labels?.length || 0)} подписей</span></div>`;
+  $('cleanStage').querySelector('img')?.addEventListener('error', () => {
+    $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось показать чистовой лист</b><span>Проект CAD сохранён. Открой его кнопкой «Редактировать».</span></div>';
+  }, { once: true });
+  $('previewMeta').textContent = pipeCount === 0
+    ? 'Не найдено подтверждённых трубных трасс. CAD-лист создан как заготовка с исходной подложкой; проверь распознавание и при необходимости начерти линии вручную.'
+    : project.analysisComplete === false
+      ? 'Показан неполный CAD-черновик. Продолжи преобразование и сверь все элементы с исходником.'
+      : 'Чистовой лист LPGCad R1 сформирован из результата преобразования. Перед использованием проверь геометрию, символы и подписи.';
+}
+
+async function ensureHouseSchemeCadProject(jobId) {
+  if (!graph || graph.jobId !== jobId) return null;
+  const button = $('openManualCadBtn');
+  button.hidden = false;
+  button.disabled = true;
+  button.innerHTML = '<b>CAD</b><span>Подготовка…</span>';
+  try {
+    const response = await fetch(`/api/manual-cad/import-job/${encodeURIComponent(jobId)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: activeScheme?.title || 'Схема дома' })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    renderHouseSchemeCadPreview(data.project);
+    if (data.preservedManualEdits) {
+      $('previewMeta').textContent += ' Сохранённая ручная редакция не была перезаписана повторным распознаванием.';
+    }
+    return data.project;
+  } catch (error) {
+    button.disabled = false;
+    button.innerHTML = '<b>CAD</b><span>Открыть редактор</span>';
+    button.title = error.message;
+    $('previewMeta').textContent = `Не удалось подготовить чистовой CAD-лист: ${error.message}`;
+    console.warn('House scheme CAD project preparation failed:', error);
+    return null;
   }
 }
 
@@ -599,8 +657,9 @@ function showResult() {
   $('openManualCadBtn').hidden = !graph.jobId;
   $('openManualCadBtn').disabled = false;
   $('openManualCadBtn').innerHTML = processingComplete
-    ? '<b>CAD</b><span>Доработать</span>'
-    : '<b>CAD</b><span>Черновик</span>';
+    ? '<b>CAD</b><span>Редактировать</span>'
+    : '<b>CAD</b><span>Править черновик</span>';
+  $('openManualCadBtn').title = 'Открыть чистовой лист этой схемы в CAD-редакторе';
   $('processSchemeBtn').hidden = processingComplete;
   $('processSchemeBtn').disabled = false;
   $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
@@ -1399,6 +1458,13 @@ function buildSheetSvg() {
 
 function renderClean() {
   if (!graph) return;
+  if (graph.manualCadProjectId && graph.manualCadPreviewUrl) {
+    const button = $('openManualCadBtn');
+    button.hidden = false; button.disabled = false;
+    button.dataset.projectId = graph.manualCadProjectId;
+    return;
+  }
+  $('cleanStage').classList.remove('manual-cad-preview');
   const visible = shownEdges();
   const hasIncludedText = graph.annotations.some(item => annotationExportLayer(item));
   const hasReviewGeometry = showReviewGeometry && (graph.edges.some(edge => edge.visible !== false && !isPrimaryCadEdge(edge) && edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension') || (graph.semanticRoutes || []).some(route => !route.primary_validated && Number(route.confidence ?? 0) >= 20 && Array.isArray(route.points) && route.points.length >= 2));
@@ -1516,17 +1582,17 @@ $('openManualCadBtn').addEventListener('click', async () => {
   if (!graph?.jobId) return;
   const button = $('openManualCadBtn');
   button.disabled = true;
-  button.innerHTML = '<b>CAD</b><span>Перенос…</span>';
+  button.innerHTML = '<b>CAD</b><span>Открываю…</span>';
   try {
-    const response = await fetch(`/api/manual-cad/import-job/${encodeURIComponent(graph.jobId)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: activeScheme?.title || 'Черновик автообработки' })
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    window.location.href = `/manual-cad.html?project=${encodeURIComponent(data.project.id)}`;
+    let projectId = graph.manualCadProjectId || button.dataset.projectId;
+    if (!projectId) {
+      const project = await ensureHouseSchemeCadProject(graph.jobId);
+      projectId = project?.id;
+    }
+    if (!projectId) throw new Error('CAD-проект для этой схемы пока не создан. Повтори преобразование.');
+    window.location.href = `/manual-cad.html?project=${encodeURIComponent(projectId)}`;
   } catch (error) {
-    setAlert(`Не удалось перенести черновик в ручной CAD: ${error.message}`);
+    setAlert(`Не удалось открыть CAD-редактор: ${error.message}`);
     button.disabled = false;
     button.innerHTML = '<b>CAD</b><span>Повторить</span>';
   }

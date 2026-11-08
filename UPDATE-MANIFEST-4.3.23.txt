@@ -1,0 +1,28 @@
+ScadaProfit 4.3.23 — house archive → LPGCad R1 → editable CAD
+
+Included app files:
+- CHANGELOG-RU.md
+- UPGRADE-GIT-4.3.23-RU.md
+- UPDATE-MANIFEST-4.3.23.txt
+- package.json
+- server.js
+- manual-cad-core.js
+- public/app.js
+- public/index.html
+- public/manual-cad.html
+- public/manual-cad.js
+- public/styles.css
+- tests/manual-cad.test.js
+
+Not included / not modified by this update:
+- vdgo/
+- compose.yaml
+- nginx-unified.conf
+- .env or secrets
+- PostgreSQL data or Docker volumes
+- Nginx gateway configuration
+
+Workflow:
+A plumber uploads a source photo to a street/house inbox. An office user opens that exact scheme and clicks Convert. After analysis, the app automatically creates/reuses an address-linked LPGCad R1 CAD project and shows its sheet preview inside the scheme record. Edit opens that same project in Manual CAD and provides a return link to the house scheme.
+
+Safety: only selected primary CAD edges and separately ink-validated Qwen paths are imported as geometry. Review-only lines, uncertain crossings, unknown symbols, unconfirmed dimensions, and apartment/riser assignments are not invented. Incomplete analyses are marked as drafts requiring review.

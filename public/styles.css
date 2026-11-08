@@ -205,3 +205,44 @@ body{background:var(--page);color:var(--ink);font-size:14px}
   .product-switcher { position: static; margin: 8px; justify-content: center; }
 }
 
+
+/* House-scheme workflow: show the generated LPGCad sheet immediately after conversion. */
+.clean-stage.manual-cad-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 350px;
+  padding: 10px;
+  background: #eef1f0;
+}
+.manual-cad-preview-image {
+  display: block;
+  width: min(100%, 960px);
+  height: auto;
+  max-height: 78vh;
+  object-fit: contain;
+  background: #fff;
+  box-shadow: 0 2px 14px rgba(20, 40, 50, .08);
+}
+.manual-cad-preview-caption {
+  display: flex;
+  width: min(100%, 960px);
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: #68777e;
+  font-size: 10px;
+}
+.manual-cad-preview-caption b {
+  color: #7a623b;
+  font-size: 9px;
+  letter-spacing: .04em;
+}
+.manual-cad-preview-caption span { line-height: 1.4; }
+@media(max-width:620px) {
+  .clean-stage.manual-cad-preview { min-height: 260px; padding: 5px; }
+  .manual-cad-preview-image { max-height: 65vh; }
+}

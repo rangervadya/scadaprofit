@@ -212,3 +212,44 @@ test('LPGCad R1 lays out explicitly entered riser groups in SVG and editable DXF
   assert.match(dxf, /0\nLWPOLYLINE\n100\nAcDbEntity\n8\nRISER_GROUPS\n100\nAcDbPolyline/);
   assert.match(dxf, /0\nEOF/);
 });
+
+test('house-scheme conversion creates one address-linked LPGCad R1 project from the graph', () => {
+  const jobId = '11111111-1111-4111-8111-111111111111';
+  const graph = {
+    image: { width: 1200, height: 800 }, complete: true,
+    nodes: [{ id: 'N1', x: 100, y: 100, degree: 3, review: false }, { id: 'N2', x: 500, y: 100, degree: 1, review: false }],
+    edges: [{ id: 'E1', from: 'N1', to: 'N2', cad_include: true, geometry: [[100,100],[300,100],[500,100]] }],
+    primarySemanticRoutes: [{ id: 'Q1', primary_validated: true, points: [[500,100],[650,100],[650,260]] }],
+    semanticRoutes: [{ id: 'Q-review', primary_validated: false, points: [[100,200],[800,200]] }],
+    documentModel: { labels: [{ id: 'L1', text: 'DN 25', x: 180, y: 80 }] }
+  };
+  const project = createManualCadProjectFromGraph(graph, {
+    title: 'Схема подъезда 2', siteAddress: 'ул. Лесная, дом 12', entrance: '2',
+    sourceJobId: jobId, sourceStreetId: 'street-1', sourceBuildingId: 'house-12'
+  });
+  assert.equal(project.drawingStyle, 'lpgcad-r1');
+  assert.equal(project.sourceJobId, jobId);
+  assert.equal(project.siteAddress, 'ул. Лесная, дом 12');
+  assert.equal(project.analysisComplete, true);
+  assert.equal(project.pipes.length, 2);
+  assert.equal(project.pipes[1].source, 'qwen-ink-validated');
+  const svg = renderManualCadSvg(project);
+  assert.match(svg, /ул\. Лесная, дом 12/);
+  assert.match(svg, /DN 25/);
+});
+
+test('manual CAD save metadata keeps the originating house scheme link and edit revision', () => {
+  const base = createManualCadProject({ title: 'Схема дома' });
+  const sourceJobId = '22222222-2222-4222-8222-222222222222';
+  const linked = normalizeManualCadProject({
+    ...base, sourceJobId, sourceStreetId: 'street-2', sourceBuildingId: 'house-7',
+    analysisComplete: false, manualEditRevision: 3, siteAddress: 'ул. Мира, дом 7'
+  }, base);
+  const saved = normalizeManualCadProject({ ...linked, title: 'Исправленная схема' }, linked);
+  assert.equal(saved.sourceJobId, sourceJobId);
+  assert.equal(saved.sourceStreetId, 'street-2');
+  assert.equal(saved.sourceBuildingId, 'house-7');
+  assert.equal(saved.analysisComplete, false);
+  assert.equal(saved.manualEditRevision, 3);
+  assert.equal(saved.siteAddress, 'ул. Мира, дом 7');
+});

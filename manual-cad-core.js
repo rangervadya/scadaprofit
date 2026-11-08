@@ -39,6 +39,11 @@ export function createManualCadProject({ id = randomUUID(), title = 'Новая 
     createdAt: now,
     updatedAt: now,
     source: null,
+    sourceJobId: null,
+    sourceStreetId: null,
+    sourceBuildingId: null,
+    analysisComplete: true,
+    manualEditRevision: 0,
     width: 1600,
     height: 1000,
     page: 'portrait',
@@ -61,7 +66,7 @@ export function createManualCadProject({ id = randomUUID(), title = 'Новая 
   };
 }
 
-export function createManualCadProjectFromGraph(graph, { id = randomUUID(), title = 'Черновик схемы' } = {}) {
+export function createManualCadProjectFromGraph(graph, { id = randomUUID(), title = 'Черновик схемы', siteAddress = '', entrance = '', sourceJobId = null, sourceStreetId = null, sourceBuildingId = null } = {}) {
   const documentModel = graph?.documentModel && typeof graph.documentModel === 'object' ? graph.documentModel : {};
   const sourceSize = graph?.image || documentModel.sourceImage || {};
   const width = Math.round(Math.max(100, Math.min(30000, num(sourceSize.width, 1600))));
@@ -89,6 +94,24 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
       if (!pipeIdsByNode.has(String(nodeId))) pipeIdsByNode.set(String(nodeId), []);
       pipeIdsByNode.get(String(nodeId)).push(pipeId);
     }
+  }
+
+  // Qwen routes are added only from the server's separately validated set.
+  // Unvalidated semanticRoutes remain review-only and are never promoted here.
+  const primarySemanticRoutes = Array.isArray(graph?.primarySemanticRoutes) ? graph.primarySemanticRoutes : [];
+  for (const route of primarySemanticRoutes) {
+    if (route?.primary_validated === false) continue;
+    const points = (Array.isArray(route?.points) ? route.points : [])
+      .map(raw => Array.isArray(raw) && raw.length >= 2 ? [num(raw[0], NaN), num(raw[1], NaN)] : null)
+      .filter(raw => raw && raw.every(Number.isFinite));
+    if (points.length < 2) continue;
+    const routeId = safeId(`qwen_${route.id || pipes.length + 1}`, `qwen_${pipes.length + 1}`);
+    if (pipes.some(pipe => pipe.id === routeId)) continue;
+    pipes.push({
+      id: routeId, name: text(route.name || route.label, 80), diameter: '',
+      kind: ['branch', 'riser'].includes(String(route.kind || '')) ? String(route.kind) : 'pipe',
+      points, visible: true, source: 'qwen-ink-validated'
+    });
   }
 
   const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
@@ -152,6 +175,8 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   return normalizeManualCadProject({
     ...base, width, height, page: width > height ? 'landscape' : 'portrait',
     paperSize: 'A4', drawingStyle: 'lpgcad-r1',
+    siteAddress, entrance, sourceJobId, sourceStreetId, sourceBuildingId,
+    analysisComplete: !incomplete, manualEditRevision: 0,
     notes: noteParts.join(' '), pipes, junctions, symbols, labels, dimensions: []
   }, base);
 }
@@ -167,6 +192,11 @@ export function normalizeManualCadProject(input, existing = null) {
     createdAt: base.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     source: base.source || null,
+    sourceJobId: text(input?.sourceJobId ?? base.sourceJobId, 64) || null,
+    sourceStreetId: text(input?.sourceStreetId ?? base.sourceStreetId, 64) || null,
+    sourceBuildingId: text(input?.sourceBuildingId ?? base.sourceBuildingId, 64) || null,
+    analysisComplete: input?.analysisComplete === false ? false : input?.analysisComplete === true ? true : (base.analysisComplete !== false),
+    manualEditRevision: Math.max(0, Math.floor(num(input?.manualEditRevision, num(base.manualEditRevision, 0)))),
     width,
     height,
     page: input?.page === 'landscape' ? 'landscape' : 'portrait',
@@ -200,6 +230,7 @@ export function normalizeManualCadProject(input, existing = null) {
     if (points.length < 2) continue;
     result.pipes.push({
       id: safeId(raw.id, 'pipe'),
+      source: raw.source === 'qwen-ink-validated' ? 'qwen-ink-validated' : undefined,
       name: text(raw.name, 80),
       diameter: text(raw.diameter, 32),
       kind: ['branch', 'riser'].includes(raw.kind) ? raw.kind : 'pipe',
