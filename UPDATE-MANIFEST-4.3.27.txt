@@ -1,0 +1,34 @@
+ScadaProfit 4.3.27 — cumulative overlay on the user's 4.3.23 source and deployed 4.3.25 baseline.
+
+Included: 4.3.26 cloud-first Yandex OCR order plus Vision service-account authentication correction.
+
+Paths included:
+- CHANGELOG-RU.md
+- README.md
+- README-RU.md
+- UPGRADE-GIT-4.3.27-RU.md
+- UPDATE-MANIFEST-4.3.27.txt
+- package.json
+- server.js
+- processor.py
+- yandex_ai.py
+- manual-cad-core.js
+- public/app.js
+- public/index.html
+- public/styles.css
+- public/manual-cad.html
+- public/manual-cad.js
+- public/manual-cad.css
+- tests/manual-cad.test.js
+- tests/test_engine.py
+- tests/test_yandex_ai.py
+- tests/test_yandex_priority.py
+
+Explicitly excluded and untouched:
+- vdgo/ and all VDGO frontend/backend files
+- compose.yaml and all Docker Compose files
+- nginx-unified.conf and other Nginx configuration
+- PostgreSQL data, schemas, and Docker volumes
+- Ollama service/container configuration
+- .env files, .git metadata, uploads, and generated evaluation results
+- existing private Yandex settings in the cad_jobs data volume (preserved during app-only rebuild)

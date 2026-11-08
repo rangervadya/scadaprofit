@@ -122,10 +122,10 @@ def _bbox_from_polygon(polygon: dict[str, Any] | None, scale_x: float = 1.0, sca
     return {"x": round(x1), "y": round(y1), "w": round(x2 - x1), "h": round(y2 - y1)}
 
 
-def yandex_ocr_annotations(image_path: str | Path, api_key: str, folder_id: str, *, timeout: float = 90.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Recognize mixed handwritten/printed RU+EN text and map boxes to source pixels."""
-    if not api_key or not folder_id:
-        raise YandexAIError("Не заданы YANDEX_API_KEY и YANDEX_FOLDER_ID.")
+def yandex_ocr_annotations(image_path: str | Path, api_key: str, folder_id: str = "", *, timeout: float = 90.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Recognize RU+EN text using service-account auth; Vision gets its folder from the service account."""
+    if not api_key:
+        raise YandexAIError("Не задан YANDEX_API_KEY.")
     image_bytes, sent_width, sent_height, scale_x, scale_y = _prepare_image(image_path, max_edge=4096)
     payload = {
         "mimeType": "JPEG",
@@ -136,7 +136,8 @@ def yandex_ocr_annotations(image_path: str | Path, api_key: str, folder_id: str,
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Api-Key {api_key}",
-        "x-folder-id": folder_id,
+        # Yandex docs: with a service-account API key, Vision OCR resolves the
+        # account's parent folder automatically. Do NOT send x-folder-id here.
         "x-data-logging-enabled": "false",
     }
     response = _post_json(OCR_URL, headers, payload, timeout)
@@ -301,8 +302,9 @@ def yandex_semantic_routes(image_path: str | Path, api_key: str, folder_id: str,
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Api-Key {api_key}",
+        # OpenAI-Project is the documented folder selector for the
+        # OpenAI-compatible Model API. x-folder-id is not required here.
         "OpenAI-Project": folder_id,
-        "x-folder-id": folder_id,
     }
     response = _post_json(CHAT_URL, headers, payload, timeout)
     choices = response.get("choices") if isinstance(response.get("choices"), list) else []

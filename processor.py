@@ -2171,17 +2171,33 @@ def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 
 def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Run local Qwen + optional Yandex Vision OCR + Tesseract; never remove a local engine."""
+    """Prefer configured Yandex Vision OCR; use local Qwen as fallback and Tesseract as a supplement.
+
+    The cloud OCR is a single whole-image request. Running the 3x3 local Qwen
+    OCR grid first made users wait through up to nine GPU timeouts before the
+    configured cloud provider was even called. When Yandex returns annotations,
+    local Qwen OCR is skipped for this job (the local model remains installed and
+    is still used when Yandex is disabled, fails, or returns no annotations).
+    """
     h, w = gray.shape[:2]
-    qwen_items, qwen_status = _qwen_annotations(image_path, w, h, checkpoint_dir=checkpoint_dir)
+    yandex_enabled = os.getenv('YANDEX_OCR_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+    qwen_items: list[dict[str, Any]] = []
+    qwen_status: dict[str, Any] = {
+        'available': True, 'complete': False, 'skipped': False,
+        'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
+        'annotations': 0, 'tiles': 0, 'successful_tiles': 0, 'failed_tiles': [],
+    }
     yandex_items: list[dict[str, Any]] = []
     yandex_status: dict[str, Any] = {
         'available': False, 'complete': False, 'model': 'vision-ocr-handwritten',
         'annotations': 0, 'tiles': 0, 'successful_tiles': 0, 'failed_tiles': [],
-        'disabled': os.getenv('YANDEX_OCR_ENABLED', '0').strip().lower() not in {'1', 'true', 'yes', 'on'},
+        'disabled': not yandex_enabled,
     }
-    if not yandex_status['disabled']:
-        _progress('OCR', 'Yandex Vision OCR started (local Qwen and Tesseract remain enabled)')
+
+    # Try the configured cloud OCR first; one whole-image request avoids waiting
+    # for a sequence of slow local GPU tiles on servers with limited VRAM.
+    if yandex_enabled:
+        _progress('OCR', 'Yandex Vision OCR started (cloud-first; local Qwen remains fallback)')
         try:
             yandex_items, yandex_status = yandex_ocr_annotations(
                 image_path,
@@ -2195,8 +2211,23 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
                 'available': False, 'complete': False, 'error': str(error)[:260],
                 'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
             })
-            _progress('OCR', f'Yandex Vision OCR failed: {str(error)[:220]}')
-    # Keep the preferred local Qwen candidate when two engines cover the same text box.
+            _progress('OCR', f'Yandex Vision OCR failed; local Qwen fallback will run: {str(error)[:220]}')
+
+    yandex_usable = bool(yandex_status.get('complete')) and bool(yandex_items)
+    if yandex_usable:
+        qwen_status.update({
+            'skipped': True,
+            'skip_reason': 'Yandex Vision OCR returned annotations; local Qwen OCR is retained as fallback.',
+        })
+        _progress('OCR', 'Local Qwen OCR skipped: Yandex Vision OCR succeeded; local Qwen remains available as fallback')
+    else:
+        if yandex_enabled and yandex_status.get('complete') and not yandex_items:
+            _progress('OCR', 'Yandex Vision OCR completed without annotations; starting local Qwen fallback')
+        else:
+            _progress('OCR', 'Local Qwen OCR started (Yandex OCR disabled or unavailable)')
+        qwen_items, qwen_status = _qwen_annotations(image_path, w, h, checkpoint_dir=checkpoint_dir)
+
+    # Keep local Qwen candidates first when fallback ran and two engines cover the same text box.
     yandex_items = [
         item for item in yandex_items
         if not any(_boxes_overlap(item.get('bbox') or {}, qwen.get('bbox') or {}) >= 0.22 for qwen in qwen_items)
@@ -2223,7 +2254,7 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
             if bw < 2 or bh < 2:
                 continue
             box = {'x': x, 'y': y, 'w': bw, 'h': bh}
-            # Prefer the vision model when two OCR engines refer to the same mark.
+            # Prefer either vision engine when two OCR engines refer to the same mark.
             if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in (qwen_items + yandex_items)):
                 continue
             has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))

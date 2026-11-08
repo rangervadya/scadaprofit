@@ -72,6 +72,7 @@ class YandexProviderTests(unittest.TestCase):
         self.assertEqual(args[0], yandex_ai.OCR_URL)
         self.assertEqual(kwargs, {})
         self.assertEqual(args[1]["Authorization"], "Api-Key test-key")
+        self.assertNotIn("x-folder-id", args[1])
         self.assertEqual(args[2]["model"], "handwritten")
         self.assertEqual(args[2]["languageCodes"], ["ru", "en"])
 
@@ -101,6 +102,17 @@ class YandexProviderTests(unittest.TestCase):
         image_part = args[2]["messages"][0]["content"][1]
         self.assertTrue(image_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
         self.assertEqual(args[1]["Authorization"], "Api-Key test-key")
+        self.assertNotIn("x-folder-id", args[1])
+
+    @patch("yandex_ai._post_json")
+    def test_vision_ocr_uses_service_account_folder_without_folder_header(self, post_json):
+        post_json.return_value = {"result": {"textAnnotation": {"blocks": []}}}
+        items, status = yandex_ai.yandex_ocr_annotations(self.image_path, "test-key", "")
+        self.assertEqual(items, [])
+        self.assertTrue(status["complete"])
+        headers = post_json.call_args.args[1]
+        self.assertEqual(headers["Authorization"], "Api-Key test-key")
+        self.assertNotIn("x-folder-id", headers)
 
     @patch("yandex_ai.yandex_semantic_routes")
     @patch("yandex_ai.yandex_ocr_annotations")

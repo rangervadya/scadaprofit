@@ -1259,12 +1259,12 @@ app.get('/api/health', async (_req, res) => {
   const yandexSettings = publicYandexAiSettings(await readYandexAiSettings());
   res.json({
     ok: true,
-    version: '4.3.25',
+    version: '4.3.27',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
-    ocr: 'Qwen3-VL 4B Instruct 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
+    ocr: 'Yandex Vision OCR first when enabled; local Qwen3-VL 4B Instruct 3x3 tiled OCR is fallback when cloud OCR is disabled, fails, or returns no annotations; Tesseract supplements both',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
@@ -1744,7 +1744,7 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.25: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.27: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
   console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
