@@ -77,22 +77,21 @@
           </div>
         </details>
 
-        <details class="card yandex-settings-card" id="yandexAiSettings">
-          <summary class="template-settings-summary"><span><strong>Облачный AI · Yandex</strong><small>Дополнительное распознавание для проверки</small></span><span class="template-settings-caret">▾</span></summary>
-          <div class="template-settings-body yandex-settings-body">
-            <div class="yandex-provider-status" id="yandexStatus" role="status">Проверяю настройки Yandex AI…</div>
-            <label class="yandex-field"><span>API-ключ Yandex AI Studio</span><input id="yandexApiKey" type="password" autocomplete="new-password" placeholder="Вставь API-ключ (сохраняется на сервере)"></label>
-            <label class="yandex-field"><span>Folder ID</span><input id="yandexFolderId" type="text" autocomplete="off" placeholder="Идентификатор каталога Yandex Cloud"></label>
-            <label class="yandex-field"><span>Мультимодальная модель</span><input id="yandexModel" type="text" value="qwen3.6-35b-a3b" spellcheck="false"></label>
-            <label class="yandex-check"><input id="yandexEnabled" type="checkbox"><span>Включить Yandex AI для новых схем</span></label>
-            <label class="yandex-check"><input id="yandexOcrEnabled" type="checkbox" checked><span>Использовать Vision OCR для рукописных подписей</span></label>
-            <label class="yandex-check"><input id="yandexPipeEnabled" type="checkbox" checked><span>Пробовать Qwen3.6 для трассировки труб</span></label>
-            <div class="yandex-actions">
-              <button class="secondary-button" id="yandexSaveBtn" type="button">Сохранить настройки</button>
-              <button class="secondary-button" id="yandexTestBtn" type="button">Проверить на открытой схеме</button>
+        <details class="card openrouter-settings-card" id="openrouterSettings">
+          <summary class="template-settings-summary"><span><strong>Облачный AI · OpenRouter</strong><small>Бесплатная мультимодальная модель для тестирования</small></span><span class="template-settings-caret">▾</span></summary>
+          <div class="template-settings-body openrouter-settings-body">
+            <div class="openrouter-provider-status" id="openrouterStatus" role="status">Проверяю настройки OpenRouter…</div>
+            <label class="openrouter-field"><span>API-ключ OpenRouter</span><input id="openrouterApiKey" type="password" autocomplete="new-password" placeholder="sk-or-v1-… (сохраняется на сервере)"></label>
+            <label class="openrouter-field"><span>Мультимодальная модель</span><input id="openrouterModel" type="text" value="nvidia/nemotron-3.5-super-vl:free" spellcheck="false" readonly></label>
+            <label class="openrouter-check"><input id="openrouterEnabled" type="checkbox"><span>Включить OpenRouter для новых схем</span></label>
+            <label class="openrouter-check"><input id="openrouterOcrEnabled" type="checkbox" checked><span>Использовать модель для распознавания подписей</span></label>
+            <label class="openrouter-check"><input id="openrouterPipeEnabled" type="checkbox" checked><span>Использовать модель для трассировки труб</span></label>
+            <div class="openrouter-actions">
+              <button class="secondary-button" id="openrouterSaveBtn" type="button">Сохранить настройки</button>
+              <button class="secondary-button" id="openrouterTestBtn" type="button">Проверить на открытой схеме</button>
             </div>
-            <button class="tiny-button yandex-clear" id="yandexClearBtn" type="button" hidden>Удалить только настройки Yandex</button>
-            <p class="template-note">Qwen на сервере и Tesseract не отключаются и остаются резервными. При включении фотография отправляется в облако Yandex AI Studio; использование API тарифицируется отдельно. Ключ сохраняется в закрытой папке тома данных ScadaProfit и не возвращается в браузер.</p>
+            <button class="tiny-button openrouter-clear" id="openrouterClearBtn" type="button" hidden>Удалить только ключ и настройки OpenRouter</button>
+            <p class="template-note">Локальные Qwen и Tesseract сохраняются как резерв. Бесплатная модель OpenRouter ограничена 50 запросами в сутки. Внимание: запросы бесплатного endpoint могут сохраняться для улучшения модели NVIDIA. Не отправляйте фотографии с адресами, ФИО, телефонами и другими персональными или конфиденциальными данными. Ключ хранится только в закрытой папке данных ScadaProfit и не возвращается в браузер.</p>
           </div>
         </details>
 

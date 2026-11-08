@@ -29,7 +29,9 @@ const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
 // Manual CAD projects are isolated from automatic analysis jobs and from the VDGO app.
 const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
 // API credentials live in the existing private cad_jobs volume; no compose or .env changes are required.
-const YANDEX_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
+const OPENROUTER_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'openrouter-ai-settings.json');
+const OPENROUTER_FREE_MODEL = 'nvidia/nemotron-3.5-super-vl:free';
+const LEGACY_YANDEX_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
 // 5 400 000 мс = 90 минут: OCR и Qwen-трассировка проходят двумя
@@ -46,54 +48,55 @@ const UUID_PATTERN = JOB_ID_PATTERN;
 await mkdir(DATA, { recursive: true });
 await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
 await chmod(LIBRARY_DIR, 0o700).catch(() => {});
+// Yandex integration was retired at the user's request. Remove only its private
+// settings file; address data, CAD projects, templates and other app data remain.
+await rm(LEGACY_YANDEX_CONFIG_PATH, { force: true }).catch(() => {});
 await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
-async function readYandexAiSettings() {
+async function readOpenRouterSettings() {
   try {
-    const value = JSON.parse(await readFile(YANDEX_AI_CONFIG_PATH, 'utf8'));
+    const value = JSON.parse(await readFile(OPENROUTER_AI_CONFIG_PATH, 'utf8'));
     return value && typeof value === 'object' ? value : {};
   } catch (error) {
     if (error?.code === 'ENOENT') return {};
-    console.error('[AI] Cannot read private Yandex settings:', error?.message || error);
+    console.error('[AI] Cannot read private OpenRouter settings:', error?.message || error);
     return {};
   }
 }
 
-function publicYandexAiSettings(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim() && String(settings.folderId || '').trim());
+function publicOpenRouterSettings(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim());
   return {
     configured,
     enabled: configured && settings.enabled === true,
-    folderId: String(settings.folderId || ''),
-    model: String(settings.model || 'qwen3.6-35b-a3b'),
+    model: String(settings.model || OPENROUTER_FREE_MODEL),
     ocrEnabled: settings.ocrEnabled !== false,
     pipeEnabled: settings.pipeEnabled !== false,
-    keyStored: Boolean(String(settings.apiKey || '').trim()),
+    keyStored: configured,
   };
 }
 
-function yandexPythonEnvironment(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim() && String(settings.folderId || '').trim());
+function openRouterPythonEnvironment(settings = {}) {
+  const configured = Boolean(String(settings.apiKey || '').trim());
   const enabled = configured && settings.enabled === true;
   return {
-    YANDEX_API_KEY: enabled ? String(settings.apiKey).trim() : '',
-    YANDEX_FOLDER_ID: enabled ? String(settings.folderId).trim() : '',
-    YANDEX_VISION_MODEL: String(settings.model || 'qwen3.6-35b-a3b'),
-    YANDEX_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
-    YANDEX_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
+    OPENROUTER_API_KEY: enabled ? String(settings.apiKey).trim() : '',
+    OPENROUTER_MODEL: String(settings.model || OPENROUTER_FREE_MODEL),
+    OPENROUTER_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
+    OPENROUTER_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
   };
 }
 
-async function saveYandexAiSettings(settings) {
+async function saveOpenRouterSettings(settings) {
   await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
-  const temporary = `${YANDEX_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
+  const temporary = `${OPENROUTER_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
   await writeFile(temporary, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
   await chmod(temporary, 0o600).catch(() => {});
-  await rename(temporary, YANDEX_AI_CONFIG_PATH);
-  await chmod(YANDEX_AI_CONFIG_PATH, 0o600).catch(() => {});
+  await rename(temporary, OPENROUTER_AI_CONFIG_PATH);
+  await chmod(OPENROUTER_AI_CONFIG_PATH, 0o600).catch(() => {});
 }
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -542,10 +545,10 @@ async function runStoredSchemeAnalysis(jobId) {
   const templatePath = await pinTemplateReference(jobDir);
   const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
-  const aiSettings = await readYandexAiSettings();
+  const aiSettings = await readOpenRouterSettings();
   await runPythonStreaming(
     processorArgs,
-    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: yandexPythonEnvironment(aiSettings) }
+    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: openRouterPythonEnvironment(aiSettings) }
   );
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
@@ -1148,80 +1151,78 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
   }
 });
 
-app.get('/api/ai-settings', async (_req, res) => {
-  const settings = await readYandexAiSettings();
-  return res.json({ ok: true, yandex: publicYandexAiSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
+app.get('/api/openrouter-settings', async (_req, res) => {
+  const settings = await readOpenRouterSettings();
+  return res.json({ ok: true, openrouter: publicOpenRouterSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
 });
 
-app.put('/api/ai-settings', async (req, res) => {
+app.put('/api/openrouter-settings', async (req, res) => {
   try {
-    const current = await readYandexAiSettings();
+    const current = await readOpenRouterSettings();
     const apiKey = String(req.body?.apiKey || current.apiKey || '').trim();
-    const folderId = String(req.body?.folderId ?? current.folderId ?? '').trim();
-    const model = String(req.body?.model || current.model || 'qwen3.6-35b-a3b').trim();
-    if (apiKey.length > 1000 || !/^[A-Za-z0-9_-]{3,100}$/.test(folderId)) {
-      return res.status(400).json({ error: 'Проверь API-ключ и Folder ID Yandex Cloud.' });
+    const model = String(req.body?.model || current.model || 'nvidia/nemotron-3.5-super-vl:free').trim();
+    if (apiKey.length > 1000 || (apiKey && !/^sk-or-v1-[A-Za-z0-9_-]{20,}$/.test(apiKey))) {
+      return res.status(400).json({ error: 'Проверь API-ключ OpenRouter. Ожидается ключ формата sk-or-v1-…' });
     }
-    if (!/^[A-Za-z0-9._-]{2,100}$/.test(model)) {
-      return res.status(400).json({ error: 'Название мультимодальной модели содержит недопустимые символы.' });
+    if (model !== OPENROUTER_FREE_MODEL) {
+      return res.status(400).json({ error: `В этой бесплатной конфигурации разрешена только модель ${OPENROUTER_FREE_MODEL}.` });
     }
-    const enabled = req.body?.enabled !== false;
-    if (enabled && (!apiKey || !folderId)) {
-      return res.status(400).json({ error: 'Для включения Yandex AI нужны API-ключ и Folder ID.' });
+    const enabled = req.body?.enabled === true;
+    if (enabled && !apiKey) {
+      return res.status(400).json({ error: 'Для включения OpenRouter нужен API-ключ.' });
     }
     const next = {
-      apiKey, folderId, model, enabled,
+      apiKey, model, enabled,
       ocrEnabled: req.body?.ocrEnabled !== false,
       pipeEnabled: req.body?.pipeEnabled !== false,
       updatedAt: new Date().toISOString(),
     };
-    await saveYandexAiSettings(next);
-    return res.json({ ok: true, yandex: publicYandexAiSettings(next), message: 'Настройки сохранены в закрытой папке данных ScadaProfit.' });
+    await saveOpenRouterSettings(next);
+    return res.json({ ok: true, openrouter: publicOpenRouterSettings(next), message: 'Настройки OpenRouter сохранены в закрытой папке данных ScadaProfit.' });
   } catch (error) {
-    console.error('[AI] Cannot save Yandex settings:', error?.message || error);
-    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки Yandex AI.' });
+    console.error('[AI] Cannot save OpenRouter settings:', error?.message || error);
+    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки OpenRouter.' });
   }
 });
 
-app.delete('/api/ai-settings', async (_req, res) => {
+app.delete('/api/openrouter-settings', async (_req, res) => {
   try {
-    await rm(YANDEX_AI_CONFIG_PATH, { force: true });
-    return res.json({ ok: true, yandex: publicYandexAiSettings({}), message: 'Настройки Yandex AI удалены. Qwen и Tesseract продолжают работать.' });
+    await rm(OPENROUTER_AI_CONFIG_PATH, { force: true });
+    return res.json({ ok: true, openrouter: publicOpenRouterSettings({}), message: 'Настройки OpenRouter удалены. Локальные Qwen и Tesseract продолжают работать.' });
   } catch (error) {
-    return res.status(500).json({ error: 'Не удалось удалить настройки Yandex AI.' });
+    return res.status(500).json({ error: 'Не удалось удалить настройки OpenRouter.' });
   }
 });
 
-app.post('/api/ai-settings/test', async (req, res) => {
+app.post('/api/openrouter-settings/test', async (req, res) => {
   const jobId = String(req.body?.jobId || '');
-  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала открой существующую загруженную схему, на которой нужно проверить Yandex AI.' });
-  const settings = await readYandexAiSettings();
-  if (!publicYandexAiSettings(settings).configured || settings.enabled !== true) {
-    return res.status(409).json({ error: 'Сначала сохрани и включи API-ключ и Folder ID Yandex AI.' });
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала открой во входящих фотографию схемы дома, которую нужно проверить.' });
+  const settings = await readOpenRouterSettings();
+  if (!publicOpenRouterSettings(settings).configured || settings.enabled !== true) {
+    return res.status(409).json({ error: 'Сначала сохрани API-ключ и включи OpenRouter.' });
   }
   const jobDir = path.join(DATA, jobId);
-  let sourcePath = null;
   try {
     const names = await readdir(jobDir);
     const sourceName = names.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
     if (!sourceName) return res.status(404).json({ error: 'В выбранном задании нет исходной фотографии.' });
-    sourcePath = path.join(jobDir, sourceName);
-    const tempLog = path.join(LIBRARY_DIR, `yandex-test-${randomUUID()}.log`);
+    const sourcePath = path.join(jobDir, sourceName);
+    const tempLog = path.join(LIBRARY_DIR, `openrouter-test-${randomUUID()}.log`);
     try {
       const run = await runPythonStreaming(
-        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-yandex'],
-        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: yandexPythonEnvironment(settings) }
+        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-openrouter'],
+        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: openRouterPythonEnvironment(settings) }
       );
       let result;
       try { result = JSON.parse(run.stdout.trim()); }
-      catch { throw new Error('Тест Yandex AI завершился без корректного JSON-отчёта.'); }
+      catch { throw new Error('Тест OpenRouter завершился без корректного JSON-отчёта.'); }
       return res.json({ ok: Boolean(result.ok), result });
     } finally {
       await rm(tempLog, { force: true }).catch(() => {});
     }
   } catch (error) {
-    console.error(`[AI TEST ${jobId.slice(0, 8)}] Yandex test failed:`, error?.stderr || error?.message || error);
-    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить Yandex AI.').slice(-900) });
+    console.error(`[AI TEST ${jobId.slice(0, 8)}] OpenRouter test failed:`, error?.stderr || error?.message || error);
+    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить OpenRouter.').slice(-900) });
   }
 });
 
@@ -1256,15 +1257,15 @@ app.get('/api/health', async (_req, res) => {
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
 
-  const yandexSettings = publicYandexAiSettings(await readYandexAiSettings());
+  const openrouterSettings = publicOpenRouterSettings(await readOpenRouterSettings());
   res.json({
     ok: true,
-    version: '4.3.27',
+    version: '4.3.28',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
-    ocr: 'Yandex Vision OCR first when enabled; local Qwen3-VL 4B Instruct 3x3 tiled OCR is fallback when cloud OCR is disabled, fails, or returns no annotations; Tesseract supplements both',
+    ocr: 'OpenRouter multimodal OCR first when enabled; local Qwen3-VL tiled OCR is fallback when cloud OCR is disabled, fails, or returns no annotations; Tesseract supplements both',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
@@ -1282,7 +1283,7 @@ app.get('/api/health', async (_req, res) => {
       modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
     },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
-    yandexAI: yandexSettings,
+    openrouterAI: openrouterSettings,
     ollamaRequiredForCleanCad: false,
     ollamaRequired: false,
     ollama
@@ -1328,10 +1329,10 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const templatePath = await pinTemplateReference(jobDir);
     const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
-    const aiSettings = await readYandexAiSettings();
+    const aiSettings = await readOpenRouterSettings();
     await runPythonStreaming(
       processorArgs,
-      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: yandexPythonEnvironment(aiSettings) }
+      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: openRouterPythonEnvironment(aiSettings) }
     );
 
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));

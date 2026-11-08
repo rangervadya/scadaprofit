@@ -1,7 +1,9 @@
-# ScadaProfit 4.3.27
+# ScadaProfit 4.3.28
 
-The 4.3.27 update is cumulative from the supplied 4.3.23 project. It retains the 4.3.24 house-scheme queue, topology-aware cleanup, review-only candidates, and editable Manual CAD, and adds an optional Yandex Cloud AI provider for handwritten OCR and multimodal pipeline-route proposals.
+This update replaces the retired Yandex AI integration with an optional OpenRouter multimodal provider using `nvidia/nemotron-3.5-super-vl:free`. The model is used for whole-image handwriting OCR and pipe-route suggestions. Every suggested route remains subject to local source-ink and topology validation; uncertain labels and joins remain review items.
 
-When enabled, Yandex Vision OCR now runs first on the full image. Local Qwen3-VL remains the fallback when Yandex is disabled, fails, or returns no annotations; Tesseract remains a supplemental OCR source. This avoids waiting for nine sequential local OCR tiles before the configured cloud OCR is attempted. Yandex is opt-in and disabled until configured. Cloud routes are still checked against original image ink and OpenCV geometry; unverified text and uncertain topology remain review items. The Yandex API key is stored in the existing private ScadaProfit data volume, not in the browser, Compose, or Git.
+Local Ollama Qwen3-VL and Tesseract are retained as fallbacks/supplementary OCR. OpenRouter is disabled until its API key is explicitly saved and enabled in ScadaProfit. The API key is stored in the existing private ScadaProfit data volume and is never returned to the browser or committed to Git.
 
-This package changes only the primary ScadaProfit files listed in `UPDATE-MANIFEST-4.3.27.txt`. `vdgo/`, Compose, Nginx, PostgreSQL, and their volumes are not modified. Follow `UPGRADE-GIT-4.3.27-RU.md`. Real Yandex API calls and server-side Docker validation require testing after installation with the user's Yandex Cloud credentials.
+The free OpenRouter model has provider/platform rate limits (currently 50 requests/day and 20/minute for free models). Two cloud calls are used by a full test/analysis (OCR and route tracing). Failed requests may count against the daily quota. The free NVIDIA endpoint may log prompts and images for service improvement; do not send confidential drawings or images containing personal information. Use an anonymized copy for testing.
+
+This patch changes only the primary ScadaProfit app and its tests/docs. It does not modify `vdgo/`, `compose.yaml`, Nginx, PostgreSQL or Docker volumes. Apply using `UPGRADE-GIT-4.3.28-RU.md`. A real OpenRouter request and Docker deployment must be tested after installation using the user's key.

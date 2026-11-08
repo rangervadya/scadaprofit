@@ -1176,12 +1176,12 @@ function renderReviewList() {
 }
 
 function renderTextList() {
-  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract', 'yandex-vision-ocr'].includes(item.source) && item.text);
+  const annotations = graph.annotations.filter(item => ['qwen3-vl', 'qwen3-vl-block', 'tesseract', 'openrouter-vision-ocr'].includes(item.source) && item.text);
   $('textList').innerHTML = annotations.length ? annotations.map(annotation => `
     <div class="rowitem"><input type="checkbox" data-include-annotation="${escapeHtml(annotation.id)}" ${((annotation.include ?? annotation.verified) ? 'checked' : '')} title="Заменить рукописную надпись CAD-текстом" aria-label="Заменить рукописную надпись ${escapeHtml(annotation.id)} CAD-текстом">
       <span class="id">${escapeHtml(annotation.id)}</span>
       <input type="text" data-text="${escapeHtml(annotation.id)}" value="${escapeHtml(annotation.text)}" aria-label="Текст ${escapeHtml(annotation.id)}">
-      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : annotation.source === 'yandex-vision-ocr' ? 'Yandex OCR' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL, Yandex OCR и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
+      <span class="mini">${escapeHtml(String(annotation.confidence ?? 0))}% · ${annotation.source === 'qwen3-vl-block' ? 'Qwen · строка' : annotation.source === 'qwen3-vl' ? 'Qwen' : annotation.source === 'openrouter-vision-ocr' ? 'OpenRouter OCR' : 'Tesseract'}</span></div>`).join('') : '<div class="helper">Qwen3-VL, OpenRouter OCR и Tesseract не нашли читаемых подписей. Подтверждённый текст выводится как редактируемая CAD-надпись, а не как штрихи.</div>';
   $('textList').querySelectorAll('[data-text]').forEach(input => input.addEventListener('input', () => {
     const annotation = graph.annotations.find(item => item.id === input.dataset.text);
     if (annotation) annotation.text = input.value;
@@ -1776,128 +1776,124 @@ if (templateFileInput) {
 }
 
 
-// Optional Yandex AI Studio integration. The API key is write-only from the
-// browser: GET endpoints never return the secret, and Qwen/Tesseract stay live.
-const yandexApiKeyInput = $('yandexApiKey');
-const yandexFolderIdInput = $('yandexFolderId');
-const yandexModelInput = $('yandexModel');
-const yandexEnabledInput = $('yandexEnabled');
-const yandexOcrEnabledInput = $('yandexOcrEnabled');
-const yandexPipeEnabledInput = $('yandexPipeEnabled');
-const yandexSaveBtn = $('yandexSaveBtn');
-const yandexTestBtn = $('yandexTestBtn');
-const yandexClearBtn = $('yandexClearBtn');
+// Optional OpenRouter multimodal integration. The API key is write-only in
+// the browser and stored in the private app data volume; local Qwen/Tesseract stay live.
+const openrouterApiKeyInput = $('openrouterApiKey');
+const openrouterModelInput = $('openrouterModel');
+const openrouterEnabledInput = $('openrouterEnabled');
+const openrouterOcrEnabledInput = $('openrouterOcrEnabled');
+const openrouterPipeEnabledInput = $('openrouterPipeEnabled');
+const openrouterSaveBtn = $('openrouterSaveBtn');
+const openrouterTestBtn = $('openrouterTestBtn');
+const openrouterClearBtn = $('openrouterClearBtn');
 
-function setYandexStatus(message, kind = '') {
-  const box = $('yandexStatus');
+function setOpenRouterStatus(message, kind = '') {
+  const box = $('openrouterStatus');
   if (!box) return;
   box.textContent = message;
   box.dataset.kind = kind;
 }
 
-async function loadYandexAiSettings() {
+async function loadOpenRouterSettings() {
   try {
-    const response = await fetch('/api/ai-settings', { cache: 'no-store' });
+    const response = await fetch('/api/openrouter-settings', { cache: 'no-store' });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки Yandex AI.');
-    const cfg = data.yandex || {};
-    yandexFolderIdInput.value = cfg.folderId || '';
-    yandexModelInput.value = cfg.model || 'qwen3.6-35b-a3b';
-    yandexEnabledInput.checked = Boolean(cfg.enabled);
-    yandexOcrEnabledInput.checked = cfg.ocrEnabled !== false;
-    yandexPipeEnabledInput.checked = cfg.pipeEnabled !== false;
-    yandexClearBtn.hidden = !cfg.configured;
-    setYandexStatus(cfg.configured
-      ? `Ключ сохранён · ${cfg.enabled ? 'Yandex AI включён' : 'Yandex AI выключен'} · модель ${cfg.model}. Qwen и Tesseract сохранены.`
-      : 'API-ключ ещё не настроен. Qwen и Tesseract работают как раньше.');
+    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки OpenRouter.');
+    const cfg = data.openrouter || {};
+    openrouterModelInput.value = cfg.model || 'nvidia/nemotron-3.5-super-vl:free';
+    openrouterEnabledInput.checked = Boolean(cfg.enabled);
+    openrouterOcrEnabledInput.checked = cfg.ocrEnabled !== false;
+    openrouterPipeEnabledInput.checked = cfg.pipeEnabled !== false;
+    openrouterClearBtn.hidden = !cfg.configured;
+    setOpenRouterStatus(cfg.configured
+      ? `Ключ сохранён · ${cfg.enabled ? 'OpenRouter включён' : 'OpenRouter выключен'} · модель ${cfg.model}. Локальные Qwen и Tesseract сохранены.`
+      : 'API-ключ ещё не настроен. Локальные Qwen и Tesseract работают как раньше.');
   } catch (error) {
-    setYandexStatus(error.message || 'Не удалось загрузить настройки Yandex AI.', 'error');
+    setOpenRouterStatus(error.message || 'Не удалось загрузить настройки OpenRouter.', 'error');
   }
 }
 
-if (yandexSaveBtn) {
-  yandexSaveBtn.addEventListener('click', async () => {
-    yandexSaveBtn.disabled = true;
-    setYandexStatus('Сохраняю настройки на сервере…');
+if (openrouterSaveBtn) {
+  openrouterSaveBtn.addEventListener('click', async () => {
+    openrouterSaveBtn.disabled = true;
+    setOpenRouterStatus('Сохраняю настройки на сервере…');
     try {
-      const response = await fetch('/api/ai-settings', {
+      const response = await fetch('/api/openrouter-settings', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKey: yandexApiKeyInput.value,
-          folderId: yandexFolderIdInput.value.trim(),
-          model: yandexModelInput.value.trim() || 'qwen3.6-35b-a3b',
-          enabled: yandexEnabledInput.checked,
-          ocrEnabled: yandexOcrEnabledInput.checked,
-          pipeEnabled: yandexPipeEnabledInput.checked,
+          apiKey: openrouterApiKeyInput.value,
+          model: openrouterModelInput.value.trim() || 'nvidia/nemotron-3.5-super-vl:free',
+          enabled: openrouterEnabledInput.checked,
+          ocrEnabled: openrouterOcrEnabledInput.checked,
+          pipeEnabled: openrouterPipeEnabledInput.checked,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Не удалось сохранить настройки.');
-      yandexApiKeyInput.value = '';
-      yandexClearBtn.hidden = !data.yandex?.configured;
-      setYandexStatus(`Настройки сохранены. ${data.yandex?.enabled ? 'Yandex AI будет использоваться для новых обработок.' : 'Yandex AI выключен.'} Qwen и Tesseract не изменены.`, 'success');
+      openrouterApiKeyInput.value = '';
+      openrouterClearBtn.hidden = !data.openrouter?.configured;
+      setOpenRouterStatus(`Настройки сохранены. ${data.openrouter?.enabled ? 'OpenRouter будет использоваться для новых обработок.' : 'OpenRouter выключен.'} Qwen и Tesseract не изменены.`, 'success');
     } catch (error) {
-      setYandexStatus(error.message || 'Ошибка сохранения настроек.', 'error');
+      setOpenRouterStatus(error.message || 'Ошибка сохранения настроек.', 'error');
     } finally {
-      yandexSaveBtn.disabled = false;
+      openrouterSaveBtn.disabled = false;
     }
   });
 }
 
-if (yandexTestBtn) {
-  yandexTestBtn.addEventListener('click', async () => {
+if (openrouterTestBtn) {
+  openrouterTestBtn.addEventListener('click', async () => {
     if (!selectedJobId) {
-      setYandexStatus('Сначала открой во входящих фотографию схемы дома. Тест отправит именно её в Yandex OCR и Qwen3.6 Vision.');
+      setOpenRouterStatus('Сначала открой во входящих фотографию схемы дома. Тест отправит именно её в OpenRouter OCR и Vision.');
       return;
     }
-    yandexTestBtn.disabled = true;
-    yandexTestBtn.textContent = 'Тестирую…';
-    setYandexStatus('Отправляю открытую фотографию в Yandex Vision OCR и мультимодальную Qwen3.6. Запросы тарифицируются.');
+    openrouterTestBtn.disabled = true;
+    openrouterTestBtn.textContent = 'Тестирую…';
+    setOpenRouterStatus('Отправляю открытую фотографию в бесплатную мультимодальную модель OpenRouter. Выполняются два запроса — OCR и трассировка.');
     try {
-      const response = await fetch('/api/ai-settings/test', {
+      const response = await fetch('/api/openrouter-settings/test', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId: selectedJobId }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Тест Yandex AI не выполнен.');
+      if (!response.ok) throw new Error(data.error || 'Тест OpenRouter не выполнен.');
       const ocr = data.result?.ocr || {};
       const vision = data.result?.vision || {};
-      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} строк` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
+      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} надписей` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
       const visionText = vision.ok ? `Vision: ${vision.routes} маршрутов труб` : `Vision: ошибка — ${vision.error || 'неизвестно'}`;
-      setYandexStatus(`${data.ok ? 'Тест API пройден частично или полностью.' : 'Оба теста не прошли.'} ${ocrText}. ${visionText}. Результат пока тестовый — существующий чертёж не изменён.`, data.ok ? 'success' : 'error');
+      setOpenRouterStatus(`${data.ok ? 'Оба теста завершились успешно.' : 'Проверка завершилась частично или с ошибкой.'} ${ocrText}. ${visionText}. Тест не изменил существующий чертёж.`, data.ok ? 'success' : 'error');
     } catch (error) {
-      setYandexStatus(error.message || 'Не удалось выполнить тест Yandex AI.', 'error');
+      setOpenRouterStatus(error.message || 'Не удалось выполнить тест OpenRouter.', 'error');
     } finally {
-      yandexTestBtn.disabled = false;
-      yandexTestBtn.textContent = 'Проверить на открытой схеме';
+      openrouterTestBtn.disabled = false;
+      openrouterTestBtn.textContent = 'Проверить на открытой схеме';
     }
   });
 }
 
-if (yandexClearBtn) {
-  yandexClearBtn.addEventListener('click', async () => {
-    if (!window.confirm('Удалить только сохранённый API-ключ и настройки Yandex AI? Qwen и Tesseract останутся без изменений.')) return;
-    yandexClearBtn.disabled = true;
+if (openrouterClearBtn) {
+  openrouterClearBtn.addEventListener('click', async () => {
+    if (!window.confirm('Удалить только сохранённый API-ключ и настройки OpenRouter? Локальные Qwen и Tesseract останутся без изменений.')) return;
+    openrouterClearBtn.disabled = true;
     try {
-      const response = await fetch('/api/ai-settings', { method: 'DELETE' });
+      const response = await fetch('/api/openrouter-settings', { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Не удалось удалить настройки.');
-      yandexApiKeyInput.value = '';
-      yandexFolderIdInput.value = '';
-      yandexEnabledInput.checked = false;
-      yandexOcrEnabledInput.checked = true;
-      yandexPipeEnabledInput.checked = true;
-      yandexClearBtn.hidden = true;
-      setYandexStatus('Настройки Yandex AI удалены. Локальные Qwen и Tesseract по-прежнему включены.', 'success');
+      openrouterApiKeyInput.value = '';
+      openrouterEnabledInput.checked = false;
+      openrouterOcrEnabledInput.checked = true;
+      openrouterPipeEnabledInput.checked = true;
+      openrouterClearBtn.hidden = true;
+      setOpenRouterStatus('Настройки OpenRouter удалены. Локальные Qwen и Tesseract продолжают работать.', 'success');
     } catch (error) {
-      setYandexStatus(error.message || 'Не удалось удалить настройки.', 'error');
+      setOpenRouterStatus(error.message || 'Не удалось удалить настройки.', 'error');
     } finally {
-      yandexClearBtn.disabled = false;
+      openrouterClearBtn.disabled = false;
     }
   });
 }
 
-loadYandexAiSettings();
+loadOpenRouterSettings();
 
 fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
   const ollama = health.ollama || {};
