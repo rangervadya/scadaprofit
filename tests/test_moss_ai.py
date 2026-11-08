@@ -108,6 +108,45 @@ class MossImageTests(unittest.TestCase):
     @patch('moss_ai._delete_image')
     @patch('moss_ai._request_json')
     @patch('moss_ai._upload_image')
+    def test_ocr_accepts_single_top_level_text_bbox_record(self, upload, request, delete):
+        upload.return_value = 'file_single_record'
+        request.return_value = {
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
+                'text': 'Ду 25', 'bbox': [10, 20, 50, 40], 'confidence': 0.84
+            }, ensure_ascii=False)}]}],
+            'usage': {'total_tokens': 42},
+        }
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['text'], 'Ду 25')
+        self.assertEqual(items[0]['bbox'], {'x': 10, 'y': 20, 'w': 40, 'h': 20})
+        self.assertEqual(items[0]['confidence'], 84.0)
+        self.assertEqual(status['annotations_field'], '$ (single text region)')
+        delete.assert_called_once()
+
+    @patch('moss_ai._delete_image')
+    @patch('moss_ai._request_json')
+    @patch('moss_ai._upload_image')
+    def test_ocr_accepts_nested_single_text_bbox_record(self, upload, request, delete):
+        upload.return_value = 'file_nested_single_record'
+        request.return_value = {
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
+                'result': {'text': 'Ø 32', 'bbox': {'x': 20, 'y': 30, 'width': 48, 'height': 16}}
+            }, ensure_ascii=False)}]}],
+            'usage': {'total_tokens': 36},
+        }
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['text'], 'Ø 32')
+        self.assertEqual(items[0]['bbox'], {'x': 20, 'y': 30, 'w': 48, 'h': 16})
+        self.assertEqual(status['annotations_field'], '$.result (single text region)')
+        delete.assert_called_once()
+
+    @patch('moss_ai._delete_image')
+    @patch('moss_ai._request_json')
+    @patch('moss_ai._upload_image')
     def test_ocr_accepts_polygon_coordinates(self, upload, request, delete):
         upload.return_value = 'file_polygon'
         request.return_value = {

@@ -267,6 +267,27 @@ def _extract_ocr_records(parsed: dict[str, Any]) -> tuple[list[Any] | None, str 
             actual = key_map.get(alias.lower().replace("-", "_"))
             if actual is not None and isinstance(node.get(actual), list):
                 return node[actual], f"{path}.{actual}"
+
+        # Some MOSS responses ignore the requested annotations array when
+        # there is only one detected label and return that record directly:
+        # {"text": "DN 25", "bbox": [x1, y1, x2, y2]}. Treat it as a
+        # one-element record list only when both explicit text and geometry
+        # fields are present. Never infer a box or fabricate coordinates.
+        has_text = any(
+            isinstance(node.get(key_map.get(alias)), (str, int, float))
+            and str(node.get(key_map.get(alias))).strip()
+            for alias in _OCR_TEXT_KEYS if key_map.get(alias) is not None
+        )
+        has_geometry = any(key_map.get(alias.lower().replace("-", "_")) is not None for alias in _OCR_BOX_KEYS)
+        has_geometry = has_geometry or all(key in key_map for key in ("x1", "y1", "x2", "y2"))
+        has_geometry = has_geometry or (
+            all(key in key_map for key in ("x", "y"))
+            and ("w" in key_map or "width" in key_map)
+            and ("h" in key_map or "height" in key_map)
+        )
+        if has_text and has_geometry:
+            return [node], f"{path} (single text region)"
+
         if depth < 3:
             for container_key in _OCR_CONTAINER_KEYS:
                 actual = key_map.get(container_key)
@@ -277,15 +298,21 @@ def _extract_ocr_records(parsed: dict[str, Any]) -> tuple[list[Any] | None, str 
 
 
 def _ocr_text_value(raw: dict[str, Any]) -> str:
+    key_map = {str(key).lower().replace("-", "_"): key for key in raw.keys()}
     for key in _OCR_TEXT_KEYS:
-        value = raw.get(key)
+        actual = key_map.get(key.lower().replace("-", "_"))
+        value = raw.get(actual) if actual is not None else None
         if isinstance(value, (str, int, float)) and str(value).strip():
             return re.sub(r"\s+", " ", str(value)).strip()[:180]
     return ""
 
 
 def _ocr_box_values(raw: dict[str, Any]) -> tuple[float, float, float, float]:
-    box = next((raw.get(key) for key in _OCR_BOX_KEYS if raw.get(key) is not None), None)
+    key_map = {str(key).lower().replace("-", "_"): key for key in raw.keys()}
+    box_key = next((key_map.get(key.lower().replace("-", "_")) for key in _OCR_BOX_KEYS
+                    if key_map.get(key.lower().replace("-", "_")) is not None
+                    and raw.get(key_map[key.lower().replace("-", "_")]) is not None), None)
+    box = raw.get(box_key) if box_key is not None else None
     if isinstance(box, dict):
         normalized = {str(k).lower(): v for k, v in box.items()}
         if all(key in normalized for key in ("x", "y")) and ("w" in normalized or "width" in normalized) and ("h" in normalized or "height" in normalized):
