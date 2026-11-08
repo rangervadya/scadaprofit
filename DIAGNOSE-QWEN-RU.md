@@ -1,4 +1,4 @@
-# Диагностика Qwen/Ollama · версия 4.2.7
+# Диагностика Qwen/Ollama · профиль ScadaProfit 4.3.22
 
 ## 1. Проверить реальное состояние
 
@@ -18,7 +18,7 @@ http://АДРЕС-СЕРВЕРА:3001/api/health
 
 ```bash
 docker compose up -d ollama
-docker compose exec ollama ollama pull qwen3-vl:4b
+docker compose exec ollama ollama pull qwen3-vl:4b-instruct
 docker compose restart app
 ```
 

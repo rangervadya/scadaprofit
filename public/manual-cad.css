@@ -4,3 +4,23 @@
 @media(max-width:820px){.mc-shell{grid-template-columns:1fr}.mc-projects-panel{order:2}.mc-inspector{order:3;grid-template-columns:1fr 1fr}.mc-workspace{order:1}.mc-project-list{max-height:180px;grid-template-columns:repeat(2,minmax(0,1fr))}.mc-documentbar{align-items:flex-start;flex-direction:column}.mc-document-name{max-width:none;width:100%}.mc-canvas-scroll{height:58vh;min-height:320px}.mc-toolbar{align-items:flex-start;flex-direction:column}.mc-toolgroup-right{align-self:flex-end}}
 @media(max-width:560px){.mc-topbar{padding:0 10px}.mc-save-state{display:none}.mc-nav{padding:0 8px;gap:2px}.mc-nav-link,.mc-nav-current{font-size:9px;padding:6px}.mc-shell{padding:6px;gap:7px}.mc-document-actions{width:100%}.mc-button{font-size:9px;padding:0 7px}.mc-propertybar{gap:6px}.mc-prop-route input{width:100px}.mc-lowerbar{align-items:stretch;flex-direction:column}.mc-settings .mc-notes-prop input{width:190px}.mc-inspector{display:block}.mc-statistics{margin-top:12px}.mc-canvas-scroll{height:52vh}}
 .mc-prop-opacity input[type=range]{cursor:pointer}
+
+/* LPGCad R1 engineering sheet controls */
+.mc-engineering-panel{margin:0;padding:9px 12px;border-bottom:1px solid #edf1ed;background:#fcfdfc}
+.mc-engineering-panel>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none}
+.mc-engineering-panel>summary::-webkit-details-marker{display:none}
+.mc-engineering-panel>summary b{display:block;font-size:10px;color:#2f4536}
+.mc-engineering-panel>summary small{display:block;margin-top:3px;font-size:9px;color:#89958c}
+.mc-engineering-caret{color:#839087;font-size:13px}
+.mc-engineering-panel[open] .mc-engineering-caret{transform:rotate(180deg)}
+.mc-engineering-fields{display:grid;grid-template-columns:minmax(145px,1fr) minmax(75px,.35fr) minmax(210px,2fr) minmax(85px,.45fr);gap:8px;margin-top:10px;align-items:end}
+.mc-engineering-fields .mc-prop input,.mc-engineering-fields .mc-prop select{width:100%;height:30px}
+.mc-prop-inspection{grid-column:span 2}
+.mc-prop-subtitle{grid-column:span 2}
+.mc-engineering-note{margin:8px 0 0;color:#859188;font-size:9px;line-height:1.5}
+.mc-pipe-riser{stroke-dasharray:8 3}
+.mc-pipe-branch{stroke-width:3.4}
+@media(max-width:900px){.mc-engineering-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.mc-prop-inspection,.mc-prop-subtitle{grid-column:span 2}}
+@media(max-width:560px){.mc-engineering-fields{grid-template-columns:1fr}.mc-prop-inspection,.mc-prop-subtitle{grid-column:auto}.mc-engineering-panel{padding:8px}}
+
+.mc-prop-riser-groups{grid-column:1/-1}.mc-prop-riser-groups textarea{width:100%;min-height:58px;resize:vertical;border:1px solid #e0e7e1;border-radius:5px;background:#fff;padding:7px 8px;font:10px/1.5 Arial,sans-serif;color:#35443a}.mc-prop-riser-groups small{display:block;margin-top:4px;color:#859188;font-size:9px;line-height:1.4}

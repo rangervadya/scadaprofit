@@ -34,6 +34,15 @@ function ensureProjectDefaults(project) {
   project.height = Math.max(100, safeNum(project.height, 1000));
   project.pipes ||= []; project.junctions ||= []; project.symbols ||= []; project.labels ||= []; project.dimensions ||= [];
   project.page = project.page === 'landscape' ? 'landscape' : 'portrait';
+  project.paperSize = project.paperSize === 'A3' ? 'A3' : 'A4';
+  project.drawingStyle = project.drawingStyle === 'lpgcad-r1' ? 'lpgcad-r1' : 'standard';
+  project.siteAddress ||= '';
+  project.entrance ||= '';
+  project.inspectionTitle ||= 'Заключение по результатам технического диагностирования внутридомового газового оборудования';
+  if (!project.schemeSubtitle || project.schemeSubtitle === 'Схема неразрушающего контроля внутридомового газового оборудования') project.schemeSubtitle = 'неразрушающего контроля внутридомового газового оборудования';
+  project.riserGroups = Array.isArray(project.riserGroups) ? project.riserGroups : [];
+  project.schemeAuthor ||= '';
+  project.schemeChecker ||= '';
   return project;
 }
 
@@ -138,8 +147,17 @@ function syncControls() {
   const p = state.project; if (!p) return;
   $('projectTitle').value = p.title || '';
   $('pageOrientation').value = p.page || 'portrait';
+  $('paperSize').value = p.paperSize || 'A4';
+  $('drawingStyle').value = p.drawingStyle || 'standard';
   $('preparedBy').value = p.preparedBy || '';
   $('drawingNotes').value = p.notes || '';
+  $('siteAddress').value = p.siteAddress || '';
+  $('entrance').value = p.entrance || '';
+  $('inspectionTitle').value = p.inspectionTitle || '';
+  $('schemeSubtitle').value = p.schemeSubtitle || '';
+  $('schemeAuthor').value = p.schemeAuthor || '';
+  $('schemeChecker').value = p.schemeChecker || '';
+  $('riserGroups').value = (p.riserGroups || []).map(group => `${group.name}: ${(group.apartments || []).join(', ')}`).join('\n');
   $('canvasDimensions').textContent = `${p.width} × ${p.height} px`;
   const hasSource = Boolean(p.sourceUrl);
   $('toggleSourceBtn').disabled = !hasSource;
@@ -254,7 +272,7 @@ function finishRoute() {
   const startAttachment=state.draftStart;
   // Resolve the final snap before inserting the new pipe, so a route cannot snap to itself.
   const endAttachment=nearestPipeProjection(state.draft[state.draft.length-1]);
-  const pipe={id,name,diameter,kind:state.tool==='branch'?'branch':'pipe',points:state.draft.map(p=>[p.x,p.y]),visible:true};
+  const pipe={id,name,diameter,kind:state.tool==='branch'?'branch':$('pipeKind').value==='riser'?'riser':'pipe',points:state.draft.map(p=>[p.x,p.y]),visible:true};
   state.project.pipes.push(pipe);
   if (startAttachment) commitJunction(startAttachment,id);
   if (endAttachment) commitJunction(endAttachment,id);
@@ -315,7 +333,7 @@ function renderCanvas() {
     if(pipe.visible===false)return '';
     const points=pipe.points.map(pair=>`${safeNum(pair[0])},${safeNum(pair[1])}`).join(' ');
     const selected=state.selected?.type==='pipe'&&state.selected.id===pipe.id;
-    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="8"/>`).join(''):''}</g>`;
+    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="8"/>`).join(''):''}</g>`;
   }).join('');
   const junctions=p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('');
   const symbols=p.symbols.map(symbolSvg).join('');
@@ -434,8 +452,26 @@ $('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.t
 $('sourceOpacity').addEventListener('input',renderCanvas);
 $('projectTitle').addEventListener('input',event=>{if(!state.project)return;state.project.title=event.target.value;scheduleSave();});
 $('pageOrientation').addEventListener('change',event=>{if(!state.project)return;pushUndo();state.project.page=event.target.value;scheduleSave();});
+$('paperSize').addEventListener('change',event=>{if(!state.project)return;pushUndo();state.project.paperSize=event.target.value;scheduleSave();});
+$('drawingStyle').addEventListener('change',event=>{if(!state.project)return;pushUndo();state.project.drawingStyle=event.target.value;scheduleSave();toast(event.target.value==='lpgcad-r1'?'Включено оформление LPGCad R1. Геометрия не изменена.':'Включено стандартное оформление CAD.');});
 $('preparedBy').addEventListener('input',event=>{if(!state.project)return;state.project.preparedBy=event.target.value;scheduleSave();});
 $('drawingNotes').addEventListener('input',event=>{if(!state.project)return;state.project.notes=event.target.value;scheduleSave();});
+for (const [id, key] of [['siteAddress','siteAddress'],['entrance','entrance'],['inspectionTitle','inspectionTitle'],['schemeSubtitle','schemeSubtitle'],['schemeAuthor','schemeAuthor'],['schemeChecker','schemeChecker']]) {
+  $(id).addEventListener('input',event=>{if(!state.project)return;state.project[key]=event.target.value;scheduleSave();});
+}
+$('riserGroups').addEventListener('change',event=>{
+  if(!state.project)return;
+  pushUndo();
+  state.project.riserGroups=String(event.target.value||'').split(/\r?\n/).map((line,index)=>{
+    const split=line.split(/[:：]/,2);
+    if(split.length<2)return null;
+    const name=split[0].trim().slice(0,40);
+    const apartments=split[1].split(/[,;|]/).map(value=>value.trim().slice(0,24)).filter(Boolean).slice(0,30);
+    return name&&apartments.length?{id:`riser_group_${index+1}`,name,apartments}:null;
+  }).filter(Boolean).slice(0,8);
+  scheduleSave();
+  toast(`Групп стояков: ${state.project.riserGroups.length}. Номера квартир перенесены в чистовой лист.`);
+});
 $('saveNowBtn').addEventListener('click',()=>saveProject());
 svg.addEventListener('click',handleCanvasClick);
 svg.addEventListener('pointerdown',startDrag);
@@ -469,4 +505,4 @@ $('selectedSymbolLabel').addEventListener('change',event=>{const item=selectedIt
 window.addEventListener('beforeunload',event=>{
   if(state.saveTimer){event.preventDefault();event.returnValue='';}
 });
-loadProjects();
+loadProjects(new URLSearchParams(window.location.search).get('project'));

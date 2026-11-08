@@ -5,12 +5,12 @@
 1. **Семантическая трассировка:** модель должна вернуть осевые маршруты труб, точки поворотов и ответвления в JSON. Рукописные цифры, размеры, выноски, стрелки и символы не должны становиться трубопроводами. Эти маршруты используются как независимые подсказки на слое `QWEN_REVIEW`; основной `PIPE_MAIN` строится по отобранной геометрии OpenCV.
 2. **OCR:** изображение делится на четыре перекрывающихся увеличенных фрагмента; модель возвращает текст и bbox. Распознанные подписи экспортируются как редактируемые CAD TEXT. Боксы средней уверенности также помогают исключить рукописные штрихи из линейных кандидатов.
 
-Нужна Ollama 0.12.7 или новее и модель `qwen3-vl:4b` (более крупная модель может повысить качество, но требует больше ресурсов).
+Нужна Ollama 0.12.7 или новее и модель `qwen3-vl:4b-instruct` (более крупная модель может повысить качество, но требует больше ресурсов).
 
 Для Docker Compose: загрузите модель один раз:
 
 ```bash
-docker compose exec ollama ollama pull qwen3-vl:4b
+docker compose exec ollama ollama pull qwen3-vl:4b-instruct
 docker compose restart app
 ```
 
@@ -27,7 +27,7 @@ docker compose restart app
 docker compose up -d ollama
 
 # Установить модель в том Ollama (обычно скачивается один раз)
-docker compose exec ollama ollama pull qwen3-vl:4b
+docker compose exec ollama ollama pull qwen3-vl:4b-instruct
 
 # Перезапустить обработчик после установки модели
 docker compose restart app
@@ -37,7 +37,7 @@ docker compose restart app
 
 ```bash
 ollama list
-ollama pull qwen3-vl:4b
+ollama pull qwen3-vl:4b-instruct
 curl http://127.0.0.1:11434/api/tags
 ```
 
@@ -45,7 +45,7 @@ curl http://127.0.0.1:11434/api/tags
 
 ## Настройки
 
-- `QWEN_MODEL` — модель Ollama, по умолчанию `qwen3-vl:4b`.
+- `QWEN_MODEL` — модель Ollama, по умолчанию `qwen3-vl:4b-instruct`.
 - `QWEN_OCR_TILE_GRID=3` — сетка OCR (3×3 перекрывающихся фрагмента).
 - `QWEN_OCR_UPSCALE=2.0` — увеличение фрагментов для чтения мелких цифр.
 - `QWEN_OCR_TIMEOUT=40` — тайм-аут одного OCR-фрагмента в секундах.

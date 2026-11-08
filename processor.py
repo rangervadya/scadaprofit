@@ -120,19 +120,104 @@ def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float, float]:
         return 0, 0.0, 0.0
 
 
+def _detect_text_rotation_fallback(bgr: np.ndarray) -> dict[str, Any] | None:
+    """Score four page orientations with OCR when Tesseract OSD is inconclusive.
+
+    This deliberately requires a clear score margin: on sparse engineering
+    drawings a weak OCR guess must not override the user's source image.
+    Returns diagnostics even when no orientation is accepted.
+    """
+    try:
+        import pytesseract
+        from pytesseract import Output
+
+        max_edge = max(300, min(1800, int(os.getenv('OSD_FALLBACK_MAX_EDGE', '900'))))
+        timeout = max(1.0, min(15.0, float(os.getenv('OSD_FALLBACK_TIMEOUT_SECONDS', '4.0'))))
+        min_score = max(0.0, float(os.getenv('OSD_FALLBACK_MIN_SCORE', '18.0')))
+        min_gap = max(0.0, float(os.getenv('OSD_FALLBACK_MIN_GAP', '3.0')))
+        min_margin = max(0.0, min(1.0, float(os.getenv('OSD_FALLBACK_MIN_MARGIN', '0.12'))))
+        lang = os.getenv('OSD_FALLBACK_LANG', 'rus+eng').strip() or 'eng'
+
+        h, w = bgr.shape[:2]
+        scale = min(1.0, max_edge / max(h, w))
+        sample = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr.copy()
+        scores: dict[str, float] = {}
+        diagnostics: dict[str, Any] = {}
+        rotations = {
+            0: sample,
+            90: cv2.rotate(sample, cv2.ROTATE_90_CLOCKWISE),
+            180: cv2.rotate(sample, cv2.ROTATE_180),
+            270: cv2.rotate(sample, cv2.ROTATE_90_COUNTERCLOCKWISE),
+        }
+        for angle, candidate in rotations.items():
+            gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
+            try:
+                data = pytesseract.image_to_data(
+                    Image.fromarray(gray), lang=lang, config='--oem 1 --psm 11',
+                    output_type=Output.DICT, timeout=timeout
+                )
+                score = 0.0
+                accepted_tokens = 0
+                for raw_text, raw_conf in zip(data.get('text', []), data.get('conf', [])):
+                    token = str(raw_text or '').strip()
+                    try:
+                        confidence = float(raw_conf)
+                    except (TypeError, ValueError):
+                        continue
+                    if confidence < 25 or not any(char.isalnum() for char in token):
+                        continue
+                    score += (confidence / 100.0) ** 1.5 * min(len(token), 8)
+                    accepted_tokens += 1
+                scores[str(angle)] = round(score, 2)
+                diagnostics[str(angle)] = {'tokens': accepted_tokens, 'status': 'ok'}
+            except Exception as error:
+                scores[str(angle)] = 0.0
+                diagnostics[str(angle)] = {'tokens': 0, 'status': type(error).__name__}
+
+        ranked = sorted(((score, int(angle)) for angle, score in scores.items()), reverse=True)
+        if not ranked:
+            return {'accepted': False, 'rotation_degrees': None, 'scores': scores, 'candidates': diagnostics, 'reason': 'no_candidates'}
+        best_score, best_angle = ranked[0]
+        second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+        required_gap = max(min_gap, best_score * min_margin)
+        accepted = best_score >= min_score and (best_score - second_score) >= required_gap
+        reason = 'clear_ocr_margin' if accepted else 'ambiguous_ocr_scores'
+        return {
+            'accepted': bool(accepted),
+            'rotation_degrees': best_angle if accepted else None,
+            'scores': scores, 'candidates': diagnostics,
+            'winner_score': round(best_score, 2), 'runner_up_score': round(second_score, 2),
+            'required_margin': round(required_gap, 2), 'reason': reason,
+        }
+    except Exception as error:
+        return {
+            'accepted': False, 'rotation_degrees': None, 'scores': {},
+            'candidates': {}, 'reason': f'fallback_unavailable:{type(error).__name__}',
+        }
+
+
 def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
     """Rectify a photographed page and rotate confidently detected text upright."""
     original_h, original_w = bgr.shape[:2]
     quad = _detect_page_quad(bgr)
     prepared = _warp_page(bgr, quad) if quad is not None else bgr.copy()
+    rotation_diagnostics = None
     if rotation_degrees is None:
         rotation_degrees, orientation_confidence, script_confidence = _detect_text_rotation(prepared)
         min_orientation = max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0')))
         min_script = max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0')))
-        orientation_decision = 'auto_applied' if rotation_degrees else (
-            'preserved_low_confidence' if orientation_confidence < min_orientation or script_confidence < min_script
-            else 'preserved_no_rotation'
-        )
+        osd_trusted = orientation_confidence >= min_orientation and script_confidence >= min_script
+        if rotation_degrees:
+            orientation_decision = 'auto_applied'
+        elif not osd_trusted:
+            rotation_diagnostics = _detect_text_rotation_fallback(prepared)
+            if rotation_diagnostics and rotation_diagnostics.get('accepted'):
+                rotation_degrees = int(rotation_diagnostics.get('rotation_degrees') or 0)
+                orientation_decision = 'fallback_ocr_applied' if rotation_degrees else 'fallback_ocr_preserved_upright'
+            else:
+                orientation_decision = 'preserved_low_confidence'
+        else:
+            orientation_decision = 'preserved_no_rotation'
     else:
         orientation_confidence = 100.0
         script_confidence = 100.0
@@ -151,6 +236,7 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
         "orientation_min_confidence": max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0'))),
         "script_min_confidence": max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0'))),
         "orientation_decision": orientation_decision,
+        "orientation_fallback": rotation_diagnostics,
         "prepared_width": int(prepared.shape[1]), "prepared_height": int(prepared.shape[0]),
     }
 
@@ -1358,10 +1444,105 @@ def _clip_polyline_to_rect(points: list[list[float]], rect: tuple[float, float, 
     return fragments
 
 
+def _tesseract_failed_ocr_tiles(original: Image.Image, tile_diagnostics: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover review-only text candidates from Qwen OCR tiles that failed.
+
+    This supplement never counts as a successful Qwen tile: the job remains
+    incomplete until the configured vision-model coverage is complete. OCR
+    boxes from this pass are review annotations, not engineering assertions.
+    """
+    failed = [item for item in tile_diagnostics if item.get('tile_status') == 'failed']
+    try:
+        max_tiles = max(0, min(9, int(os.getenv('QWEN_TESSERACT_FALLBACK_MAX_TILES', '9'))))
+    except (TypeError, ValueError):
+        max_tiles = 9
+    if not failed or max_tiles <= 0:
+        return [], []
+    try:
+        timeout = max(1.0, min(8.0, float(os.getenv('QWEN_TESSERACT_FALLBACK_TIMEOUT_SECONDS', '3.0'))))
+    except (TypeError, ValueError):
+        timeout = 3.0
+    try:
+        max_edge = max(600, min(2400, int(os.getenv('QWEN_TESSERACT_FALLBACK_MAX_EDGE', '1600'))))
+    except (TypeError, ValueError):
+        max_edge = 1600
+    lang = os.getenv('QWEN_TESSERACT_FALLBACK_LANG', 'rus+eng').strip() or 'eng'
+    try:
+        import pytesseract
+        from pytesseract import Output
+    except Exception as error:
+        unavailable = [{'tile': item.get('tile'), 'status': 'unavailable', 'error': type(error).__name__}
+                       for item in failed[:max_tiles]]
+        return [], unavailable
+
+    recovered: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for tile_diag in failed[:max_tiles]:
+        tile_index = int(tile_diag.get('tile', 0) or 0)
+        coords = tile_diag.get('source_crop_xyxy')
+        diag: dict[str, Any] = {'tile': tile_index, 'status': 'started'}
+        try:
+            if not isinstance(coords, (list, tuple)) or len(coords) != 4:
+                raise ValueError('missing_source_crop_coordinates')
+            left, top, right, bottom = (int(value) for value in coords)
+            left, top = max(0, left), max(0, top)
+            right, bottom = min(original.width, right), min(original.height, bottom)
+            if right - left < 12 or bottom - top < 12:
+                raise ValueError('failed_tile_crop_is_too_small')
+            crop = original.crop((left, top, right, bottom)).convert('RGB')
+            requested_scale = min(2.0, max_edge / max(crop.size))
+            scale = requested_scale if abs(requested_scale - 1.0) > 0.001 else 1.0
+            if scale != 1.0:
+                crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
+            data = pytesseract.image_to_data(
+                crop, lang=lang, config='--oem 1 --psm 11',
+                output_type=Output.DICT, timeout=timeout
+            )
+            accepted = 0
+            for raw_text, raw_conf, raw_x, raw_y, raw_w, raw_h in zip(
+                    data.get('text', []), data.get('conf', []), data.get('left', []),
+                    data.get('top', []), data.get('width', []), data.get('height', [])):
+                text_value = re.sub(r'\s+', ' ', str(raw_text or '')).strip()
+                try:
+                    confidence = float(raw_conf)
+                    x, y, bw, bh = (int(round(float(value) / scale)) for value in (raw_x, raw_y, raw_w, raw_h))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text_value))
+                if not text_value or len(text_value) > 180 or confidence < 20 or not has_alnum:
+                    continue
+                if bw < 2 or bh < 2 or x < -2 or y < -2:
+                    continue
+                x = max(0, min(original.width - left - 1, x))
+                y = max(0, min(original.height - top - 1, y))
+                bw = max(0, min(right - left - x, bw))
+                bh = max(0, min(bottom - top - y, bh))
+                if bw < 2 or bh < 2:
+                    continue
+                recovered.append({
+                    'id': f'TF{tile_index}_{len(recovered) + 1}', 'text': text_value,
+                    'confidence': round(max(0.0, min(100.0, confidence)), 1),
+                    'bbox': {'x': left + x, 'y': top + y, 'w': bw, 'h': bh},
+                    # Tesseract confidence is useful for sorting, not proof of a
+                    # correct engineering transcription. Always require operator review.
+                    'verified': False, 'include': False, 'verification_required': True,
+                    'geometry_exclude': confidence >= 25, 'source': 'tesseract-tile',
+                    'tile': tile_index, 'coordinate_space': 'source_image_px',
+                })
+                accepted += 1
+            diag.update({'status': 'completed', 'annotations': accepted, 'crop_xyxy': [left, top, right, bottom],
+                         'scale': round(float(scale), 4)})
+        except Exception as error:
+            diag.update({'status': 'failed', 'annotations': 0, 'error': (str(error).strip() or type(error).__name__)[:180]})
+        diagnostics.append(diag)
+        _progress('OCR', f'Tesseract fallback for failed Qwen tile {tile_index}: {diag.get("status")}; annotations={diag.get("annotations", 0)}')
+    return recovered, diagnostics
+
+
 def _qwen_annotations(image_path: str, original_width: int, original_height: int, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR handwriting in overlapping enlarged tiles; keep low-confidence boxes as geometry masks."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
-    model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
+    model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct').strip()
     calls_ok = 0
     errors: list[str] = []
     try:
@@ -1433,7 +1614,10 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             prompt_width = max(1, round(crop.width * sent_scale))
             prompt_height = max(1, round(crop.height * sent_scale))
             prompt = prompt_template.replace('{width}', str(prompt_width)).replace('{height}', str(prompt_height))
-            call_diagnostics: dict[str, Any] = {'tile': tile_index, 'crop_size': list(crop.size)}
+            call_diagnostics: dict[str, Any] = {
+                'tile': tile_index, 'crop_size': list(crop.size),
+                'source_crop_xyxy': [int(left), int(top), int(right), int(bottom)],
+            }
             checkpoint_settings = {
                 'prompt_version': 3, 'model': model, 'grid': grid,
                 'region': [int(left), int(top), int(right), int(bottom)],
@@ -1592,6 +1776,15 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 tile_diagnostics.append(call_diagnostics)
                 _progress('OCR', f'Tile {tile_index}/{len(regions)} failed after {call_diagnostics["attempts"]} attempt(s): {message}')
 
+        tile_fallback_items, tile_fallback_diagnostics = _tesseract_failed_ocr_tiles(original, tile_diagnostics)
+        if tile_fallback_items:
+            items.extend(tile_fallback_items)
+        for tile_diag in tile_diagnostics:
+            matching = next((item for item in tile_fallback_diagnostics if item.get('tile') == tile_diag.get('tile')), None)
+            if matching is not None:
+                tile_diag['tesseract_fallback'] = matching
+        _progress('OCR', f'Tesseract recovered {len(tile_fallback_items)} review annotations from {len(tile_fallback_diagnostics)} failed Qwen tiles; Qwen completeness is unchanged')
+
         # A second, line-oriented OCR pass reads dense handwritten note blocks
         # as whole rows instead of independent glyph boxes. This is especially
         # useful for the numbered handwritten list at the right of the drawing.
@@ -1631,8 +1824,12 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             items = kept_items
             items.append(block_item)
 
-        # Deduplicate boxes repeated in the overlapping tile seams.
-        items.sort(key=lambda item: item['confidence'], reverse=True)
+        # Deduplicate boxes repeated in overlapping seams. Preserve native Qwen
+        # wording over supplemental Tesseract text when boxes substantially overlap.
+        items.sort(key=lambda item: (
+            0 if item.get('source') in {'qwen3-vl', 'qwen3-vl-block'} else 1,
+            -float(item.get('confidence', 0) or 0),
+        ))
         deduped: list[dict[str, Any]] = []
         for item in items:
             box = item['bbox']
@@ -1671,6 +1868,9 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'block_passes': len(block_diagnostics), 'block_diagnostics': block_diagnostics,
             'block_pass_deferred': bool(block_pass_deferred),
             'block_annotations': sum(1 for item in deduped if item.get('source') == 'qwen3-vl-block'),
+            'native_qwen_annotations': sum(1 for item in deduped if item.get('source') in {'qwen3-vl', 'qwen3-vl-block'}),
+            'tesseract_tile_fallback_annotations': sum(1 for item in deduped if item.get('source') == 'tesseract-tile'),
+            'tesseract_tile_fallback_diagnostics': tile_fallback_diagnostics,
             'recognized_anything': bool(deduped),
             'empty_result': calls_ok > 0 and not deduped,
             'error': ('; '.join(tile_errors[:2])[:220] if tile_errors else (('OCR-ответы достигли лимита токенов.' if any(item.get('truncated') for item in tile_diagnostics) else 'Все плитки обработаны, но Qwen не вернула распознанных надписей.') if calls_ok > 0 and not deduped else None)),
@@ -1714,7 +1914,7 @@ def _semantic_error_hint(error: Exception, model: str) -> tuple[str, str]:
 def _qwen_semantic_routes(image_path: str, original_width: int, original_height: int, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Trace pipe centre-lines tile-by-tile so a small model does not need to parse a full sheet at once."""
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
-    model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b').strip()
+    model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct').strip()
     raw_count = rejected_low_confidence = rejected_invalid = 0
     tile_diagnostics: list[dict[str, Any]] = []
     try:

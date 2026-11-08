@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
-  <title>Ручной CAD · ScadaProfit</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=1.0.0">
-  <script src="/manual-cad.js?v=1.0.0" defer></script>
+  <title>Ручной CAD · ScadaProfit 4.3.22</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.22">
+  <script src="/manual-cad.js?v=4.3.22" defer></script>
 </head>
 <body class="manual-cad-page">
   <nav class="mc-nav" aria-label="Разделы ScadaProfit">
@@ -49,6 +49,22 @@
         </div>
       </div>
 
+      <details class="mc-engineering-panel" open>
+        <summary><span><b>Чистовой лист LPGCad R1</b><small>Шапка заключения · адрес · легенда · подписи · A4/A3</small></span><span class="mc-engineering-caret">▾</span></summary>
+        <div class="mc-engineering-fields">
+          <div class="mc-prop mc-prop-style"><label for="drawingStyle">Профиль оформления</label><select id="drawingStyle"><option value="standard">Стандартный CAD</option><option value="lpgcad-r1">Газовая схема · LPGCad R1</option></select></div>
+          <div class="mc-prop mc-prop-paper"><label for="paperSize">Формат листа</label><select id="paperSize"><option value="A4">A4</option><option value="A3">A3</option></select></div>
+          <div class="mc-prop mc-prop-address"><label for="siteAddress">Адрес объекта</label><input id="siteAddress" maxlength="240" placeholder="Республика Татарстан, г. Казань, ул. ..."></div>
+          <div class="mc-prop mc-prop-entrance"><label for="entrance">Подъезд</label><input id="entrance" maxlength="80" placeholder="2"></div>
+          <div class="mc-prop mc-prop-inspection"><label for="inspectionTitle">Заголовок заключения</label><input id="inspectionTitle" maxlength="240"></div>
+          <div class="mc-prop mc-prop-subtitle"><label for="schemeSubtitle">Подзаголовок схемы</label><input id="schemeSubtitle" maxlength="240"></div>
+          <div class="mc-prop mc-prop-author"><label for="schemeAuthor">Схему составил</label><input id="schemeAuthor" maxlength="100" placeholder="ФИО"></div>
+          <div class="mc-prop mc-prop-checker"><label for="schemeChecker">Схему начертил</label><input id="schemeChecker" maxlength="100" placeholder="ФИО"></div>
+          <div class="mc-prop mc-prop-riser-groups"><label for="riserGroups">Нижние группы стояков · по одной строке на группу</label><textarea id="riserGroups" rows="3" placeholder="Ст-5: 67, 63, 59, 55, 51\nСт-6: 68, 64, 60, 56, 52"></textarea><small>Номера и порядок задаёт оператор. Формат: название стояка: номера квартир через запятую. До 8 групп по 30 номеров.</small></div>
+        </div>
+        <p class="mc-engineering-note">LPGCad R1 оформляет чистовой лист и выводит группы стояков из явно введённых номеров квартир. Он не угадывает квартиры, количество этажей, трассы или оборудование. Проверь данные и геометрию по оригиналу.</p>
+      </details>
+
       <div class="mc-toolbar" role="toolbar" aria-label="Инструменты черчения">
         <div class="mc-toolgroup">
           <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
@@ -69,6 +85,7 @@
       <div class="mc-propertybar">
         <div class="mc-prop mc-prop-route"><label for="pipeName">Обозначение трубы</label><input id="pipeName" maxlength="80" placeholder="Например, Т-1"></div>
         <div class="mc-prop mc-prop-route"><label for="pipeDiameter">Диаметр / DN</label><input id="pipeDiameter" maxlength="32" placeholder="Например, 25"></div>
+        <div class="mc-prop mc-prop-route"><label for="pipeKind">Тип линии</label><select id="pipeKind"><option value="pipe">Газопровод</option><option value="riser">Стояк</option></select></div>
         <div class="mc-prop mc-prop-label" hidden><label for="labelText">Текст подписи</label><input id="labelText" maxlength="180" placeholder="Номер, адрес, примечание"></div>
         <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option></select></div>
         <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
@@ -91,7 +108,7 @@
 
       <div class="mc-lowerbar">
         <div class="mc-settings">
-          <div class="mc-prop"><label for="pageOrientation">Лист экспорта</label><select id="pageOrientation"><option value="portrait">A4 · книжный</option><option value="landscape">A4 · альбомный</option></select></div>
+          <div class="mc-prop"><label for="pageOrientation">Ориентация листа</label><select id="pageOrientation"><option value="portrait">Книжная</option><option value="landscape">Альбомная</option></select></div>
           <div class="mc-prop"><label for="preparedBy">Исполнитель</label><input id="preparedBy" maxlength="100" placeholder="ФИО / организация"></div>
           <div class="mc-prop mc-notes-prop"><label for="drawingNotes">Примечание в штампе</label><input id="drawingNotes" maxlength="300" placeholder="Например, по результатам обследования"></div>
         </div>

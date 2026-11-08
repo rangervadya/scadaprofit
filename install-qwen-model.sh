@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${QWEN_MODEL:-qwen3-vl:4b}"
+MODEL="${QWEN_MODEL:-qwen3-vl:4b-instruct}"
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker не найден. Установите Docker Engine и Compose plugin." >&2
   exit 1

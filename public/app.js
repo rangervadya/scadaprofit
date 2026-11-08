@@ -264,6 +264,7 @@ $('libraryDialogForm').addEventListener('submit', async event => {
 function setPanelsVisible(visible) {
   for (const id of ['statsPanel', 'edgePanel', 'nodePanel', 'textPanel']) $(id).hidden = !visible;
   for (const id of ['exportSvg', 'exportDxf', 'exportJson', 'exportPdf']) $(id).disabled = !visible;
+  $('openManualCadBtn').hidden = !visible;
 }
 
 function schemeStatusText(status) {
@@ -484,6 +485,7 @@ function setFile(file) {
   $('edgePanel').hidden = true;
   $('nodePanel').hidden = true;
   $('textPanel').hidden = true;
+  $('openManualCadBtn').hidden = true;
   $('sourceEmpty').hidden = false;
   $('imageFrame').hidden = true;
   $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Фото готово к отправке</b><span>Сначала выбери адрес слева и отправь эскиз в папку дома.</span></div>';
@@ -511,6 +513,7 @@ $('clearFile').addEventListener('click', () => {
   $('edgePanel').hidden = true;
   $('nodePanel').hidden = true;
   $('textPanel').hidden = true;
+  $('openManualCadBtn').hidden = true;
   $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div>';
   $('canvasMeta').textContent = 'Ожидает изображения';
   setAlert('');
@@ -593,6 +596,11 @@ $('processSchemeBtn').addEventListener('click', async () => {
 
 function showResult() {
   const processingComplete = graph.complete !== false && graph.analysisStatus !== 'incomplete';
+  $('openManualCadBtn').hidden = !graph.jobId;
+  $('openManualCadBtn').disabled = false;
+  $('openManualCadBtn').innerHTML = processingComplete
+    ? '<b>CAD</b><span>Доработать</span>'
+    : '<b>CAD</b><span>Черновик</span>';
   $('processSchemeBtn').hidden = processingComplete;
   $('processSchemeBtn').disabled = false;
   $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
@@ -1504,6 +1512,26 @@ function finalExportAllowed() {
 function rejectPartialExport() {
   setAlert('Экспорт SVG/DXF/PDF запрещён: обработка неполная. Повтори преобразование, чтобы продолжить с сохранённых checkpoint. JSON остаётся доступен для диагностики.');
 }
+$('openManualCadBtn').addEventListener('click', async () => {
+  if (!graph?.jobId) return;
+  const button = $('openManualCadBtn');
+  button.disabled = true;
+  button.innerHTML = '<b>CAD</b><span>Перенос…</span>';
+  try {
+    const response = await fetch(`/api/manual-cad/import-job/${encodeURIComponent(graph.jobId)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: activeScheme?.title || 'Черновик автообработки' })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    window.location.href = `/manual-cad.html?project=${encodeURIComponent(data.project.id)}`;
+  } catch (error) {
+    setAlert(`Не удалось перенести черновик в ручной CAD: ${error.message}`);
+    button.disabled = false;
+    button.innerHTML = '<b>CAD</b><span>Повторить</span>';
+  }
+});
+
 $('exportSvg').addEventListener('click', () => {
   if (!finalExportAllowed()) return rejectPartialExport();
   downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml');

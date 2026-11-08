@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { createManualCadProject, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
+import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1024,7 +1024,7 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
 });
 
 app.get('/api/health', async (_req, res) => {
-  const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b';
+  const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
   const tagsUrl = process.env.OLLAMA_TAGS_URL ||
     (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
 
@@ -1056,12 +1056,12 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
-    version: '4.3.20',
+    version: '4.3.22',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
-    ocr: 'Qwen3-VL 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
+    ocr: 'Qwen3-VL 4B Instruct 3x3 tiled handwriting OCR + Tesseract confidence filtering + separate per-row OCR for dense numbered notes; failed rows remain TEXT_REVIEW masks',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
@@ -1229,6 +1229,47 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
 // Manual CAD editor API. This module only reads/writes DATA/.private/manual-cad;
 // it does not call, proxy, or modify any VDGO route, service, database, or file.
+app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
+  const jobDir = path.join(DATA, jobId);
+  const projectId = randomUUID();
+  const projectDir = path.join(MANUAL_CAD_DIR, projectId);
+  try {
+    const [rawGraph, preparedImage] = await Promise.all([
+      readFile(path.join(jobDir, 'graph.json'), 'utf8'),
+      // The prepared image is in the exact coordinate space of graph.image.
+      // Do not fall back to the unrotated upload: that would misalign geometry.
+      readFile(path.join(jobDir, 'prepared-input.png'))
+    ]);
+    const graph = JSON.parse(rawGraph);
+    if (!graph?.image?.width || !graph?.image?.height) {
+      return res.status(409).json({ error: 'В графе нет размеров подготовленного изображения. Повторно обработай схему перед переносом в CAD.' });
+    }
+    const project = createManualCadProjectFromGraph(graph, {
+      id: projectId,
+      title: cleanLabel(req.body?.title || 'Черновик автообработки', 140)
+    });
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(path.join(projectDir, 'source.png'), preparedImage);
+    project.source = {
+      fileName: 'source.png', originalName: 'Подготовленное изображение автообработки',
+      size: preparedImage.length, uploadedAt: new Date().toISOString()
+    };
+    await writeFile(manualProjectPath(projectId), JSON.stringify(project, null, 2), 'utf8');
+    console.log(`[CAD] Imported job ${jobId.slice(0, 8)} into manual project ${projectId.slice(0, 8)}: pipes=${project.pipes.length}, labels=${project.labels.length}, symbols=${project.symbols.length}`);
+    return res.status(201).json({ ok: true, project: manualProjectResponse(project) });
+  } catch (error) {
+    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    const status = error?.code === 'ENOENT' ? 404 : 400;
+    return res.status(status).json({
+      error: status === 404
+        ? 'Подготовленное изображение или граф задания не найдены. Повтори обработку схемы и попробуй снова.'
+        : (error.message || 'Не удалось перенести черновик в ручной CAD.')
+    });
+  }
+});
+
 app.get('/api/manual-cad/projects', async (_req, res) => {
   try {
     const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
@@ -1386,7 +1427,7 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.20: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.3.22: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: OCR-masked OpenCV routes, supported short branches and ink-validated Qwen routes for PIPE_MAIN; review geometry remains separate.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
   console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
