@@ -1,0 +1,13 @@
+ScadaProfit 4.3.30 OCR parser correction (incremental update from 4.3.29)
+
+Changed/new paths (8 total):
+- CHANGELOG-RU.md
+- README-RU.md
+- UPDATE-MANIFEST-4.3.30.txt
+- UPGRADE-GIT-4.3.30-RU.md
+- moss_ai.py
+- package.json
+- server.js
+- tests/test_moss_ai.py
+
+No VDGO, compose.yaml, Nginx, PostgreSQL, database data, or Docker-volume files are included.

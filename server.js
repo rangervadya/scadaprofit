@@ -1378,7 +1378,7 @@ app.get('/api/health', async (_req, res) => {
   const mossSettings = publicMossSettings(await readMossSettings());
   res.json({
     ok: true,
-    version: '4.3.29',
+    version: '4.3.30',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',

@@ -236,6 +236,90 @@ def _vision_json(
         _delete_image(api_key, file_id, timeout=min(timeout, 20.0))
 
 
+_OCR_ARRAY_KEYS = (
+    "annotations", "text_annotations", "textAnnotations", "texts",
+    "recognized_texts", "recognizedTexts", "text_regions", "textRegions",
+    "ocr_results", "ocrResults", "detections", "items", "results",
+    "words", "lines", "blocks", "regions",
+)
+_OCR_CONTAINER_KEYS = ("result", "data", "ocr", "document", "response", "output")
+_OCR_TEXT_KEYS = ("text", "recognized_text", "recognizedText", "value", "label", "word", "transcription", "content")
+_OCR_BOX_KEYS = ("bbox", "box", "bounding_box", "boundingBox", "rect", "rectangle", "box_2d", "position", "polygon", "points")
+
+
+def _extract_ocr_records(parsed: dict[str, Any]) -> tuple[list[Any] | None, str | None]:
+    """Accept common model JSON envelopes without guessing missing geometry.
+
+    MOSS-VL returns plain text from /v1/responses and does not enforce a JSON
+    schema server-side, so an image model can wrap the requested array in a
+    result/data object or choose a synonymous array key. We normalize only
+    known text-region arrays; routes and arbitrary lists are never reinterpreted.
+    """
+    queue: list[tuple[dict[str, Any], str, int]] = [(parsed, "$", 0)]
+    seen: set[int] = set()
+    while queue:
+        node, path, depth = queue.pop(0)
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        key_map = {str(key).lower().replace("-", "_"): key for key in node.keys()}
+        for alias in _OCR_ARRAY_KEYS:
+            actual = key_map.get(alias.lower().replace("-", "_"))
+            if actual is not None and isinstance(node.get(actual), list):
+                return node[actual], f"{path}.{actual}"
+        if depth < 3:
+            for container_key in _OCR_CONTAINER_KEYS:
+                actual = key_map.get(container_key)
+                child = node.get(actual) if actual is not None else None
+                if isinstance(child, dict):
+                    queue.append((child, f"{path}.{actual}", depth + 1))
+    return None, None
+
+
+def _ocr_text_value(raw: dict[str, Any]) -> str:
+    for key in _OCR_TEXT_KEYS:
+        value = raw.get(key)
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            return re.sub(r"\s+", " ", str(value)).strip()[:180]
+    return ""
+
+
+def _ocr_box_values(raw: dict[str, Any]) -> tuple[float, float, float, float]:
+    box = next((raw.get(key) for key in _OCR_BOX_KEYS if raw.get(key) is not None), None)
+    if isinstance(box, dict):
+        normalized = {str(k).lower(): v for k, v in box.items()}
+        if all(key in normalized for key in ("x", "y")) and ("w" in normalized or "width" in normalized) and ("h" in normalized or "height" in normalized):
+            x1, y1 = float(normalized["x"]), float(normalized["y"])
+            x2 = x1 + float(normalized.get("w", normalized.get("width")))
+            y2 = y1 + float(normalized.get("h", normalized.get("height")))
+            return x1, y1, x2, y2
+        if all(key in normalized for key in ("left", "top", "right", "bottom")):
+            return tuple(float(normalized[key]) for key in ("left", "top", "right", "bottom"))  # type: ignore[return-value]
+        if all(key in normalized for key in ("x1", "y1", "x2", "y2")):
+            return tuple(float(normalized[key]) for key in ("x1", "y1", "x2", "y2"))  # type: ignore[return-value]
+        raise ValueError("bbox object format")
+    if isinstance(box, (list, tuple)):
+        if len(box) == 4 and not any(isinstance(item, (list, tuple, dict)) for item in box):
+            return tuple(map(float, box))  # type: ignore[return-value]
+        if len(box) >= 3 and all(isinstance(item, (list, tuple)) and len(item) >= 2 for item in box):
+            xs = [float(item[0]) for item in box]
+            ys = [float(item[1]) for item in box]
+            return min(xs), min(ys), max(xs), max(ys)
+        if len(box) == 8 and all(not isinstance(item, (list, tuple, dict)) for item in box):
+            values = list(map(float, box))
+            xs, ys = values[0::2], values[1::2]
+            return min(xs), min(ys), max(xs), max(ys)
+    # Some models put the rectangle fields beside the text rather than nesting
+    # them in bbox. Accept only explicit xyxy or xywh field groups.
+    keys = {str(k).lower(): v for k, v in raw.items()}
+    if all(key in keys for key in ("x1", "y1", "x2", "y2")):
+        return tuple(float(keys[key]) for key in ("x1", "y1", "x2", "y2"))  # type: ignore[return-value]
+    if all(key in keys for key in ("x", "y")) and ("w" in keys or "width" in keys) and ("h" in keys or "height" in keys):
+        x1, y1 = float(keys["x"]), float(keys["y"])
+        return x1, y1, x1 + float(keys.get("w", keys.get("width"))), y1 + float(keys.get("h", keys.get("height")))
+    raise ValueError("bbox missing")
+
+
 def moss_ocr_annotations(
     image_path: str | Path, api_key: str, model: str = DEFAULT_MODEL, *, timeout: float = 180.0
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -252,8 +336,11 @@ def moss_ocr_annotations(
             f"этого изображения {width}x{height}, формат [x1,y1,x2,y2], начало в левом верхнем углу. "
             "Верни только JSON: {\"annotations\":[{\"text\":\"Ду 25\",\"bbox\":[10,20,80,42],\"confidence\":65}]}. "
             "confidence от 0 до 100 — только ориентировочная оценка модели, не подтверждение правильности. "
+            "СТРОГО: верхний уровень JSON обязан содержать ключ annotations, значение — массив объектов. "
+            "У каждого объекта обязательны ключи text и bbox; bbox — ровно четыре числа [x1,y1,x2,y2]. "
+            "Не используй ключи texts, results, items или иные обёртки; не возвращай пояснение или Markdown. "
             "Не объединяй несколько разнесённых надписей. Максимум 100 annotations. Если текст не найден, "
-            "верни пустой массив."
+            "верни ровно {\"annotations\": []}."
         )
         payload = {"model": model, "input": [{"role": "user", "content": [
             {"type": "input_text", "text": prompt}, {"type": "input_image", "file_id": file_id}
@@ -266,29 +353,25 @@ def moss_ocr_annotations(
     finally:
         _delete_image(api_key, file_id, timeout=min(timeout, 20.0))
 
-    raw_items = parsed.get("annotations")
-    if not isinstance(raw_items, list):
-        raise MossAIError("Ответ MOSS OCR не содержит массива annotations.")
+    raw_items, annotation_path = _extract_ocr_records(parsed)
+    if raw_items is None:
+        # Keep the diagnostic useful but never echo recognized text or other
+        # potentially sensitive drawing content into UI/logs.
+        field_names = ", ".join(sorted(str(key)[:32] for key in parsed.keys())[:12]) or "нет"
+        raise MossAIError(
+            "Ответ MOSS OCR не содержит массива текстовых областей с координатами. "
+            f"Поля JSON: {field_names}. Локальный Qwen/Tesseract должен выполнить резервный OCR."
+        )
     items: list[dict[str, Any]] = []
     rejected = 0
     for index, raw in enumerate(raw_items[:100], 1):
         if not isinstance(raw, dict):
             rejected += 1
             continue
-        text_value = re.sub(r"\s+", " ", str(raw.get("text") or "")).strip()[:180]
-        box = raw.get("bbox")
+        text_value = _ocr_text_value(raw)
         try:
-            if isinstance(box, dict) and all(key in box for key in ("x", "y", "w", "h")):
-                x1, y1 = float(box["x"]), float(box["y"])
-                x2, y2 = x1 + float(box["w"]), y1 + float(box["h"])
-            elif isinstance(box, dict):
-                x1, y1 = float(box.get("x1")), float(box.get("y1"))
-                x2, y2 = float(box.get("x2")), float(box.get("y2"))
-            elif isinstance(box, (list, tuple)) and len(box) == 4:
-                x1, y1, x2, y2 = map(float, box)
-            else:
-                raise ValueError("bbox format")
-            confidence = float(raw.get("confidence", 55))
+            x1, y1, x2, y2 = _ocr_box_values(raw)
+            confidence = float(raw.get("confidence", raw.get("score", 55)))
         except (TypeError, ValueError):
             rejected += 1
             continue
@@ -322,7 +405,7 @@ def moss_ocr_annotations(
     return items, {
         "available": True, "complete": True, "model": model, "provider": "moss",
         "annotations": len(items), "tiles": 1, "successful_tiles": 1, "failed_tiles": [],
-        "rejected_annotations": rejected,
+        "rejected_annotations": rejected, "annotations_field": annotation_path,
         "image_size_sent": {"width": width, "height": height},
         "source_coordinate_scale": {"x": round(scale_x, 6), "y": round(scale_y, 6)},
         "usage": usage, "error": None,

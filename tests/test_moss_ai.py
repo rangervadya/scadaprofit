@@ -83,6 +83,61 @@ class MossImageTests(unittest.TestCase):
         self.assertEqual(status['provider'], 'moss')
         delete.assert_called_once()
 
+    @patch('moss_ai._delete_image')
+    @patch('moss_ai._request_json')
+    @patch('moss_ai._upload_image')
+    def test_ocr_accepts_nested_text_regions_and_xywh_bbox(self, upload, request, delete):
+        upload.return_value = 'file_text_regions'
+        request.return_value = {
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
+                'result': {'text_regions': [
+                    {'recognized_text': 'Ø 32', 'box': {'x': 20, 'y': 30, 'width': 48, 'height': 16}, 'score': 0.82}
+                ]}
+            }, ensure_ascii=False)}]}],
+            'usage': {'total_tokens': 90},
+        }
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['text'], 'Ø 32')
+        self.assertEqual(items[0]['bbox'], {'x': 20, 'y': 30, 'w': 48, 'h': 16})
+        self.assertEqual(items[0]['confidence'], 82.0)
+        self.assertEqual(status['annotations_field'], '$.result.text_regions')
+        delete.assert_called_once()
+
+    @patch('moss_ai._delete_image')
+    @patch('moss_ai._request_json')
+    @patch('moss_ai._upload_image')
+    def test_ocr_accepts_polygon_coordinates(self, upload, request, delete):
+        upload.return_value = 'file_polygon'
+        request.return_value = {
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
+                'texts': [{'content': 'DN 25', 'polygon': [[12, 18], [62, 16], [64, 34], [14, 36]]}]
+            }, ensure_ascii=False)}]}],
+            'usage': {'total_tokens': 70},
+        }
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['bbox'], {'x': 12, 'y': 16, 'w': 52, 'h': 20})
+        self.assertEqual(status['annotations_field'], '$.texts')
+
+    @patch('moss_ai._delete_image')
+    @patch('moss_ai._request_json')
+    @patch('moss_ai._upload_image')
+    def test_ocr_missing_regions_reports_only_json_keys(self, upload, request, delete):
+        upload.return_value = 'file_missing_regions'
+        request.return_value = {
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
+                'summary': 'Sensitive handwritten address must not be echoed', 'review_note': 'no boxes'
+            }, ensure_ascii=False)}]}],
+        }
+        with self.assertRaises(moss_ai.MossAIError) as caught:
+            moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        self.assertIn('Поля JSON: review_note, summary', str(caught.exception))
+        self.assertNotIn('Sensitive handwritten address', str(caught.exception))
+
     @patch('moss_ai.urllib.request.urlopen')
     def test_upload_uses_bearer_key_and_multipart_image_purpose(self, urlopen):
         class FakeResponse:
