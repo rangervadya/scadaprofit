@@ -32,7 +32,7 @@ MAX_IMAGE_EDGE = 2304
 MOSS_PIPE_MAX_OUTPUT_TOKENS = 2048
 MOSS_PIPE_MAX_IMAGE_EDGE = 1536
 MOSS_PIPE_MAX_ROUTES = 32
-MOSS_PIPE_MAX_POINTS = 24
+MOSS_PIPE_MAX_POINTS = 64
 
 
 class MossAIError(RuntimeError):
@@ -443,7 +443,13 @@ _ROUTE_ARRAY_KEYS = (
     "segments", "line_segments", "lineSegments", "pipe_segments", "pipeSegments", "lines",
 )
 _ROUTE_CONTAINER_KEYS = ("result", "data", "vision", "geometry", "drawing", "response", "output")
-_POINT_ARRAY_KEYS = ("points", "vertices", "polyline", "coordinates", "path", "centerline", "center_line")
+_POINT_ARRAY_KEYS = (
+    "points", "vertices", "polyline", "coordinates", "coords", "path", "centerline", "center_line",
+    "route_points", "routePoints", "path_points", "pathPoints", "vertex_list", "vertexList",
+    "coordinates_px", "coordinatesPx", "points_px", "pointsPx",
+    "geometry", "path_data", "pathData", "point_coordinates", "pointCoordinates",
+    "points_list", "pointsList", "line", "segment", "route",
+)
 
 
 def _extract_route_records(parsed: dict[str, Any]) -> tuple[list[Any] | None, str | None]:
@@ -476,42 +482,165 @@ def _extract_route_records(parsed: dict[str, Any]) -> tuple[list[Any] | None, st
     return None, None
 
 
+def _is_scalar_coordinate(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    if isinstance(value, str):
+        try:
+            return math.isfinite(float(value.strip().replace(",", ".")))
+        except ValueError:
+            return False
+    return False
+
+
 def _is_point(value: Any) -> bool:
     if isinstance(value, dict):
         keys = {_norm_key(k) for k in value}
-        return "x" in keys and "y" in keys
-    return isinstance(value, (list, tuple)) and len(value) >= 2 and not isinstance(value[0], (list, tuple, dict)) and not isinstance(value[1], (list, tuple, dict))
+        return any(x in keys for x in ("x", "px", "x_px", "cx")) and any(
+            y in keys for y in ("y", "py", "y_px", "cy")
+        )
+    return (
+        isinstance(value, (list, tuple)) and len(value) >= 2
+        and _is_scalar_coordinate(value[0]) and _is_scalar_coordinate(value[1])
+    )
 
 
 def _point_xy(value: Any) -> tuple[float, float]:
     if isinstance(value, dict):
         keys = {_norm_key(k): v for k, v in value.items()}
-        return float(keys["x"]), float(keys["y"])
+        x_value = next((keys[k] for k in ("x", "px", "x_px", "cx") if k in keys), None)
+        y_value = next((keys[k] for k in ("y", "py", "y_px", "cy") if k in keys), None)
+        if x_value is None or y_value is None:
+            raise ValueError("point mapping must contain x and y")
+        return float(str(x_value).strip().replace(",", ".")), float(str(y_value).strip().replace(",", "."))
     if isinstance(value, (list, tuple)) and len(value) >= 2:
-        return float(value[0]), float(value[1])
-    raise ValueError("point format")
+        return float(str(value[0]).strip().replace(",", ".")), float(str(value[1]).strip().replace(",", "."))
+    if isinstance(value, str):
+        nums = re.findall(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][-+]?\d+)?", value)
+        if len(nums) >= 2:
+            return float(nums[0].replace(",", ".")), float(nums[1].replace(",", "."))
+    raise ValueError("unsupported point format")
+
+
+def _point_sequence(value: Any) -> list[Any] | None:
+    """Normalize common point containers without inventing coordinates."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if isinstance(value, list):
+        if not value:
+            return []
+        if all(_is_scalar_coordinate(item) for item in value):
+            if len(value) >= 4 and len(value) % 2 == 0:
+                return [[value[i], value[i + 1]] for i in range(0, len(value), 2)]
+            return value
+        if len(value) == 1 and isinstance(value[0], (list, dict)):
+            nested = _point_sequence(value[0])
+            if nested is not None:
+                return nested
+        return value
+    if isinstance(value, dict):
+        if _is_point(value):
+            return [value]
+        key_map = {_norm_key(key): key for key in value.keys()}
+        for alias in _POINT_ARRAY_KEYS:
+            actual = key_map.get(_norm_key(alias))
+            if actual is not None:
+                nested = _point_sequence(value[actual])
+                if nested is not None:
+                    return nested
+        normalized = {_norm_key(k): v for k, v in value.items()}
+        endpoint_pairs = (
+            ("start", "end"), ("from", "to"), ("start_point", "end_point"),
+            ("startPoint", "endPoint"), ("p1", "p2"), ("a", "b"),
+        )
+        for start_key, end_key in endpoint_pairs:
+            a, b = normalized.get(_norm_key(start_key)), normalized.get(_norm_key(end_key))
+            if a is not None and b is not None:
+                return [a, b]
+        if value and all(str(key).isdigit() for key in value):
+            return [value[key] for key in sorted(value, key=lambda item: int(str(item)))]
+    return None
 
 
 def _route_point_list(raw: Any) -> list[Any] | None:
     if isinstance(raw, list):
-        return raw
+        return _point_sequence(raw)
     if not isinstance(raw, dict):
-        return None
+        return _point_sequence(raw)
     key_map = {_norm_key(key): key for key in raw.keys()}
     for alias in _POINT_ARRAY_KEYS:
         actual = key_map.get(_norm_key(alias))
-        value = raw.get(actual) if actual is not None else None
-        if isinstance(value, list):
-            return value
-    # Straight segment format with explicit endpoints.
+        if actual is not None:
+            result = _point_sequence(raw.get(actual))
+            if result is not None:
+                return result
     keys = {_norm_key(k): v for k, v in raw.items()}
     if all(key in keys for key in ("x1", "y1", "x2", "y2")):
         return [[keys["x1"], keys["y1"]], [keys["x2"], keys["y2"]]]
-    for start_key, end_key in (("start", "end"), ("from", "to")):
-        if start_key in keys and end_key in keys:
-            return [keys[start_key], keys[end_key]]
+    for start_key, end_key in (
+        ("start", "end"), ("from", "to"), ("start_point", "end_point"),
+        ("startPoint", "endPoint"), ("p1", "p2"), ("a", "b"),
+    ):
+        start, end = keys.get(_norm_key(start_key)), keys.get(_norm_key(end_key))
+        if start is not None and end is not None:
+            return [start, end]
     return None
 
+
+def _confidence_value(raw: dict[str, Any]) -> tuple[float, bool]:
+    """Read numeric or qualitative confidence; never reject geometry only for a label."""
+    keys = {_norm_key(k): v for k, v in raw.items()}
+    value = next((keys[k] for k in ("confidence", "score", "certainty", "probability") if k in keys), None)
+    if value is None:
+        return 50.0, False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        qualitative = {
+            "very high": 90.0, "high": 75.0, "medium": 60.0,
+            "moderate": 60.0, "medium-high": 68.0, "low": 40.0,
+            "very low": 25.0,
+        }
+        if normalized in qualitative:
+            return qualitative[normalized], True
+        match = re.search(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)", normalized)
+        if match:
+            value = match.group(0).replace(",", ".")
+        else:
+            return 50.0, True
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 50.0, True
+    if 0 <= confidence <= 1:
+        confidence *= 100
+    if not math.isfinite(confidence) or confidence < 0 or confidence > 100:
+        return 50.0, True
+    return confidence, False
+
+
+def _route_shape_summary(raw: Any) -> dict[str, Any]:
+    """Return safe schema metadata only; never log coordinates or drawing content."""
+    if isinstance(raw, dict):
+        keys = sorted(str(k)[:32] for k in raw.keys())[:16]
+        key_map = {_norm_key(k): k for k in raw.keys()}
+        point_key = next((key_map.get(_norm_key(k)) for k in _POINT_ARRAY_KEYS if key_map.get(_norm_key(k)) is not None), None)
+        point_value = raw.get(point_key) if point_key is not None else None
+        first = point_value[0] if isinstance(point_value, list) and point_value else None
+        confidence = next((raw.get(key_map[k]) for k in ("confidence", "score", "certainty", "probability") if k in key_map), None)
+        return {
+            "keys": keys, "points_key": str(point_key) if point_key is not None else None,
+            "points_type": type(point_value).__name__ if point_value is not None else None,
+            "points_count": len(point_value) if isinstance(point_value, (list, dict)) else None,
+            "first_point_type": type(first).__name__ if first is not None else None,
+            "first_point_keys": sorted(str(k)[:24] for k in first.keys())[:12] if isinstance(first, dict) else None,
+            "confidence_type": type(confidence).__name__ if confidence is not None else None,
+        }
+    return {"type": type(raw).__name__}
 
 def _coordinate_mode(parsed: dict[str, Any], raw: Any) -> str:
     values = []
@@ -554,7 +683,7 @@ def moss_semantic_routes(
             "рамки и условные символы. Не дорисовывай невидимые части и не соединяй разрывы. "
             "Допускай кандидаты с умеренной уверенностью, но каждая точка должна лежать на видимом "
             "штрихе трубы. Координаты — пиксели отправленного изображения "
-            f"{width}x{height}, начало слева сверху. points — 2..24 пары [x,y]; confidence — "
+            f"{width}x{height}, начало слева сверху. points — 2..64 пары [x,y]; confidence — "
             "число 35..100. Максимум 32 маршрута. Верни только JSON вида "
             '{"routes":[{"id":"R1","points":[[20,80],[180,80]],"confidence":65}]}. '
             "Если видимых труб действительно нет, верни {\"routes\":[]}."
@@ -609,18 +738,10 @@ def moss_semantic_routes(
         if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= MOSS_PIPE_MAX_POINTS:
             rejected_invalid += 1
             if len(route_diagnostics) < 30:
-                route_diagnostics.append({"index": index, "decision": "reject", "reason": "invalid-points"})
+                route_diagnostics.append({"index": index, "decision": "reject", "reason": "invalid-points", "shape": _route_shape_summary(raw)})
             continue
-        confidence_supplied = "confidence" in raw or "score" in raw
-        try:
-            confidence = float(raw.get("confidence", raw.get("score", 50)))
-        except (TypeError, ValueError):
-            confidence = 50.0 if not confidence_supplied else float("nan")
-        if 0 <= confidence <= 1:
-            confidence *= 100
-        if not math.isfinite(confidence) or confidence < 0 or confidence > 100:
-            rejected_invalid += 1
-            continue
+        confidence_supplied = any(_norm_key(k) in {"confidence", "score", "certainty", "probability"} for k in raw)
+        confidence, confidence_assumed = _confidence_value(raw)
         if confidence < min_confidence:
             rejected_low_confidence += 1
             if len(route_diagnostics) < 30:
@@ -661,7 +782,7 @@ def moss_semantic_routes(
                 rejected_invalid += 1
                 reason = "invalid-point"
             if len(route_diagnostics) < 30:
-                route_diagnostics.append({"index": index, "decision": "reject", "reason": reason})
+                route_diagnostics.append({"index": index, "decision": "reject", "reason": reason, "shape": _route_shape_summary(raw)})
             continue
         length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
         if length < 8.0:
@@ -672,7 +793,7 @@ def moss_semantic_routes(
         route_id = str(raw.get("id") or index)[:20]
         routes.append({
             "id": f"MS{route_id}", "points": points,
-            "confidence": round(confidence, 1), "confidence_assumed": not confidence_supplied,
+            "confidence": round(confidence, 1), "confidence_assumed": (not confidence_supplied) or confidence_assumed,
             "needs_review": confidence < 65, "source": f"moss-{model}", "include": True,
         })
         if len(route_diagnostics) < 30:
@@ -718,6 +839,9 @@ def moss_semantic_routes(
         f"too_short={rejected_too_short}; low_confidence={rejected_low_confidence}; "
         f"output_tokens={usage.get('output_tokens', 'n/a')}"
     )
+    rejected_shapes = [item for item in route_diagnostics if item.get("decision") == "reject"][:8]
+    if rejected_shapes:
+        _progress("Route rejection schema (keys/types only): " + json.dumps(rejected_shapes, ensure_ascii=False, separators=(",", ":"))[:1100])
     return routes, status
 
 

@@ -228,7 +228,69 @@ class MossImageTests(unittest.TestCase):
         self.assertEqual(moss_ai.MOSS_PIPE_MAX_OUTPUT_TOKENS, 2048)
         self.assertLessEqual(moss_ai.MOSS_PIPE_MAX_OUTPUT_TOKENS, 8192)
         self.assertEqual(moss_ai.MOSS_PIPE_MAX_ROUTES, 32)
-        self.assertEqual(moss_ai.MOSS_PIPE_MAX_POINTS, 24)
+        self.assertEqual(moss_ai.MOSS_PIPE_MAX_POINTS, 64)
+
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_accepts_flat_coordinates_and_qualitative_confidence(self, upload, request, delete):
+        upload.return_value = "file_flat_coords"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "routes": [{"id": "F1", "coordinates": [10, 20, 200, 20], "confidence": "high"}]
+        })}]}], "usage": {"output_tokens": 40}}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[10.0, 20.0], [200.0, 20.0]])
+        self.assertEqual(routes[0]["confidence"], 75.0)
+        self.assertTrue(routes[0]["confidence_assumed"])
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_accepts_points_object_with_start_and_end(self, upload, request, delete):
+        upload.return_value = "file_endpoint_object"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "routes": [{"id": "E1", "points": {"start": {"x": 10, "y": 20}, "end": {"x": 240, "y": 20}}, "score": 0.9}]
+        })}]}]}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[10.0, 20.0], [240.0, 20.0]])
+        self.assertEqual(routes[0]["confidence"], 90.0)
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_invalid_route_logs_safe_schema_details(self, upload, request, delete):
+        upload.return_value = "file_bad_shape"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "routes": [{"id": "bad", "path_data": {"unexpected": "shape"}, "confidence": "high"}]
+        })}]}]}
+        with patch("moss_ai._progress") as progress:
+            routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(routes, [])
+        self.assertEqual(status["result_state"], "all_routes_rejected_by_parser")
+        self.assertTrue(any("Route rejection schema" in call.args[0] for call in progress.call_args_list))
+        diagnostic = status["route_diagnostics"][0]
+        self.assertEqual(diagnostic["reason"], "invalid-points")
+        self.assertIn("path_data", diagnostic["shape"]["keys"])
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_accepts_geojson_linestring_geometry(self, upload, request, delete):
+        upload.return_value = "file_geojson"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "routes": [{"id": "G1", "geometry": {"type": "LineString", "coordinates": [[10, 20], [150, 20], [150, 80]]}, "confidence": "medium"}]
+        })}]}]}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[10.0, 20.0], [150.0, 20.0], [150.0, 80.0]])
+        self.assertEqual(routes[0]["confidence"], 60.0)
+        delete.assert_called_once()
 
 
 if __name__ == "__main__":

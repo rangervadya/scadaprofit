@@ -1,0 +1,15 @@
+ScadaProfit 4.3.36 — replacement manifest
+
+Replace:
+- moss_ai.py
+- package.json
+- tests/test_moss_ai.py
+
+Add:
+- CHANGELOG-4.3.36-RU.md
+- UPDATE-MANIFEST-4.3.36.txt
+- README-4.3.36-RU.txt
+
+Do not alter or commit api.txt.
+No server.js, moss-env-boot.js, processor.py, VDGO, compose.yaml, Nginx,
+PostgreSQL, Docker volume, or service configuration files are included.
