@@ -23,6 +23,7 @@ from clean_layout import build_clean_layout
 from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
 from pipeline_diagnostics import build_pipeline_diagnostics
+from reference_vectorization import build_reference_trace
 
 
 class GraphTests(unittest.TestCase):
@@ -396,8 +397,9 @@ class GraphTests(unittest.TestCase):
                 'warnings': ['partial'],
             }
             diagnostics = build_pipeline_diagnostics(str(source), temporary, graph)
-            self.assertEqual(diagnostics['status'], 'blocked')
-            self.assertIn('all-qwen-tiles-complete', diagnostics['blockingGates'])
+            self.assertEqual(diagnostics['status'], 'needs_review')
+            self.assertNotIn('all-qwen-tiles-complete', diagnostics['blockingGates'])
+            self.assertIn('all-qwen-tiles-complete', diagnostics['advisoryGates'])
 
     def test_near_endpoints_are_snapped_to_same_node(self):
         segments = [
@@ -1207,7 +1209,7 @@ class GraphTests(unittest.TestCase):
             self.assertIn('PIPE_MAIN', dxf)
             self.assertIn('DETAIL_REVIEW', dxf)
 
-    def test_incomplete_ocr_defers_qwen_pipe_and_still_exports_review_graph(self):
+    def test_incomplete_ocr_does_not_defer_qwen_pipe_and_still_exports_review_graph(self):
         with TemporaryDirectory() as temp:
             source = Path(temp) / 'source.png'
             out_dir = Path(temp) / 'job'
@@ -1221,15 +1223,22 @@ class GraphTests(unittest.TestCase):
             }
             with patch.object(processor, 'ocr_annotations', return_value=([], {
                 'qwen': qwen_status, 'tesseract': {'annotations': 0}
-            })), patch.object(processor, '_qwen_semantic_routes', side_effect=AssertionError('PIPE must wait for complete OCR')):
+            })), patch.object(processor, '_qwen_semantic_routes', return_value=([], {
+                'available': False, 'complete': False, 'provider': 'ollama-qwen',
+                'routes': 0, 'tiles': 4, 'successful_tiles': 0, 'failed_tiles': [1, 2, 3, 4],
+                'error': 'synthetic pipe timeout', 'hint': 'test'
+            })) as pipe_trace:
                 graph = processor.analyze(str(source), str(out_dir))
+                pipe_trace.assert_called_once()
 
             self.assertFalse(graph['complete'])
             self.assertEqual(graph['analysisStatus'], 'incomplete')
-            self.assertTrue(graph['semanticTrace']['deferred_due_to_ocr_incomplete'])
+            self.assertFalse(graph['semanticTrace'].get('deferred_due_to_ocr_incomplete', False))
             self.assertTrue((out_dir / 'graph.json').is_file())
             self.assertTrue((out_dir / 'clean.svg').is_file())
             self.assertTrue((out_dir / 'drawing.dxf').is_file())
+            self.assertTrue((out_dir / 'reference-trace.svg').is_file())
+            self.assertTrue((out_dir / 'reference-trace.dxf').is_file())
 
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
@@ -2309,6 +2318,82 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
         self.assertFalse(processor._qwen_stage_is_complete({'tiles': 9, 'successful_tiles': 8}))
         self.assertTrue(processor._qwen_stage_is_complete({'available': True}))
         self.assertFalse(processor._qwen_stage_is_complete({'available': False}))
+
+
+class ReferenceVectorizationTests(unittest.TestCase):
+    def test_reference_trace_exports_editable_svg_and_dxf_contours(self):
+        mask = np.zeros((120, 180), dtype=np.uint8)
+        cv2.line(mask, (15, 20), (150, 20), 255, 3, cv2.LINE_AA)
+        cv2.line(mask, (150, 20), (150, 95), 255, 3, cv2.LINE_AA)
+        cv2.rectangle(mask, (30, 45), (75, 85), 255, 2)
+        result = build_reference_trace(mask, source_name='test drawing.jpg')
+        self.assertGreater(result.components, 0)
+        self.assertGreater(result.contours, 0)
+        self.assertGreater(result.vertices, 0)
+        self.assertIn('ink-component-', result.svg)
+        self.assertIn('fill-rule="evenodd"', result.svg)
+        self.assertIn('REFERENCE_TRACE', result.dxf)
+        self.assertIn('LWPOLYLINE', result.dxf)
+        self.assertAlmostEqual(result.page_width_mm / result.page_height_mm, 297 / 210, places=4)
+
+    def test_analysis_runs_pipe_trace_even_when_qwen_ocr_is_incomplete(self):
+        with TemporaryDirectory() as temp:
+            source_path = Path(temp) / 'source.png'
+            out_dir = Path(temp) / 'output'
+            image = np.full((500, 360, 3), 255, dtype=np.uint8)
+            cv2.line(image, (35, 100), (320, 100), (20, 20, 20), 3, cv2.LINE_AA)
+            cv2.line(image, (180, 100), (180, 410), (20, 20, 20), 3, cv2.LINE_AA)
+            cv2.line(image, (180, 260), (300, 260), (20, 20, 20), 3, cv2.LINE_AA)
+            self.assertTrue(cv2.imwrite(str(source_path), image))
+
+            ocr_status = {
+                'qwen': {'available': True, 'complete': False, 'tiles': 4, 'successful_tiles': 1,
+                         'failed_tiles': [2, 3, 4], 'provider': 'ollama-qwen', 'block_diagnostics': []},
+                'tesseract': {'available': True, 'annotations': 0},
+            }
+            route_status = {
+                'available': False, 'complete': False, 'provider': 'ollama-qwen', 'routes': 0,
+                'tiles': 4, 'successful_tiles': 0, 'failed_tiles': [1, 2, 3, 4],
+                'error': 'synthetic timeout', 'hint': 'test', 'tile_diagnostics': [],
+            }
+            with patch('processor.ocr_annotations', return_value=([], ocr_status)), \
+                 patch('processor._qwen_semantic_routes', return_value=([], route_status)) as pipe_trace:
+                graph = processor.analyze(str(source_path), str(out_dir))
+
+            pipe_trace.assert_called_once()
+            self.assertFalse(graph['complete'])
+            self.assertTrue(graph['referenceTrace']['available'])
+            self.assertTrue((out_dir / 'reference-trace.svg').is_file())
+            self.assertTrue((out_dir / 'reference-trace.dxf').is_file())
+            self.assertTrue((out_dir / 'cad-draft.svg').is_file())
+            self.assertTrue((out_dir / 'cad-draft.dxf').is_file())
+            self.assertIn('Qwen OCR', ' '.join(graph['incompleteReasons']))
+
+    def test_diagnostics_do_not_block_source_trace_for_topology_review(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source.png'
+            cv2.imwrite(str(source), np.full((16, 16, 3), 255, dtype=np.uint8))
+            for name in ('clean.svg', 'drawing.dxf', 'cad-draft.svg', 'cad-draft.dxf',
+                         'reference-trace.svg', 'reference-trace.dxf', 'graph.json'):
+                (root / name).write_text('ok', encoding='utf-8')
+            graph = {
+                'complete': False, 'analysisStatus': 'incomplete',
+                'summary': {'segment_candidates': 100, 'cad_primary_edges': 60,
+                            'open_terminal_nodes': 90, 'crossings_to_review': 60},
+                'documentModel': {'pipes': [{'state': 'primary'}], 'nodes': [],
+                                  'reviewTasks': [], 'validationFindings': []},
+                'ocr': {'qwen': {'available': True, 'successful_tiles': 1, 'tiles': 4},
+                        'tesseract': {'available': True}},
+                'semanticTrace': {'successful_tiles': 0, 'tiles': 4},
+                'referenceTrace': {'available': True}, 'warnings': [],
+            }
+            diagnostics = build_pipeline_diagnostics(str(source), str(root), graph)
+            self.assertEqual(diagnostics['status'], 'needs_review')
+            self.assertEqual(diagnostics['blockingGates'], [])
+            self.assertIn('topology-fragmentation-controlled', diagnostics['advisoryGates'])
+            graph_file_artifact = next(item for item in diagnostics['artifacts'] if item['name'] == 'graph.json')
+            self.assertTrue(graph_file_artifact['exists'])
 
 
 if __name__ == "__main__":

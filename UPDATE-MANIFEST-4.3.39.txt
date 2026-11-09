@@ -1,0 +1,51 @@
+ScadaProfit 4.3.39 update manifest
+
+Changed application files:
+  processor.py
+  reference_vectorization.py (new)
+  pipeline_diagnostics.py
+  server.js
+  public/app.js
+  public/index.html
+  public/styles.css
+  public/manual-cad.html (version/cache-bust metadata)
+  public/manual-cad.css (version/cache-bust metadata)
+  compose.yaml (ScadaProfit app request/resource defaults only; Ollama service unchanged)
+  .env.example
+  package.json
+  tests/test_engine.py
+  README.md
+  README-RU.md
+  README-RU.txt
+
+New release documents:
+  CHANGELOG-4.3.39-RU.md
+  README-4.3.39-RU.txt
+  UPDATE-MANIFEST-4.3.39.txt
+
+Generated artifacts per processed job:
+  reference-trace.svg
+  reference-trace.dxf
+  cad-draft.svg
+  cad-draft.dxf
+
+Compatibility:
+  clean.svg and drawing.dxf remain aliases for the structured CAD draft.
+  Existing job records without referenceTrace keep their legacy behavior.
+
+Untouched:
+  vdgo/ source files (all 45 files byte-for-byte unchanged)
+  Ollama service configuration and shared model store
+  PostgreSQL service configuration and volumes
+  gateway/Nginx configuration
+  user .env file
+  other application containers and GPU processes
+
+Do not deploy by replacing the whole project directory on a live server.
+Use the established Git workflow and rebuild only `app`:
+  docker compose build app
+  docker compose up -d --no-deps app
+
+Do not restart/recreate Ollama, VDGO, gateway, PostgreSQL, or any other application.
+ScadaProfit sends Qwen request-level `num_ctx`, `num_batch`, `num_thread`, and
+`keep_alive` options explicitly to the existing Ollama service.

@@ -36,6 +36,7 @@ from clean_layout import build_clean_layout
 from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
 from pipeline_diagnostics import build_pipeline_diagnostics
+from reference_vectorization import build_reference_trace
 from openrouter_ai import (
     DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL, test_openrouter_ai,
     openrouter_ocr_annotations, openrouter_semantic_routes,
@@ -1332,7 +1333,13 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
         'stream': False,
         'format': format_schema or 'json',
-        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': max(128, min(4096, int(num_predict)))},
+        'options': {
+            'temperature': 0,
+            'num_ctx': max(2048, min(8192, int(os.getenv('QWEN_NUM_CTX', '4096')))),
+            'num_batch': max(32, min(512, int(os.getenv('QWEN_NUM_BATCH', '96')))),
+            'num_thread': max(1, min(8, int(os.getenv('QWEN_NUM_THREADS', '2')))),
+            'num_predict': max(128, min(2048, int(num_predict))),
+        },
     }
     request = urllib.request.Request(
         url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
@@ -1554,12 +1561,12 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
     calls_ok = 0
     errors: list[str] = []
     try:
-        max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1536')))
-        timeout = max(10.0, float(os.getenv('QWEN_OCR_TIMEOUT', '180')))
-        max_output_tokens = max(512, min(3072, int(os.getenv('QWEN_OCR_MAX_TOKENS', '2048'))))
+        max_edge = max(1024, int(os.getenv('QWEN_MAX_IMAGE_EDGE', '1280')))
+        timeout = max(20.0, min(180.0, float(os.getenv('QWEN_OCR_TIMEOUT', '105'))))
+        max_output_tokens = max(384, min(2048, int(os.getenv('QWEN_OCR_MAX_TOKENS', '1024'))))
         retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
-        upscale = max(1.0, min(3.0, float(os.getenv('QWEN_OCR_UPSCALE', '2.0'))))
+        upscale = max(1.0, min(2.5, float(os.getenv('QWEN_OCR_UPSCALE', '1.25'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
         prompt_template = (
@@ -1584,7 +1591,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
-        grid = max(1, min(3, int(os.getenv('QWEN_OCR_TILE_GRID', '3'))))
+        grid = max(1, min(2, int(os.getenv('QWEN_OCR_TILE_GRID', '2'))))
         if original_width < 720 or original_height < 520:
             grid = 1
         tile_w = max(1, int(round(original_width / grid)))
@@ -1926,12 +1933,12 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
     raw_count = rejected_low_confidence = rejected_invalid = 0
     tile_diagnostics: list[dict[str, Any]] = []
     try:
-        max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1536')))
-        timeout = max(20.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '240')))
-        max_output_tokens = max(768, min(3072, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '2048'))))
+        max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1280')))
+        timeout = max(20.0, min(180.0, float(os.getenv('QWEN_PIPE_TRACE_TIMEOUT', '105'))))
+        max_output_tokens = max(384, min(2048, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1024'))))
         retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
-        grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
+        grid = max(1, min(2, int(os.getenv('QWEN_PIPE_TILE_GRID', '2'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
         with Image.open(image_path) as source:
@@ -4319,47 +4326,28 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; local Qwen={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; Tesseract={ocr_status.get("tesseract", {}).get("annotations", 0)}; {timings_ms["ocr"]:.1f} ms')
     qwen_ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
-    # Cloud statuses are retained in graph.json for older clients, but they are
-    # explicitly disabled and must never satisfy the local OCR completion gate.
-    ocr_complete = qwen_ocr_complete
-    # PIPE geometry always comes from the local Ollama Qwen model. Cloud keys or
-    # legacy provider flags are intentionally ignored by the production pipeline.
+    # OCR and pipe tracing are independent vision tasks. A missing OCR tile
+    # must never suppress the geometry pass: Tesseract and OpenCV remain useful
+    # even when the local VL model times out on handwriting.
+    tesseract_available = bool(ocr_status.get('tesseract', {}).get('available'))
+    ocr_complete = qwen_ocr_complete or tesseract_available
     moss_pipe_status: dict[str, Any] | None = None
     openrouter_pipe_enabled = False
     openrouter_pipe_status: dict[str, Any] | None = None
     stage_started = time.perf_counter()
-    if not ocr_complete:
-        pipe_grid = max(1, min(3, int(os.getenv('QWEN_PIPE_TILE_GRID', '3'))))
-        if w < 640 or h < 480:
-            pipe_grid = 1
-        pipe_total = pipe_grid * pipe_grid
-        semantic_routes = []
-        route_status = {
-            'available': False, 'complete': False,
-            'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
-            'provider': 'ollama-qwen', 'routes': 0, 'raw_routes': 0,
-            'tiles': pipe_total, 'successful_tiles': 0,
-            'failed_tiles': list(range(1, pipe_total + 1)), 'tile_diagnostics': [],
-            'deferred_due_to_ocr_incomplete': True,
-            'error': 'Трассировка труб отложена: локальный Qwen OCR не завершил полный проход.',
-            'hint': 'Проверьте Ollama и установленную модель Qwen. Tesseract дополняет OCR, но не заменяет локальную трассировку геометрии.',
-            'incomplete_reason': 'PIPE отложен до завершения OCR, чтобы не строить трубные маски по неполной карте текста.',
-        }
-        _progress('PIPE', 'CAD pipe-route trace deferred: local Qwen OCR is incomplete; exporting review-only graph')
-    else:
-        _progress('PIPE', 'Local Ollama Qwen pipe-route trace started')
-        semantic_routes, route_status = _qwen_semantic_routes(
-            prepared_input_path, w, h, checkpoint_dir=checkpoint_dir
-        )
-        route_status['provider'] = 'ollama-qwen'
-        route_status['cloud_providers_disabled'] = True
-        _progress('PIPE', f'Local Qwen pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+    _progress('PIPE', 'Local Ollama Qwen pipe-route trace started independently of OCR completeness')
+    semantic_routes, route_status = _qwen_semantic_routes(
+        prepared_input_path, w, h, checkpoint_dir=checkpoint_dir
+    )
+    route_status['provider'] = 'ollama-qwen'
+    route_status['cloud_providers_disabled'] = True
+    _progress('PIPE', f'Local Qwen pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
     timings_ms['semantic_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     timings_ms['qwen_pipe_trace'] = timings_ms['semantic_pipe_trace']
-    pipe_complete = _qwen_stage_is_complete(route_status)
-    processing_complete = ocr_complete and pipe_complete
+    pipe_complete = _qwen_stage_is_complete(route_status) and bool(semantic_routes)
+    processing_complete = qwen_ocr_complete and pipe_complete
     incomplete_reasons = []
-    if not ocr_complete:
+    if not qwen_ocr_complete:
         provider_status = ocr_status.get('qwen', {})
         if provider_status.get('error') or provider_status.get('incomplete_reason'):
             incomplete_reasons.append('локальный Qwen OCR: ' + str(provider_status.get('incomplete_reason') or provider_status.get('error'))[:240])
@@ -4477,6 +4465,23 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
     cv2.imwrite(str(Path(out_dir)/'blue-ink-mask.png'), ink_layers['blue'])
     cv2.imwrite(str(Path(out_dir)/'dark-ink-mask.png'), ink_layers['dark'])
+    # Preserve every visible source mark in a separate, editable facsimile.
+    # This export is intentionally not represented as semantic pipe geometry.
+    try:
+        reference_trace = build_reference_trace(ink, source_name=Path(input_path).name)
+        Path(out_dir, 'reference-trace.svg').write_text(reference_trace.svg, encoding='utf-8')
+        Path(out_dir, 'reference-trace.dxf').write_text(reference_trace.dxf, encoding='utf-8')
+        reference_trace_meta = {
+            'available': True, 'svg': 'reference-trace.svg', 'dxf': 'reference-trace.dxf',
+            'components': reference_trace.components, 'contours': reference_trace.contours,
+            'vertices': reference_trace.vertices,
+            'pageWidthMm': reference_trace.page_width_mm, 'pageHeightMm': reference_trace.page_height_mm,
+            'semantic': False, 'description': 'Source-faithful editable ink contours; not a verified pipe centre-line graph.',
+        }
+        _progress('REFERENCE', f'Source-faithful vector trace exported: components={reference_trace.components}; contours={reference_trace.contours}; vertices={reference_trace.vertices}')
+    except Exception as trace_error:
+        reference_trace_meta = {'available': False, 'error': str(trace_error)[:300], 'semantic': False}
+        _progress('REFERENCE', f'Source-faithful vector trace failed: {str(trace_error)[:220]}')
     _progress('EXPORT', 'SVG and DXF export started')
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
@@ -4500,11 +4505,15 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     clean_layout, clean_layout_diagnostics = build_clean_layout(
         document_model, template=drawing_template, review_only=not processing_complete
     )
-    Path(out_dir,'clean.svg').write_text(build_layout_svg(clean_layout), encoding='utf-8')
-    Path(out_dir,'drawing.dxf').write_text(build_layout_dxf(clean_layout), encoding='utf-8')
+    cad_draft_svg = build_layout_svg(clean_layout)
+    cad_draft_dxf = build_layout_dxf(clean_layout)
+    Path(out_dir,'clean.svg').write_text(cad_draft_svg, encoding='utf-8')
+    Path(out_dir,'drawing.dxf').write_text(cad_draft_dxf, encoding='utf-8')
+    Path(out_dir,'cad-draft.svg').write_text(cad_draft_svg, encoding='utf-8')
+    Path(out_dir,'cad-draft.dxf').write_text(cad_draft_dxf, encoding='utf-8')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","analysisStatus":"complete" if processing_complete else "incomplete","complete":processing_complete,"incompleteReasons":incomplete_reasons,
            "checkpointing":{"enabled":True,"directory":".checkpoints","resumeBehavior":"successful OCR/PIPE tiles are restored; failed tiles are retried on the next analysis run"},
-           "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","engineeringApprovalRequired":True},
+           "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","referenceTrace":"editable-source-contours-not-semantic-pipes","cadDraft":"structured-review-draft-until-engineering-validation","engineeringApprovalRequired":True},
            "image":{"width":w,"height":h},
            "documentModel":document_model,
            "recognitionChannels":recognition_channels,
@@ -4513,17 +4522,21 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
            "annotationLinkingDiagnostics":annotation_linking_diagnostics,
            "engineeringValidation":engineering_validation,
            "cleanLayout":clean_layout,"cleanLayoutDiagnostics":clean_layout_diagnostics,
+           "referenceTrace":reference_trace_meta,
            "drawingTemplate":drawing_template,
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "timings_ms":timings_ms,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
-           "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":ocr_complete,"pipe_tiles_complete":pipe_complete,
+           "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":qwen_ocr_complete,"ocr_text_available":ocr_complete,"pipe_tiles_complete":pipe_complete,
                       "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
                       "pipe_tiles_successful":route_status.get("successful_tiles", 0),"pipe_tiles_total":route_status.get("tiles", 0),
                       "segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
+                      "reference_trace_components":reference_trace_meta.get("components", 0),
+                      "reference_trace_contours":reference_trace_meta.get("contours", 0),
+                      "reference_trace_vertices":reference_trace_meta.get("vertices", 0),
                       "semantic_routes":len(semantic_routes),
                       "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
                       "cad_primary_chains":len(_cad_edge_chains(edges)),
@@ -4582,7 +4595,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                        "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not processing_complete:
-        graph['warnings'].append('РЕЗУЛЬТАТ НЕПОЛНЫЙ: не завершён полный проход OCR и/или трассировки труб. Не используйте этот SVG/DXF как окончательный чертёж. Успешные локальные Qwen-плитки сохранены в .checkpoints; повторный запуск того же задания повторит незавершённые этапы.')
+        graph['warnings'].append('CAD-РЕКОНСТРУКЦИЯ НЕПОЛНАЯ: не завершён полный проход Qwen OCR и/или трассировки труб. Файлы cad-draft.svg/dxf являются проверочным черновиком, а не готовым техническим документом. Отдельные reference-trace.svg/dxf сохраняют видимые контуры исходного листа, но не подтверждают осевые линии труб, соединения или типы оборудования. Успешные Qwen-плитки сохранены в .checkpoints; повторный запуск задания повторит незавершённые этапы.')
         graph['warnings'].extend(str(reason) for reason in incomplete_reasons if reason)
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Локальный Qwen OCR недоступен. Tesseract может дополнить чтение текста, но не заменяет Qwen для структурного распознавания и трассировки труб. Проверьте Ollama и модель Qwen3-VL.')
@@ -4592,6 +4605,9 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
+    # Write the graph once before collecting artifact diagnostics so graph.json
+    # is not incorrectly reported as missing, then persist diagnostics in both files.
+    Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
     diagnostics = build_pipeline_diagnostics(input_path, out_dir, graph)
     graph['diagnostics'] = diagnostics
     Path(out_dir,'diagnostics.json').write_text(json.dumps(diagnostics,ensure_ascii=False,indent=2),encoding='utf-8')

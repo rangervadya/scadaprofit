@@ -20,6 +20,7 @@ let schemePollToken = 0;
 let expandedStreetIds = new Set();
 let showReviewGeometry = true;
 let showReviewText = false;
+let outputViewMode = 'reference';
 const EDGE_PAGE_SIZE = 140;
 
 const fileInput = $('fileInput');
@@ -710,17 +711,20 @@ function showResult() {
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
       graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
       graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : '',
+      graph.referenceTraceSvgUrl && graph.referenceTrace?.available ? `<a href="${escapeHtml(graph.referenceTraceSvgUrl)}" target="_blank" rel="noreferrer">Векторная копия SVG</a>` : '',
+      graph.referenceTraceDxfUrl && graph.referenceTrace?.available ? `<a href="${escapeHtml(graph.referenceTraceDxfUrl)}" target="_blank" rel="noreferrer">Контуры DXF</a>` : '',
+      graph.cadDraftSvgUrl ? `<a href="${escapeHtml(graph.cadDraftSvgUrl)}" target="_blank" rel="noreferrer">CAD-черновик SVG</a>` : '',
+      graph.cadDraftDxfUrl ? `<a href="${escapeHtml(graph.cadDraftDxfUrl)}" target="_blank" rel="noreferrer">CAD-черновик DXF</a>` : '',
       graph.progressUrl ? `<a href="${escapeHtml(graph.progressUrl)}" target="_blank" rel="noreferrer">Журнал обработки</a>` : '',
       graph.diagnosticsUrl ? `<a href="${escapeHtml(graph.diagnosticsUrl)}" target="_blank" rel="noreferrer">Диагностика JSON</a>` : ''
     ].filter(Boolean);
     diagnostics.innerHTML = links.join('<span>·</span>');
     diagnostics.hidden = !links.length;
   }
-  $('previewMeta').textContent = processingComplete
-    ? (graph.confirmedConnections.length
-      ? `Обработка завершена · соединений, требующих проверки: ${graph.confirmedConnections.length}`
-      : 'Обработка завершена · инженерная проверка обязательна')
-    : 'Частичный результат · только для проверки; повтори обработку для продолжения';
+  const hasReferenceTrace = Boolean(graph.referenceTrace?.available && graph.referenceTraceSvgUrl);
+  $('previewMeta').textContent = hasReferenceTrace
+    ? `Векторная копия оригинала сохранена · ${Number(graph.referenceTrace.contours || 0).toLocaleString('ru-RU')} контуров. CAD-реконструкция ${processingComplete ? 'готова к проверке' : 'неполная и требует продолжения'}.`
+    : (processingComplete ? 'CAD-реконструкция завершена · инженерная проверка обязательна' : 'Распознавание неполное · CAD-черновик только для проверки');
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
@@ -753,14 +757,20 @@ function showResult() {
   renderTextList();
   renderJoinList();
   renderReviewList();
-  for (const id of ['exportSvg', 'exportDxf', 'exportPdf']) $(id).disabled = !processingComplete;
+  const canExportSourceTrace = hasReferenceTrace;
+  for (const id of ['exportSvg', 'exportDxf', 'exportPdf']) $(id).disabled = !(canExportSourceTrace || processingComplete);
   $('exportJson').disabled = false;
-  if (!processingComplete) {
-    setAlert('Распознаны не все плитки OCR/трассировки. SVG, DXF и PDF отключены, чтобы частичную геометрию нельзя было принять за готовую схему. Сохрани JSON для диагностики и повтори преобразование: checkpoint сохранит успешные плитки.');
+  $('exportSvg').title = outputViewMode === 'reference' ? 'Скачать контурную векторную копию исходной схемы' : 'Скачать CAD-черновик SVG';
+  $('exportDxf').title = outputViewMode === 'reference' ? 'Скачать векторные контуры исходной схемы для AutoCAD' : 'Скачать CAD-черновик DXF';
+  if (!processingComplete && hasReferenceTrace) {
+    setAlert('Векторная копия исходного листа готова. CAD-реконструкция ещё неполная: проверь связи, размеры и условные обозначения по оригиналу. Экспорт копии SVG/DXF/PDF доступен отдельно.');
+  } else if (!processingComplete) {
+    setAlert('CAD-реконструкция неполная. Сохрани JSON и диагностику; векторная копия исходного листа недоступна.');
   } else {
     setAlert('');
   }
-  setState(processingComplete ? 'ОБРАБОТКА ЗАВЕРШЕНА · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА' : 'ЧАСТИЧНЫЙ ГРАФ · ТОЛЬКО ПРОВЕРКА', processingComplete ? 'ready' : 'error');
+  setState(processingComplete ? 'CAD-РЕКОНСТРУКЦИЯ · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА' : (hasReferenceTrace ? 'КОПИЯ ОРИГИНАЛА ГОТОВА · CAD НА ПРОВЕРКЕ' : 'ЧАСТИЧНЫЙ ГРАФ · ТОЛЬКО ПРОВЕРКА'), processingComplete || hasReferenceTrace ? 'ready' : 'error');
+  setOutputViewMode(hasReferenceTrace ? 'reference' : 'cad');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
 }
 
@@ -1482,6 +1492,21 @@ function buildSheetSvg() {
   return output.join('\n');
 }
 
+function setOutputViewMode(mode) {
+  outputViewMode = mode === 'cad' ? 'cad' : 'reference';
+  const referenceButton = $('referenceTraceView');
+  const cadButton = $('cadDraftView');
+  if (referenceButton) {
+    referenceButton.classList.toggle('active', outputViewMode === 'reference');
+    referenceButton.setAttribute('aria-pressed', String(outputViewMode === 'reference'));
+  }
+  if (cadButton) {
+    cadButton.classList.toggle('active', outputViewMode === 'cad');
+    cadButton.setAttribute('aria-pressed', String(outputViewMode === 'cad'));
+  }
+  renderClean();
+}
+
 function renderClean() {
   if (!graph) return;
   if (graph.manualCadProjectId && graph.manualCadPreviewUrl) {
@@ -1491,6 +1516,25 @@ function renderClean() {
     return;
   }
   $('cleanStage').classList.remove('manual-cad-preview');
+  if (outputViewMode === 'reference' && graph.referenceTrace?.available && graph.referenceTraceSvgUrl) {
+    const trace = graph.referenceTrace;
+    $('cleanStage').classList.add('manual-cad-preview');
+    $('cleanStage').innerHTML = `<img class="manual-cad-preview-image reference-trace-image" src="${escapeHtml(graph.referenceTraceSvgUrl)}?v=${Date.now()}" alt="Редактируемая векторная копия исходного чертежа" loading="eager"><div class="manual-cad-preview-caption"><b>ВЕКТОРНАЯ КОПИЯ ОРИГИНАЛА</b><span>${Number(trace.components || 0).toLocaleString('ru-RU')} компонентов · ${Number(trace.contours || 0).toLocaleString('ru-RU')} контуров · внешний вид сохранён, трубная топология не подтверждена</span></div>`;
+    $('cleanStage').querySelector('img')?.addEventListener('error', () => {
+      $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось загрузить векторную копию</b><span>Проверь ссылку на reference-trace.svg в диагностике.</span></div>';
+    });
+    return;
+  }
+  if (outputViewMode === 'cad' && (graph.cadDraftSvgUrl || graph.svgUrl)) {
+    const draftUrl = graph.cadDraftSvgUrl || graph.svgUrl;
+    const completeness = graph.complete === false ? 'ЧЕРНОВИК · НЕПОЛНЫЙ РЕЗУЛЬТАТ' : 'CAD-ЧЕРНОВИК · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА';
+    $('cleanStage').classList.add('manual-cad-preview');
+    $('cleanStage').innerHTML = `<img class="manual-cad-preview-image cad-draft-preview-image" src="${escapeHtml(draftUrl)}?v=${Date.now()}" alt="CAD-реконструкция исходной схемы" loading="eager"><div class="manual-cad-preview-caption"><b>${completeness}</b><span>${Number(graph.summary?.cad_primary_edges || 0).toLocaleString('ru-RU')} основных CAD-сегментов · ${Number(graph.summary?.crossings_to_review || 0).toLocaleString('ru-RU')} пересечений на проверку · контуры оборудования и соединения сверить с оригиналом</span></div>`;
+    $('cleanStage').querySelector('img')?.addEventListener('error', () => {
+      $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось загрузить CAD-черновик</b><span>Открой диагностику обработки или переключись на копию оригинала.</span></div>';
+    });
+    return;
+  }
   const visible = shownEdges();
   const hasIncludedText = graph.annotations.some(item => annotationExportLayer(item));
   const hasReviewGeometry = showReviewGeometry && (graph.edges.some(edge => edge.visible !== false && !isPrimaryCadEdge(edge) && edge.component_role !== 'text_or_annotation' && edge.suggested_role !== 'text_or_dimension') || (graph.semanticRoutes || []).some(route => !route.primary_validated && Number(route.confidence ?? 0) >= 20 && Array.isArray(route.points) && route.points.length >= 2));
@@ -1649,26 +1693,58 @@ $('openManualCadBtn').addEventListener('click', async () => {
   }
 });
 
+function downloadJobArtifact(url, filename) {
+  if (!url) return false;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return true;
+}
+$('referenceTraceView')?.addEventListener('click', () => setOutputViewMode('reference'));
+$('cadDraftView')?.addEventListener('click', () => setOutputViewMode('cad'));
 $('exportSvg').addEventListener('click', () => {
-  if (!finalExportAllowed()) return rejectPartialExport();
-  downloadFile('reconstructed-scheme.svg', buildSheetSvg(), 'image/svg+xml');
+  if (outputViewMode === 'reference' && graph?.referenceTrace?.available && graph?.referenceTraceSvgUrl) {
+    downloadJobArtifact(graph.referenceTraceSvgUrl, 'source-faithful-scheme.svg');
+    return;
+  }
+  if (graph?.cadDraftSvgUrl) downloadJobArtifact(graph.cadDraftSvgUrl, 'cad-reconstruction-draft.svg');
+  else if (finalExportAllowed()) downloadFile('cad-reconstruction-draft.svg', buildSheetSvg(), 'image/svg+xml');
+  else rejectPartialExport();
 });
 $('exportDxf').addEventListener('click', () => {
-  if (!finalExportAllowed()) return rejectPartialExport();
-  if (graph?.dxfUrl && graph?.cleanLayout) {
-    const link = document.createElement('a'); link.href = graph.dxfUrl; link.download = 'reconstructed-scheme.dxf'; document.body.appendChild(link); link.click(); link.remove();
-  } else downloadFile('reconstructed-scheme.dxf', buildDxf(), 'application/dxf');
+  if (outputViewMode === 'reference' && graph?.referenceTrace?.available && graph?.referenceTraceDxfUrl) {
+    downloadJobArtifact(graph.referenceTraceDxfUrl, 'source-faithful-contours.dxf');
+    return;
+  }
+  if (graph?.cadDraftDxfUrl) downloadJobArtifact(graph.cadDraftDxfUrl, 'cad-reconstruction-draft.dxf');
+  else if (graph?.dxfUrl && graph?.cleanLayout) downloadJobArtifact(graph.dxfUrl, 'cad-reconstruction-draft.dxf');
+  else if (finalExportAllowed()) downloadFile('cad-reconstruction-draft.dxf', buildDxf(), 'application/dxf');
+  else rejectPartialExport();
 });
 $('exportJson').addEventListener('click', () => downloadFile('reconstruction-graph.json', JSON.stringify(graph, null, 2), 'application/json'));
 $('exportPdf').addEventListener('click', () => {
-  if (!finalExportAllowed()) return rejectPartialExport();
+  const hasTrace = outputViewMode === 'reference' && Boolean(graph?.referenceTrace?.available && graph?.referenceTraceSvgUrl);
+  const hasCadDraft = Boolean(graph?.cadDraftSvgUrl || graph?.svgUrl);
+  if (!hasTrace && !hasCadDraft && !finalExportAllowed()) return rejectPartialExport();
   const popup = window.open('', '_blank');
   if (!popup) { setAlert('Разреши всплывающие окна, чтобы открыть печать в PDF.'); return; }
   popup.document.open();
-  const page = graph.cleanLayout?.page || {};
-  const widthMm = Number(page.widthMm || 297);
-  const heightMm = Number(page.heightMm || 210);
-  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Схема ВДГО</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}svg{display:block;width:${widthMm}mm;height:${heightMm}mm}</style></head><body>${buildSheetSvg()}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);
+  if (hasTrace) {
+    const widthMm = Number(graph.referenceTrace.pageWidthMm || 210);
+    const heightMm = Number(graph.referenceTrace.pageHeightMm || 297);
+    const sourceUrl = `${graph.referenceTraceSvgUrl}?print=${Date.now()}`;
+    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Векторная копия исходной схемы</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}img{display:block;width:${widthMm}mm;height:${heightMm}mm;object-fit:contain}</style></head><body><img src="${escapeHtml(sourceUrl)}" alt="Исходная схема"><script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);
+  } else {
+    const page = graph.cleanLayout?.page || {};
+    const widthMm = Number(page.widthMm || 297);
+    const heightMm = Number(page.heightMm || 210);
+    const draftUrl = graph.cadDraftSvgUrl || graph.svgUrl;
+    const body = draftUrl ? `<img src="${escapeHtml(draftUrl)}?print=${Date.now()}" alt="CAD-черновик">` : buildSheetSvg();
+    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>CAD-черновик ВДГО</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}svg,img{display:block;width:${widthMm}mm;height:${heightMm}mm;object-fit:contain}</style></head><body>${body}<script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);
+  }
   popup.document.close();
 });
 

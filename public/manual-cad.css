@@ -27,7 +27,7 @@
 
 .mc-pipe-review{stroke:#d97706!important;stroke-dasharray:7 5!important;opacity:.88}.mc-accept-review{width:100%;margin-top:10px;white-space:normal;height:auto;min-height:34px}.mc-statistics{grid-template-columns:1fr 1fr}
 
-/* 4.3.38 — CAD workspace: larger work area, readable controls and direct geometry editing. */
+/* 4.3.39 — CAD workspace: larger work area, readable controls and direct geometry editing. */
 .mc-shell{grid-template-columns:minmax(218px,250px) minmax(470px,1fr) minmax(250px,290px);gap:13px;padding:14px;max-width:2200px}
 .mc-projects-panel,.mc-inspector{padding:14px}
 .mc-panel-head b{font-size:13px}.mc-panel-head small{font-size:10px}
