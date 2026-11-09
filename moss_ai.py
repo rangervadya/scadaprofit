@@ -559,7 +559,7 @@ def moss_semantic_routes(
         )
         payload = {"model": model, "input": [{"role": "user", "content": [
             {"type": "input_text", "text": prompt}, {"type": "input_image", "file_id": file_id}
-        ]}], "max_output_tokens": 10000}
+        ]}], "max_output_tokens": 8192}
         response = _request_json(
             api_key, RESPONSES_URL, method="POST",
             body=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),

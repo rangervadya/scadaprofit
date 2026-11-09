@@ -85,6 +85,10 @@ class MossImageTests(unittest.TestCase):
             {"id": "R2", "points": [[-10, 5], [30, 5]], "confidence": 90},
         ]})}]}], "usage": {"output_tokens": 100}}
         routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        request_payload = json.loads(request.call_args.args[2].decode("utf-8")) if len(request.call_args.args) > 2 else json.loads(request.call_args.kwargs["body"].decode("utf-8"))
+        self.assertGreaterEqual(request_payload["max_output_tokens"], 1)
+        self.assertLessEqual(request_payload["max_output_tokens"], 8192)
+        self.assertEqual(request_payload["max_output_tokens"], 8192)
         self.assertEqual(len(routes), 1)
         self.assertEqual(routes[0]["points"], [[10.0, 20.0], [200.0, 20.0]])
         self.assertEqual(status["raw_routes"], 2)
