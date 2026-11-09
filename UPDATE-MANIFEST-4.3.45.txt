@@ -1,0 +1,7 @@
+ScadaProfit 4.3.45 — Git patch only
+
+Изменённые файлы: server.js, package.json, manual-cad-core.js, public/app.js, public/index.html, public/manual-cad.html, public/manual-cad.css, public/manual-cad.js, public/manual-cad-ink-trace.js, tests/manual-cad.test.js, tests/manual-cad-ink-trace.test.js, MANUAL-CAD-USER-GUIDE-RU.md, README.md, README-RU.md, CHANGELOG-4.3.45-RU.md, README-4.3.45-RU.txt.
+
+Не изменены: vdgo/, compose.yaml, .env, Nginx/gateway, PostgreSQL, Ollama, Docker volumes, сторонние приложения.
+
+Инструмент «Автотрасса» является пошаговым помощником по пикселям исходной фотографии. Каждый предпросмотр должен быть проверен и подтверждён пользователем. Начальные, конечные и промежуточные привязки создают явные узлы только с уже подтверждёнными трубами.

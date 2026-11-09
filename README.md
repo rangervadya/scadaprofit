@@ -1,4 +1,19 @@
-# ScadaProfit 4.3.42 — CAD quality gating and source-safe preview
+# ScadaProfit 4.3.45 — guided fitter-sketch tracing and unified PROFIT menu
+
+
+## 4.3.45 — guided ink tracing
+
+The manual CAD editor now includes **Автотрасса** (guided ink tracing). The operator clicks the start, end of each straight section, and intermediate bend points. A* searches actual dark/blue pen pixels inside a bounded corridor. The dashed preview is a candidate; only **Применить маршрут** adds it as an editable pipe. Snapped starts, ends, and intermediate waypoints can create explicit junctions with already confirmed routes. Review-only candidates are not snap targets and are excluded from clean exports until accepted.
+
+This is operator-assisted line tracing, not semantic recognition of a pipe from an arbitrary mark. The engineer must verify the selected stroke, branches, symbols, and dimensions. See `MANUAL-CAD-USER-GUIDE-RU.md`.
+
+
+## Unified application menu
+
+A shared responsive burger menu is available in the sketch-recognition workspace, manual CAD editor and VDGO frontend. It switches between the existing same-origin routes: `/` (sketch recognition), `/manual-cad.html` (CAD editor), and `/vdgo/` (VDGO technical reports). The modules remain separate services and keep their own APIs and data stores.
+
+See `CHANGELOG-4.3.43-RU.md` for this release and the previous 4.3.42 notes below.
+
 
 ## Исправление 4.3.42: недопустимые координаты Qwen
 
@@ -21,7 +36,7 @@ This release corrects the misleading default preview introduced by the raw centr
 
 ## CAD readiness checks
 
-The readiness assessment flags excessive open endpoints, high crossing density, insufficient symbol classification and insufficient dimension-to-object attachment. For the user's current diagnostic these values fail: 406 open endpoints / 428 segments, 173 crossings / 428 segments, 0/11 classified symbols and 1/8 attached dimensions. Therefore ScadaProfit should not present the generated CAD draft as a finished drawing.
+The readiness assessment flags excessive open endpoints, high crossing density, insufficient symbol classification and insufficient dimension-to-object attachment. For the user's current diagnostic these values fail: 384 open endpoints / 367 segments, 145 ambiguous crossings / 367 segments, 0/8 classified symbols and 2/8 attached dimensions. Therefore ScadaProfit should not present the generated CAD draft as a finished drawing.
 
 The machine-readable diagnostics now include `cadReadiness` with `ready`, `automaticCadExportAllowed`, `failedChecks` and metrics. Existing source-trace artifacts remain exportable for review. The diagnostic job status continues to distinguish processing completion from engineering readiness.
 

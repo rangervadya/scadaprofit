@@ -394,6 +394,40 @@ test('sketch-assist imports high-recall line components and pairs trunk through 
   assert.doesNotMatch(renderManualCadDxf(project), /\n0\nCIRCLE\n8\nSYMBOLS/);
 });
 
+
+
+test('normalizer preserves operator-confirmed ink-traced route provenance and compact metrics', () => {
+  const base = createManualCadProject({ title: 'Ink route' });
+  const project = normalizeManualCadProject({
+    ...base,
+    pipes: [{ id: 'ink-main', source: 'ink-trace-assist', traceMetrics: [{ inkSupport: 0.84, lengthPx: 244.5, visited: 1400 }], points: [[10, 10], [80, 20], [100, 90]] }]
+  }, base);
+  assert.equal(project.pipes[0].source, 'ink-trace-assist');
+  assert.deepEqual(project.pipes[0].traceMetrics, [{ inkSupport: 0.84, lengthPx: 244.5, visited: 1400 }]);
+});
+
+test('component line edges not selected for primary CAD remain visible as review candidates', () => {
+  const graph = {
+    image: { width: 700, height: 500 }, complete: true,
+    nodes: [
+      { id: 'A', x: 30, y: 80 }, { id: 'B', x: 230, y: 80 },
+      { id: 'C', x: 260, y: 100 }, { id: 'D', x: 520, y: 100 }
+    ],
+    components: [{ id: 'ROUTE', role: 'line_structure', edge_count: 2, total_length: 460 }],
+    edges: [
+      { id: 'MAIN', component_id: 'ROUTE', component_role: 'line_structure', cad_include: true, topology_network_candidate: true, from: 'A', to: 'B', geometry: [[30,80],[230,80]] },
+      { id: 'REVIEW_SEGMENT', component_id: 'ROUTE', component_role: 'line_structure', cad_include: false, topology_network_candidate: false, from: 'C', to: 'D', geometry: [[260,100],[390,100],[520,100]] }
+    ],
+    documentModel: { labels: [], symbols: [] }
+  };
+  const project = createManualCadProjectFromGraph(graph);
+  assert.ok(project.pipes.some(pipe => pipe.id === 'MAIN' && !pipe.reviewOnly));
+  const candidate = project.pipes.find(pipe => pipe.id === 'review_REVIEW_SEGMENT');
+  assert.ok(candidate, 'unselected edge from a route component remains visible for inspection');
+  assert.equal(candidate.reviewOnly, true);
+  assert.doesNotMatch(renderManualCadSvg(project), /REVIEW_SEGMENT/);
+});
+
 test('sketch-assist treats a four-way crossing as two continuous routes, not one joined junction', () => {
   const graph = {
     image: { width: 400, height: 300 }, complete: true,

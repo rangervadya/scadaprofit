@@ -273,13 +273,40 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     if (!usedEdges.has(edgeIndex)) buildRoute(edgeRecords[edgeIndex].fromId, edgeIndex);
   }
 
-  // Ambiguous detector edges are retained as orange, review-only candidates.
-  // They never join the primary topology and are excluded from SVG/DXF until
-  // an operator explicitly accepts them in the editor.
-  const reviewEdges = hasComponentModel ? [] : rawEdges.filter(edge => edge?.cad_include === true && (
-    edge.component_role === 'ambiguous' ||
-    (hasTopologyHints && edge.component_role !== 'ambiguous' && edge.topology_network_candidate !== true)
-  ));
+  // Preserve high-recall detector strokes from candidate line components as
+  // separate orange review objects. The previous implementation returned an
+  // empty array whenever a component model existed, silently hiding every
+  // not-yet-selected edge from the CAD helper. Candidate geometry is never
+  // promoted to the clean export until an operator explicitly accepts it.
+  const geometryLength = points => points.slice(1).reduce((sum, point, index) => sum + distance2d(points[index], point), 0);
+  const reviewEdges = hasComponentModel
+    ? rawEdges.filter(edge => {
+        if (!edge || edge.cad_include === true) return false;
+        const componentId = String(edge.component_id ?? '');
+        if (!candidateComponentIds.has(componentId)) return false;
+        const component = componentById.get(componentId);
+        const role = String(component?.role || edge.component_role || '');
+        if (!['line_structure', 'ambiguous'].includes(role)) return false;
+        const points = (Array.isArray(edge.geometry) ? edge.geometry : [])
+          .map(raw => Array.isArray(raw) && raw.length >= 2 ? [num(raw[0], NaN), num(raw[1], NaN)] : null)
+          .filter(raw => raw && raw.every(Number.isFinite));
+        if (points.length < 2) return false;
+        const length = geometryLength(points);
+        const minimumLength = role === 'ambiguous' ? 30 : Math.max(14, Math.min(width, height) * 0.012);
+        if (length < minimumLength) return false;
+        // Exclude page-frame fragments and detector records explicitly marked
+        // as text/annotation. The original photograph remains visible for review.
+        if (['text', 'text_or_annotation', 'dimension'].includes(String(edge.suggested_role || edge.component_role_hint || ''))) return false;
+        const margin = 5;
+        const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
+        const nearPageFrame = (Math.max(...xs) - Math.min(...xs) > width * 0.65 &&
+          (Math.min(...ys) < margin || Math.max(...ys) > height - margin));
+        return !nearPageFrame;
+      })
+    : rawEdges.filter(edge => edge?.cad_include === true && (
+        edge.component_role === 'ambiguous' ||
+        (hasTopologyHints && edge.component_role !== 'ambiguous' && edge.topology_network_candidate !== true)
+      ));
   for (const edge of reviewEdges.slice(0, 700)) {
     const points = (Array.isArray(edge.geometry) ? edge.geometry : [])
       .map(raw => Array.isArray(raw) && raw.length >= 2 ? [num(raw[0], NaN), num(raw[1], NaN)] : null)
@@ -456,7 +483,12 @@ export function normalizeManualCadProject(input, existing = null) {
     if (points.length < 2) continue;
     result.pipes.push({
       id: safeId(raw.id, 'pipe'),
-      source: raw.source === 'qwen-ink-validated' ? 'qwen-ink-validated' : undefined,
+      source: ['qwen-ink-validated', 'ink-trace-assist'].includes(raw.source) ? raw.source : undefined,
+      traceMetrics: raw.source === 'ink-trace-assist' && Array.isArray(raw.traceMetrics) ? raw.traceMetrics.slice(0, 32).map(metric => ({
+        inkSupport: Math.max(0, Math.min(1, num(metric?.inkSupport, 0))),
+        lengthPx: Math.max(0, num(metric?.lengthPx, 0)),
+        visited: Math.max(0, Math.floor(num(metric?.visited, 0)))
+      })) : undefined,
       name: text(raw.name, 80),
       diameter: text(raw.diameter, 32),
       kind: ['branch', 'riser'].includes(raw.kind) ? raw.kind : 'pipe',

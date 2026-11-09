@@ -740,10 +740,10 @@ function showResult() {
   $('openManualCadBtn').disabled = false;
   $('openManualCadBtn').innerHTML = cadReadiness.ready
     ? '<b>CAD</b><span>Редактировать</span>'
-    : '<b>CAD</b><span>Проверить черновик</span>';
+    : '<b>CAD</b><span>Помощник трассировки</span>';
   $('openManualCadBtn').title = cadReadiness.ready
     ? 'Открыть CAD-редактор'
-    : 'Реконструкция не прошла проверки связности/символов/размеров. Открывается только черновик для ручной проверки.';
+    : 'Автоматическая схема пока не прошла проверку. Открой CAD-помощник: укажи начало, повороты и конец нужной трубы — автотрасса проследит реальные штрихи на фотографии.';
   $('processSchemeBtn').hidden = processingComplete;
   $('processSchemeBtn').disabled = false;
   $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
@@ -824,7 +824,7 @@ function showResult() {
   $('exportSvg').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; содержит текст и символы' : outputViewMode === 'reference' ? 'Скачать контуры всех исходных штрихов' : 'Скачать CAD-черновик SVG';
   $('exportDxf').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; не является трубной сетью' : outputViewMode === 'reference' ? 'Скачать векторные контуры исходных штрихов' : 'Скачать CAD-черновик DXF';
   if (!cadReadiness.ready) {
-    setAlert(`Автоматическая CAD-реконструкция пока не готова. Показан исходник без искажений. Причины: ${cadReadiness.reasons.join('; ')}. Режимы «Все штрихи» и «Контуры штрихов» являются диагностической векторизацией, а не чистой схемой труб.`);
+    setAlert(`Автоматическая CAD-реконструкция пока не готова. Показан исходник без искажений. Причины: ${cadReadiness.reasons.join('; ')}. Нажми «Помощник трассировки», чтобы вручную задать ход трубы по исходным штрихам; это безопаснее, чем выдавать шумную векторизацию за готовую схему.`);
   } else if (!processingComplete) {
     setAlert('Обработка не завершена полностью. CAD-черновик доступен только для проверки.');
   } else {

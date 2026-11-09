@@ -1,11 +1,13 @@
-'use strict';
+import { prepareInkTrace, traceInkRoute } from './manual-cad-ink-trace.js';
+
 const $ = id => document.getElementById(id);
 const svg = $('cadCanvas');
 const state = {
   projects: [], project: null, tool: 'select', selected: null,
   draft: [], draftStart: null, draftEnd: null, dimensionStart: null,
   sourceVisible: true, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
-  undo: [], redo: [], drag: null, activeVertex: null, justDragged: false, lastSaved: null, toastTimer: null, zoom: 1, ortho: false
+  undo: [], redo: [], drag: null, activeVertex: null, justDragged: false, lastSaved: null, toastTimer: null, zoom: 1, ortho: false,
+  traceRaster: null, traceLastPoint: null, traceSegments: 0, traceMetrics: [], traceSegmentStartIndices: [], traceWaypoints: [], traceAttachments: [], traceBusy: false
 };
 
 function uid(prefix='item') { return `${prefix}_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`).replaceAll('-', '')}`; }
@@ -75,6 +77,7 @@ async function createProject(showToast=true) {
   try {
     const data = await api('/api/manual-cad/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: 'Новая схема' }) });
     state.project = ensureProjectDefaults(data.project);
+    state.traceRaster = null;
     state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.showReviewCandidates = false;
     await refreshProjectList();
     syncControls(); renderAll();
@@ -92,8 +95,121 @@ async function openProject(id) {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
     state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = Boolean(state.project.sketchAssist?.enabled && state.project.pipes.some(pipe => pipe.reviewOnly));
+    await loadTraceRaster(state.project);
     syncControls(); renderAll(); setSaveState('Сохранено', 'saved'); await refreshProjectList();
   } catch (error) { toast(error.message); }
+}
+
+
+async function loadTraceRaster(project) {
+  state.traceRaster = null;
+  if (!project?.sourceUrl) return;
+  try {
+    const image = new Image();
+    image.decoding = 'async';
+    const src = `${project.sourceUrl}?trace=${encodeURIComponent(project.source?.uploadedAt || Date.now())}`;
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('Не удалось загрузить изображение для автотрассы.'));
+      image.src = src;
+    });
+    const scale = Math.min(1, 1500 / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(2, Math.round(image.naturalWidth * scale));
+    const height = Math.max(2, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(image, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height);
+    const prepared = prepareInkTrace({ data: pixels.data, width, height, step: 2, maxDimension: 1500 });
+    state.traceRaster = {
+      prepared,
+      scaleX: project.width / prepared.width,
+      scaleY: project.height / prepared.height
+    };
+  } catch (error) {
+    state.traceRaster = null;
+    console.warn('Manual CAD ink trace raster unavailable:', error);
+  }
+}
+
+function mapProjectPointToTrace(point) {
+  const raster = state.traceRaster;
+  return raster ? { x: point.x / raster.scaleX, y: point.y / raster.scaleY } : null;
+}
+function mapTracePointToProject(pair) {
+  const raster = state.traceRaster;
+  return raster ? { x: pair[0] * raster.scaleX, y: pair[1] * raster.scaleY } : null;
+}
+
+async function addInkTraceWaypoint(point) {
+  if (!state.traceRaster) {
+    toast('Сначала загрузи фотографию в качестве подложки или открой проект с исходным изображением.');
+    return;
+  }
+  if (state.traceBusy) return;
+  if (!state.traceLastPoint) {
+    const attachment = nearestPipeProjection(point);
+    const anchor = attachment ? { x: attachment.point.x, y: attachment.point.y } : point;
+    state.traceLastPoint = anchor;
+    state.traceWaypoints = [anchor];
+    state.traceAttachments = [attachment];
+    state.traceSegmentStartIndices = [];
+    state.draft = [{ x: anchor.x, y: anchor.y }];
+    state.draftStart = attachment;
+    state.draftEnd = attachment;
+    updateToolButtons(); renderCanvas();
+    toast(attachment
+      ? 'Начало привязано к существующей подтверждённой трубе. Укажи конец участка или следующий поворот.'
+      : 'Начало выбрано. Поставь следующую точку на этой же трубе; на поворотах добавляй промежуточные точки.');
+    return;
+  }
+  const traceStart = mapProjectPointToTrace(state.traceLastPoint);
+  const traceEnd = mapProjectPointToTrace(point);
+  if (!traceStart || !traceEnd) { toast('Не удалось сопоставить координаты изображения.'); return; }
+  state.traceBusy = true;
+  updateToolButtons();
+  toast('Ищу путь по пикселям ручки в ограниченном коридоре…');
+  await new Promise(resolve => requestAnimationFrame(() => resolve()));
+  const corridorPx = Math.max(18, Math.min(72, safeNum($('traceCorridor')?.value, 38)));
+  let result;
+  try {
+    result = traceInkRoute({ prepared: state.traceRaster.prepared, start: traceStart, end: traceEnd, corridorPx, maxVisited: 220000 });
+  } catch (error) {
+    state.traceBusy = false;
+    updateToolButtons();
+    toast(`Автотрасса остановлена: ${String(error?.message || error).slice(0, 180)}`);
+    return;
+  }
+  state.traceBusy = false;
+  if (!result.ok) {
+    updateToolButtons();
+    toast(result.reason || 'Не удалось проследить участок. Добавь промежуточную точку на линии.');
+    return;
+  }
+  const mapped = result.points.map(mapTracePointToProject).filter(Boolean);
+  const attachment = nearestPipeProjection(point);
+  const snapLimit = Math.max(8, safeNum($('snapRadius')?.value, 14));
+  // Snap only when the traced pixel endpoint itself is close to an existing
+  // confirmed route; a nearby click alone is not enough to create a junction.
+  const tracedEnd = mapped.at(-1);
+  const snappedAttachment = attachment && tracedEnd && distance(tracedEnd, attachment.point) <= snapLimit
+    ? attachment : null;
+  if (snappedAttachment && mapped.length) mapped[mapped.length - 1] = snappedAttachment.point;
+  state.traceSegmentStartIndices.push(state.draft.length);
+  for (const next of mapped) {
+    const previous = state.draft.at(-1);
+    if (!previous || distance(previous, next) > 1.4) state.draft.push(next);
+  }
+  const nextAnchor = snappedAttachment ? { x: snappedAttachment.point.x, y: snappedAttachment.point.y } : point;
+  state.traceLastPoint = nextAnchor;
+  state.traceWaypoints.push(nextAnchor);
+  state.traceSegments += 1;
+  state.traceMetrics.push({ ...result.metrics, snappedToPipe: Boolean(snappedAttachment) });
+  state.traceAttachments.push(snappedAttachment);
+  state.draftEnd = snappedAttachment;
+  updateToolButtons(); renderCanvas();
+  toast(`Участок найден: ${Math.round(result.metrics.lengthPx)} px по чернилам, подтверждение ${Math.round(result.metrics.inkSupport * 100)}%. Добавь следующий поворот или примени маршрут.`);
 }
 
 function pushUndo() {
@@ -180,9 +296,9 @@ function syncControls() {
   $('reviewCandidatesCount').textContent = String(reviewCount);
   const unknownSymbols = p.symbols.filter(symbol => symbol.type === 'unknown' || symbol.reviewOnly).length;
   const assistPanel = $('mcSketchAssistPanel');
-  if (assistPanel) assistPanel.hidden = p.sketchAssist?.enabled !== true;
+  if (assistPanel) assistPanel.hidden = !p.sourceUrl;
   const assistStats = $('mcSketchCandidateStats');
-  if (assistStats) assistStats.textContent = `${reviewCount} маршрутов-кандидатов · ${unknownSymbols} знаков для классификации`;
+  if (assistStats) assistStats.textContent = `${reviewCount} маршрутов-кандидатов · ${unknownSymbols} знаков для классификации · автотрасса по ручке: ${state.traceRaster ? 'готова' : 'недоступна'}`;
   const assistButton = $('mcShowSketchCandidatesBtn');
   if (assistButton) { assistButton.disabled = reviewCount === 0; assistButton.textContent = state.showReviewCandidates ? 'Скрыть кандидаты' : 'Показать кандидаты'; }
   $('exportSvgBtn').href = `/api/manual-cad/projects/${p.id}/export.svg`;
@@ -194,12 +310,16 @@ function syncControls() {
 function updateToolButtons() {
   document.querySelectorAll('[data-tool]').forEach(button => button.classList.toggle('is-active', button.dataset.tool === state.tool));
   svg.className.baseVal = `tool-${state.tool}`;
-  $('finishRouteBtn').disabled = state.draft.length < 2 || !['pipe','branch'].includes(state.tool);
-  $('draftStatus').textContent = state.draft.length ? `Точек в линии: ${state.draft.length} · Enter — завершить` : 'Нет незавершённых линий';
+  $('finishRouteBtn').disabled = state.traceBusy || state.draft.length < 2 || !['pipe','branch','trace'].includes(state.tool) || (state.tool === 'trace' && state.traceSegments < 1);
+  $('finishRouteBtn').textContent = state.tool === 'trace' ? (state.traceBusy ? 'Ищу линию…' : 'Применить маршрут ↵') : 'Завершить линию ↵';
+  $('draftStatus').textContent = state.tool === 'trace'
+    ? (state.traceSegments ? `Автотрасса: ${state.traceSegments} участков · ${state.draft.length} точек · можно добавить поворот или применить` : (state.traceLastPoint ? 'Начало выбрано · укажи конец первого участка' : 'Укажи начало трубы на исходном эскизе'))
+    : (state.draft.length ? `Точек в линии: ${state.draft.length} · Enter — завершить` : 'Нет незавершённых линий');
   $('canvasHint').textContent = ({
     select:'Выбор: нажми на трубу или символ. У выбранной трубы можно перетаскивать вершины.',
     pipe:'Труба: кликай по поворотам маршрута. Двойной щелчок или Enter завершает линию.',
     branch:'Ответвление: первая точка должна попасть на существующую трубу — создастся узел Т-образного соединения.',
+    trace:'Автотрасса: кликни начало, затем конец каждого прямого участка по штриху. На поворотах ставь промежуточные точки. Backspace отменяет последний участок, Escape очищает маршрут. Применяй только после проверки синего предпросмотра.',
     node:'Узел: щёлкни по существующему отрезку, чтобы вставить вершину. Выбери инструмент «Выбор», чтобы перетащить её.',
     label:'Подпись: введи текст справа от панели инструментов и щёлкни по месту размещения.',
     symbol:'Символ: выбери тип условного обозначения и щёлкни по месту установки.',
@@ -208,19 +328,20 @@ function updateToolButtons() {
 }
 function updateDeleteButton() { $('deleteBtn').disabled = !state.selected; $('duplicateBtn').disabled = !state.selected; $('deleteBtn').title = state.activeVertex ? 'Удалить выбранную вершину (Del)' : 'Удалить выбранный элемент (Del)'; }
 function setTool(tool) {
-  if (!['select','pipe','branch','node','label','symbol','dimension'].includes(tool)) return;
+  if (!['select','pipe','branch','trace','node','label','symbol','dimension'].includes(tool)) return;
   if (state.draft.length && tool !== state.tool) clearDraft();
   state.tool = tool;
-  for (const selector of ['.mc-prop-route','.mc-prop-label','.mc-prop-symbol','.mc-prop-dimension']) {
+  for (const selector of ['.mc-prop-route','.mc-prop-trace','.mc-prop-label','.mc-prop-symbol','.mc-prop-dimension']) {
     document.querySelectorAll(selector).forEach(el => el.hidden = true);
   }
-  if (tool === 'pipe' || tool === 'branch') document.querySelectorAll('.mc-prop-route').forEach(el => el.hidden = false);
+  if (tool === 'pipe' || tool === 'branch' || tool === 'trace') document.querySelectorAll('.mc-prop-route').forEach(el => el.hidden = false);
+  if (tool === 'trace') document.querySelectorAll('.mc-prop-trace').forEach(el => el.hidden = false);
   if (tool === 'label') document.querySelectorAll('.mc-prop-label').forEach(el => el.hidden = false);
   if (tool === 'symbol') document.querySelectorAll('.mc-prop-symbol').forEach(el => el.hidden = false);
   if (tool === 'dimension') document.querySelectorAll('.mc-prop-dimension').forEach(el => el.hidden = false);
   updateToolButtons(); renderCanvas();
 }
-function clearDraft() { state.draft = []; state.draftStart = null; state.draftEnd = null; state.dimensionStart = null; updateToolButtons(); }
+function clearDraft() { state.draft = []; state.draftStart = null; state.draftEnd = null; state.dimensionStart = null; state.traceLastPoint = null; state.traceSegments = 0; state.traceMetrics = []; state.traceSegmentStartIndices = []; state.traceWaypoints = []; state.traceAttachments = []; state.traceBusy = false; updateToolButtons(); }
 
 function getCanvasPoint(event) {
   const point = svg.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
@@ -231,12 +352,12 @@ function getCanvasPoint(event) {
   return { x: Math.max(0, Math.min(project.width, p.x)), y: Math.max(0, Math.min(project.height, p.y)) };
 }
 function distance(a,b) { return Math.hypot(a.x-b.x, a.y-b.y); }
-function nearestPipeProjection(point) {
+function nearestPipeProjection(point, { includeReview = false } = {}) {
   const limit = safeNum($('snapRadius').value, 14);
   if (limit <= 0) return null;
   let best = null;
   for (const pipe of state.project.pipes) {
-    if (pipe.visible === false || (pipe.reviewOnly === true && !state.showReviewCandidates)) continue;
+    if (pipe.visible === false || (pipe.reviewOnly === true && !includeReview)) continue;
     for (let i=1;i<pipe.points.length;i++) {
       const a={x:pipe.points[i-1][0],y:pipe.points[i-1][1]}, b={x:pipe.points[i][0],y:pipe.points[i][1]};
       const dx=b.x-a.x, dy=b.y-a.y, length2=dx*dx+dy*dy;
@@ -353,13 +474,28 @@ function finishRoute() {
   const id=uid('pipe');
   const name=$('pipeName').value.trim(); const diameter=$('pipeDiameter').value.trim();
   const startAttachment=state.draftStart;
-  // Resolve the final snap before inserting the new pipe, so a route cannot snap to itself.
-  const endAttachment=nearestPipeProjection(state.draft[state.draft.length-1]);
-  const pipe={id,name,diameter,kind:state.tool==='branch'?'branch':$('pipeKind').value==='riser'?'riser':'pipe',points:state.draft.map(p=>[p.x,p.y]),visible:true};
+  // Resolve all explicit snaps before inserting the new pipe, so the route
+  // cannot attach to itself. Intermediate waypoints may form real junctions.
+  const endAttachment=state.draftEnd || nearestPipeProjection(state.draft[state.draft.length-1]);
+  const routePoints=state.draft.map(p=>[p.x,p.y]);
+  if (startAttachment && routePoints.length) routePoints[0]=[startAttachment.point.x,startAttachment.point.y];
+  if (endAttachment && routePoints.length) routePoints[routePoints.length-1]=[endAttachment.point.x,endAttachment.point.y];
+  const pipe={id,name,diameter,kind:state.tool==='branch'?'branch':$('pipeKind').value==='riser'?'riser':'pipe',points:routePoints,visible:true};
+  if (state.tool === 'trace') {
+    pipe.source = 'ink-trace-assist';
+    pipe.traceMetrics = clone(state.traceMetrics);
+    pipe.reviewOnly = false; // operator explicitly reviewed and applied the preview.
+    pipe.reviewReason = '';
+  }
   state.project.pipes.push(pipe);
-  if (startAttachment) commitJunction(startAttachment,id);
-  if (endAttachment) commitJunction(endAttachment,id);
-  state.selected={type:'pipe',id}; clearDraft(); renderAll(); scheduleSave(); toast('Трубопровод добавлен. Узлы привязки отмечены явно.');
+  const seenAttachments = new Set();
+  for (const attachment of [startAttachment, ...state.traceAttachments, endAttachment].filter(Boolean)) {
+    const key = `${attachment.pipeId}:${Math.round(attachment.point.x * 2)}:${Math.round(attachment.point.y * 2)}`;
+    if (seenAttachments.has(key)) continue;
+    seenAttachments.add(key);
+    commitJunction(attachment,id);
+  }
+  state.selected={type:'pipe',id}; const wasTrace = pipe.source === 'ink-trace-assist'; clearDraft(); renderAll(); scheduleSave(); toast(wasTrace ? 'Маршрут по чернилам добавлен. Проверь узлы и направление по исходнику.' : 'Трубопровод добавлен. Узлы привязки отмечены явно.');
 }
 function handleCanvasClick(event) {
   if (!state.project) return;
@@ -367,6 +503,7 @@ function handleCanvasClick(event) {
   const point=getCanvasPoint(event);
   $('cursorPosition').textContent=`X: ${Math.round(point.x)} · Y: ${Math.round(point.y)}`;
   if (state.tool === 'node') { insertVertexAt(point); return; }
+  if (state.tool === 'trace') { if (event.detail > 1) return; void addInkTraceWaypoint(point); return; }
   if (state.tool==='pipe' || state.tool==='branch') {
     if (event.detail >= 2) { finishRoute(); return; }
     addPipePoint(point,state.draft.length===0); return;
@@ -428,7 +565,7 @@ function renderCanvas() {
   const labels=p.labels.map(item=>`<text class="mc-cad-label ${state.selected?.type==='label'&&state.selected.id===item.id?'is-selected':''}" data-element-type="label" data-element-id="${esc(item.id)}" x="${item.x}" y="${item.y}" font-size="${item.size}" text-anchor="${item.anchor||'start'}" transform="rotate(${item.rotation||0} ${item.x} ${item.y})">${esc(item.text)}</text>`).join('');
   const dimensions=p.dimensions.map(item=>`<g data-element-type="dimension" data-element-id="${esc(item.id)}"><path class="mc-dimension" d="M ${item.a[0]} ${item.a[1]} L ${item.b[0]} ${item.b[1]} M ${item.a[0]-5} ${item.a[1]-5} l 10 10 M ${item.b[0]-5} ${item.b[1]-5} l 10 10"/><text class="mc-dimension-text" x="${(item.a[0]+item.b[0])/2}" y="${(item.a[1]+item.b[1])/2-8}" text-anchor="middle">${esc(item.text)}</text></g>`).join('');
   let draft='';
-  if(state.draft.length){const points=state.draft.map(pt=>`${pt.x},${pt.y}`).join(' ');draft=`<polyline class="mc-draft" points="${points}"/>${state.draft.map(pt=>`<circle class="mc-snap-ring" cx="${pt.x}" cy="${pt.y}" r="7"/>`).join('')}`;}
+  if(state.draft.length){const points=state.draft.map(pt=>`${pt.x},${pt.y}`).join(' ');const traceClass=state.tool==='trace'?'mc-draft-trace':'';draft=`<polyline class="mc-draft ${traceClass}" points="${points}"/>${state.draft.map((pt,index)=>`<circle class="mc-snap-ring ${state.tool==='trace'?'mc-trace-waypoint':''}" cx="${pt.x}" cy="${pt.y}" r="${index===0||index===state.draft.length-1?8:5}"/>`).join('')}`;}
   if(state.dimensionStart) draft+=`<circle class="mc-snap-ring" cx="${state.dimensionStart[0]}" cy="${state.dimensionStart[1]}" r="7"/>`;
   svg.innerHTML=`<defs><pattern id="mcGrid" width="25" height="25" patternUnits="userSpaceOnUse"><path d="M25 0H0V25" fill="none" stroke="#dce4de" stroke-width="1"/></pattern></defs><rect width="${p.width}" height="${p.height}" fill="#fff"/>${grid}${source}${pipes}${junctions}${dimensions}${symbols}${labels}${draft}`;
   svg.className.baseVal=`tool-${state.tool}`;
@@ -613,8 +750,8 @@ async function uploadSource(file) {
     const form=new FormData();form.append('source',file);form.append('width',String(image.naturalWidth));form.append('height',String(image.naturalHeight));
     setSaveState('Загружаю подложку…','busy');
     const data=await api(`/api/manual-cad/projects/${state.project.id}/source`,{method:'POST',body:form});
-    state.project=ensureProjectDefaults(data.project);state.sourceVisible=true;syncControls();renderCanvas();await refreshProjectList();setSaveState('Подложка загружена','saved');
-    toast(`Подложка загружена: ${image.naturalWidth} × ${image.naturalHeight}. Теперь можно обводить маршруты.`);
+    state.project=ensureProjectDefaults(data.project);state.sourceVisible=true;clearDraft();await loadTraceRaster(state.project);syncControls();renderCanvas();await refreshProjectList();setSaveState('Подложка загружена','saved');
+    toast(`Подложка загружена: ${image.naturalWidth} × ${image.naturalHeight}. Автотрасса готова: укажи начало и конец участка.`);
   }catch(error){setSaveState('Ошибка загрузки','error');toast(error.message);}finally{URL.revokeObjectURL(objectUrl);$('sourceFile').value='';}
 }
 
@@ -669,7 +806,8 @@ window.addEventListener('keydown',event=>{
   if(event.key==='Escape'){clearDraft();state.activeVertex=null;renderCanvas();return;}
   if(event.key.toLowerCase()==='o'&&!event.ctrlKey&&!event.metaKey){state.ortho=!state.ortho;$('orthoMode').checked=state.ortho;return;}
   if(event.key.toLowerCase()==='n'&&!event.ctrlKey&&!event.metaKey){setTool('node');return;}
-  if(event.key==='Enter'&&['pipe','branch'].includes(state.tool)){event.preventDefault();finishRoute();return;}
+  if(event.key==='Enter'&&['pipe','branch','trace'].includes(state.tool)){event.preventDefault();finishRoute();return;}
+  if(event.key==='Backspace'&&state.tool==='trace'&&state.traceSegments>0){event.preventDefault();const cut=state.traceSegmentStartIndices.pop()??1;state.draft=state.draft.slice(0,cut);state.traceSegments=Math.max(0,state.traceSegments-1);state.traceMetrics.pop();state.traceWaypoints.pop();state.traceAttachments.pop();state.traceLastPoint=state.traceWaypoints.at(-1)||null;state.draftEnd=state.traceAttachments.at(-1)||null;updateToolButtons();renderCanvas();return;}
   if(event.key==='Backspace'&&state.draft.length){state.draft.pop();if(!state.draft.length)state.draftStart=null;renderCanvas();return;}
   if((event.key==='Delete'||event.key==='Backspace')&&state.selected){event.preventDefault();deleteSelected();}
 });

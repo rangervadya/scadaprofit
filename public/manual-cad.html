@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
   <title>CAD-редактор · ПРОФИТ</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=4.3.44">
-  <script src="/manual-cad.js?v=4.3.44" defer></script>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.45">
+  <script type="module" src="/manual-cad.js?v=4.3.45"></script>
 </head>
 <body class="manual-cad-page">
   <nav class="suite-nav" aria-label="ПРОФИТ — модули">
@@ -67,7 +67,7 @@
       </div>
 
       <section class="mc-sketch-assist" id="mcSketchAssistPanel" aria-label="Помощник восстановления эскиза">
-        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Эскиз слесаря → инженерная схема</b><p>Оранжевые пунктирные линии — автоматически найденные кандидаты трубопроводов. Они собраны по связным компонентам и требуют проверки. Подтверждайте только то, что действительно нарисовано как труба.</p><small id="mcSketchCandidateStats">Кандидаты появятся после импорта распознанного эскиза.</small></div></div>
+        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Эскиз слесаря → инженерная схема</b><p>Нажми «Автотрасса»: укажи начало и конец прямого участка по штриху. На каждом повороте добавляй промежуточную точку. Помощник прослеживает синюю и тёмную ручку в узком коридоре. Предпросмотр нужно проверить и только затем применить. Оранжевые кандидаты остаются отдельным слоем.</p><small id="mcSketchCandidateStats">Кандидаты появятся после импорта распознанного эскиза.</small></div></div>
         <button class="mc-button mc-button-review" id="mcShowSketchCandidatesBtn" type="button" disabled>Показать кандидаты</button>
       </section>
 
@@ -92,6 +92,7 @@
           <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
           <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
           <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
+          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Укажи начало, повороты и конец трубы — помощник проследит реальные пиксели ручки">⌁ <span>Автотрасса</span></button>
           <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
           <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
           <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
@@ -114,6 +115,7 @@
         <div class="mc-prop mc-prop-route"><label for="pipeName">Обозначение трубы</label><input id="pipeName" maxlength="80" placeholder="Например, Т-1"></div>
         <div class="mc-prop mc-prop-route"><label for="pipeDiameter">Диаметр / DN</label><input id="pipeDiameter" maxlength="32" placeholder="Например, 25"></div>
         <div class="mc-prop mc-prop-route"><label for="pipeKind">Тип линии</label><select id="pipeKind"><option value="pipe">Газопровод</option><option value="riser">Стояк</option></select></div>
+        <div class="mc-prop mc-prop-trace" hidden><label for="traceCorridor">Коридор поиска</label><select id="traceCorridor"><option value="24">Узкий · 24 px</option><option value="38" selected>Обычный · 38 px</option><option value="54">Широкий · 54 px</option><option value="72">Очень широкий · 72 px</option></select></div>
         <div class="mc-prop mc-prop-label" hidden><label for="labelText">Текст подписи</label><input id="labelText" maxlength="180" placeholder="Номер, адрес, примечание"></div>
         <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option></select></div>
         <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
