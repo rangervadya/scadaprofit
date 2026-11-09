@@ -20,7 +20,7 @@ let schemePollToken = 0;
 let expandedStreetIds = new Set();
 let showReviewGeometry = true;
 let showReviewText = false;
-let outputViewMode = 'reference';
+let outputViewMode = 'centerline';
 const EDGE_PAGE_SIZE = 140;
 
 const fileInput = $('fileInput');
@@ -711,7 +711,9 @@ function showResult() {
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
       graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
       graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : '',
-      graph.referenceTraceSvgUrl && graph.referenceTrace?.available ? `<a href="${escapeHtml(graph.referenceTraceSvgUrl)}" target="_blank" rel="noreferrer">Векторная копия SVG</a>` : '',
+      graph.centerlineTraceSvgUrl && graph.centerlineTrace?.available ? `<a href="${escapeHtml(graph.centerlineTraceSvgUrl)}" target="_blank" rel="noreferrer">Линейная векторизация SVG</a>` : '',
+      graph.centerlineTraceDxfUrl && graph.centerlineTrace?.available ? `<a href="${escapeHtml(graph.centerlineTraceDxfUrl)}" target="_blank" rel="noreferrer">Линейная векторизация DXF</a>` : '',
+      graph.referenceTraceSvgUrl && graph.referenceTrace?.available ? `<a href="${escapeHtml(graph.referenceTraceSvgUrl)}" target="_blank" rel="noreferrer">Контуры оригинала SVG</a>` : '',
       graph.referenceTraceDxfUrl && graph.referenceTrace?.available ? `<a href="${escapeHtml(graph.referenceTraceDxfUrl)}" target="_blank" rel="noreferrer">Контуры DXF</a>` : '',
       graph.cadDraftSvgUrl ? `<a href="${escapeHtml(graph.cadDraftSvgUrl)}" target="_blank" rel="noreferrer">CAD-черновик SVG</a>` : '',
       graph.cadDraftDxfUrl ? `<a href="${escapeHtml(graph.cadDraftDxfUrl)}" target="_blank" rel="noreferrer">CAD-черновик DXF</a>` : '',
@@ -722,9 +724,12 @@ function showResult() {
     diagnostics.hidden = !links.length;
   }
   const hasReferenceTrace = Boolean(graph.referenceTrace?.available && graph.referenceTraceSvgUrl);
-  $('previewMeta').textContent = hasReferenceTrace
-    ? `Векторная копия оригинала сохранена · ${Number(graph.referenceTrace.contours || 0).toLocaleString('ru-RU')} контуров. CAD-реконструкция ${processingComplete ? 'готова к проверке' : 'неполная и требует продолжения'}.`
-    : (processingComplete ? 'CAD-реконструкция завершена · инженерная проверка обязательна' : 'Распознавание неполное · CAD-черновик только для проверки');
+  const hasCenterlineTrace = Boolean(graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl);
+  $('previewMeta').textContent = hasCenterlineTrace
+    ? `${Number(graph.centerlineTrace.paths || 0).toLocaleString('ru-RU')} открытых линейных полилиний · исходные штрихи превращены в линии. Связность труб требует инженерной проверки.`
+    : hasReferenceTrace
+      ? `Векторная копия оригинала сохранена · ${Number(graph.referenceTrace.contours || 0).toLocaleString('ru-RU')} контуров. CAD-реконструкция ${processingComplete ? 'готова к проверке' : 'неполная и требует продолжения'}.`
+      : (processingComplete ? 'CAD-реконструкция завершена · инженерная проверка обязательна' : 'Распознавание неполное · CAD-черновик только для проверки');
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
@@ -757,11 +762,11 @@ function showResult() {
   renderTextList();
   renderJoinList();
   renderReviewList();
-  const canExportSourceTrace = hasReferenceTrace;
+  const canExportSourceTrace = hasCenterlineTrace || hasReferenceTrace;
   for (const id of ['exportSvg', 'exportDxf', 'exportPdf']) $(id).disabled = !(canExportSourceTrace || processingComplete);
   $('exportJson').disabled = false;
-  $('exportSvg').title = outputViewMode === 'reference' ? 'Скачать контурную векторную копию исходной схемы' : 'Скачать CAD-черновик SVG';
-  $('exportDxf').title = outputViewMode === 'reference' ? 'Скачать векторные контуры исходной схемы для AutoCAD' : 'Скачать CAD-черновик DXF';
+  $('exportSvg').title = outputViewMode === 'centerline' ? 'Скачать открытые линейные полилинии исходной схемы' : outputViewMode === 'reference' ? 'Скачать замкнутые контуры исходной схемы' : 'Скачать CAD-черновик SVG';
+  $('exportDxf').title = outputViewMode === 'centerline' ? 'Скачать открытые полилинии для AutoCAD' : outputViewMode === 'reference' ? 'Скачать векторные контуры исходной схемы для AutoCAD' : 'Скачать CAD-черновик DXF';
   if (!processingComplete && hasReferenceTrace) {
     setAlert('Векторная копия исходного листа готова. CAD-реконструкция ещё неполная: проверь связи, размеры и условные обозначения по оригиналу. Экспорт копии SVG/DXF/PDF доступен отдельно.');
   } else if (!processingComplete) {
@@ -770,7 +775,7 @@ function showResult() {
     setAlert('');
   }
   setState(processingComplete ? 'CAD-РЕКОНСТРУКЦИЯ · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА' : (hasReferenceTrace ? 'КОПИЯ ОРИГИНАЛА ГОТОВА · CAD НА ПРОВЕРКЕ' : 'ЧАСТИЧНЫЙ ГРАФ · ТОЛЬКО ПРОВЕРКА'), processingComplete || hasReferenceTrace ? 'ready' : 'error');
-  setOutputViewMode(hasReferenceTrace ? 'reference' : 'cad');
+  setOutputViewMode(hasCenterlineTrace ? 'centerline' : hasReferenceTrace ? 'reference' : 'cad');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
 }
 
@@ -1493,16 +1498,12 @@ function buildSheetSvg() {
 }
 
 function setOutputViewMode(mode) {
-  outputViewMode = mode === 'cad' ? 'cad' : 'reference';
-  const referenceButton = $('referenceTraceView');
-  const cadButton = $('cadDraftView');
-  if (referenceButton) {
-    referenceButton.classList.toggle('active', outputViewMode === 'reference');
-    referenceButton.setAttribute('aria-pressed', String(outputViewMode === 'reference'));
-  }
-  if (cadButton) {
-    cadButton.classList.toggle('active', outputViewMode === 'cad');
-    cadButton.setAttribute('aria-pressed', String(outputViewMode === 'cad'));
+  outputViewMode = ['centerline', 'reference', 'cad'].includes(mode) ? mode : 'centerline';
+  for (const [id, key] of [['centerlineTraceView', 'centerline'], ['referenceTraceView', 'reference'], ['cadDraftView', 'cad']]) {
+    const button = $(id);
+    if (!button) continue;
+    button.classList.toggle('active', outputViewMode === key);
+    button.setAttribute('aria-pressed', String(outputViewMode === key));
   }
   renderClean();
 }
@@ -1516,6 +1517,15 @@ function renderClean() {
     return;
   }
   $('cleanStage').classList.remove('manual-cad-preview');
+  if (outputViewMode === 'centerline' && graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl) {
+    const trace = graph.centerlineTrace;
+    $('cleanStage').classList.add('manual-cad-preview');
+    $('cleanStage').innerHTML = `<img class="manual-cad-preview-image reference-trace-image centerline-trace-image" src="${escapeHtml(graph.centerlineTraceSvgUrl)}?v=${Date.now()}" alt="Линейная векторизация исходного чертежа" loading="eager"><div class="manual-cad-preview-caption"><b>ЛИНЕЙНАЯ ВЕКТОРИЗАЦИЯ · ОТКРЫТЫЕ ПОЛИЛИНИИ</b><span>${Number(trace.paths || 0).toLocaleString('ru-RU')} полилиний · ${Number(trace.vertices || 0).toLocaleString('ru-RU')} вершин · исходные штрихи без замкнутых контуров; это не подтверждённая топология труб</span></div>`;
+    $('cleanStage').querySelector('img')?.addEventListener('error', () => {
+      $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось загрузить линейную векторизацию</b><span>Проверь centerline-trace.svg в диагностике.</span></div>';
+    });
+    return;
+  }
   if (outputViewMode === 'reference' && graph.referenceTrace?.available && graph.referenceTraceSvgUrl) {
     const trace = graph.referenceTrace;
     $('cleanStage').classList.add('manual-cad-preview');
@@ -1703,11 +1713,16 @@ function downloadJobArtifact(url, filename) {
   link.remove();
   return true;
 }
+$('centerlineTraceView')?.addEventListener('click', () => setOutputViewMode('centerline'));
 $('referenceTraceView')?.addEventListener('click', () => setOutputViewMode('reference'));
 $('cadDraftView')?.addEventListener('click', () => setOutputViewMode('cad'));
 $('exportSvg').addEventListener('click', () => {
+  if (outputViewMode === 'centerline' && graph?.centerlineTrace?.available && graph?.centerlineTraceSvgUrl) {
+    downloadJobArtifact(graph.centerlineTraceSvgUrl, 'source-centerline-polylines.svg');
+    return;
+  }
   if (outputViewMode === 'reference' && graph?.referenceTrace?.available && graph?.referenceTraceSvgUrl) {
-    downloadJobArtifact(graph.referenceTraceSvgUrl, 'source-faithful-scheme.svg');
+    downloadJobArtifact(graph.referenceTraceSvgUrl, 'source-contours.svg');
     return;
   }
   if (graph?.cadDraftSvgUrl) downloadJobArtifact(graph.cadDraftSvgUrl, 'cad-reconstruction-draft.svg');
@@ -1715,8 +1730,12 @@ $('exportSvg').addEventListener('click', () => {
   else rejectPartialExport();
 });
 $('exportDxf').addEventListener('click', () => {
+  if (outputViewMode === 'centerline' && graph?.centerlineTrace?.available && graph?.centerlineTraceDxfUrl) {
+    downloadJobArtifact(graph.centerlineTraceDxfUrl, 'source-centerline-polylines.dxf');
+    return;
+  }
   if (outputViewMode === 'reference' && graph?.referenceTrace?.available && graph?.referenceTraceDxfUrl) {
-    downloadJobArtifact(graph.referenceTraceDxfUrl, 'source-faithful-contours.dxf');
+    downloadJobArtifact(graph.referenceTraceDxfUrl, 'source-contours.dxf');
     return;
   }
   if (graph?.cadDraftDxfUrl) downloadJobArtifact(graph.cadDraftDxfUrl, 'cad-reconstruction-draft.dxf');
@@ -1726,17 +1745,22 @@ $('exportDxf').addEventListener('click', () => {
 });
 $('exportJson').addEventListener('click', () => downloadFile('reconstruction-graph.json', JSON.stringify(graph, null, 2), 'application/json'));
 $('exportPdf').addEventListener('click', () => {
-  const hasTrace = outputViewMode === 'reference' && Boolean(graph?.referenceTrace?.available && graph?.referenceTraceSvgUrl);
+  const selectedSourceTrace = outputViewMode === 'centerline'
+    ? { meta: graph?.centerlineTrace, url: graph?.centerlineTraceSvgUrl, title: 'Линейная векторизация исходной схемы' }
+    : outputViewMode === 'reference'
+      ? { meta: graph?.referenceTrace, url: graph?.referenceTraceSvgUrl, title: 'Векторная копия исходной схемы' }
+      : null;
+  const hasTrace = Boolean(selectedSourceTrace?.meta?.available && selectedSourceTrace?.url);
   const hasCadDraft = Boolean(graph?.cadDraftSvgUrl || graph?.svgUrl);
   if (!hasTrace && !hasCadDraft && !finalExportAllowed()) return rejectPartialExport();
   const popup = window.open('', '_blank');
   if (!popup) { setAlert('Разреши всплывающие окна, чтобы открыть печать в PDF.'); return; }
   popup.document.open();
   if (hasTrace) {
-    const widthMm = Number(graph.referenceTrace.pageWidthMm || 210);
-    const heightMm = Number(graph.referenceTrace.pageHeightMm || 297);
-    const sourceUrl = `${graph.referenceTraceSvgUrl}?print=${Date.now()}`;
-    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Векторная копия исходной схемы</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}img{display:block;width:${widthMm}mm;height:${heightMm}mm;object-fit:contain}</style></head><body><img src="${escapeHtml(sourceUrl)}" alt="Исходная схема"><script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);
+    const widthMm = Number(selectedSourceTrace.meta.pageWidthMm || 210);
+    const heightMm = Number(selectedSourceTrace.meta.pageHeightMm || 297);
+    const sourceUrl = `${selectedSourceTrace.url}?print=${Date.now()}`;
+    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(selectedSourceTrace.title)}</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}img{display:block;width:${widthMm}mm;height:${heightMm}mm;object-fit:contain}</style></head><body><img src="${escapeHtml(sourceUrl)}" alt="Исходная схема"><script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);
   } else {
     const page = graph.cleanLayout?.page || {};
     const widthMm = Number(page.widthMm || 297);

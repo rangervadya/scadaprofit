@@ -24,6 +24,48 @@ from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
 from pipeline_diagnostics import build_pipeline_diagnostics
 from reference_vectorization import build_reference_trace
+from centerline_vectorization import build_centerline_trace, zhang_suen_thinning
+
+
+class CenterlineVectorizationTests(unittest.TestCase):
+    def test_cross_is_exported_as_four_open_connected_polylines(self):
+        mask = np.zeros((60, 60), dtype=np.uint8)
+        mask[30, 5:56] = 255
+        mask[5:56, 30] = 255
+        result = build_centerline_trace(mask, min_path_length_px=2.0)
+        self.assertEqual(result.components, 1)
+        self.assertEqual(result.paths, 4)
+        self.assertIn('fill="none" stroke="#111"', result.svg)
+        self.assertEqual(result.dxf.count('LWPOLYLINE'), 4)
+        self.assertEqual(result.dxf.count('0\nLWPOLYLINE'), 4)
+        self.assertEqual(len([block for block in result.dxf.split('0\nLWPOLYLINE')[1:] if '\n70\n0\n' in block]), 4)  # all entities are open
+        self.assertIn('SOURCE_CENTERLINE', result.dxf)
+
+    def test_isolated_dot_does_not_become_a_false_line(self):
+        mask = np.zeros((30, 30), dtype=np.uint8)
+        mask[15, 15] = 255
+        with self.assertRaisesRegex(ValueError, 'no usable open paths'):
+            build_centerline_trace(mask)
+
+    def test_l_route_remains_one_open_polyline(self):
+        mask = np.zeros((50, 50), dtype=np.uint8)
+        mask[8:42, 10] = 255
+        mask[41, 10:42] = 255
+        result = build_centerline_trace(mask, min_path_length_px=2.0)
+        self.assertGreaterEqual(result.paths, 1)
+        self.assertGreater(result.vertices, 2)
+        self.assertIn(' L ', result.svg)
+        self.assertGreaterEqual(result.dxf.count('LWPOLYLINE'), 1)
+
+    def test_thinning_keeps_centerline_binary_and_connected(self):
+        mask = np.zeros((40, 40), dtype=np.uint8)
+        mask[10:31, 20] = 255
+        skeleton = zhang_suen_thinning(mask)
+        self.assertEqual(skeleton.ndim, 2)
+        self.assertTrue(set(np.unique(skeleton)).issubset({0, 255}))
+        self.assertGreaterEqual(int(np.count_nonzero(skeleton)), 18)
+        count, _ = cv2.connectedComponents((skeleton > 0).astype(np.uint8), 8)
+        self.assertEqual(count - 1, 1)
 
 
 class GraphTests(unittest.TestCase):
@@ -1239,6 +1281,8 @@ class GraphTests(unittest.TestCase):
             self.assertTrue((out_dir / 'drawing.dxf').is_file())
             self.assertTrue((out_dir / 'reference-trace.svg').is_file())
             self.assertTrue((out_dir / 'reference-trace.dxf').is_file())
+            self.assertTrue((out_dir / 'centerline-trace.svg').is_file())
+            self.assertTrue((out_dir / 'centerline-trace.dxf').is_file())
 
     def test_dxf_has_pipe_and_verified_text_layers(self):
         edges = [{"geometry": [[0, 0], [100, 100]], "component_role": "line_structure"}]
@@ -2365,6 +2409,10 @@ class ReferenceVectorizationTests(unittest.TestCase):
             self.assertTrue(graph['referenceTrace']['available'])
             self.assertTrue((out_dir / 'reference-trace.svg').is_file())
             self.assertTrue((out_dir / 'reference-trace.dxf').is_file())
+            self.assertTrue(graph['centerlineTrace']['available'])
+            self.assertGreater(graph['centerlineTrace']['paths'], 0)
+            self.assertTrue((out_dir / 'centerline-trace.svg').is_file())
+            self.assertTrue((out_dir / 'centerline-trace.dxf').is_file())
             self.assertTrue((out_dir / 'cad-draft.svg').is_file())
             self.assertTrue((out_dir / 'cad-draft.dxf').is_file())
             self.assertIn('Qwen OCR', ' '.join(graph['incompleteReasons']))
@@ -2375,7 +2423,8 @@ class ReferenceVectorizationTests(unittest.TestCase):
             source = root / 'source.png'
             cv2.imwrite(str(source), np.full((16, 16, 3), 255, dtype=np.uint8))
             for name in ('clean.svg', 'drawing.dxf', 'cad-draft.svg', 'cad-draft.dxf',
-                         'reference-trace.svg', 'reference-trace.dxf', 'graph.json'):
+                         'reference-trace.svg', 'reference-trace.dxf',
+                         'centerline-trace.svg', 'centerline-trace.dxf', 'graph.json'):
                 (root / name).write_text('ok', encoding='utf-8')
             graph = {
                 'complete': False, 'analysisStatus': 'incomplete',
@@ -2386,12 +2435,14 @@ class ReferenceVectorizationTests(unittest.TestCase):
                 'ocr': {'qwen': {'available': True, 'successful_tiles': 1, 'tiles': 4},
                         'tesseract': {'available': True}},
                 'semanticTrace': {'successful_tiles': 0, 'tiles': 4},
-                'referenceTrace': {'available': True}, 'warnings': [],
+                'referenceTrace': {'available': True},
+                'centerlineTrace': {'available': True, 'paths': 4, 'vertices': 8}, 'warnings': [],
             }
             diagnostics = build_pipeline_diagnostics(str(source), str(root), graph)
             self.assertEqual(diagnostics['status'], 'needs_review')
             self.assertEqual(diagnostics['blockingGates'], [])
             self.assertIn('topology-fragmentation-controlled', diagnostics['advisoryGates'])
+            self.assertTrue(next(item for item in diagnostics['artifacts'] if item['name'] == 'centerline-trace.svg')['exists'])
             graph_file_artifact = next(item for item in diagnostics['artifacts'] if item['name'] == 'graph.json')
             self.assertTrue(graph_file_artifact['exists'])
 

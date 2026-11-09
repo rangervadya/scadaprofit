@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
-  <title>Схемы домов · 4.3.39</title>
+  <title>Схемы домов · 4.3.40</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.39">
-  <script src="/app.js?v=4.3.39" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.40">
+  <script src="/app.js?v=4.3.40" defer></script>
 </head>
 <body>
   <nav class="product-switcher" aria-label="Разделы приложения">
@@ -157,10 +157,11 @@
 
         <section class="card output-card">
           <div class="output-header">
-            <div><h2>Результат</h2><p class="canvas-description">Сравни исходную векторную копию с CAD-реконструкцией. Первая сохраняет рисунок, вторая содержит распознанную геометрию для проверки.</p></div>
+            <div><h2>Результат</h2><p class="canvas-description">Сравни линейную векторизацию исходных штрихов, их контуры и CAD-реконструкцию. Линейный режим строит открытые полилинии вместо замкнутых контуров.</p></div>
             <div class="output-tools">
               <div class="output-view-toggle" role="group" aria-label="Вид результата">
-                <button type="button" class="output-view-button active" id="referenceTraceView" aria-pressed="true">Копия оригинала</button>
+                <button type="button" class="output-view-button active" id="centerlineTraceView" aria-pressed="true">Линии оригинала</button>
+                <button type="button" class="output-view-button" id="referenceTraceView" aria-pressed="false">Контуры оригинала</button>
                 <button type="button" class="output-view-button" id="cadDraftView" aria-pressed="false">CAD-реконструкция</button>
               </div>
               <label class="check-control"><input type="checkbox" id="showReviewGeometry" checked><span class="check-ui"></span>Линии на проверку</label>

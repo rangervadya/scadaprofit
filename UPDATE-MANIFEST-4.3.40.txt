@@ -1,0 +1,50 @@
+ScadaProfit 4.3.40 update manifest
+
+Changed application files:
+  processor.py
+  pipeline_diagnostics.py (centerline artefact and vectorization stage reporting)
+  centerline_vectorization.py (new; NumPy-only skeleton and open polyline exporter)
+  server.js (new centerline artifact URLs)
+  public/app.js (centerline mode, default selection and exports)
+  public/index.html (three output modes)
+  public/styles.css (release/cache metadata)
+  public/manual-cad.html (release/cache metadata only)
+  public/manual-cad.css (release/cache metadata only)
+  package.json (version 4.3.40)
+  tests/test_engine.py (four centerline tests)
+  README.md
+  README-RU.md
+
+New release documents:
+  CHANGELOG-4.3.40-RU.md
+  README-4.3.40-RU.txt
+  UPDATE-MANIFEST-4.3.40.txt
+
+New artifacts per processed job:
+  centerline-trace.svg — open source-ink centreline paths
+  centerline-trace.dxf — open LWPOLYLINE entities on SOURCE_CENTERLINE
+
+Preserved artifacts:
+  reference-trace.svg/dxf — closed source contours
+  cad-draft.svg/dxf — structured CAD reconstruction draft
+  clean.svg and drawing.dxf — compatibility aliases for CAD draft
+
+Untouched:
+  vdgo/ source tree
+  compose.yaml and Ollama service configuration
+  PostgreSQL service, database and volumes
+  gateway/Nginx configuration
+  user .env
+  other application containers and GPU processes
+
+Resource impact:
+  Centerline extraction uses CPU/NumPy and existing source ink mask only.
+  No new Python package, GPU model, Ollama restart, or other-app stop is required.
+
+Deployment (existing Git workflow):
+  git pull --ff-only
+  docker compose build app
+  docker compose up -d --no-deps app
+
+Do not run docker compose down -v, --force-recreate, docker volume prune,
+or any command that stops/recreates other application containers.

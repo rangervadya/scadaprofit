@@ -288,7 +288,7 @@ body{background:var(--page);color:var(--ink);font-size:14px}
 @media(max-width:820px){.local-ai-grid{grid-template-columns:1fr 1fr}.local-ai-card{grid-column:1/-1}.sidebar{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}.library-card{grid-row:span 2}.local-ai-card{order:4}}
 @media(max-width:560px){.local-ai-grid{grid-template-columns:1fr}.sidebar{display:flex}.local-ai-card{order:0}.local-ai-note{font-size:10px}}
 
-/* 4.3.39 — two honest output modes: source-faithful contour copy and CAD draft. */
+/* 4.3.40 — centreline polylines, source contours and CAD draft. */
 .output-view-toggle{display:flex;flex-wrap:wrap;gap:4px;padding:3px;border:1px solid #e0e6e1;border-radius:7px;background:#f5f7f5}
 .output-view-button{min-height:29px;padding:0 10px;border:1px solid transparent;border-radius:5px;background:transparent;color:#68766e;font:inherit;font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap}
 .output-view-button:hover{background:#fff;color:#344b3a}

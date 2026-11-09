@@ -1,22 +1,16 @@
-# ScadaProfit 4.3.39
+# ScadaProfit 4.3.40 — open centreline vectorization
 
-This release switches the normal recognition pipeline back to local Qwen-VL through Ollama, with Tesseract (`rus+eng`) as a supplemental OCR channel. MOSS and OpenRouter are disabled in the normal processing path, including retries of stored schemes. Existing cloud keys/flags do not enable them.
+This release adds source-ink skeletonization and exports open SVG paths and DXF `LWPOLYLINE` entities rather than thousands of closed contour loops. The result viewer now defaults to **Source lines**, with separate **Source contours** and **CAD reconstruction** modes. The centreline vectorizer is implemented with NumPy only; no scikit-image, OpenCV-contrib, GPU memory, or other-application process is required.
 
-The CAD workbench adds editable pipe vertices, connected-junction movement, whole-branch translation, orthogonal drawing, zoom controls, duplication, symbol/label properties and numbered callouts. The drawing-sheet template includes the engineering title/address block, legend and riser columns used to compose a clean schematic resembling the supplied reference. Operator review is still required for uncertain geometry and OCR.
+The open polylines preserve visible source strokes and join incident branches to shared vector nodes. They do not classify each stroke as a pipe, dimension line, symbol, or text. Semantic pipe connectivity still requires Qwen/OpenCV analysis and engineering review.
 
-The embedded VDGO application is preserved. The `vdgo/` source tree, `compose.yaml`, gateway configuration, PostgreSQL service and persistent volumes are not changed by this release. Update only the ScadaProfit application service; do not remove shared volumes or recreate VDGO services for this update.
+Local Qwen-VL through Ollama and Tesseract (`rus+eng`) remain the recognition stack. A partial OCR result does not suppress the independent PIPE pass. Qwen request resource limits are applied by ScadaProfit; no Ollama restart or modification to other application processes is required.
 
-Run automated offline checks with `npm run check`. A live inference run against the user's Ollama server is not part of this package validation; confirm model availability and compare every inferred pipe junction and label against the source scan after deployment.
+VDGO, `vdgo/`, Compose configuration, gateway/Nginx, PostgreSQL, persistent volumes, and the user's `.env` are not changed in this release. Deploy by rebuilding only the application service:
 
-See [README-4.3.39-RU.txt](README-4.3.39-RU.txt) and [CHANGELOG-4.3.39-RU.md](CHANGELOG-4.3.39-RU.md) for deployment and change details.
+```bash
+docker compose build app
+docker compose up -d --no-deps app
+```
 
-
-## 4.3.39 — source-faithful vector copy and independent tracing
-
-- Every conversion now writes `reference-trace.svg` and `reference-trace.dxf`: editable contours traced directly from the source ink mask. This preserves the visual sheet, symbols, dimensions and labels without claiming that contours are verified pipe centerlines.
-- The structured CAD draft remains separate as `cad-draft.svg` / `cad-draft.dxf` (with `clean.svg` / `drawing.dxf` retained for compatibility).
-- Qwen PIPE tracing runs independently of OCR completeness. A handwriting OCR timeout no longer suppresses the separate geometry task.
-- Qwen defaults are tuned for shared 6 GB GPU servers: context 4096, two-by-two tiles, bounded image edge/output size, one request at a time, short model residency. Tesseract remains an independent OCR channel.
-- Diagnostics treat topology and model-tile completeness as review conditions, not as reasons to hide the source-faithful exports. `graph.json` is written before artifact diagnostics so it is not falsely reported as absent.
-
-The source-faithful vector trace is an editable contour facsimile, not a semantic CAD network. Pipe connectivity, dimensions and equipment types still require engineering verification.
+Run offline checks with `npm run check`. The tests cover junction polyline generation, isolated-dot rejection, L-route preservation, and connected one-pixel thinning. A live inference run against the user's Ollama server is not part of package validation.

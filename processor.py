@@ -37,6 +37,7 @@ from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
 from pipeline_diagnostics import build_pipeline_diagnostics
 from reference_vectorization import build_reference_trace
+from centerline_vectorization import build_centerline_trace
 from openrouter_ai import (
     DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL, test_openrouter_ai,
     openrouter_ocr_annotations, openrouter_semantic_routes,
@@ -4465,8 +4466,10 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
     cv2.imwrite(str(Path(out_dir)/'blue-ink-mask.png'), ink_layers['blue'])
     cv2.imwrite(str(Path(out_dir)/'dark-ink-mask.png'), ink_layers['dark'])
-    # Preserve every visible source mark in a separate, editable facsimile.
-    # This export is intentionally not represented as semantic pipe geometry.
+    # Preserve the original contour facsimile for exact ink-shape editing, but
+    # also export a true one-pixel centreline version as open CAD polylines.
+    # This avoids the thousands of closed contour loops that look like dots in
+    # CAD viewers when a thin engineering drawing is imported.
     try:
         reference_trace = build_reference_trace(ink, source_name=Path(input_path).name)
         Path(out_dir, 'reference-trace.svg').write_text(reference_trace.svg, encoding='utf-8')
@@ -4476,12 +4479,30 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
             'components': reference_trace.components, 'contours': reference_trace.contours,
             'vertices': reference_trace.vertices,
             'pageWidthMm': reference_trace.page_width_mm, 'pageHeightMm': reference_trace.page_height_mm,
-            'semantic': False, 'description': 'Source-faithful editable ink contours; not a verified pipe centre-line graph.',
+            'semantic': False, 'description': 'Source-faithful closed ink contours; not a verified pipe centre-line graph.',
         }
-        _progress('REFERENCE', f'Source-faithful vector trace exported: components={reference_trace.components}; contours={reference_trace.contours}; vertices={reference_trace.vertices}')
+        _progress('REFERENCE', f'Source contour trace exported: components={reference_trace.components}; contours={reference_trace.contours}; vertices={reference_trace.vertices}')
     except Exception as trace_error:
         reference_trace_meta = {'available': False, 'error': str(trace_error)[:300], 'semantic': False}
-        _progress('REFERENCE', f'Source-faithful vector trace failed: {str(trace_error)[:220]}')
+        _progress('REFERENCE', f'Source contour trace failed: {str(trace_error)[:220]}')
+
+    try:
+        centerline_trace = build_centerline_trace(ink, source_name=Path(input_path).name)
+        Path(out_dir, 'centerline-trace.svg').write_text(centerline_trace.svg, encoding='utf-8')
+        Path(out_dir, 'centerline-trace.dxf').write_text(centerline_trace.dxf, encoding='utf-8')
+        centerline_trace_meta = {
+            'available': True, 'svg': 'centerline-trace.svg', 'dxf': 'centerline-trace.dxf',
+            'components': centerline_trace.components, 'paths': centerline_trace.paths,
+            'vertices': centerline_trace.vertices, 'skeletonPixels': centerline_trace.skeleton_pixels,
+            'lengthPx': round(centerline_trace.length_px, 2),
+            'pageWidthMm': centerline_trace.page_width_mm, 'pageHeightMm': centerline_trace.page_height_mm,
+            'semantic': False,
+            'description': 'Open source-ink centerline polylines; faithful linework, not verified semantic pipe topology.',
+        }
+        _progress('CENTERLINE', f'Open polylines exported: components={centerline_trace.components}; paths={centerline_trace.paths}; vertices={centerline_trace.vertices}; skeleton_pixels={centerline_trace.skeleton_pixels}')
+    except Exception as trace_error:
+        centerline_trace_meta = {'available': False, 'error': str(trace_error)[:300], 'semantic': False}
+        _progress('CENTERLINE', f'Open polyline tracing failed: {str(trace_error)[:220]}')
     _progress('EXPORT', 'SVG and DXF export started')
     svg=build_clean_svg(w,h,edges,annotations, semantic_routes=semantic_routes, semantic_status=route_status, primary_semantic_routes=primary_semantic_routes)
     Path(out_dir,'clean.svg').write_text(svg,encoding='utf-8')
@@ -4513,7 +4534,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     Path(out_dir,'cad-draft.dxf').write_text(cad_draft_dxf, encoding='utf-8')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","analysisStatus":"complete" if processing_complete else "incomplete","complete":processing_complete,"incompleteReasons":incomplete_reasons,
            "checkpointing":{"enabled":True,"directory":".checkpoints","resumeBehavior":"successful OCR/PIPE tiles are restored; failed tiles are retried on the next analysis run"},
-           "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","referenceTrace":"editable-source-contours-not-semantic-pipes","cadDraft":"structured-review-draft-until-engineering-validation","engineeringApprovalRequired":True},
+           "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","referenceTrace":"editable-source-contours-not-semantic-pipes","centerlineTrace":"editable-open-source-ink-polylines-not-semantic-pipes","cadDraft":"structured-review-draft-until-engineering-validation","engineeringApprovalRequired":True},
            "image":{"width":w,"height":h},
            "documentModel":document_model,
            "recognitionChannels":recognition_channels,
@@ -4523,6 +4544,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
            "engineeringValidation":engineering_validation,
            "cleanLayout":clean_layout,"cleanLayoutDiagnostics":clean_layout_diagnostics,
            "referenceTrace":reference_trace_meta,
+           "centerlineTrace":centerline_trace_meta,
            "drawingTemplate":drawing_template,
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "timings_ms":timings_ms,
@@ -4537,6 +4559,9 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                       "reference_trace_components":reference_trace_meta.get("components", 0),
                       "reference_trace_contours":reference_trace_meta.get("contours", 0),
                       "reference_trace_vertices":reference_trace_meta.get("vertices", 0),
+                      "centerline_trace_paths":centerline_trace_meta.get("paths", 0),
+                      "centerline_trace_vertices":centerline_trace_meta.get("vertices", 0),
+                      "centerline_trace_skeleton_pixels":centerline_trace_meta.get("skeletonPixels", 0),
                       "semantic_routes":len(semantic_routes),
                       "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
                       "cad_primary_chains":len(_cad_edge_chains(edges)),
@@ -4595,7 +4620,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                        "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",
                        "Проверьте трассы, повороты, размеры и подписи по оригиналу до использования чертежа."]}
     if not processing_complete:
-        graph['warnings'].append('CAD-РЕКОНСТРУКЦИЯ НЕПОЛНАЯ: не завершён полный проход Qwen OCR и/или трассировки труб. Файлы cad-draft.svg/dxf являются проверочным черновиком, а не готовым техническим документом. Отдельные reference-trace.svg/dxf сохраняют видимые контуры исходного листа, но не подтверждают осевые линии труб, соединения или типы оборудования. Успешные Qwen-плитки сохранены в .checkpoints; повторный запуск задания повторит незавершённые этапы.')
+        graph['warnings'].append('CAD-РЕКОНСТРУКЦИЯ НЕПОЛНАЯ: не завершён полный проход Qwen OCR и/или трассировки труб. Файлы cad-draft.svg/dxf являются проверочным черновиком, а не готовым техническим документом. Файлы centerline-trace.svg/dxf сохраняют открытые осевые линии видимых исходных штрихов, а reference-trace.svg/dxf — их замкнутые контуры; ни один из этих вариантов не подтверждает инженерные соединения или типы оборудования. Успешные Qwen-плитки сохранены в .checkpoints; повторный запуск задания повторит незавершённые этапы.')
         graph['warnings'].extend(str(reason) for reason in incomplete_reasons if reason)
     if not ocr_status.get('qwen', {}).get('available'):
         graph['warnings'].append('Локальный Qwen OCR недоступен. Tesseract может дополнить чтение текста, но не заменяет Qwen для структурного распознавания и трассировки труб. Проверьте Ollama и модель Qwen3-VL.')

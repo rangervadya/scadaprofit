@@ -18,7 +18,8 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
     names = ['prepared-input.png','ink-mask.png','blue-ink-mask.png','dark-ink-mask.png',
              'primary-overlay.png','text-region-mask.png','handwritten-text-blocks.png',
              'clean.svg','drawing.dxf','cad-draft.svg','cad-draft.dxf',
-             'reference-trace.svg','reference-trace.dxf','graph.json','progress.log']
+             'reference-trace.svg','reference-trace.dxf','centerline-trace.svg','centerline-trace.dxf',
+             'graph.json','progress.log']
     artifacts = []
     for name in names:
         path = Path(out_dir, name)
@@ -28,8 +29,15 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
     open_endpoint_count = int(summary.get('open_terminal_nodes', 0) or 0)
     crossing_count = int(summary.get('crossings_to_review', 0) or 0)
     has_reference_trace = bool((graph.get('referenceTrace') or {}).get('available'))
-    required_exports = ({'reference-trace.svg', 'reference-trace.dxf', 'cad-draft.svg', 'cad-draft.dxf'}
-                        if has_reference_trace else {'clean.svg', 'drawing.dxf'})
+    has_centerline_trace = bool((graph.get('centerlineTrace') or {}).get('available'))
+    if has_centerline_trace:
+        required_exports = {'centerline-trace.svg', 'centerline-trace.dxf',
+                            'reference-trace.svg', 'reference-trace.dxf',
+                            'cad-draft.svg', 'cad-draft.dxf'}
+    elif has_reference_trace:
+        required_exports = {'reference-trace.svg', 'reference-trace.dxf', 'cad-draft.svg', 'cad-draft.dxf'}
+    else:
+        required_exports = {'clean.svg', 'drawing.dxf'}
     gates = [
         {'id':'source-readable','passed':source.exists() and bool(digest),'value':source.stat().st_size if source.exists() else 0},
         {'id':'text-recognition-available','passed':bool(graph.get('ocr',{}).get('qwen',{}).get('available') or graph.get('ocr',{}).get('tesseract',{}).get('available')),
@@ -62,6 +70,9 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
     advisory = [item['id'] for item in gates if item['id'] not in blocking_ids and not item['passed']]
     stages = {
         'geometry':{'segments':segment_count,'primaryPipes':len(primary_pipes),'nodes':len(model.get('nodes') or [])},
+        'vectorization':{'centerlinePaths':int((graph.get('centerlineTrace') or {}).get('paths', 0) or 0),
+                         'centerlineVertices':int((graph.get('centerlineTrace') or {}).get('vertices', 0) or 0),
+                         'sourceContours':int((graph.get('referenceTrace') or {}).get('contours', 0) or 0)},
         'recognition':{'labels':len(model.get('labels') or []),'symbols':len(symbols),
                        'classifiedSymbols':sum(1 for item in symbols if item.get('type')),
                        'dimensions':len(dimensions),'assignedDimensions':sum(1 for item in dimensions if item.get('targetId'))},

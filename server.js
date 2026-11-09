@@ -353,10 +353,16 @@ function attachJobUrls(jobId, graph, sourceName = null) {
   // the new artifacts. Historical jobs keep their legacy clean.svg/drawing.dxf
   // links instead of receiving dead links to files that were never generated.
   if (graph.referenceTrace?.available) {
-    graph.cadDraftSvgUrl = `/jobs/${jobId}/cad-draft.svg`;
-    graph.cadDraftDxfUrl = `/jobs/${jobId}/cad-draft.dxf`;
     graph.referenceTraceSvgUrl = `/jobs/${jobId}/reference-trace.svg`;
     graph.referenceTraceDxfUrl = `/jobs/${jobId}/reference-trace.dxf`;
+  }
+  if (graph.centerlineTrace?.available) {
+    graph.centerlineTraceSvgUrl = `/jobs/${jobId}/centerline-trace.svg`;
+    graph.centerlineTraceDxfUrl = `/jobs/${jobId}/centerline-trace.dxf`;
+  }
+  if (graph.referenceTrace?.available || graph.centerlineTrace?.available) {
+    graph.cadDraftSvgUrl = `/jobs/${jobId}/cad-draft.svg`;
+    graph.cadDraftDxfUrl = `/jobs/${jobId}/cad-draft.dxf`;
   }
   graph.diagnosticsUrl = `/jobs/${jobId}/diagnostics.json`;
   graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
@@ -1194,7 +1200,7 @@ app.get('/api/health', async (_req, res) => {
   const tesseract = await checkTesseract();
   res.json({
     ok: true,
-    version: '4.3.39',
+    version: '4.3.40',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
