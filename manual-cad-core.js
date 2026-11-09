@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout']);
+const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout', 'unknown']);
 const MAX_PIPES = 1200;
 const MAX_POINTS_PER_PIPE = 1200;
 const MAX_LABELS = 2000;
@@ -62,7 +62,8 @@ export function createManualCadProject({ id = randomUUID(), title = 'Новая 
     junctions: [],
     symbols: [],
     labels: [],
-    dimensions: []
+    dimensions: [],
+    sketchAssist: null
   };
 }
 
@@ -75,17 +76,31 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   const rawEdges = Array.isArray(graph?.edges) ? graph.edges : [];
   const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const nodeById = new Map(rawNodes.filter(node => node?.id != null).map(node => [String(node.id), node]));
-  // Import only selected CAD geometry and explicit manual links. The graph may
-  // contain thousands of short segments; join degree-2 chains into continuous
-  // editable polylines. A geometric crossing does not join unless both edges
-  // share the same graph node ID.
+  // Sketch-assist mode keeps high-recall, component-classified route candidates
+  // visible for operator review. Older graph formats without component summaries
+  // retain the conservative behaviour for backwards compatibility.
   const hasTopologyHints = rawEdges.some(edge => typeof edge?.topology_network_candidate === 'boolean');
-  const selectedEdges = rawEdges.filter(edge =>
-    edge && (
-      (edge.cad_include === true && edge.component_role !== 'ambiguous' && (!hasTopologyHints || edge.topology_network_candidate === true)) ||
-      (edge.source === 'manual' && edge.detector === 'MANUAL')
-    )
-  );
+  const hasComponentModel = Array.isArray(graph?.components) && graph.components.length > 0;
+  const componentById = new Map((graph?.components || []).filter(component => component?.id != null).map(component => [String(component.id), component]));
+  const candidateComponentIds = new Set();
+  if (hasComponentModel) {
+    for (const component of graph.components) {
+      const role = String(component?.role || '');
+      const lineCandidate = role === 'line_structure';
+      const ambiguousRouteCandidate = role === 'ambiguous' && Boolean(
+        component?.connected_line_candidate || component?.elbow_route_candidate ||
+        component?.topology_network_candidate || component?.dense_route_exemption
+      );
+      if (lineCandidate || ambiguousRouteCandidate) candidateComponentIds.add(String(component.id));
+    }
+  }
+  const selectedEdges = rawEdges.filter(edge => {
+    if (!edge) return false;
+    if (edge.source === 'manual' && edge.detector === 'MANUAL') return true;
+    if (edge.cad_include !== true) return false;
+    if (hasComponentModel) return candidateComponentIds.has(String(edge.component_id ?? ''));
+    return edge.component_role !== 'ambiguous' && (!hasTopologyHints || edge.topology_network_candidate === true);
+  });
   const edgeRecords = [];
   const adjacency = new Map();
   const addAdjacent = (nodeId, edgeIndex) => {
@@ -112,6 +127,50 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     edgeRecords.push({ edge, points, fromId, toId });
     addAdjacent(fromId, edgeIndex);
     addAdjacent(toId, edgeIndex);
+  }
+
+  // At branch junctions pair the most opposing directions. This keeps a
+  // straight trunk as one editable polyline while the side branch remains a
+  // separate route ending at the same node. No spatial crossing is auto-joined.
+  const continuationByNode = new Map();
+  const edgeDirectionFromNode = (nodeId, edgeIndex) => {
+    const record = edgeRecords[edgeIndex];
+    if (!record) return null;
+    const ordered = record.fromId === nodeId ? record.points : [...record.points].reverse();
+    const origin = ordered[0];
+    for (let i = 1; i < ordered.length; i += 1) {
+      const dx = ordered[i][0] - origin[0], dy = ordered[i][1] - origin[1];
+      const length = Math.hypot(dx, dy);
+      if (length > 0.01) return [dx / length, dy / length];
+    }
+    return null;
+  };
+  for (const [nodeId, incident] of adjacency.entries()) {
+    const available = incident.map(edgeIndex => ({ edgeIndex, vector: edgeDirectionFromNode(nodeId, edgeIndex) })).filter(item => item.vector);
+    const pairs = new Map();
+    if (available.length === 2) {
+      pairs.set(available[0].edgeIndex, available[1].edgeIndex);
+      pairs.set(available[1].edgeIndex, available[0].edgeIndex);
+    } else if (hasComponentModel && available.length >= 3) {
+      const remaining = new Set(available.map(item => item.edgeIndex));
+      while (remaining.size >= 2) {
+        let best = null;
+        const candidates = available.filter(item => remaining.has(item.edgeIndex));
+        for (let i = 0; i < candidates.length; i += 1) {
+          for (let j = i + 1; j < candidates.length; j += 1) {
+            const a = candidates[i], b = candidates[j];
+            const dot = a.vector[0] * b.vector[0] + a.vector[1] * b.vector[1];
+            if (!best || dot < best.dot) best = { a, b, dot };
+          }
+        }
+        if (!best || best.dot > -0.18) break;
+        pairs.set(best.a.edgeIndex, best.b.edgeIndex);
+        pairs.set(best.b.edgeIndex, best.a.edgeIndex);
+        remaining.delete(best.a.edgeIndex);
+        remaining.delete(best.b.edgeIndex);
+      }
+    }
+    continuationByNode.set(nodeId, pairs);
   }
 
   const pipes = [];
@@ -144,9 +203,8 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
       routeEdges.push(record.edge);
       const nextNodeId = forward ? record.toId : record.fromId;
       routeNodeIds.push(nextNodeId);
-      if ((adjacency.get(nextNodeId) || []).length !== 2) break;
-      const continuation = (adjacency.get(nextNodeId) || []).find(candidate => !usedEdges.has(candidate));
-      if (continuation == null) break;
+      const continuation = continuationByNode.get(nextNodeId)?.get(edgeIndex);
+      if (continuation == null || usedEdges.has(continuation)) break;
       currentNodeId = nextNodeId;
       edgeIndex = continuation;
     }
@@ -168,9 +226,16 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const routeLength = routePoints.slice(1).reduce((sum, current, index) => sum + distance2d(routePoints[index], current), 0);
     const hasBranchNode = routeNodeIds.some(nodeId => (adjacency.get(nodeId) || []).length >= 3);
     const shortIsolated = routeLength < Math.max(16, Math.min(24, Math.min(width, height) * 0.025)) && !hasBranchNode;
+    const routeComponentIds = [...new Set(routeEdges.map(edge => String(edge.component_id ?? '')).filter(Boolean))];
     const routeHasTopologySupport = routeEdges.some(edge => edge.topology_network_candidate === true);
-    const topologyNeedsReview = hasTopologyHints && !routeHasTopologySupport && !routeEdges.every(edge => edge.source === 'manual' && edge.detector === 'MANUAL');
-    const reviewOnly = shortIsolated || topologyNeedsReview;
+    const routeHasManualEdge = routeEdges.every(edge => edge.source === 'manual' && edge.detector === 'MANUAL');
+    const containsAmbiguousComponent = routeComponentIds.some(componentId => componentById.get(componentId)?.role === 'ambiguous');
+    const unverifiedSketchRoute = hasComponentModel && !routeHasManualEdge && routeEdges.some(edge => edge.topology_network_candidate !== true);
+    const topologyNeedsReview = hasTopologyHints && !routeHasTopologySupport && !routeHasManualEdge;
+    const reviewOnly = shortIsolated || topologyNeedsReview || unverifiedSketchRoute || containsAmbiguousComponent;
+    const reviewReason = shortIsolated
+      ? 'Короткий изолированный штрих: подтвердите, что это участок газопровода.'
+      : reviewOnly ? 'Кандидат маршрута из эскиза слесаря. Проверьте повороты, ответвления, разрывы и назначение перед включением в чистовой лист.' : '';
     pipes.push({
       id: pipeId,
       name: text(nameEdge?.name || nameEdge?.label, 80),
@@ -179,22 +244,28 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
       points: routePoints,
       visible: true,
       reviewOnly,
-      reviewReason: shortIsolated
-        ? 'Короткий изолированный штрих: подтвердите, что это участок газопровода.'
-        : topologyNeedsReview ? 'Маршрут не включён анализатором в подтверждённую топологическую сеть. Сверьте его с оригиналом.' : ''
+      reviewReason,
+      sourceComponentIds: routeComponentIds
     });
     if (!reviewOnly) {
       for (const nodeId of routeNodeIds) registerNodePipe(nodeId, pipeId);
     }
   };
 
-  // Start routes at terminals and branch nodes. At degree-2 nodes we continue
-  // through the next edge; at degree-3+ nodes we stop and preserve a real
-  // explicit junction. This removes segmentation noise without inventing joins.
+  // Trace from terminals first. Starting at a branch/junction node would walk
+  // out along the unpaired branch before the opposite trunk edge has a chance
+  // to be paired, breaking a straight-through main run into two fragments.
   for (const [nodeId, incident] of adjacency.entries()) {
-    if (incident.length === 2) continue;
+    if (incident.length !== 1) continue;
+    for (const edgeIndex of incident) if (!usedEdges.has(edgeIndex)) buildRoute(nodeId, edgeIndex);
+  }
+  // Then trace remaining unpaired incidences at branch nodes. Paired edges are
+  // already handled by terminal-origin routes or will be covered by the cycle pass.
+  for (const [nodeId, incident] of adjacency.entries()) {
+    if (incident.length <= 1) continue;
+    const pairs = continuationByNode.get(nodeId) || new Map();
     for (const edgeIndex of incident) {
-      if (!usedEdges.has(edgeIndex)) buildRoute(nodeId, edgeIndex);
+      if (!usedEdges.has(edgeIndex) && !pairs.has(edgeIndex)) buildRoute(nodeId, edgeIndex);
     }
   }
   // Pure loops have no terminal or branch node. Trace any still-unused cycle.
@@ -205,7 +276,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   // Ambiguous detector edges are retained as orange, review-only candidates.
   // They never join the primary topology and are excluded from SVG/DXF until
   // an operator explicitly accepts them in the editor.
-  const reviewEdges = rawEdges.filter(edge => edge?.cad_include === true && (
+  const reviewEdges = hasComponentModel ? [] : rawEdges.filter(edge => edge?.cad_include === true && (
     edge.component_role === 'ambiguous' ||
     (hasTopologyHints && edge.component_role !== 'ambiguous' && edge.topology_network_candidate !== true)
   ));
@@ -282,19 +353,27 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     if (dimension?.rawText) addLabel({ ...dimension, id: dimension.sourceAnnotationId || dimension.id, text: dimension.rawText }, dimension.id);
   }
 
-  // The current recognizer classifies marks as unknown candidates. Import a
-  // symbol only if a future/verified pipeline output supplies an explicit type
-  // supported by this editor; do not guess from visual appearance.
-  const allowedSymbols = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter']);
+  // Import classified symbols as editable objects and compact unknown marks as
+  // review-only placeholders. The placeholder never enters clean SVG/DXF until
+  // the operator chooses a real type in the editor.
+  const allowedSymbols = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout']);
   const symbols = [];
   for (const raw of (Array.isArray(documentModel.symbols) ? documentModel.symbols : [])) {
-    const type = String(raw?.type || '');
-    if (!allowedSymbols.has(type) || !['primary', 'confirmed'].includes(String(raw?.state || ''))) continue;
+    const rawType = String(raw?.type || '');
+    const isClassified = allowedSymbols.has(rawType) && ['primary', 'confirmed'].includes(String(raw?.state || ''));
     const bbox = raw?.bbox && typeof raw.bbox === 'object' ? raw.bbox : {};
-    const x = num(raw?.x, num(bbox.x, NaN) + num(bbox.w, 0) / 2);
-    const y = num(raw?.y, num(bbox.y, NaN) + num(bbox.h, 0) / 2);
+    const bw = num(bbox.w, 0), bh = num(bbox.h, 0);
+    const isUnknownCandidate = hasComponentModel && !isClassified && String(raw?.state || '') === 'review' && Boolean(raw?.visualClass) && bw >= 7 && bh >= 7 && bw <= 160 && bh <= 160;
+    if (!isClassified && !isUnknownCandidate) continue;
+    const x = num(raw?.x, num(bbox.x, NaN) + bw / 2);
+    const y = num(raw?.y, num(bbox.y, NaN) + bh / 2);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    symbols.push({ id: safeId(raw.id, `symbol_${symbols.length + 1}`), type, x, y, rotation: 0, label: '', scale: 1 });
+    symbols.push({
+      id: safeId(raw.id, `symbol_${symbols.length + 1}`),
+      type: isClassified ? rawType : 'unknown', x, y, rotation: 0, label: '', scale: 1,
+      reviewOnly: !isClassified, reviewReason: isClassified ? '' : `Не классифицированный знак (${text(raw.visualClass, 60)}). Выберите тип по оригинальному эскизу.`,
+      confidence: Math.max(0, Math.min(1, num(raw.confidence, 0)))
+    });
   }
 
   const incomplete = graph?.complete === false || graph?.analysisStatus === 'incomplete';
@@ -308,7 +387,15 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     paperSize: 'A4', drawingStyle: 'lpgcad-r1',
     siteAddress, entrance, sourceJobId, sourceStreetId, sourceBuildingId,
     analysisComplete: !incomplete, manualEditRevision: 0,
-    notes: noteParts.join(' '), pipes, junctions, symbols, labels, dimensions: []
+    notes: noteParts.join(' '), pipes, junctions, symbols, labels, dimensions: [],
+    sketchAssist: hasComponentModel ? {
+      enabled: true,
+      method: 'component-aware-high-recall-route-candidates',
+      candidateRoutes: pipes.filter(pipe => pipe.reviewOnly).length,
+      confirmedRoutes: pipes.filter(pipe => !pipe.reviewOnly).length,
+      unresolvedSymbols: symbols.filter(symbol => symbol.reviewOnly).length,
+      note: 'Оранжевые маршруты — высокорисковые кандидаты, извлечённые из связных компонентов эскиза. Перед чистовым экспортом подтвердите каждый маршрут и символ.'
+    } : null
   }, base);
 }
 
@@ -350,7 +437,15 @@ export function normalizeManualCadProject(input, existing = null) {
       apartments: (Array.isArray(group?.apartments) ? group.apartments : []).slice(0, 30).map(value => text(value, 24)).filter(Boolean)
     })).filter(group => group.apartments.length),
     notes: text(input?.notes ?? base.notes, 1000),
-    pipes: [], junctions: [], symbols: [], labels: [], dimensions: []
+    pipes: [], junctions: [], symbols: [], labels: [], dimensions: [],
+    sketchAssist: input?.sketchAssist && typeof input.sketchAssist === 'object' ? {
+      enabled: input.sketchAssist.enabled === true,
+      method: text(input.sketchAssist.method, 80),
+      candidateRoutes: Math.max(0, Math.floor(num(input.sketchAssist.candidateRoutes, 0))),
+      confirmedRoutes: Math.max(0, Math.floor(num(input.sketchAssist.confirmedRoutes, 0))),
+      unresolvedSymbols: Math.max(0, Math.floor(num(input.sketchAssist.unresolvedSymbols, 0))),
+      note: text(input.sketchAssist.note, 300)
+    } : null
   };
 
   const pipeInput = Array.isArray(input?.pipes) ? input.pipes.slice(0, MAX_PIPES) : [];
@@ -390,7 +485,10 @@ export function normalizeManualCadProject(input, existing = null) {
     result.symbols.push({
       id: safeId(raw.id, 'sym'), type, x: p[0], y: p[1],
       rotation: ((num(raw.rotation) % 360) + 360) % 360,
-      label: text(raw.label, 80), scale: Math.max(0.5, Math.min(4, num(raw.scale, 1)))
+      label: text(raw.label, 80), scale: Math.max(0.5, Math.min(4, num(raw.scale, 1))),
+      reviewOnly: raw.reviewOnly === true,
+      reviewReason: text(raw.reviewReason, 240),
+      confidence: Math.max(0, Math.min(1, num(raw.confidence, 0)))
     });
   }
 
@@ -493,6 +591,7 @@ function symbolMarkup(symbol, map) {
   if (symbol.type === 'consumer') body = `<circle r="${s * 1.35}" ${common}/><path d="M 0 ${s} C ${-s * 1.5} ${s * 0.1}, ${s * 0.6} ${-s * 0.3}, 0 ${-s}" fill="none" stroke="#111" stroke-width="0.48"/>`;
   if (symbol.type === 'riser') body = `<path d="M 0 ${s * 1.8} V ${-s * 1.8} M ${-s} ${-s * 1.8} H ${s}" fill="none" stroke="#111" stroke-width="0.55"/>`;
   if (symbol.type === 'filter') body = `<path d="M ${-s * 1.25} ${-s} L ${s * 1.25} ${-s} L ${s * 1.25} ${s} L ${-s * 1.25} ${s} Z" ${common}/><path d="M ${-s} ${s} L ${s} ${-s}" stroke="#111" stroke-width="0.4"/>`;
+  if (symbol.type === 'unknown') body = `<circle r="${s * 1.35}" fill="#fff7ed" stroke="#d97706" stroke-width="0.55" stroke-dasharray="1.2 0.9"/><text y="${s * 0.35}" text-anchor="middle" font-size="${s * 1.1}" fill="#b45309" stroke="none">?</text>`;
   if (symbol.type === 'callout') body = `<rect x="${-s * 1.45}" y="${-s}" width="${s * 2.9}" height="${s * 2}" ${common}/><text y="${s * 0.43}" text-anchor="middle" font-size="${s * 1.05}" font-weight="700" fill="#111" stroke="none">${esc(symbol.label || '')}</text>`;
   return `<g transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label && symbol.type !== 'callout' ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
 }
@@ -519,7 +618,7 @@ export function renderManualCadSvg(rawProject) {
   }
   parts.push('</g>');
   parts.push('<g id="SYMBOLS">');
-  for (const symbol of project.symbols) parts.push(symbolMarkup(symbol, map));
+  for (const symbol of project.symbols) if (!symbol.reviewOnly && symbol.type !== 'unknown') parts.push(symbolMarkup(symbol, map));
   parts.push('</g>');
   parts.push('<g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.28">');
   for (const dim of project.dimensions) {
@@ -578,7 +677,7 @@ function renderLpgCadR1Svg(project) {
     parts.push(`<circle cx="${fmt(x)}" cy="${fmt(y)}" r="0.62"/>`);
   }
   parts.push('</g><g id="SYMBOLS">');
-  for (const symbol of project.symbols) parts.push(symbolMarkup(symbol, map));
+  for (const symbol of project.symbols) if (!symbol.reviewOnly && symbol.type !== 'unknown') parts.push(symbolMarkup(symbol, map));
   parts.push('</g><g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.25">');
   for (const dim of project.dimensions) {
     const a = map(dim.a), b = map(dim.b);
@@ -704,6 +803,7 @@ export function renderManualCadDxf(rawProject) {
   }
   for (const junction of project.junctions) addDxfCircle(out, 'JUNCTIONS', dxfPoint([junction.x, junction.y]), 0.7);
   for (const symbol of project.symbols) {
+    if (symbol.reviewOnly || symbol.type === 'unknown') continue;
     const p = dxfPoint([symbol.x, symbol.y]);
     const s = 2.4 * symbol.scale;
     if (symbol.type === 'meter' || symbol.type === 'consumer') addDxfCircle(out, 'SYMBOLS', p, s * (symbol.type === 'meter' ? 1.25 : 1.35));
@@ -801,6 +901,7 @@ function renderLpgCadR1Dxf(project) {
   }
   for (const junction of project.junctions) addDxfCircle(out, 'JUNCTIONS', toDxf([junction.x, junction.y]), 0.65);
   for (const symbol of project.symbols) {
+    if (symbol.reviewOnly || symbol.type === 'unknown') continue;
     const p = toDxf([symbol.x, symbol.y]), s = 2.2 * symbol.scale;
     if (['meter','consumer'].includes(symbol.type)) addDxfCircle(out, 'SYMBOLS', p, s * 1.15);
     if (symbol.type === 'callout') {

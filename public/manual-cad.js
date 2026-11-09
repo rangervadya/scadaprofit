@@ -33,7 +33,9 @@ function ensureProjectDefaults(project) {
   project.width = Math.max(100, safeNum(project.width, 1600));
   project.height = Math.max(100, safeNum(project.height, 1000));
   project.pipes ||= []; project.junctions ||= []; project.symbols ||= []; project.labels ||= []; project.dimensions ||= [];
+  project.sketchAssist ||= null;
   project.pipes.forEach(pipe => { pipe.reviewOnly = pipe.reviewOnly === true; pipe.reviewReason ||= ''; });
+  project.symbols.forEach(symbol => { symbol.reviewOnly = symbol.reviewOnly === true; symbol.reviewReason ||= ''; });
   project.page = project.page === 'landscape' ? 'landscape' : 'portrait';
   project.paperSize = project.paperSize === 'A3' ? 'A3' : 'A4';
   project.drawingStyle = project.drawingStyle === 'lpgcad-r1' ? 'lpgcad-r1' : 'standard';
@@ -89,7 +91,7 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = false;
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = Boolean(state.project.sketchAssist?.enabled && state.project.pipes.some(pipe => pipe.reviewOnly));
     syncControls(); renderAll(); setSaveState('Сохранено', 'saved'); await refreshProjectList();
   } catch (error) { toast(error.message); }
 }
@@ -176,6 +178,13 @@ function syncControls() {
   $('reviewCandidatesLabel').hidden = reviewCount === 0;
   $('showReviewCandidates').checked = state.showReviewCandidates;
   $('reviewCandidatesCount').textContent = String(reviewCount);
+  const unknownSymbols = p.symbols.filter(symbol => symbol.type === 'unknown' || symbol.reviewOnly).length;
+  const assistPanel = $('mcSketchAssistPanel');
+  if (assistPanel) assistPanel.hidden = p.sketchAssist?.enabled !== true;
+  const assistStats = $('mcSketchCandidateStats');
+  if (assistStats) assistStats.textContent = `${reviewCount} маршрутов-кандидатов · ${unknownSymbols} знаков для классификации`;
+  const assistButton = $('mcShowSketchCandidatesBtn');
+  if (assistButton) { assistButton.disabled = reviewCount === 0; assistButton.textContent = state.showReviewCandidates ? 'Скрыть кандидаты' : 'Показать кандидаты'; }
   $('exportSvgBtn').href = `/api/manual-cad/projects/${p.id}/export.svg`;
   $('exportDxfBtn').href = `/api/manual-cad/projects/${p.id}/export.dxf`;
   $('exportSvgBtn').setAttribute('aria-disabled', 'false'); $('exportDxfBtn').setAttribute('aria-disabled', 'false');
@@ -397,9 +406,10 @@ function symbolSvg(symbol) {
   if (symbol.type==='consumer') shape=`<circle r="${s*1.15}"/><path d="M 0 ${s*.8} C ${-s*1.2} 0 ${s*.5} ${-s*.2} 0 ${-s*.8} C ${s*1.2} 0 ${s*.5} ${s*.4} 0 ${s*.8}"/>`;
   if (symbol.type==='riser') shape=`<path d="M 0 ${s*1.5} V ${-s*1.5} M ${-s*.8} ${-s*1.5} H ${s*.8}"/>`;
   if (symbol.type==='filter') shape=`<rect x="${-s}" y="${-s*.85}" width="${s*2}" height="${s*1.7}"/><path d="M ${-s*.7} ${s*.65} L ${s*.7} ${-s*.65}"/>`;
+  if (symbol.type==='unknown') shape=`<circle r="${s*1.2}" fill="#fff7ed" stroke="#d97706" stroke-dasharray="4 3"/><text x="0" y="5" text-anchor="middle" fill="#b45309" stroke="none">?</text>`;
   if (symbol.type==='callout') shape=`<rect x="${-s*1.45}" y="${-s}" width="${s*2.9}" height="${s*2}"/><text x="0" y="${s*.38}" text-anchor="middle">${esc(symbol.label||'')}</text>`;
   const caption=symbol.label&&symbol.type!=='callout'?`<text x="0" y="${s*1.8}" text-anchor="middle">${esc(symbol.label)}</text>`:'';
-  return `<g class="mc-cad-symbol ${state.selected?.type==='symbol'&&state.selected.id===symbol.id?'is-selected':''}" data-element-type="symbol" data-element-id="${esc(symbol.id)}" transform="translate(${x} ${y}) rotate(${rotate})">${shape}${caption}</g>`;
+  return `<g class="mc-cad-symbol ${symbol.reviewOnly?'mc-symbol-review':''} ${state.selected?.type==='symbol'&&state.selected.id===symbol.id?'is-selected':''}" data-element-type="symbol" data-element-id="${esc(symbol.id)}" transform="translate(${x} ${y}) rotate(${rotate})">${shape}${caption}</g>`;
 }
 function renderCanvas() {
   const p=state.project; if (!p) return;
@@ -458,7 +468,7 @@ function renderProperties() {
   $('selectedFontSizeWrap').hidden=state.selected.type!=='label';
   if (state.selected.type==='symbol') $('selectedScale').value=safeNum(item.scale,1);
   if (state.selected.type==='label') $('selectedFontSize').value=safeNum(item.size,18);
-  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину; перетаскивание линии двигает всю ветку с сохранением стыков.'):'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
+  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину; перетаскивание линии двигает всю ветку с сохранением стыков.') : state.selected.type==='symbol' && item.reviewOnly ? (item.reviewReason || 'Знак распознан, но не классифицирован. Выбери его точный тип по исходному эскизу.') : 'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
   $('acceptReviewPipeBtn').hidden=!(state.selected.type==='pipe' && item.reviewOnly===true);
   updateDeleteButton();
 }
@@ -675,12 +685,13 @@ $('selectedName').addEventListener('change',event=>{
 });
 $('selectedDiameter').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.diameter=event.target.value;renderCanvas();scheduleSave();});
 $('selectedSymbolLabel').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.label=event.target.value;renderCanvas();scheduleSave();});
-$('selectedSymbolType').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.type=event.target.value;renderCanvas();scheduleSave();});
+$('selectedSymbolType').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.type=event.target.value;item.reviewOnly=item.type==='unknown';item.reviewReason=item.reviewOnly?'Знак оставлен неопределённым.':'Оператор классифицировал условный знак; проверь положение и ориентацию.';renderAll();scheduleSave();toast(item.reviewOnly?'Знак оставлен на классификацию.':'Классификация знака сохранена.');});
 $('selectedKind').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.kind=event.target.value;renderCanvas();scheduleSave();});
 for (const [id,key] of [['selectedX','x'],['selectedY','y'],['selectedRotation','rotation'],['selectedScale','scale'],['selectedFontSize','size']]) {
   $(id).addEventListener('change',event=>{const item=selectedItem();if(!item)return;const value=Number(event.target.value);if(!Number.isFinite(value))return;pushUndo();item[key]=key==='scale'?Math.max(.25,Math.min(4,value)):key==='size'?Math.max(6,Math.min(120,value)):key==='rotation'?Math.max(-360,Math.min(360,value)):Math.max(0,Math.min(key==='x'?state.project.width:state.project.height,value));renderCanvas();scheduleSave();});
 }
-$('showReviewCandidates').addEventListener('change',event=>{state.showReviewCandidates=event.target.checked;renderCanvas();});
+$('showReviewCandidates').addEventListener('change',event=>{state.showReviewCandidates=event.target.checked;renderCanvas();const b=$('mcShowSketchCandidatesBtn');if(b)b.textContent=state.showReviewCandidates?'Скрыть кандидаты':'Показать кандидаты';});
+$('mcShowSketchCandidatesBtn')?.addEventListener('click',()=>{state.showReviewCandidates=!state.showReviewCandidates;$('showReviewCandidates').checked=state.showReviewCandidates;renderCanvas();const b=$('mcShowSketchCandidatesBtn');if(b)b.textContent=state.showReviewCandidates?'Скрыть кандидаты':'Показать кандидаты';});
 $('acceptReviewPipeBtn').addEventListener('click',()=>{
   const item=selectedItem();
   if(!item||state.selected?.type!=='pipe'||item.reviewOnly!==true)return;

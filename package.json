@@ -1,8 +1,8 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.3.42",
+  "version": "4.3.44",
   "private": true,
-  "description": "OCR-aware topology reconstruction of handwritten piping schematics",
+  "description": "Local hand-drawn fitter sketch to editable VDGO engineering schematic reconstruction",
   "type": "module",
   "engines": {
     "node": ">=20.17.0"

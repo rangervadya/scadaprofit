@@ -1,0 +1,7 @@
+ScadaProfit 4.3.44 — patch-only update
+
+Изменённые файлы: package.json, server.js, processor.py, manual-cad-core.js, public/index.html, public/app.js, public/styles.css, public/manual-cad.html, public/manual-cad.js, public/manual-cad.css, tests/manual-cad.test.js, CHANGELOG-4.3.44-RU.md, README-4.3.44-RU.txt.
+
+Не включать и не менять: .env, compose.yaml, Dockerfile, vdgo/, PostgreSQL, Nginx/gateway, Ollama config, Docker volumes, другие приложения.
+
+Сервис для пересборки: app.

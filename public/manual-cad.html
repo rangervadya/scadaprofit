@@ -5,15 +5,32 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
-  <title>Ручной CAD · ScadaProfit 4.3.41</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=4.3.41">
-  <script src="/manual-cad.js?v=4.3.41" defer></script>
+  <title>CAD-редактор · ПРОФИТ</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.44">
+  <script src="/manual-cad.js?v=4.3.44" defer></script>
 </head>
 <body class="manual-cad-page">
-  <nav class="mc-nav" aria-label="Разделы ScadaProfit">
-    <a href="/" class="mc-nav-link" id="mcBackToSchemeLink">← Схемы домов</a>
-    <span class="mc-nav-current">Ручной CAD</span>
-    <a href="/vdgo/" class="mc-nav-link">Технические заключения ВДГО</a>
+  <nav class="suite-nav" aria-label="ПРОФИТ — модули">
+    <a class="suite-brand" href="/" aria-label="ПРОФИТ — главная">
+      <span class="suite-brand-mark" aria-hidden="true">П</span>
+      <span class="suite-brand-copy"><strong>ПРОФИТ</strong><small>Инженерные сервисы</small></span>
+    </a>
+    <details class="suite-menu">
+      <summary aria-label="Открыть меню модулей"><span class="suite-burger" aria-hidden="true"><i></i><i></i><i></i></span><span>Модули</span><span class="suite-chevron" aria-hidden="true">▾</span></summary>
+      <div class="suite-menu-panel">
+        <div class="suite-menu-heading">РАБОЧИЕ МОДУЛИ</div>
+        <a class="suite-menu-item" href="/">
+          <span class="suite-menu-icon">↗</span><span><b>Распознавание эскизов</b><small>Фото слесаря → чистовая схема</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <a class="suite-menu-item is-active" href="/manual-cad.html" aria-current="page">
+          <span class="suite-menu-icon">⌁</span><span><b>CAD-редактор</b><small>Трубы, узлы, символы и размеры</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <a class="suite-menu-item" href="/vdgo/">
+          <span class="suite-menu-icon">▤</span><span><b>Технические заключения ВДГО</b><small>Формирование PDF и DOCX</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <div class="suite-menu-footer"><span class="suite-menu-status-dot"></span>Все модули на одном сервере · независимые сервисы</div>
+      </div>
+    </details>
   </nav>
 
   <header class="mc-topbar">
@@ -48,6 +65,11 @@
           <a class="mc-button mc-button-export" id="exportDxfBtn" href="#" aria-disabled="true">Экспорт DXF</a>
         </div>
       </div>
+
+      <section class="mc-sketch-assist" id="mcSketchAssistPanel" aria-label="Помощник восстановления эскиза">
+        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Эскиз слесаря → инженерная схема</b><p>Оранжевые пунктирные линии — автоматически найденные кандидаты трубопроводов. Они собраны по связным компонентам и требуют проверки. Подтверждайте только то, что действительно нарисовано как труба.</p><small id="mcSketchCandidateStats">Кандидаты появятся после импорта распознанного эскиза.</small></div></div>
+        <button class="mc-button mc-button-review" id="mcShowSketchCandidatesBtn" type="button" disabled>Показать кандидаты</button>
+      </section>
 
       <details class="mc-engineering-panel" open>
         <summary><span><b>Чистовой лист LPGCad R1</b><small>Шапка заключения · адрес · легенда · подписи · A4/A3</small></span><span class="mc-engineering-caret">▾</span></summary>
@@ -131,7 +153,7 @@
       <div id="selectionProperties" hidden>
         <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
         <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
-        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolType">Тип условного обозначения</label><select id="selectedSymbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option></select><label for="selectedSymbolLabel">Подпись / номер</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolType">Тип условного обозначения</label><select id="selectedSymbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option><option value="unknown">Не определён — классифицировать</option></select><label for="selectedSymbolLabel">Подпись / номер</label><input id="selectedSymbolLabel" maxlength="80"></div>
         <div class="mc-prop mc-full" id="selectedKindWrap" hidden><label for="selectedKind">Тип трубопровода</label><select id="selectedKind"><option value="pipe">Газопровод</option><option value="branch">Ответвление</option><option value="riser">Стояк</option></select></div>
         <div class="mc-property-grid" id="selectedPositionWrap" hidden>
           <div class="mc-prop"><label for="selectedX">Координата X</label><input id="selectedX" type="number" step="1"></div>

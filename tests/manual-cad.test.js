@@ -354,3 +354,68 @@ test('numbered callout symbols stay editable in both SVG and DXF exports', () =>
   assert.match(dxf, /0\nTEXT\n8\nTEXT/);
   assert.match(dxf, /24/);
 });
+
+
+test('sketch-assist imports high-recall line components and pairs trunk through a branch while preserving the branch', () => {
+  const graph = {
+    image: { width: 500, height: 400 }, complete: true,
+    nodes: [
+      { id: 'A', x: 20, y: 100 }, { id: 'B', x: 140, y: 100 },
+      { id: 'C', x: 260, y: 100 }, { id: 'D', x: 140, y: 260 }
+    ],
+    components: [
+      { id: 'L1', role: 'line_structure', edge_count: 3, total_length: 400 },
+      { id: 'AUX', role: 'ambiguous', connected_line_candidate: false, elbow_route_candidate: false, topology_network_candidate: false, dense_route_exemption: false }
+    ],
+    edges: [
+      { id: 'AB', component_id: 'L1', component_role: 'line_structure', cad_include: true, topology_network_candidate: false, from: 'A', to: 'B', geometry: [[20,100],[140,100]] },
+      { id: 'BC', component_id: 'L1', component_role: 'line_structure', cad_include: true, topology_network_candidate: false, from: 'B', to: 'C', geometry: [[140,100],[260,100]] },
+      { id: 'BD', component_id: 'L1', component_role: 'line_structure', cad_include: true, topology_network_candidate: false, kind: 'branch', from: 'B', to: 'D', geometry: [[140,100],[140,260]] },
+      { id: 'NOISE', component_id: 'AUX', component_role: 'ambiguous', cad_include: true, topology_network_candidate: false, from: 'A', to: 'D', geometry: [[20,100],[140,260]] }
+    ],
+    documentModel: {
+      labels: [], dimensions: [],
+      symbols: [{ id: 'U1', visualClass: 'unknown_compact_mark', bbox: { x: 300, y: 100, w: 20, h: 24 }, state: 'review', confidence: 0.72 }]
+    }
+  };
+  const project = createManualCadProjectFromGraph(graph);
+  assert.equal(project.sketchAssist.enabled, true);
+  assert.equal(project.pipes.length, 2, 'only line_structure component is imported; unrelated ambiguous noise is excluded');
+  assert.equal(project.pipes.filter(pipe => pipe.reviewOnly).length, 2, 'unverified hand-drawn routes remain review-only');
+  const trunk = project.pipes.find(pipe => pipe.points.some(point => point[0] === 20) && pipe.points.some(point => point[0] === 260));
+  const branch = project.pipes.find(pipe => pipe.kind === 'branch');
+  assert.ok(trunk, 'opposing edges join into one trunk across the junction');
+  assert.equal(trunk.points.length, 3);
+  assert.ok(branch, 'side branch remains a separate editable polyline');
+  assert.equal(project.symbols.length, 1);
+  assert.equal(project.symbols[0].type, 'unknown');
+  assert.equal(project.symbols[0].reviewOnly, true);
+  assert.doesNotMatch(renderManualCadSvg(project), /unknown|\?>/);
+  assert.doesNotMatch(renderManualCadDxf(project), /\n0\nCIRCLE\n8\nSYMBOLS/);
+});
+
+test('sketch-assist treats a four-way crossing as two continuous routes, not one joined junction', () => {
+  const graph = {
+    image: { width: 400, height: 300 }, complete: true,
+    nodes: [
+      { id: 'W', x: 30, y: 120 }, { id: 'X', x: 180, y: 120 },
+      { id: 'E', x: 330, y: 120 }, { id: 'N', x: 180, y: 30 },
+      { id: 'S', x: 180, y: 270 }
+    ],
+    components: [{ id: 'CROSS', role: 'line_structure', edge_count: 4, total_length: 510 }],
+    edges: [
+      { id: 'W-X', component_id: 'CROSS', cad_include: true, topology_network_candidate: false, from: 'W', to: 'X', geometry: [[30,120],[180,120]] },
+      { id: 'X-E', component_id: 'CROSS', cad_include: true, topology_network_candidate: false, from: 'X', to: 'E', geometry: [[180,120],[330,120]] },
+      { id: 'N-X', component_id: 'CROSS', cad_include: true, topology_network_candidate: false, from: 'N', to: 'X', geometry: [[180,30],[180,120]] },
+      { id: 'X-S', component_id: 'CROSS', cad_include: true, topology_network_candidate: false, from: 'X', to: 'S', geometry: [[180,120],[180,270]] }
+    ]
+  };
+  const project = createManualCadProjectFromGraph(graph);
+  assert.equal(project.pipes.length, 2);
+  const horizontal = project.pipes.find(pipe => pipe.points.every(point => point[1] === 120));
+  const vertical = project.pipes.find(pipe => pipe.points.every(point => point[0] === 180));
+  assert.ok(horizontal);
+  assert.ok(vertical);
+  assert.equal(horizontal.reviewOnly, true);
+  assert.equal(vertical.reviewOnly, true);
+});

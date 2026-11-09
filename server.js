@@ -553,6 +553,7 @@ async function runStoredSchemeAnalysis(jobId) {
   const templatePath = await pinTemplateReference(jobDir);
   const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
+  if (meta.rotationDegrees != null && [0, 90, 180, 270].includes(Number(meta.rotationDegrees))) processorArgs.push('--rotation', String(Number(meta.rotationDegrees)));
   await runPythonStreaming(
     processorArgs,
     { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
@@ -827,8 +828,10 @@ app.post('/api/library/schemes/upload', upload.single('image'), async (req, res)
     await copyFile(req.file.path, path.join(jobDir, sourceName));
     await rm(req.file.path, { force: true });
 
+    const requestedRotation = String(req.body?.rotationDegrees ?? 'auto');
+    const rotationDegrees = ['0','90','180','270'].includes(requestedRotation) ? Number(requestedRotation) : null;
     const meta = {
-      jobId, title, originalName, sourceName, uploadedBy,
+      jobId, title, originalName, sourceName, uploadedBy, rotationDegrees,
       streetId, streetName: address.street.name,
       buildingId, buildingName: address.building.name,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -1200,7 +1203,7 @@ app.get('/api/health', async (_req, res) => {
   const tesseract = await checkTesseract();
   res.json({
     ok: true,
-    version: '4.3.42',
+    version: '4.3.43',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
@@ -1271,6 +1274,8 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const templatePath = await pinTemplateReference(jobDir);
     const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
+    const requestedRotation = String(req.body?.rotationDegrees ?? 'auto');
+    if (['0','90','180','270'].includes(requestedRotation)) processorArgs.push('--rotation', requestedRotation);
     await runPythonStreaming(
       processorArgs,
       { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }

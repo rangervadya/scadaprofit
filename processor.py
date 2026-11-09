@@ -4380,7 +4380,7 @@ def _qwen_stage_is_complete(status: dict[str, Any] | None) -> bool:
     return bool(status.get('available'))
 
 
-def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> dict[str, Any]:
+def analyze(input_path: str, out_dir: str, template_path: str | None = None, rotation_degrees: int | None = None) -> dict[str, Any]:
     global _ANALYSIS_HARD_DEADLINE
     job_started = time.perf_counter()
     configured_job_ms = max(60_000.0, float(os.getenv('PYTHON_JOB_TIMEOUT_MS', '5400000')))
@@ -4390,7 +4390,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     _progress('JOB', 'Image preprocessing started')
     stage_started = time.perf_counter()
     source_bgr = load_image(input_path)
-    bgr, preparation = prepare_document_image(source_bgr)
+    bgr, preparation = prepare_document_image(source_bgr, rotation_degrees=rotation_degrees)
     h,w=bgr.shape[:2]
     prepared_input_path = str(Path(out_dir) / 'prepared-input.png')
     cv2.imwrite(prepared_input_path, bgr)
@@ -4731,6 +4731,7 @@ def main():
     ap.add_argument('--input', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--template', default=None, help='Optional reference sheet file; raster is used for page profile only')
+    ap.add_argument('--rotation', type=int, choices=[0, 90, 180, 270], default=None, help='Explicit clockwise page rotation in degrees; overrides unreliable handwriting orientation detection')
     ap.add_argument('--test-openrouter', action='store_true', help='Run an explicit OpenRouter OCR + multimodal vision smoke test on the source image')
     ap.add_argument('--test-moss', action='store_true', help='Run an explicit MOSS OCR + multimodal vision smoke test on the source image')
     args = ap.parse_args()
@@ -4746,7 +4747,7 @@ def main():
         )
         print(json.dumps(result, ensure_ascii=False))
         return
-    result = analyze(args.input, args.out, template_path=args.template)
+    result = analyze(args.input, args.out, template_path=args.template, rotation_degrees=args.rotation)
     print(json.dumps(result, ensure_ascii=False))
 
 if __name__=='__main__': main()

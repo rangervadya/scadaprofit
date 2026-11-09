@@ -5,16 +5,33 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
-  <title>Схемы домов · 4.3.42</title>
+  <title>Распознавание эскизов · ПРОФИТ</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.42">
-  <script src="/app.js?v=4.3.42" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.44">
+  <script src="/app.js?v=4.3.44" defer></script>
 </head>
 <body>
-  <nav class="product-switcher" aria-label="Разделы приложения">
-    <span class="product-switcher__current">Схемы домов</span>
-    <a href="/manual-cad.html">Ручной CAD</a>
-    <a href="/vdgo/">Технические заключения ВДГО</a>
+  <nav class="suite-nav" aria-label="ПРОФИТ — модули">
+    <a class="suite-brand" href="/" aria-label="ПРОФИТ — главная">
+      <span class="suite-brand-mark" aria-hidden="true">П</span>
+      <span class="suite-brand-copy"><strong>ПРОФИТ</strong><small>Инженерные сервисы</small></span>
+    </a>
+    <details class="suite-menu">
+      <summary aria-label="Открыть меню модулей"><span class="suite-burger" aria-hidden="true"><i></i><i></i><i></i></span><span>Модули</span><span class="suite-chevron" aria-hidden="true">▾</span></summary>
+      <div class="suite-menu-panel">
+        <div class="suite-menu-heading">РАБОЧИЕ МОДУЛИ</div>
+        <a class="suite-menu-item is-active" href="/" aria-current="page">
+          <span class="suite-menu-icon">↗</span><span><b>Распознавание эскизов</b><small>Фото слесаря → чистовая схема</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <a class="suite-menu-item" href="/manual-cad.html">
+          <span class="suite-menu-icon">⌁</span><span><b>CAD-редактор</b><small>Трубы, узлы, символы и размеры</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <a class="suite-menu-item" href="/vdgo/">
+          <span class="suite-menu-icon">▤</span><span><b>Технические заключения ВДГО</b><small>Формирование PDF и DOCX</small></span><span class="suite-menu-arrow">›</span>
+        </a>
+        <div class="suite-menu-footer"><span class="suite-menu-status-dot"></span>Все модули на одном сервере · независимые сервисы</div>
+      </div>
+    </details>
   </nav>
   <main class="app-shell">
     <div class="workspace-grid">
@@ -43,6 +60,7 @@
             <span class="drop-sub">или <u>выбрать файл</u></span>
             <span class="drop-limit">До 18 МБ · JPG, PNG, WEBP, TIFF</span>
           </label>
+          <div class="sketch-orientation-option"><label for="sketchRotation">Ориентация фотографии</label><select id="sketchRotation"><option value="auto">Определить автоматически</option><option value="0">Как на фотографии</option><option value="90">Повернуть вправо на 90°</option><option value="180">Перевернуть на 180°</option><option value="270">Повернуть влево на 90°</option></select><small>Для бокового снимка выбери поворот вручную — рукописные эскизы часто распознаются неправильно автоматически.</small></div>
           <div class="file-preview" id="filePreview" hidden>
             <div class="file-thumb"><img id="previewThumb" alt="Предпросмотр загруженного эскиза"><span id="previewFallback">IMG</span></div>
             <div class="file-info"><b id="previewName">—</b><span id="previewMeta">Ожидает обработки</span></div>

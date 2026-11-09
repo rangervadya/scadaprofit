@@ -606,6 +606,8 @@ analyzeBtn.addEventListener('click', async () => {
     form.append('streetId', selectedStreetId);
     form.append('buildingId', selectedBuildingId);
     form.append('title', selectedFile.name.replace(/\.[^.]+$/, ''));
+    const requestedRotation = $('sketchRotation')?.value || 'auto';
+    if (['0','90','180','270'].includes(requestedRotation)) form.append('rotationDegrees', requestedRotation);
     const response = await fetch('/api/library/schemes/upload', { method: 'POST', body: form });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Ошибка сервера ${response.status}`);
