@@ -28,6 +28,11 @@ RESPONSES_URL = f"{API_BASE}/responses"
 DEFAULT_MODEL = "moss-vl-1.0"
 MAX_IMAGE_BYTES = 8_000_000
 MAX_IMAGE_EDGE = 2304
+# Keep synchronous Vision responses comfortably below common gateway read timeouts.
+MOSS_PIPE_MAX_OUTPUT_TOKENS = 2048
+MOSS_PIPE_MAX_IMAGE_EDGE = 1536
+MOSS_PIPE_MAX_ROUTES = 32
+MOSS_PIPE_MAX_POINTS = 24
 
 
 class MossAIError(RuntimeError):
@@ -84,6 +89,11 @@ def _request_json(
             404: "Endpoint или модель MOSS не найдены.",
             413: "Изображение слишком большое для загрузки.",
             429: "Достигнут лимит запросов MOSS; попробуй позже.",
+            524: (
+                "Сервер MOSS не успел вернуть синхронный ответ до тайм-аута шлюза "
+                "(HTTP 524). Это серверный тайм-аут, а не ошибка API-ключа или JSON. "
+                "Запрос трассировки уменьшен; попробуйте повторить позже, если шлюз перегружен."
+            ),
         }
         raise MossAIError(
             f"MOSS HTTP {error.code}: {detail}. "
@@ -522,44 +532,41 @@ def _coordinate_mode(parsed: dict[str, Any], raw: Any) -> str:
 def moss_semantic_routes(
     image_path: str | Path, api_key: str, model: str = DEFAULT_MODEL, *, timeout: float = 300.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Propose high-recall visible pipe centre-lines; caller validates them against source ink."""
+    """Propose visible pipe center-lines; caller validates every candidate against source ink."""
     model = str(model or DEFAULT_MODEL).strip()
-    image_bytes, width, height, scale_x, scale_y = _prepare_image(image_path)
+    image_bytes, width, height, scale_x, scale_y = _prepare_image(
+        image_path, max_edge=MOSS_PIPE_MAX_IMAGE_EDGE
+    )
+    _progress(
+        f"Vision request started: image={width}x{height}; "
+        f"max_output_tokens={MOSS_PIPE_MAX_OUTPUT_TOKENS}; "
+        f"max_routes={MOSS_PIPE_MAX_ROUTES}"
+    )
     file_id = _upload_image(api_key, image_bytes, timeout=timeout)
     try:
         prompt = (
-            "Ты выполняешь трассировку рукописной инженерной схемы газопровода по изображению. "
-            "Найди видимые линии, которые изображают трубы, и верни их как редактируемые полилинии. "
-            "Работай с ПОВЫШЕННЫМ ПОЛНОТОЙ ПОИСКА: не требуй идеальной уверенности, чтобы сообщить "
-            "о видимом кандидате. Неопределённость отражай числом confidence, а не удалением кандидата. "
-            "Ищи длинные горизонтальные, вертикальные и наклонные штрихи, соединённые участки, "
-            "повороты и ответвления; учитывай синие, чёрные и серые рукописные линии разной толщины. "
-            "Для прямого видимого участка достаточно двух точек — начала и конца. Для поворота добавь "
-            "точку каждого видимого угла. Не нужно распознавать всю сеть целиком: возвращай каждый "
-            "достоверно видимый непрерывный участок отдельным маршрутом. Если линия прерывается надписью "
-            "или разрывом, не соединяй скрытый участок; верни видимые части отдельно. "
-            "На Т-ответвлении разделяй ветви; общий конец допускается только там, где линии явно встречаются. "
-            "Пересечения без явного соединения оставляй раздельными. Не включай текст, цифры, размеры, "
-            "выноски, стрелки, рамку и контуры условных символов. Если труба подходит к символу, закончи "
-            "линию у видимого входа в символ. Не выдумывай невидимые продолжения и не рисуй линии по памяти. "
-            "Каждая точка должна лежать на видимом штрихе трубы или в пределах его толщины. "
-            f"Координаты — абсолютные пиксели ЭТОГО отправленного изображения {width}x{height}; "
-            "начало (0,0) слева сверху, x растёт вправо, y вниз. Не используй координаты исходника, "
-            "если отправленное изображение было уменьшено. "
-            "Верни только JSON-объект с верхним ключом routes: массив объектов "
-            "{id, points, confidence}. points — массив [x,y], от 2 до 64 точек. "
-            "confidence — число 0..100: 80-100 ясно видимая труба; 50-79 вероятный участок; "
-            "35-49 слабый, но визуально поддержанный кандидат. Не возвращай кандидаты ниже 35. "
-            "Система отдельно проверит каждый маршрут по исходным пикселям и топологии. "
-            "Не возвращай пустой routes только из-за общей неопределённости: если видна хотя бы одна "
-            "похожая на трубу линия, верни её как кандидат с честной confidence. "
-            "Максимум 120 маршрутов, 64 точки на маршрут. Формат: "
-            "{\"routes\":[{\"id\":\"R1\",\"points\":[[20,80],[180,80]],\"confidence\":65}],\"review_note\":\"\"}. "
-            "Если на изображении действительно нет видимых трубных линий, верни {\"routes\":[]}."
+            "Ты трассируешь только реально видимые трубопроводы на рукописной инженерной схеме. "
+            "Верни компактный JSON без Markdown и пояснений: верхний ключ routes — массив "
+            "объектов {id, points, confidence}. Каждый отдельный непрерывный видимый участок — "
+            "отдельный маршрут. Для прямой линии укажи начало и конец; для изгибов добавь точки "
+            "видимых углов. Т-ответвления разделяй на ветви. Пересечение не считай соединением, "
+            "если на рисунке нет явного узла. Не включай надписи, цифры, размеры, выноски, стрелки, "
+            "рамки и условные символы. Не дорисовывай невидимые части и не соединяй разрывы. "
+            "Допускай кандидаты с умеренной уверенностью, но каждая точка должна лежать на видимом "
+            "штрихе трубы. Координаты — пиксели отправленного изображения "
+            f"{width}x{height}, начало слева сверху. points — 2..24 пары [x,y]; confidence — "
+            "число 35..100. Максимум 32 маршрута. Верни только JSON вида "
+            '{"routes":[{"id":"R1","points":[[20,80],[180,80]],"confidence":65}]}. '
+            "Если видимых труб действительно нет, верни {\"routes\":[]}."
         )
-        payload = {"model": model, "input": [{"role": "user", "content": [
-            {"type": "input_text", "text": prompt}, {"type": "input_image", "file_id": file_id}
-        ]}], "max_output_tokens": 8192}
+        payload = {
+            "model": model,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "file_id": file_id},
+            ]}],
+            "max_output_tokens": MOSS_PIPE_MAX_OUTPUT_TOKENS,
+        }
         response = _request_json(
             api_key, RESPONSES_URL, method="POST",
             body=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
@@ -567,6 +574,10 @@ def moss_semantic_routes(
         )
         text, usage = _response_text(response)
         parsed = _parse_json(text)
+        _progress(
+            f"Vision response received: output_tokens={usage.get('output_tokens', 'n/a')}; "
+            f"status={response.get('status', 'unknown')}"
+        )
     finally:
         _delete_image(api_key, file_id, timeout=min(timeout, 20.0))
 
@@ -579,6 +590,8 @@ def moss_semantic_routes(
     if raw_routes and all(_is_point(item) for item in raw_routes):
         raw_routes = [{"id": "R1", "points": raw_routes}]
     raw_count = len(raw_routes)
+    if raw_count > MOSS_PIPE_MAX_ROUTES:
+        _progress(f"Vision route list capped: raw={raw_count}; inspected={MOSS_PIPE_MAX_ROUTES}")
     min_confidence = max(0.0, min(100.0, float(os.getenv("MOSS_PIPE_MIN_CONFIDENCE", "35"))))
     routes: list[dict[str, Any]] = []
     rejected_invalid = 0
@@ -586,14 +599,14 @@ def moss_semantic_routes(
     rejected_out_of_bounds = 0
     rejected_too_short = 0
     route_diagnostics: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_routes[:120], 1):
+    for index, raw in enumerate(raw_routes[:MOSS_PIPE_MAX_ROUTES], 1):
         if isinstance(raw, list):
             raw = {"points": raw}
         if not isinstance(raw, dict):
             rejected_invalid += 1
             continue
         raw_points = _route_point_list(raw)
-        if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 64:
+        if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= MOSS_PIPE_MAX_POINTS:
             rejected_invalid += 1
             if len(route_diagnostics) < 30:
                 route_diagnostics.append({"index": index, "decision": "reject", "reason": "invalid-points"})
@@ -677,6 +690,11 @@ def moss_semantic_routes(
         "tiles": 1, "successful_tiles": 1, "failed_tiles": [],
         "image_size_sent": {"width": width, "height": height},
         "source_coordinate_scale": {"x": round(scale_x, 6), "y": round(scale_y, 6)},
+        "request_limits": {
+            "max_output_tokens": MOSS_PIPE_MAX_OUTPUT_TOKENS,
+            "max_routes": MOSS_PIPE_MAX_ROUTES,
+            "max_points_per_route": MOSS_PIPE_MAX_POINTS,
+        },
         "usage": usage, "review_note": review_note, "error": None,
     }
     if routes:

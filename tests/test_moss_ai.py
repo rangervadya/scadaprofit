@@ -88,7 +88,9 @@ class MossImageTests(unittest.TestCase):
         request_payload = json.loads(request.call_args.args[2].decode("utf-8")) if len(request.call_args.args) > 2 else json.loads(request.call_args.kwargs["body"].decode("utf-8"))
         self.assertGreaterEqual(request_payload["max_output_tokens"], 1)
         self.assertLessEqual(request_payload["max_output_tokens"], 8192)
-        self.assertEqual(request_payload["max_output_tokens"], 8192)
+        self.assertEqual(request_payload["max_output_tokens"], moss_ai.MOSS_PIPE_MAX_OUTPUT_TOKENS)
+        self.assertEqual(request_payload["max_output_tokens"], 2048)
+        self.assertLessEqual(len(request_payload["input"][0]["content"][0]["text"]), 1600)
         self.assertEqual(len(routes), 1)
         self.assertEqual(routes[0]["points"], [[10.0, 20.0], [200.0, 20.0]])
         self.assertEqual(status["raw_routes"], 2)
@@ -207,6 +209,26 @@ class MossImageTests(unittest.TestCase):
             moss_ai._request_json("moss-secret-key", moss_ai.RESPONSES_URL, body=b"{}", timeout=10)
         self.assertNotIn("moss-secret-key", str(caught.exception))
         self.assertIn("HTTP 401", str(caught.exception))
+
+    @patch("moss_ai.urllib.request.urlopen")
+    def test_http_524_explains_provider_gateway_timeout(self, urlopen):
+        error = __import__("urllib.error").error.HTTPError(
+            moss_ai.RESPONSES_URL, 524, "Gateway Timeout", {},
+            __import__("io").BytesIO(b"upstream timeout")
+        )
+        urlopen.side_effect = error
+        with self.assertRaises(moss_ai.MossAIError) as caught:
+            moss_ai._request_json("moss-test-key", moss_ai.RESPONSES_URL, body=b"{}", timeout=10)
+        message = str(caught.exception)
+        self.assertIn("HTTP 524", message)
+        self.assertIn("синхронный ответ", message)
+        self.assertNotIn("moss-test-key", message)
+
+    def test_pipe_request_limits_are_below_gateway_risk(self):
+        self.assertEqual(moss_ai.MOSS_PIPE_MAX_OUTPUT_TOKENS, 2048)
+        self.assertLessEqual(moss_ai.MOSS_PIPE_MAX_OUTPUT_TOKENS, 8192)
+        self.assertEqual(moss_ai.MOSS_PIPE_MAX_ROUTES, 32)
+        self.assertEqual(moss_ai.MOSS_PIPE_MAX_POINTS, 24)
 
 
 if __name__ == "__main__":

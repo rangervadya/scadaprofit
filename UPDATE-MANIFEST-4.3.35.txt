@@ -1,0 +1,13 @@
+ScadaProfit 4.3.35 — MOSS Vision timeout reduction
+
+Заменить:
+- moss_ai.py
+- package.json
+- tests/test_moss_ai.py
+
+Добавить:
+- CHANGELOG-4.3.35-RU.md
+- UPDATE-MANIFEST-4.3.35.txt
+- README-4.3.35-RU.txt
+
+Не заменять server.js, moss-env-boot.js, compose.yaml, Nginx или файлы VDGO.
