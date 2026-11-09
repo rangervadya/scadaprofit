@@ -1,0 +1,31 @@
+ИСПРАВЛЕНИЕ VDGO: ИМЯ PDF-ШАБЛОНА
+
+Причина:
+VDGO backend ожидает vdgo/backend/template/905_З(2).pdf, но в предыдущем ZIP
+имя файла было искажено при упаковке/распаковке. Из-за этого внутри контейнера
+не существовал путь /app/template/905_З(2).pdf.
+
+В архиве два файла:
+- vdgo/backend/app.py — добавлен безопасный fallback на единственный PDF
+  в каталоге template, если имя файла было изменено кодировкой.
+- vdgo/backend/template/905_З(2).pdf — тот же исходный PDF с правильным UTF-8 именем.
+
+Применение:
+1. Распакуйте архив в корень вашего Git-репозитория с сохранением структуры.
+2. Проверьте git status и убедитесь, что появились изменения app.py и PDF.
+3. Сделайте commit и push в GitHub.
+4. На сервере выполните:
+
+   cd /opt/scadaprofit
+   git pull --ff-only
+   docker compose build vdgo-backend
+   docker compose up -d --no-deps vdgo-backend
+
+Это пересобирает и перезапускает только контейнер VDGO backend. PostgreSQL,
+тома базы данных, ScadaProfit app, Ollama и остальные контейнеры не пересоздаются.
+
+Проверка после обновления:
+   docker compose exec -T vdgo-backend sh -lc 'ls -lb /app/template && test -f "/app/template/905_З(2).pdf" && echo TEMPLATE_OK'
+   docker compose logs --tail=80 vdgo-backend
+
+PDF pages: 49

@@ -12,7 +12,14 @@ from database import init_database, database_status, recent_reports, record_gene
 from io import BytesIO
 
 BASE = Path(__file__).resolve().parent
-TEMPLATE = BASE / 'template' / '905_З(2).pdf'
+TEMPLATE_DIR = BASE / 'template'
+TEMPLATE = TEMPLATE_DIR / '905_З(2).pdf'
+# Robust fallback for deployments that mangle Cyrillic ZIP/Git filenames.
+# The VDGO backend package is expected to contain exactly one source PDF template.
+if not TEMPLATE.is_file():
+    _template_candidates = sorted(p for p in TEMPLATE_DIR.glob('*.pdf') if p.is_file())
+    if len(_template_candidates) == 1:
+        TEMPLATE = _template_candidates[0]
 OUTPUT = BASE / 'output'
 UPLOADS = BASE / 'uploads'
 FONT = BASE / 'assets' / 'Carlito-Regular.ttf'
