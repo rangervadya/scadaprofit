@@ -1200,7 +1200,7 @@ app.get('/api/health', async (_req, res) => {
   const tesseract = await checkTesseract();
   res.json({
     ok: true,
-    version: '4.3.41',
+    version: '4.3.42',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',

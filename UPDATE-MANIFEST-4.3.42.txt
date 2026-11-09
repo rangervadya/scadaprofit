@@ -1,0 +1,5 @@
+ScadaProfit 4.3.42 Git patch
+
+Изменены: processor.py, tests/test_engine.py, package.json, server.js, public/index.html, README.md, README-RU.md, CHANGELOG-4.3.42-RU.md, README-4.3.42-RU.txt, UPDATE-MANIFEST-4.3.42.txt.
+
+Не включать/не изменять: vdgo/, compose.yaml, .env, Docker volumes, PostgreSQL, Ollama service configuration, Nginx/gateway и файлы других приложений.

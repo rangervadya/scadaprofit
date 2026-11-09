@@ -925,7 +925,7 @@ class GraphTests(unittest.TestCase):
             calls = []
             def fake_qwen_call(image, prompt, **kwargs):
                 calls.append((image.size, prompt))
-                return ({'routes': [{'id': 'R', 'points': [[0, 100], [600, 100]], 'confidence': 80}]}, 1.0, image.size)
+                return ({'routes': [{'id': 'R', 'points': [[0, 100], [image.width, 100]], 'confidence': 80}]}, 1.0, image.size)
             with patch.dict(os.environ, {
                 'QWEN_PIPE_TILE_GRID': '2', 'QWEN_PIPE_UPSCALE': '1.0',
                 'QWEN_PIPE_TILE_OVERLAP': '0.14', 'QWEN_PIPE_MAX_IMAGE_EDGE': '2000',
@@ -942,7 +942,41 @@ class GraphTests(unittest.TestCase):
             top_right = next(route for route in routes if route['tile'] == 2)
             self.assertEqual(top_left['points'], [[0.0, 100.0], [500.0, 100.0]])
             self.assertEqual(top_right['points'], [[500.0, 100.0], [999.0, 100.0]])
-            self.assertEqual(status['strategy'], 'overlapping semantic tiles clipped to non-overlapping cores')
+            self.assertEqual(status['strategy'], 'strictly bounded overlapping semantic tiles clipped to non-overlapping cores')
+
+    def test_qwen_pipe_rejects_out_of_bounds_coordinates_instead_of_clamping_to_page_edge(self):
+        with TemporaryDirectory() as temp:
+            image_path = Path(temp) / 'source.png'
+            from PIL import Image as PILImage
+            PILImage.new('RGB', (1000, 800), 'white').save(image_path)
+
+            def fake_qwen_call(image, prompt, **kwargs):
+                # This resembles the production failure: the model invents a
+                # y-coordinate ten times larger than the 456px tile it received.
+                return ({'routes': [{
+                    'id': 'hallucinated-edge',
+                    'points': [[100, 100], [100, 4800]],
+                    'confidence': 55,
+                }]}, 1.0, image.size)
+
+            env = {
+                'QWEN_PIPE_TILE_GRID': '2', 'QWEN_PIPE_UPSCALE': '1.0',
+                'QWEN_PIPE_TILE_OVERLAP': '0.14', 'QWEN_PIPE_MAX_IMAGE_EDGE': '2000',
+                'QWEN_PIPE_TRACE_TIMEOUT': '30', 'QWEN_TILE_RETRY_BUDGET': '0',
+                'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct',
+            }
+            with patch.dict(os.environ, env, clear=False), \
+                 patch('processor._qwen_call', side_effect=fake_qwen_call):
+                routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
+
+            self.assertEqual(routes, [], 'Invalid Qwen coordinates must never become page-border polylines')
+            self.assertEqual(status['rejected_out_of_bounds_routes'], 4)
+            self.assertIn('strictly bounded', status['strategy'])
+            self.assertEqual(status['tile_diagnostics'][0]['rejected_out_of_bounds_routes'], 1)
+            self.assertEqual(
+                status['tile_diagnostics'][0]['out_of_bounds_route_examples'][0]['expected_bounds']['y'],
+                [0, status['tile_diagnostics'][0]['sent_image']['h'] - 1],
+            )
 
     def test_qwen_empty_ocr_reports_tile_diagnostics(self):
         with TemporaryDirectory() as temp:
@@ -1108,6 +1142,53 @@ class GraphTests(unittest.TestCase):
         prepared, diagnostics = processor.prepare_document_image(image, rotation_degrees=90)
         self.assertEqual(prepared.shape[:2], (120, 60))
         self.assertEqual(diagnostics['rotation_degrees'], 90)
+
+    def test_ocr_fallback_does_not_flip_weakly_oriented_engineering_page_by_180(self):
+        image = np.full((60, 120, 3), 255, np.uint8)
+        cv2.line(image, (10, 15), (100, 15), (0, 0, 0), 2)
+        fallback = {
+            'accepted': False, 'rotation_degrees': None,
+            'winner_score': 44.72, 'runner_up_score': 33.27,
+            'required_margin': 5.37, 'relative_margin': 0.256,
+            'reason': 'ambiguous_180_requires_stronger_ocr_margin',
+        }
+        with patch('processor._detect_page_quad', return_value=None), \
+             patch('processor._detect_text_rotation', return_value=(0, 4.43, 1.11)), \
+             patch('processor._detect_text_rotation_fallback', return_value=fallback):
+            prepared, diagnostics = processor.prepare_document_image(image)
+        self.assertEqual(prepared.shape[:2], image.shape[:2])
+        self.assertEqual(diagnostics['rotation_degrees'], 0)
+        self.assertEqual(diagnostics['orientation_decision'], 'preserved_low_confidence')
+        self.assertEqual(diagnostics['orientation_fallback']['reason'], 'ambiguous_180_requires_stronger_ocr_margin')
+
+    def test_ocr_rotation_fallback_rejects_weak_relative_180_degree_margin(self):
+        import types
+        image = np.full((80, 120, 3), 255, np.uint8)
+        calls = {'count': 0}
+
+        def fake_image_to_data(*_args, **_kwargs):
+            calls['count'] += 1
+            # Four calls are made in order: 0, 90, 180, 270 degrees.
+            # 180 wins by token count, but only by a 25% relative margin,
+            # which is not strong enough to flip a technical drawing.
+            token_count = {1: 6, 2: 1, 3: 8, 4: 1}[calls['count']]
+            return {'text': ['abcdefgh'] * token_count, 'conf': ['80'] * token_count}
+
+        fake_pytesseract = types.SimpleNamespace(
+            Output=types.SimpleNamespace(DICT='dict'),
+            image_to_data=fake_image_to_data,
+        )
+        with patch.dict(sys.modules, {'pytesseract': fake_pytesseract}), \
+             patch.dict(os.environ, {
+                 'OSD_FALLBACK_MIN_SCORE': '18', 'OSD_FALLBACK_MIN_GAP': '3',
+                 'OSD_FALLBACK_MIN_MARGIN': '0.12', 'OSD_FALLBACK_180_MIN_MARGIN': '0.35',
+             }, clear=False):
+            diagnostics = processor._detect_text_rotation_fallback(image)
+
+        self.assertFalse(diagnostics['accepted'])
+        self.assertIsNone(diagnostics['rotation_degrees'])
+        self.assertEqual(diagnostics['reason'], 'ambiguous_180_requires_stronger_ocr_margin')
+        self.assertLess(diagnostics['relative_margin'], 0.35)
 
     def test_document_preparation_preserves_orientation_when_osd_evidence_is_weak(self):
         image = np.full((60, 120, 3), 255, np.uint8)

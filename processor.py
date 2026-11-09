@@ -191,13 +191,25 @@ def _detect_text_rotation_fallback(bgr: np.ndarray) -> dict[str, Any] | None:
         second_score = ranked[1][0] if len(ranked) > 1 else 0.0
         required_gap = max(min_gap, best_score * min_margin)
         accepted = best_score >= min_score and (best_score - second_score) >= required_gap
-        reason = 'clear_ocr_margin' if accepted else 'ambiguous_ocr_scores'
+        # OCR token counts can be misleading on engineering drawings: dimensions,
+        # callout numbers and mirrored-looking glyphs often make an upside-down
+        # (180-degree) pass score slightly higher than the already upright page.
+        # Require stronger relative evidence before flipping a page by 180 degrees.
+        relative_margin = (best_score - second_score) / max(best_score, 1.0)
+        min_180_margin = max(0.0, min(0.95, float(os.getenv('OSD_FALLBACK_180_MIN_MARGIN', '0.35'))))
+        if accepted and best_angle == 180 and relative_margin < min_180_margin:
+            accepted = False
+            reason = 'ambiguous_180_requires_stronger_ocr_margin'
+        else:
+            reason = 'clear_ocr_margin' if accepted else 'ambiguous_ocr_scores'
         return {
             'accepted': bool(accepted),
             'rotation_degrees': best_angle if accepted else None,
             'scores': scores, 'candidates': diagnostics,
             'winner_score': round(best_score, 2), 'runner_up_score': round(second_score, 2),
-            'required_margin': round(required_gap, 2), 'reason': reason,
+            'required_margin': round(required_gap, 2),
+            'relative_margin': round(relative_margin, 4),
+            'minimum_180_relative_margin': min_180_margin, 'reason': reason,
         }
     except Exception as error:
         return {
@@ -1932,6 +1944,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
     url = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat').strip()
     model = os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct').strip()
     raw_count = rejected_low_confidence = rejected_invalid = 0
+    rejected_out_of_bounds_routes = 0
     tile_diagnostics: list[dict[str, Any]] = []
     try:
         max_edge = max(1024, int(os.getenv('QWEN_PIPE_MAX_IMAGE_EDGE', '1280')))
@@ -1989,6 +2002,9 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху. '
                     'Каждый routes[i].points — упорядоченный список из 2..64 видимых точек одной '
                     'непрерывной полилинии [[x1,y1],[x2,y2],...]. Максимум 64 полилинии. '
+                    f'ВАЖНО: каждая координата ОБЯЗАНА находиться внутри изображения: 0<=x<{sent_width}, 0<=y<{sent_height}. '
+                    'Не используй координаты исходного листа, миллиметры, проценты или координаты больше размера фрагмента. '
+                    'Если путь нельзя уверенно описать координатами внутри этих границ, не возвращай его. '
                     'Пример: {"routes":[{"id":"S1","points":[[20,80],[180,80],[180,240]],"confidence":70}]}. '
                     'Верни только JSON без текста и без объяснений.'
                 )
@@ -1996,9 +2012,12 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'tile': tile_index, 'row': row + 1, 'column': col + 1,
                     'core': {'x': core_left, 'y': core_top, 'w': core_w, 'h': core_h},
                     'crop': {'x': left, 'y': top, 'w': right - left, 'h': bottom - top},
+                    'sent_image': {'w': sent_width, 'h': sent_height},
+                    'coordinate_contract': 'pixel coordinates strictly inside sent_image; out-of-bounds route is rejected',
                 }
                 checkpoint_settings = {
-                    'prompt_version': 3, 'model': model, 'grid': grid,
+                    'prompt_version': 4, 'coordinate_contract': 'strict-sent-image-bounds-v1',
+                    'model': model, 'grid': grid,
                     'core': [core_left, core_top, core_right, core_bottom],
                     'crop': [left, top, right, bottom], 'upscale': upscale,
                     'overlap': overlap, 'max_edge': max_edge,
@@ -2032,6 +2051,9 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 tile_raw_before = raw_count
                 tile_low_before = rejected_low_confidence
                 tile_invalid_before = rejected_invalid
+                tile_oob_before = rejected_out_of_bounds_routes
+                tile_oob_examples: list[dict[str, Any]] = []
+                tile_oob_count = 0
                 _progress('PIPE', f'Tile {tile_index}/{total_tiles} started')
                 try:
                     parsed, resize_scale, sent_size = _qwen_call_with_retry(
@@ -2040,6 +2062,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                         format_schema=PIPE_RESPONSE_SCHEMA, retry_state=tile_retry_state,
                         stage='PIPE', tile_index=tile_index
                     )
+                    sent_width, sent_height = int(sent_size[0]), int(sent_size[1])
+                    diag['sent_image'] = {'w': sent_width, 'h': sent_height}
                     raw_routes = parsed.get('routes', parsed.get('pipes', parsed.get('pipe_routes', parsed.get('polylines', parsed.get('paths', parsed.get('traces', []))))))
                     if not isinstance(raw_routes, list):
                         if isinstance(raw_routes, dict):
@@ -2071,25 +2095,71 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                             confidence = 60.0 if not confidence_supplied else 0.0
                         if 0 <= confidence <= 1:
                             confidence *= 100
-                        mapped: list[list[float]] = []
-                        for pt in points_raw[:64]:
+                        # Qwen is explicitly asked for coordinates in the exact image
+                        # dimensions sent to Ollama. Never clamp wildly invalid model
+                        # coordinates to the page edge: doing so turns hallucinated
+                        # points such as y=4800 on a 480px tile into fake border pipes.
+                        local_points: list[list[float]] = []
+                        route_coordinate_error: str | None = None
+                        route_min_x = route_min_y = float('inf')
+                        route_max_x = route_max_y = float('-inf')
+                        for point_index, pt in enumerate(points_raw[:64], 1):
                             try:
                                 if isinstance(pt, dict):
                                     px, py = float(pt.get('x')), float(pt.get('y'))
                                 elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
                                     px, py = float(pt[0]), float(pt[1])
                                 else:
-                                    continue
+                                    route_coordinate_error = 'invalid-point-shape'
+                                    break
                             except (TypeError, ValueError):
-                                continue
+                                route_coordinate_error = 'non-numeric-point'
+                                break
                             if not math.isfinite(px) or not math.isfinite(py):
-                                continue
+                                route_coordinate_error = 'non-finite-coordinate'
+                                break
+                            route_min_x, route_max_x = min(route_min_x, px), max(route_max_x, px)
+                            route_min_y, route_max_y = min(route_min_y, py), max(route_max_y, py)
+                            # Allow only tiny rounding noise (2px). Meaningful
+                            # out-of-frame coordinates invalidate the entire route.
+                            if px < -2.0 or py < -2.0 or px > sent_width + 2.0 or py > sent_height + 2.0:
+                                route_coordinate_error = 'coordinate-out-of-sent-image-bounds'
+                                break
+                            px = max(0.0, min(float(sent_width - 1), px))
+                            py = max(0.0, min(float(sent_height - 1), py))
+                            if not local_points or math.dist(local_points[-1], [px, py]) >= 2.0:
+                                local_points.append([px, py])
+                        if route_coordinate_error:
+                            rejected_invalid += 1
+                            if route_coordinate_error == 'coordinate-out-of-sent-image-bounds':
+                                rejected_out_of_bounds_routes += 1
+                                tile_oob_count += 1
+                                if len(tile_oob_examples) < 5:
+                                    tile_oob_examples.append({
+                                        'route': str(raw.get('id') or raw_index)[:32],
+                                        'point_index': point_index,
+                                        'x_range': [round(route_min_x, 1), round(route_max_x, 1)] if math.isfinite(route_min_x) else None,
+                                        'y_range': [round(route_min_y, 1), round(route_max_y, 1)] if math.isfinite(route_min_y) else None,
+                                        'expected_bounds': {'x': [0, sent_width - 1], 'y': [0, sent_height - 1]},
+                                    })
+                            continue
+                        if len(local_points) < 2:
+                            rejected_invalid += 1
+                            continue
+                        mapped: list[list[float]] = []
+                        for px, py in local_points:
                             gx, gy = left + px / coordinate_scale, top + py / coordinate_scale
+                            # The local bounds check above should guarantee page
+                            # bounds too. Keep a defensive check; only tolerate
+                            # one-pixel arithmetic noise instead of edge-clamping.
+                            if gx < -1.0 or gy < -1.0 or gx > original_width or gy > original_height:
+                                route_coordinate_error = 'mapped-coordinate-out-of-page-bounds'
+                                break
                             gx = max(0.0, min(float(original_width - 1), gx))
                             gy = max(0.0, min(float(original_height - 1), gy))
                             if not mapped or math.dist(mapped[-1], [gx, gy]) >= 2.0:
                                 mapped.append([gx, gy])
-                        if len(mapped) < 2:
+                        if route_coordinate_error or len(mapped) < 2:
                             rejected_invalid += 1
                             continue
                         # The model sees overlap for context; export only this tile's non-overlap core.
@@ -2115,6 +2185,9 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                             })
                     tile_routes = result[route_item_start:]
                     diag['accepted_routes'] = len(tile_routes)
+                    diag['rejected_out_of_bounds_routes'] = tile_oob_count
+                    if tile_oob_examples:
+                        diag['out_of_bounds_route_examples'] = tile_oob_examples
                     diag['tile_status'] = 'ok'
                     _save_tile_checkpoint(checkpoint_dir, 'pipe', tile_index, checkpoint_signature, tile_routes, diag)
                 except Exception as error:
@@ -2122,12 +2195,15 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     raw_count = tile_raw_before
                     rejected_low_confidence = tile_low_before
                     rejected_invalid = tile_invalid_before
+                    rejected_out_of_bounds_routes = tile_oob_before
                     diag['tile_status'] = 'error'
                     diag['error'] = (str(error).strip() or error.__class__.__name__)[:180]
                     diag['attempts'] = int(diag.get('attempts', 1) or 1)
                 tile_diagnostics.append(diag)
                 if diag.get('tile_status') == 'ok':
                     _progress('PIPE', f'Tile {tile_index}/{total_tiles} completed; routes={diag.get("accepted_routes", 0)}')
+                    if tile_oob_count:
+                        _progress('PIPE', f'Tile {tile_index}: rejected {tile_oob_count} route(s) with coordinates outside sent image {sent_width}x{sent_height}')
                 else:
                     _progress('PIPE', f'Tile {tile_index}/{total_tiles} failed: {diag.get("error", "unknown error")}')
 
@@ -2138,12 +2214,14 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
             'available': successful_tiles > 0, 'complete': complete, 'model': model,
             'routes': len(result), 'raw_routes': raw_count,
             'rejected_low_confidence': rejected_low_confidence, 'rejected_invalid': rejected_invalid,
+            'rejected_out_of_bounds_routes': rejected_out_of_bounds_routes,
             'tiles': total_tiles, 'successful_tiles': successful_tiles, 'failed_tiles': failed_tiles,
             'truncated_tiles': sum(1 for item in tile_diagnostics if item.get('truncated')),
             'tile_diagnostics': tile_diagnostics,
             'error': None, 'hint': None,
             'image_size': {'width': original_width, 'height': original_height},
-            'strategy': 'overlapping semantic tiles clipped to non-overlapping cores',
+            'strategy': 'strictly bounded overlapping semantic tiles clipped to non-overlapping cores',
+            'coordinate_contract': 'all Qwen points must be inside each tile sent to Ollama; invalid routes are rejected, never clamped to page borders',
             'incomplete_reason': (f'Не обработаны PIPE-плитки: {failed_tiles}' if failed_tiles else None),
         }
         if not result:
@@ -2155,8 +2233,11 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
             elif raw_count == 0 and successful_tiles:
                 status['error'] = f'Qwen успешно обработала {successful_tiles}/{len(tile_diagnostics)} фрагментов, но вернула пустой список маршрутов.'
                 status['hint'] = 'Промпт теперь запрашивает отдельные прямые отрезки, а не сложные полилинии. Если routes снова пусты, Qwen не распознаёт геометрию даже на уровне сегментов: нужно менять модель/визуальную предобработку, а не порог confidence.'
+            elif rejected_out_of_bounds_routes:
+                status['error'] = f'Qwen вернул {raw_count} маршрутов; {rejected_out_of_bounds_routes} отброшены из-за координат за пределами изображений фрагментов.'
+                status['hint'] = 'Это предотвращает превращение невозможных координат (например, y=4800 на фрагменте высотой 480 px) в линии по краям страницы. Проверьте out_of_bounds_route_examples в semanticTrace.tile_diagnostics.'
             elif rejected_low_confidence:
-                status['error'] = f'Qwen вернул маршруты, но все ниже порога уверенности {min_confidence:g}%.'
+                status['error'] = f'Qwen вернул маршруты, но все ниже порога уверенности {min_confidence:g}%. '
                 status['hint'] = 'Проверьте координаты и confidence каждого фрагмента.'
             else:
                 status['error'] = f'Qwen вернул {raw_count} элементов, но они не прошли проверку координат, границ фрагмента или длины.'

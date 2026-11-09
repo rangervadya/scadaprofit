@@ -1,4 +1,13 @@
-# ScadaProfit 4.3.41 — CAD quality gating and source-safe preview
+# ScadaProfit 4.3.42 — CAD quality gating and source-safe preview
+
+## Исправление 4.3.42: недопустимые координаты Qwen
+
+Qwen PIPE теперь проверяет каждую точку относительно точной ширины и высоты изображения, отправленного в Ollama. Маршрут с координатами за пределами фрагмента отклоняется целиком; точки больше не обрезаются до границы исходной страницы. Это устраняет ложные граничные линии от ответов вроде `y=4800` для фрагмента высотой 480 px.
+
+Подпись checkpoint изменена, поэтому старые сохранённые Qwen PIPE-ответы с прежней логикой проверки не переиспользуются. Диагностика показывает размеры фрагмента, диапазон неправильных координат и количество отклонённых маршрутов.
+
+Дополнительно усилена защита ориентации: один лишь небольшой перевес OCR-оценки не может автоматически перевернуть технический чертёж на 180 градусов. По умолчанию для такого поворота требуется относительный перевес 35% (`OSD_FALLBACK_180_MIN_MARGIN`).
+
 
 This release corrects the misleading default preview introduced by the raw centreline trace mode. Source-ink skeletonization includes every dark stroke on the page: pipe lines, letters, dimensions, leaders, symbols and scanning noise. It is an inspection/vector-trace artifact, not a semantically classified pipe network.
 
