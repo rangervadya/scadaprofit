@@ -28,11 +28,6 @@ const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
 const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
 // Manual CAD projects are isolated from automatic analysis jobs and from the VDGO app.
 const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
-// API credentials live in the existing private cad_jobs volume; no compose or .env changes are required.
-const OPENROUTER_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'openrouter-ai-settings.json');
-const OPENROUTER_FREE_MODEL = 'nvidia/nemotron-3.5-super-vl:free';
-const MOSS_AI_CONFIG_PATH = path.join(LIBRARY_DIR, 'moss-ai-settings.json');
-const MOSS_MODEL = 'moss-vl-1.0';
 const LEGACY_YANDEX_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
 
 // ВАЖНО: PYTHON_JOB_TIMEOUT_MS задаётся в миллисекундах.
@@ -58,90 +53,43 @@ await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
 
-async function readOpenRouterSettings() {
-  try {
-    const value = JSON.parse(await readFile(OPENROUTER_AI_CONFIG_PATH, 'utf8'));
-    return value && typeof value === 'object' ? value : {};
-  } catch (error) {
-    if (error?.code === 'ENOENT') return {};
-    console.error('[AI] Cannot read private OpenRouter settings:', error?.message || error);
-    return {};
-  }
-}
-
-function publicOpenRouterSettings(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim());
+function localRecognitionPythonEnvironment() {
   return {
-    configured,
-    enabled: configured && settings.enabled === true,
-    model: String(settings.model || OPENROUTER_FREE_MODEL),
-    ocrEnabled: settings.ocrEnabled !== false,
-    pipeEnabled: settings.pipeEnabled !== false,
-    keyStored: configured,
+    MOSS_API_KEY: '', MOSS_OCR_ENABLED: '0', MOSS_PIPE_ENABLED: '0',
+    OPENROUTER_API_KEY: '', OPENROUTER_OCR_ENABLED: '0', OPENROUTER_PIPE_ENABLED: '0',
+    RECOGNITION_MODE: 'local-qwen-tesseract',
   };
 }
 
-function openRouterPythonEnvironment(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim());
-  const enabled = configured && settings.enabled === true;
-  return {
-    OPENROUTER_API_KEY: enabled ? String(settings.apiKey).trim() : '',
-    OPENROUTER_MODEL: String(settings.model || OPENROUTER_FREE_MODEL),
-    OPENROUTER_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
-    OPENROUTER_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
-  };
-}
-
-async function saveOpenRouterSettings(settings) {
-  await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
-  const temporary = `${OPENROUTER_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
-  await writeFile(temporary, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-  await chmod(temporary, 0o600).catch(() => {});
-  await rename(temporary, OPENROUTER_AI_CONFIG_PATH);
-  await chmod(OPENROUTER_AI_CONFIG_PATH, 0o600).catch(() => {});
-}
-
-async function readMossSettings() {
-  try {
-    const value = JSON.parse(await readFile(MOSS_AI_CONFIG_PATH, 'utf8'));
-    return value && typeof value === 'object' ? value : {};
-  } catch (error) {
-    if (error?.code === 'ENOENT') return {};
-    console.error('[AI] Cannot read private MOSS settings:', error?.message || error);
-    return {};
-  }
-}
-
-function publicMossSettings(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim());
-  return {
-    configured,
-    enabled: configured && settings.enabled === true,
-    model: MOSS_MODEL,
-    ocrEnabled: settings.ocrEnabled !== false,
-    pipeEnabled: settings.pipeEnabled !== false,
-    keyStored: configured,
-  };
-}
-
-function mossPythonEnvironment(settings = {}) {
-  const configured = Boolean(String(settings.apiKey || '').trim());
-  const enabled = configured && settings.enabled === true;
-  return {
-    MOSS_API_KEY: enabled ? String(settings.apiKey).trim() : '',
-    MOSS_MODEL,
-    MOSS_OCR_ENABLED: enabled && settings.ocrEnabled !== false ? '1' : '0',
-    MOSS_PIPE_ENABLED: enabled && settings.pipeEnabled !== false ? '1' : '0',
-  };
-}
-
-async function saveMossSettings(settings) {
-  await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
-  const temporary = `${MOSS_AI_CONFIG_PATH}.tmp-${randomUUID()}`;
-  await writeFile(temporary, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-  await chmod(temporary, 0o600).catch(() => {});
-  await rename(temporary, MOSS_AI_CONFIG_PATH);
-  await chmod(MOSS_AI_CONFIG_PATH, 0o600).catch(() => {});
+function checkTesseract() {
+  return new Promise((resolve) => {
+    let output = '';
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn('tesseract', ['--list-langs'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { output += chunk.toString(); });
+    child.on('error', error => finish({ available: false, languages: [], error: String(error.message || error).slice(0, 180) }));
+    child.on('close', code => {
+      const languages = output.split(/\r?\n/).map(line => line.trim()).filter(line => /^[a-z]{3}$/.test(line));
+      finish({
+        available: code === 0,
+        languages,
+        russianEnglishReady: code === 0 && languages.includes('rus') && languages.includes('eng'),
+        error: code === 0 ? null : `tesseract --list-langs завершился с кодом ${code}`,
+      });
+    });
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ available: false, languages: [], error: 'Проверка Tesseract превысила 4 секунды.' });
+    }, 4000);
+  });
 }
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -590,10 +538,9 @@ async function runStoredSchemeAnalysis(jobId) {
   const templatePath = await pinTemplateReference(jobDir);
   const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
-  const aiSettings = await readOpenRouterSettings();
   await runPythonStreaming(
     processorArgs,
-    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: openRouterPythonEnvironment(aiSettings) }
+    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
   );
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
@@ -1196,152 +1143,20 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
   }
 });
 
-app.get('/api/openrouter-settings', async (_req, res) => {
-  const settings = await readOpenRouterSettings();
-  return res.json({ ok: true, openrouter: publicOpenRouterSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
+// Backward-compatible status routes: cloud integrations are intentionally disabled.
+const cloudProviderDisabled = (_req, res) => res.status(410).json({
+  ok: false,
+  disabled: true,
+  error: 'Облачные AI-провайдеры отключены. Используется локальная связка Qwen3-VL + Tesseract.',
 });
-
-app.put('/api/openrouter-settings', async (req, res) => {
-  try {
-    const current = await readOpenRouterSettings();
-    const apiKey = String(req.body?.apiKey || current.apiKey || '').trim();
-    const model = String(req.body?.model || current.model || 'nvidia/nemotron-3.5-super-vl:free').trim();
-    if (apiKey.length > 1000 || (apiKey && !/^sk-or-v1-[A-Za-z0-9_-]{20,}$/.test(apiKey))) {
-      return res.status(400).json({ error: 'Проверь API-ключ OpenRouter. Ожидается ключ формата sk-or-v1-…' });
-    }
-    if (model !== OPENROUTER_FREE_MODEL) {
-      return res.status(400).json({ error: `В этой бесплатной конфигурации разрешена только модель ${OPENROUTER_FREE_MODEL}.` });
-    }
-    const enabled = req.body?.enabled === true;
-    if (enabled && !apiKey) {
-      return res.status(400).json({ error: 'Для включения OpenRouter нужен API-ключ.' });
-    }
-    const next = {
-      apiKey, model, enabled,
-      ocrEnabled: req.body?.ocrEnabled !== false,
-      pipeEnabled: req.body?.pipeEnabled !== false,
-      updatedAt: new Date().toISOString(),
-    };
-    await saveOpenRouterSettings(next);
-    return res.json({ ok: true, openrouter: publicOpenRouterSettings(next), message: 'Настройки OpenRouter сохранены в закрытой папке данных ScadaProfit.' });
-  } catch (error) {
-    console.error('[AI] Cannot save OpenRouter settings:', error?.message || error);
-    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки OpenRouter.' });
-  }
-});
-
-app.delete('/api/openrouter-settings', async (_req, res) => {
-  try {
-    await rm(OPENROUTER_AI_CONFIG_PATH, { force: true });
-    return res.json({ ok: true, openrouter: publicOpenRouterSettings({}), message: 'Настройки OpenRouter удалены. Локальные Qwen и Tesseract продолжают работать.' });
-  } catch (error) {
-    return res.status(500).json({ error: 'Не удалось удалить настройки OpenRouter.' });
-  }
-});
-
-app.post('/api/openrouter-settings/test', async (req, res) => {
-  const jobId = String(req.body?.jobId || '');
-  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала открой во входящих фотографию схемы дома, которую нужно проверить.' });
-  const settings = await readOpenRouterSettings();
-  if (!publicOpenRouterSettings(settings).configured || settings.enabled !== true) {
-    return res.status(409).json({ error: 'Сначала сохрани API-ключ и включи OpenRouter.' });
-  }
-  const jobDir = path.join(DATA, jobId);
-  try {
-    const names = await readdir(jobDir);
-    const sourceName = names.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
-    if (!sourceName) return res.status(404).json({ error: 'В выбранном задании нет исходной фотографии.' });
-    const sourcePath = path.join(jobDir, sourceName);
-    const tempLog = path.join(LIBRARY_DIR, `openrouter-test-${randomUUID()}.log`);
-    try {
-      const run = await runPythonStreaming(
-        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-openrouter'],
-        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: openRouterPythonEnvironment(settings) }
-      );
-      let result;
-      try { result = JSON.parse(run.stdout.trim()); }
-      catch { throw new Error('Тест OpenRouter завершился без корректного JSON-отчёта.'); }
-      return res.json({ ok: Boolean(result.ok), result });
-    } finally {
-      await rm(tempLog, { force: true }).catch(() => {});
-    }
-  } catch (error) {
-    console.error(`[AI TEST ${jobId.slice(0, 8)}] OpenRouter test failed:`, error?.stderr || error?.message || error);
-    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить OpenRouter.').slice(-900) });
-  }
-});
-
-
-app.get('/api/moss-settings', async (_req, res) => {
-  const settings = await readMossSettings();
-  return res.json({ ok: true, moss: publicMossSettings(settings), local: { qwenPreserved: true, tesseractPreserved: true } });
-});
-
-app.put('/api/moss-settings', async (req, res) => {
-  try {
-    const current = await readMossSettings();
-    const apiKey = String(req.body?.apiKey || current.apiKey || '').trim();
-    if (apiKey.length > 2000 || (apiKey && /\s/.test(apiKey))) {
-      return res.status(400).json({ error: 'Проверь API-ключ MOSS: он должен быть одной строкой без пробелов.' });
-    }
-    const enabled = req.body?.enabled === true;
-    if (enabled && !apiKey) {
-      return res.status(400).json({ error: 'Для включения MOSS нужен API-ключ.' });
-    }
-    const next = {
-      apiKey, model: MOSS_MODEL, enabled,
-      ocrEnabled: req.body?.ocrEnabled !== false,
-      pipeEnabled: req.body?.pipeEnabled !== false,
-      updatedAt: new Date().toISOString(),
-    };
-    await saveMossSettings(next);
-    return res.json({ ok: true, moss: publicMossSettings(next), message: 'Настройки MOSS сохранены в закрытой папке данных ScadaProfit.' });
-  } catch (error) {
-    console.error('[AI] Cannot save MOSS settings:', error?.message || error);
-    return res.status(500).json({ error: 'Не удалось безопасно сохранить настройки MOSS.' });
-  }
-});
-
-app.delete('/api/moss-settings', async (_req, res) => {
-  try {
-    await rm(MOSS_AI_CONFIG_PATH, { force: true });
-    return res.json({ ok: true, moss: publicMossSettings({}), message: 'Настройки MOSS удалены. Локальные Qwen и Tesseract продолжают работать.' });
-  } catch (error) {
-    return res.status(500).json({ error: 'Не удалось удалить настройки MOSS.' });
-  }
-});
-
-app.post('/api/moss-settings/test', async (req, res) => {
-  const jobId = String(req.body?.jobId || '');
-  if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Сначала выбери и открой фотографию схемы, которую нужно проверить.' });
-  const settings = await readMossSettings();
-  if (!publicMossSettings(settings).configured || settings.enabled !== true) {
-    return res.status(409).json({ error: 'Сначала сохрани API-ключ и включи MOSS.' });
-  }
-  const jobDir = path.join(DATA, jobId);
-  try {
-    const names = await readdir(jobDir);
-    const sourceName = names.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
-    if (!sourceName) return res.status(404).json({ error: 'В выбранном задании нет исходной фотографии.' });
-    const sourcePath = path.join(jobDir, sourceName);
-    const tempLog = path.join(LIBRARY_DIR, `moss-test-${randomUUID()}.log`);
-    try {
-      const run = await runPythonStreaming(
-        [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir, '--test-moss'],
-        { jobId, progressPath: tempLog, timeout: 480_000, maxBuffer: 2 * 1024 * 1024, env: mossPythonEnvironment(settings) }
-      );
-      let result;
-      try { result = JSON.parse(run.stdout.trim()); }
-      catch { throw new Error('Тест MOSS завершился без корректного JSON-отчёта.'); }
-      return res.json({ ok: Boolean(result.ok), result });
-    } finally {
-      await rm(tempLog, { force: true }).catch(() => {});
-    }
-  } catch (error) {
-    console.error(`[AI TEST ${jobId.slice(0, 8)}] MOSS test failed:`, error?.stderr || error?.message || error);
-    return res.status(502).json({ error: String(error?.stderr || error?.message || 'Не удалось проверить MOSS.').slice(-900) });
-  }
-});
+app.get('/api/openrouter-settings', (_req, res) => res.json({ ok: true, disabled: true, openrouter: { configured: false, enabled: false }, local: { mode: 'Qwen3-VL + Tesseract' } }));
+app.put('/api/openrouter-settings', cloudProviderDisabled);
+app.delete('/api/openrouter-settings', cloudProviderDisabled);
+app.post('/api/openrouter-settings/test', cloudProviderDisabled);
+app.get('/api/moss-settings', (_req, res) => res.json({ ok: true, disabled: true, moss: { configured: false, enabled: false }, local: { mode: 'Qwen3-VL + Tesseract' } }));
+app.put('/api/moss-settings', cloudProviderDisabled);
+app.delete('/api/moss-settings', cloudProviderDisabled);
+app.post('/api/moss-settings/test', cloudProviderDisabled);
 
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
@@ -1349,22 +1164,15 @@ app.get('/api/health', async (_req, res) => {
     (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
 
   let ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
-
   try {
     const response = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
     if (!response.ok) throw new Error(`Ollama API вернула HTTP ${response.status}`);
     const data = await response.json();
     const models = Array.isArray(data.models) ? data.models : [];
     const names = models.map(item => String(item.name || item.model || '')).filter(Boolean);
-
     ollama.reachable = true;
     ollama.models = names;
-    ollama.modelInstalled = names.some(name =>
-      name === qwenModel ||
-      name === `${qwenModel}:latest` ||
-      name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, '')
-    );
-
+    ollama.modelInstalled = names.some(name => name === qwenModel || name === `${qwenModel}:latest` || name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''));
     if (!ollama.modelInstalled) {
       ollama.error = `Модель ${qwenModel} не найдена. Установлены: ${names.join(', ') || 'нет моделей'}.`;
       ollama.hint = `Выполните: docker compose exec ollama ollama pull ${qwenModel}`;
@@ -1374,16 +1182,16 @@ app.get('/api/health', async (_req, res) => {
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
 
-  const openrouterSettings = publicOpenRouterSettings(await readOpenRouterSettings());
-  const mossSettings = publicMossSettings(await readMossSettings());
+  const tesseract = await checkTesseract();
   res.json({
     ok: true,
-    version: '4.3.30',
+    version: '4.3.38',
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
-    geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
-    ocr: 'MOSS-VL multimodal OCR first when enabled; local Qwen3-VL is fallback when MOSS is disabled, fails, or returns no annotations; Tesseract supplements both',
+    recognitionMode: 'local-qwen-tesseract',
+    geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated local Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
+    ocr: 'Local Ollama Qwen3-VL is the primary OCR and route-tracing model; local Tesseract rus+eng supplements text recognition. Cloud providers are disabled in the production pipeline.',
     qwenModel,
     qwenLimits: {
       ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
@@ -1400,12 +1208,12 @@ app.get('/api/health', async (_req, res) => {
       ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2),
       modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
     },
+    localRecognition: { mode: 'Qwen3-VL + Tesseract', cloudDisabled: true, qwen: ollama, tesseract },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
-    mossAI: mossSettings,
-    openrouterAI: openrouterSettings,
+    cloudProvidersDisabled: true,
     ollamaRequiredForCleanCad: false,
     ollamaRequired: false,
-    ollama
+    ollama,
   });
 });
 
@@ -1448,11 +1256,9 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const templatePath = await pinTemplateReference(jobDir);
     const processorArgs = [path.join(__dirname, 'processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
-    const aiSettings = await readOpenRouterSettings();
-    const mossSettings = await readMossSettings();
     await runPythonStreaming(
       processorArgs,
-      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: { ...openRouterPythonEnvironment(aiSettings), ...mossPythonEnvironment(mossSettings) } }
+      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
     );
 
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));

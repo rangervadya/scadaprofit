@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
-  <title>Ручной CAD · ScadaProfit 4.3.26</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=4.3.26">
-  <script src="/manual-cad.js?v=4.3.26" defer></script>
+  <title>Ручной CAD · ScadaProfit 4.3.38</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.38">
+  <script src="/manual-cad.js?v=4.3.38" defer></script>
 </head>
 <body class="manual-cad-page">
   <nav class="mc-nav" aria-label="Разделы ScadaProfit">
@@ -33,7 +33,7 @@
       <div id="projectList" class="mc-project-list"><div class="mc-muted-block">Загружаю список…</div></div>
       <div class="mc-project-help">
         <b>Как работать</b>
-        <p>Загрузи фотографию как подложку. Обведи трубы инструментом «Труба», начинай ответвление прямо на существующей линии, добавляй символы и подписи. В DXF попадёт только построенная векторная схема.</p>
+        <p>Загрузи фото как подложку и обведи трассу. Вершины можно двигать, добавлять инструментом «Узел» и удалять отдельно. Перетаскивай линию целиком, чтобы сдвинуть ветку; ответвления сохраняют точки соединения. Ctrl+D дублирует выбранный элемент.</p>
       </div>
     </aside>
 
@@ -70,6 +70,7 @@
           <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
           <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
           <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
+          <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
           <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
           <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
           <button class="mc-tool" type="button" data-tool="dimension" title="Поставить размер между двумя точками">↔ <span>Размер</span></button>
@@ -77,8 +78,13 @@
         <div class="mc-toolgroup mc-toolgroup-right">
           <button class="mc-button mc-button-light" id="finishRouteBtn" type="button" disabled>Завершить линию ↵</button>
           <button class="mc-icon-button" id="undoBtn" type="button" title="Отменить Ctrl+Z" disabled>↶</button>
-          <button class="mc-icon-button" id="redoBtn" type="button" title="Повторить Ctrl+Y" disabled>↷</button>
-          <button class="mc-icon-button mc-danger" id="deleteBtn" type="button" title="Удалить выбранный элемент" disabled>⌫</button>
+          <button class="mc-icon-button" id="redoBtn" type="button" title="Повторить Ctrl+Y · Del узел/элемент" disabled>↷</button>
+          <button class="mc-icon-button" id="duplicateBtn" type="button" title="Дублировать выбранный элемент · Ctrl+D" disabled>⧉</button>
+          <button class="mc-icon-button mc-danger" id="deleteBtn" type="button" title="Удалить выбранный узел или элемент" disabled>⌫</button>
+          <span class="mc-toolbar-divider"></span>
+          <button class="mc-icon-button" id="zoomOutBtn" type="button" title="Уменьшить масштаб">−</button>
+          <button class="mc-button mc-button-light mc-zoom-value" id="zoomResetBtn" type="button" title="Сбросить масштаб">100%</button>
+          <button class="mc-icon-button" id="zoomInBtn" type="button" title="Увеличить масштаб">＋</button>
         </div>
       </div>
 
@@ -87,9 +93,10 @@
         <div class="mc-prop mc-prop-route"><label for="pipeDiameter">Диаметр / DN</label><input id="pipeDiameter" maxlength="32" placeholder="Например, 25"></div>
         <div class="mc-prop mc-prop-route"><label for="pipeKind">Тип линии</label><select id="pipeKind"><option value="pipe">Газопровод</option><option value="riser">Стояк</option></select></div>
         <div class="mc-prop mc-prop-label" hidden><label for="labelText">Текст подписи</label><input id="labelText" maxlength="180" placeholder="Номер, адрес, примечание"></div>
-        <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option></select></div>
+        <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option></select></div>
         <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
-        <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выключена</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
+        <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выкл.</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
+        <label class="mc-check mc-ortho-check" title="Фиксировать горизонтальные и вертикальные сегменты"><input id="orthoMode" type="checkbox"><span>Ортогонально</span></label>
         <label class="mc-check" id="reviewCandidatesLabel" hidden title="Показывает линии, которые не включены в чистовой экспорт"><input id="showReviewCandidates" type="checkbox"><span>Кандидаты на проверку: <b id="reviewCandidatesCount">0</b></span></label>
         <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Подложка</span></label>
         <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
@@ -120,11 +127,21 @@
 
     <aside class="mc-inspector">
       <div class="mc-panel-head"><div><b>Свойства</b><small>Выбранный элемент</small></div><span class="mc-count" id="selectionType">—</span></div>
-      <div id="selectionEmpty" class="mc-empty-properties"><div class="mc-empty-icon">⌖</div><b>Ничего не выбрано</b><p>Выбери трубу, символ или подпись на листе. В режиме выбора можно перетаскивать вершины линии.</p></div>
+      <div id="selectionEmpty" class="mc-empty-properties"><div class="mc-empty-icon">⌖</div><b>Ничего не выбрано</b><p>Выбери трубу, вершину, символ или подпись. Перетаскивай объект, меняй координаты и свойства справа. Ctrl+D создаёт копию; Del удаляет вершину или объект.</p></div>
       <div id="selectionProperties" hidden>
         <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
         <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
-        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolLabel">Подпись символа</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolType">Тип условного обозначения</label><select id="selectedSymbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option></select><label for="selectedSymbolLabel">Подпись / номер</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <div class="mc-prop mc-full" id="selectedKindWrap" hidden><label for="selectedKind">Тип трубопровода</label><select id="selectedKind"><option value="pipe">Газопровод</option><option value="branch">Ответвление</option><option value="riser">Стояк</option></select></div>
+        <div class="mc-property-grid" id="selectedPositionWrap" hidden>
+          <div class="mc-prop"><label for="selectedX">Координата X</label><input id="selectedX" type="number" step="1"></div>
+          <div class="mc-prop"><label for="selectedY">Координата Y</label><input id="selectedY" type="number" step="1"></div>
+        </div>
+        <div class="mc-property-grid" id="selectedTransformWrap" hidden>
+          <div class="mc-prop"><label for="selectedRotation">Поворот, °</label><input id="selectedRotation" type="number" min="-360" max="360" step="5"></div>
+          <div class="mc-prop" id="selectedScaleWrap" hidden><label for="selectedScale">Масштаб символа</label><input id="selectedScale" type="number" min="0.25" max="4" step="0.05"></div>
+          <div class="mc-prop" id="selectedFontSizeWrap" hidden><label for="selectedFontSize">Размер текста</label><input id="selectedFontSize" type="number" min="6" max="120" step="1"></div>
+        </div>
         <button class="mc-button mc-button-primary mc-accept-review" id="acceptReviewPipeBtn" type="button" hidden>Подтвердить линию и включить в чертёж</button>
         <div class="mc-property-help" id="selectedHelp">Измени свойства, затем они автоматически сохранятся.</div>
       </div>

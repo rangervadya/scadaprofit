@@ -2175,112 +2175,45 @@ def _boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 
 def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Try MOSS-VL first when enabled; keep OpenRouter optional and local Qwen/Tesseract fallbacks."""
+    """Run local Qwen OCR first and Tesseract as a complementary local OCR channel.
+
+    Cloud providers are deliberately not part of the normal reconstruction path.
+    This keeps drawings on the customer's server and makes OCR behaviour repeatable.
+    """
     h, w = gray.shape[:2]
-    moss_enabled = os.getenv('MOSS_OCR_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
-    moss_api_key = os.getenv('MOSS_API_KEY', '').strip()
-    moss_model = os.getenv('MOSS_MODEL', DEFAULT_MOSS_MODEL).strip() or DEFAULT_MOSS_MODEL
-    moss_pipe_requested = os.getenv('MOSS_PIPE_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
-    moss_active = bool((moss_enabled or moss_pipe_requested) and moss_api_key)
-    openrouter_enabled = (not moss_active and
-        os.getenv('OPENROUTER_OCR_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'})
-    api_key = os.getenv('OPENROUTER_API_KEY', '').strip()
-    model = os.getenv('OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL).strip() or DEFAULT_OPENROUTER_MODEL
     qwen_items: list[dict[str, Any]] = []
     qwen_status: dict[str, Any] = {
-        'available': True, 'complete': False, 'skipped': False,
+        'available': False, 'complete': False, 'skipped': False,
         'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
-        'annotations': 0, 'tiles': 0, 'successful_tiles': 0, 'failed_tiles': [],
-    }
-    moss_items: list[dict[str, Any]] = []
-    moss_status: dict[str, Any] = {
-        'available': False, 'complete': False, 'model': moss_model,
-        'provider': 'moss', 'annotations': 0, 'tiles': 0,
-        'successful_tiles': 0, 'failed_tiles': [], 'disabled': not moss_enabled,
-    }
-    openrouter_items: list[dict[str, Any]] = []
-    openrouter_status: dict[str, Any] = {
-        'available': False, 'complete': False, 'model': model,
-        'provider': 'openrouter', 'annotations': 0, 'tiles': 0,
+        'provider': 'ollama-qwen', 'annotations': 0, 'tiles': 0,
         'successful_tiles': 0, 'failed_tiles': [],
-        'disabled': not openrouter_enabled,
-        'skip_reason': 'MOSS is enabled; OpenRouter is bypassed in MOSS-first mode.' if moss_active else None,
     }
 
-    if moss_enabled and moss_api_key:
-        _progress('OCR', f'MOSS-VL OCR started (cloud-first): {moss_model}')
-        try:
-            moss_items, moss_status = moss_ocr_annotations(
-                image_path, moss_api_key, moss_model,
-                timeout=max(30.0, float(os.getenv('MOSS_OCR_TIMEOUT', '240'))),
-            )
-            _progress('OCR', f'MOSS-VL OCR completed: annotations={len(moss_items)}')
-        except Exception as error:
-            moss_status.update({
-                'available': False, 'complete': False, 'error': str(error)[:260],
-                'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
-            })
-            _progress('OCR', f'MOSS-VL OCR failed; local Qwen fallback will run: {str(error)[:220]}')
-    elif moss_enabled:
-        moss_status.update({'error': 'Не задан API-ключ MOSS.', 'tiles': 1, 'failed_tiles': [1]})
-
-    moss_usable = bool(moss_status.get('complete')) and bool(moss_items)
-    if moss_usable:
+    _progress('OCR', f'Local Qwen3-VL OCR started: {qwen_status["model"]}')
+    try:
+        qwen_items, qwen_status = _qwen_annotations(
+            image_path, w, h, checkpoint_dir=checkpoint_dir
+        )
+        qwen_status.setdefault('provider', 'ollama-qwen')
+        _progress('OCR', f'Local Qwen3-VL OCR completed: annotations={len(qwen_items)}')
+    except Exception as error:
         qwen_status.update({
-            'skipped': True,
-            'skip_reason': 'MOSS-VL OCR returned annotations; local Qwen remains fallback.',
+            'available': False, 'complete': False, 'error': str(error)[:260],
+            'tiles': max(1, int(qwen_status.get('tiles') or 1)),
+            'successful_tiles': 0,
         })
-        _progress('OCR', 'Local Qwen OCR skipped: MOSS-VL returned annotations; Qwen remains fallback')
-    else:
-        # Do not call OpenRouter while MOSS is active: the current deployment's
-        # OpenRouter route is blocked and would only delay the local fallback.
-        if not moss_active and openrouter_enabled and api_key:
-            _progress('OCR', 'OpenRouter OCR fallback started (MOSS disabled)')
-            try:
-                openrouter_items, openrouter_status = openrouter_ocr_annotations(
-                    image_path, api_key, model,
-                    timeout=max(30.0, float(os.getenv('OPENROUTER_OCR_TIMEOUT', '180'))),
-                )
-                _progress('OCR', f'OpenRouter OCR completed: annotations={len(openrouter_items)}')
-            except Exception as error:
-                openrouter_status.update({
-                    'available': False, 'complete': False, 'error': str(error)[:260],
-                    'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
-                })
-                _progress('OCR', f'OpenRouter OCR failed; local Qwen fallback will run: {str(error)[:220]}')
-        elif not moss_active and openrouter_enabled:
-            openrouter_status.update({'error': 'Не задан API-ключ OpenRouter.', 'tiles': 1, 'failed_tiles': [1]})
+        _progress('OCR', f'Local Qwen3-VL OCR failed; Tesseract will still run: {str(error)[:220]}')
 
-        openrouter_usable = bool(openrouter_status.get('complete')) and bool(openrouter_items)
-        if openrouter_usable:
-            qwen_status.update({
-                'skipped': True,
-                'skip_reason': 'OpenRouter OCR returned annotations; local Qwen remains fallback.',
-            })
-            _progress('OCR', 'Local Qwen OCR skipped: OpenRouter returned annotations; Qwen remains fallback')
-        else:
-            if (moss_enabled and moss_status.get('complete') and not moss_items):
-                _progress('OCR', 'MOSS-VL completed without annotations; starting local Qwen fallback')
-            else:
-                _progress('OCR', 'Local Qwen OCR started (MOSS/OpenRouter disabled or unavailable)')
-            qwen_items, qwen_status = _qwen_annotations(image_path, w, h, checkpoint_dir=checkpoint_dir)
-
-    moss_items = [
-        item for item in moss_items
-        if not any(_boxes_overlap(item.get('bbox') or {}, other.get('bbox') or {}) >= 0.22
-                   for other in (qwen_items + openrouter_items))
-    ]
-    openrouter_items = [
-        item for item in openrouter_items
-        if not any(_boxes_overlap(item.get('bbox') or {}, other.get('bbox') or {}) >= 0.22
-                   for other in (qwen_items + moss_items))
-    ]
     tesseract_items: list[dict[str, Any]] = []
     tesseract_error = None
-    _progress('OCR', 'Tesseract OCR started')
+    tesseract_languages: list[str] = []
+    _progress('OCR', 'Local Tesseract OCR started (rus+eng)')
     try:
         import pytesseract
         from pytesseract import Output
+        tesseract_languages = list(pytesseract.get_languages(config=''))
+        if not {'rus', 'eng'}.issubset(set(tesseract_languages)):
+            raise RuntimeError('Не установлены языки Tesseract rus и eng.')
         data = pytesseract.image_to_data(
             Image.fromarray(gray), lang='rus+eng', config='--oem 1 --psm 11', output_type=Output.DICT
         )
@@ -2297,7 +2230,7 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
             if bw < 2 or bh < 2:
                 continue
             box = {'x': x, 'y': y, 'w': bw, 'h': bh}
-            if any(_boxes_overlap(box, item['bbox']) >= 0.22 for item in (qwen_items + moss_items + openrouter_items)):
+            if any(_boxes_overlap(box, item.get('bbox') or {}) >= 0.22 for item in qwen_items):
                 continue
             has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
             accepted = confidence >= 68 and has_alnum
@@ -2305,21 +2238,36 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
                 'id': f'T{len(tesseract_items) + 1}', 'text': text,
                 'confidence': round(confidence, 1), 'bbox': box,
                 'verified': accepted, 'include': accepted,
-                'geometry_exclude': confidence >= 20 and has_alnum, 'source': 'tesseract'
+                'geometry_exclude': confidence >= 20 and has_alnum,
+                'source': 'tesseract',
             })
     except Exception as error:
         tesseract_error = str(error)[:180]
         _progress('OCR', f'Tesseract OCR unavailable: {tesseract_error}')
 
     _progress('OCR', f'Tesseract OCR completed: annotations={len(tesseract_items)}')
-    items = qwen_items + moss_items + openrouter_items + tesseract_items
+    items = qwen_items + tesseract_items
     for index, item in enumerate(items, 1):
         item['id'] = f'A{index}'
     status = {
+        'provider': 'local-qwen+tesseract',
         'qwen': qwen_status,
-        'moss': moss_status,
-        'openrouter': openrouter_status,
-        'tesseract': {'available': tesseract_error is None, 'annotations': len(tesseract_items), 'error': tesseract_error}
+        'moss': {
+            'available': False, 'complete': False, 'disabled': True,
+            'provider': 'moss', 'annotations': 0, 'tiles': 0,
+            'skip_reason': 'Cloud OCR отключён: используется локальный режим Qwen + Tesseract.',
+        },
+        'openrouter': {
+            'available': False, 'complete': False, 'disabled': True,
+            'provider': 'openrouter', 'annotations': 0, 'tiles': 0,
+            'skip_reason': 'Cloud OCR отключён: используется локальный режим Qwen + Tesseract.',
+        },
+        'tesseract': {
+            'available': tesseract_error is None,
+            'complete': tesseract_error is None,
+            'annotations': len(tesseract_items), 'languages': tesseract_languages,
+            'error': tesseract_error,
+        },
     }
     return items, status
 
@@ -4369,18 +4317,15 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     annotations, ocr_status = ocr_annotations(prepared_input_path, gray, checkpoint_dir=checkpoint_dir)
     timings_ms['ocr'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
-    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; MOSS={ocr_status.get("moss", {}).get("successful_tiles", 0)}/{ocr_status.get("moss", {}).get("tiles", 0)}; Qwen={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; OpenRouter={ocr_status.get("openrouter", {}).get("successful_tiles", 0)}/{ocr_status.get("openrouter", {}).get("tiles", 0)}; {timings_ms["ocr"]:.1f} ms')
+    _progress('OCR', f'OCR pipeline completed: annotations={len(annotations)}; local Qwen={ocr_status.get("qwen", {}).get("successful_tiles", 0)}/{ocr_status.get("qwen", {}).get("tiles", 0)}; Tesseract={ocr_status.get("tesseract", {}).get("annotations", 0)}; {timings_ms["ocr"]:.1f} ms')
     qwen_ocr_complete = _qwen_stage_is_complete(ocr_status.get('qwen'))
-    moss_ocr_complete = _qwen_stage_is_complete(ocr_status.get('moss'))
-    openrouter_ocr_complete = _qwen_stage_is_complete(ocr_status.get('openrouter'))
-    ocr_complete = moss_ocr_complete or qwen_ocr_complete or openrouter_ocr_complete
-    moss_pipe_enabled = os.getenv('MOSS_PIPE_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
-    moss_ocr_requested = os.getenv('MOSS_OCR_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
-    moss_api_key = os.getenv('MOSS_API_KEY', '').strip()
-    moss_provider_active = bool((moss_pipe_enabled or moss_ocr_requested) and moss_api_key)
+    # Cloud statuses are retained in graph.json for older clients, but they are
+    # explicitly disabled and must never satisfy the local OCR completion gate.
+    ocr_complete = qwen_ocr_complete
+    # PIPE geometry always comes from the local Ollama Qwen model. Cloud keys or
+    # legacy provider flags are intentionally ignored by the production pipeline.
     moss_pipe_status: dict[str, Any] | None = None
-    openrouter_pipe_enabled = (not moss_provider_active and
-        os.getenv('OPENROUTER_PIPE_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'})
+    openrouter_pipe_enabled = False
     openrouter_pipe_status: dict[str, Any] | None = None
     stage_started = time.perf_counter()
     if not ocr_complete:
@@ -4390,88 +4335,42 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
         pipe_total = pipe_grid * pipe_grid
         semantic_routes = []
         route_status = {
-            'available': False, 'complete': False, 'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
-            'routes': 0, 'raw_routes': 0, 'tiles': pipe_total, 'successful_tiles': 0,
+            'available': False, 'complete': False,
+            'model': os.getenv('QWEN_MODEL', 'qwen3-vl:4b-instruct'),
+            'provider': 'ollama-qwen', 'routes': 0, 'raw_routes': 0,
+            'tiles': pipe_total, 'successful_tiles': 0,
             'failed_tiles': list(range(1, pipe_total + 1)), 'tile_diagnostics': [],
             'deferred_due_to_ocr_incomplete': True,
-            'error': 'Трассировка труб отложена: ни MOSS OCR, ни OpenRouter OCR, ни локальный Qwen OCR не завершили полный проход.',
-            'hint': 'Проверьте доступность OCR-провайдера и повторите обработку. Успешные локальные Qwen-плитки сохраняются в .checkpoints.',
+            'error': 'Трассировка труб отложена: локальный Qwen OCR не завершил полный проход.',
+            'hint': 'Проверьте Ollama и установленную модель Qwen. Tesseract дополняет OCR, но не заменяет локальную трассировку геометрии.',
             'incomplete_reason': 'PIPE отложен до завершения OCR, чтобы не строить трубные маски по неполной карте текста.',
         }
-        _progress('PIPE', 'CAD pipe-route trace deferred: no OCR provider completed; exporting review-only graph')
+        _progress('PIPE', 'CAD pipe-route trace deferred: local Qwen OCR is incomplete; exporting review-only graph')
     else:
-        _progress('PIPE', 'CAD pipe-route trace started')
-        if moss_pipe_enabled and moss_api_key:
-            moss_model = os.getenv('MOSS_MODEL', DEFAULT_MOSS_MODEL).strip() or DEFAULT_MOSS_MODEL
-            _progress('PIPE', f'MOSS-VL multimodal pipe tracing requested: {moss_model}')
-            try:
-                moss_routes, moss_pipe_status = moss_semantic_routes(
-                    prepared_input_path, moss_api_key, moss_model,
-                    timeout=max(30.0, float(os.getenv('MOSS_PIPE_TIMEOUT', '300'))),
-                )
-            except Exception as error:
-                moss_routes = []
-                moss_pipe_status = {
-                    'available': False, 'complete': False, 'model': moss_model,
-                    'provider': 'moss', 'routes': 0, 'raw_routes': 0,
-                    'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
-                    'error': str(error)[:260], 'hint': 'Проверьте MOSS API key, лимит бесплатной модели и доступность moss-vl-1.0.',
-                }
-            if moss_routes:
-                semantic_routes, route_status = moss_routes, moss_pipe_status
-                route_status['fallback_used'] = False
-                _progress('PIPE', f'MOSS-VL returned routes={len(semantic_routes)}; ink/topology checks will run next')
-            else:
-                _progress('PIPE', 'MOSS-VL returned no usable routes; falling back to local Qwen3-VL')
-                semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-                route_status['moss_attempt'] = moss_pipe_status
-                route_status['fallback_used'] = True
-        elif openrouter_pipe_enabled and os.getenv('OPENROUTER_API_KEY', '').strip():
-            openrouter_model = os.getenv('OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL).strip() or DEFAULT_OPENROUTER_MODEL
-            _progress('PIPE', f'OpenRouter multimodal pipe tracing requested: {openrouter_model}')
-            try:
-                openrouter_routes, openrouter_pipe_status = openrouter_semantic_routes(
-                    prepared_input_path, os.getenv('OPENROUTER_API_KEY', '').strip(), openrouter_model,
-                    timeout=max(30.0, float(os.getenv('OPENROUTER_PIPE_TIMEOUT', '240'))),
-                )
-            except Exception as error:
-                openrouter_routes = []
-                openrouter_pipe_status = {
-                    'available': False, 'complete': False, 'model': openrouter_model,
-                    'provider': 'openrouter', 'routes': 0, 'raw_routes': 0,
-                    'tiles': 1, 'successful_tiles': 0, 'failed_tiles': [1],
-                    'error': str(error)[:260], 'hint': 'Проверьте API-ключ OpenRouter, бесплатный лимит и доступность модели.',
-                }
-            if openrouter_routes:
-                semantic_routes, route_status = openrouter_routes, openrouter_pipe_status
-                route_status['fallback_used'] = False
-                _progress('PIPE', f'OpenRouter returned routes={len(semantic_routes)}; ink/topology checks will run next')
-            else:
-                _progress('PIPE', 'OpenRouter returned no usable routes; falling back to local Qwen3-VL')
-                semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-                route_status['openrouter_attempt'] = openrouter_pipe_status
-                route_status['fallback_used'] = True
-        else:
-            semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-        _progress('PIPE', f'CAD pipe-route trace completed: provider={route_status.get("provider", "ollama-qwen")}; routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
+        _progress('PIPE', 'Local Ollama Qwen pipe-route trace started')
+        semantic_routes, route_status = _qwen_semantic_routes(
+            prepared_input_path, w, h, checkpoint_dir=checkpoint_dir
+        )
+        route_status['provider'] = 'ollama-qwen'
+        route_status['cloud_providers_disabled'] = True
+        _progress('PIPE', f'Local Qwen pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}')
     timings_ms['semantic_pipe_trace'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     timings_ms['qwen_pipe_trace'] = timings_ms['semantic_pipe_trace']
     pipe_complete = _qwen_stage_is_complete(route_status)
     processing_complete = ocr_complete and pipe_complete
     incomplete_reasons = []
     if not ocr_complete:
-        for provider_name, provider_label in (('moss', 'MOSS-VL OCR'), ('openrouter', 'OpenRouter OCR'), ('qwen', 'локальный Qwen OCR')):
-            provider_status = ocr_status.get(provider_name, {})
-            if provider_status.get('error') or provider_status.get('incomplete_reason'):
-                incomplete_reasons.append(f'{provider_label}: ' + str(provider_status.get('incomplete_reason') or provider_status.get('error'))[:240])
+        provider_status = ocr_status.get('qwen', {})
+        if provider_status.get('error') or provider_status.get('incomplete_reason'):
+            incomplete_reasons.append('локальный Qwen OCR: ' + str(provider_status.get('incomplete_reason') or provider_status.get('error'))[:240])
         if not incomplete_reasons:
-            incomplete_reasons.append('Ни один OCR-провайдер не завершил полный проход.')
+            incomplete_reasons.append('Локальный Qwen OCR не завершил полный проход.')
     if not pipe_complete:
         incomplete_reasons.append(route_status.get('incomplete_reason') or route_status.get('error') or 'Трассировка труб не обработала все необходимые участки.')
     if processing_complete:
-        _progress('JOB', f'Analysis completed; OCR provider={"MOSS-VL" if moss_ocr_complete else "OpenRouter" if openrouter_ocr_complete else "local Qwen"}; PIPE provider={route_status.get("provider", "local Qwen")}')
+        _progress('JOB', f'Analysis completed; OCR provider=local Qwen + Tesseract; PIPE provider={route_status.get("provider", "local Qwen")}')
     else:
-        active_ocr_status = ocr_status.get('moss', {}) if moss_ocr_complete else ocr_status.get('openrouter', {}) if openrouter_ocr_complete else ocr_status.get('qwen', {})
+        active_ocr_status = ocr_status.get('qwen', {})
         _progress('JOB', f'Analysis incomplete; OCR provider={active_ocr_status.get("provider", "local Qwen")}; OCR={active_ocr_status.get("successful_tiles", 0)}/{active_ocr_status.get("tiles", 0)}; PIPE={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; checkpoints saved for retry')
     _progress('CAD', 'Graph construction started')
     stage_started = time.perf_counter()
@@ -4486,8 +4385,8 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
     )
-    # If the cloud model proposed routes but none survived source-ink validation,
-    # give the preserved local Qwen one fallback attempt before retaining only review geometry.
+    # Legacy cloud fallback stays guarded off in local-only mode. Qwen proposals
+    # are already the only semantic route source in the production path.
     if (not primary_semantic_routes and semantic_routes and
             ((route_status.get('provider') == 'moss' and moss_pipe_status and moss_pipe_status.get('available')) or
              (route_status.get('provider') == 'openrouter' and openrouter_pipe_enabled and openrouter_pipe_status and openrouter_pipe_status.get('available')))):
@@ -4621,7 +4520,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":ocr_complete,"pipe_tiles_complete":pipe_complete,
-                      "ocr_tiles_successful":(ocr_status.get("moss", {}).get("successful_tiles", 0) if moss_ocr_complete else ocr_status.get("qwen", {}).get("successful_tiles", 0) if qwen_ocr_complete else ocr_status.get("openrouter", {}).get("successful_tiles", 0)),"ocr_tiles_total":(ocr_status.get("moss", {}).get("tiles", 0) if moss_ocr_complete else ocr_status.get("qwen", {}).get("tiles", 0) if qwen_ocr_complete else ocr_status.get("openrouter", {}).get("tiles", 0)),
+                      "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
                       "pipe_tiles_successful":route_status.get("successful_tiles", 0),"pipe_tiles_total":route_status.get("tiles", 0),
                       "segment_candidates":len(segments),"nodes":len(nodes),"edges":len(edges),"crossings_to_review":len(crossings),
                       "ocr_annotations":len(annotations),
@@ -4631,7 +4530,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
                       "cad_primary_qwen_routes":len(primary_semantic_routes),
                       "cad_primary_total_paths":len(_cad_edge_chains(edges)) + len(primary_semantic_routes),
                       "semantic_validation":semantic_validation,
-                      "primary_geometry_source":"opencv-selected-graph+ink-validated-moss-openrouter-or-qwen",
+                      "primary_geometry_source":"opencv-selected-graph+ink-validated-local-qwen",
                       "qwen_annotations":len([a for a in annotations if a.get('source')=='qwen3-vl']),
                       "moss_ocr_annotations":len([a for a in annotations if a.get('source')=='moss-vl-ocr']),
                       "openrouter_ocr_annotations":len([a for a in annotations if a.get('source')=='openrouter-vision-ocr']),
@@ -4686,9 +4585,9 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
         graph['warnings'].append('РЕЗУЛЬТАТ НЕПОЛНЫЙ: не завершён полный проход OCR и/или трассировки труб. Не используйте этот SVG/DXF как окончательный чертёж. Успешные локальные Qwen-плитки сохранены в .checkpoints; повторный запуск того же задания повторит незавершённые этапы.')
         graph['warnings'].extend(str(reason) for reason in incomplete_reasons if reason)
     if not ocr_status.get('qwen', {}).get('available'):
-        graph['warnings'].append('Локальный Qwen OCR недоступен; сохранён резервный MOSS-VL, OpenRouter и/или Tesseract, если они включены. Проверьте Ollama и модель Qwen3-VL.')
+        graph['warnings'].append('Локальный Qwen OCR недоступен. Tesseract может дополнить чтение текста, но не заменяет Qwen для структурного распознавания и трассировки труб. Проверьте Ollama и модель Qwen3-VL.')
     if not route_status.get('available') or not semantic_routes:
-        graph['warnings'].append('Семантический vision-провайдер не предоставил пригодные маршруты. Основной PIPE_MAIN при этом строится независимо из выбранных геометрических путей OpenCV. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте настройки MOSS-VL, OpenRouter или Ollama.'))
+        graph['warnings'].append('Локальный Qwen не предоставил пригодные маршруты. Основной PIPE_MAIN строится из подтверждённых геометрических путей OpenCV; сомнительные фрагменты остаются на проверке. Причина: ' + str(route_status.get('error') or 'маршруты отсутствуют') + ' Действие: ' + str(route_status.get('hint') or 'проверьте доступность Ollama и установленную модель Qwen3-VL.'))
     if not _cad_edge_chains(edges):
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
@@ -4701,7 +4600,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None) -> 
     if processing_complete:
         _progress('JOB', 'Analysis completed successfully; selected OCR and pipe-tracing providers completed')
     else:
-        _progress('JOB', 'Analysis INCOMPLETE; partial exports are review-only. Re-run this job to retry incomplete providers and resume local Qwen checkpoints.')
+        _progress('JOB', 'Analysis INCOMPLETE; partial exports are review-only. Re-run this job to retry incomplete local Qwen checkpoints.')
     return graph
 
 

@@ -281,6 +281,16 @@ test('LPGCad R1 lays out explicitly entered riser groups in SVG and editable DXF
   assert.match(svg, /Ст-6/);
   assert.match(svg, />67</);
   assert.match(svg, />52</);
+  assert.match(svg, /труба-футляр/);
+  const riserBlock = svg.match(/<g id="RISER_GROUPS"[\s\S]*?<\/g>/)?.[0] || '';
+  const legendBlock = svg.match(/<g id="LEGEND"[\s\S]*?<\/g>/)?.[0] || '';
+  const riserRect = riserBlock.match(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/);
+  const legendRect = legendBlock.match(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/);
+  assert.ok(riserRect && legendRect, 'riser and legend sheet blocks should be present');
+  const riserRight = Number(riserRect[1]) + Number(riserRect[3]);
+  const legendLeft = Number(legendRect[1]);
+  assert.ok(riserRight < legendLeft, 'riser columns must stay on the left of the legend');
+  assert.ok(Number(riserRect[2]) + Number(riserRect[4]) > Number(legendRect[2]), 'riser columns and legend should share the lower sheet band');
   const dxf = renderManualCadDxf(project);
   assert.match(dxf, /RISER_GROUPS/);
   assert.match(dxf, /\\U\+0421\\U\+0442-5/);
@@ -327,4 +337,20 @@ test('manual CAD save metadata keeps the originating house scheme link and edit 
   assert.equal(saved.analysisComplete, false);
   assert.equal(saved.manualEditRevision, 3);
   assert.equal(saved.siteAddress, 'ул. Мира, дом 7');
+});
+
+test('numbered callout symbols stay editable in both SVG and DXF exports', () => {
+  const base = createManualCadProject({ title: 'Схема с контрольными точками' });
+  const project = normalizeManualCadProject({
+    ...base,
+    symbols: [{ id: 'callout-24', type: 'callout', x: 260, y: 180, label: '24', scale: 1.1, rotation: 0 }]
+  }, base);
+  assert.equal(project.symbols[0].type, 'callout');
+  const svg = renderManualCadSvg(project);
+  assert.match(svg, /<rect[^>]+width=/);
+  assert.match(svg, />24</);
+  const dxf = renderManualCadDxf(project);
+  assert.match(dxf, /0\nLINE\n8\nSYMBOLS/);
+  assert.match(dxf, /0\nTEXT\n8\nTEXT/);
+  assert.match(dxf, /24/);
 });

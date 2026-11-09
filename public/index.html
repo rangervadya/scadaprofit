@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Общие схемы домов: отправка эскизов и проверка векторных чертежей">
-  <title>Схемы домов · 4.3.26</title>
+  <title>Схемы домов · 4.3.38</title>
   <link rel="preconnect" href="/" crossorigin>
-  <link rel="stylesheet" href="/styles.css?v=4.3.26">
-  <script src="/app.js?v=4.3.26" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=4.3.38">
+  <script src="/app.js?v=4.3.38" defer></script>
 </head>
 <body>
   <nav class="product-switcher" aria-label="Разделы приложения">
@@ -77,41 +77,23 @@
           </div>
         </details>
 
-        <details class="card openrouter-settings-card moss-settings-card" id="mossSettings" open>
-          <summary class="template-settings-summary"><span><strong>Облачный AI · MOSS-VL</strong><small>Мультимодальная модель для фотографий и рукописных схем</small></span><span class="template-settings-caret">▾</span></summary>
-          <div class="template-settings-body openrouter-settings-body">
-            <div class="openrouter-provider-status" id="mossStatus" role="status">Проверяю настройки MOSS…</div>
-            <label class="openrouter-field"><span>API-ключ MOSS</span><input id="mossApiKey" type="password" autocomplete="new-password" placeholder="Вставь ключ MOSS (сохраняется только на сервере)"></label>
-            <label class="openrouter-field"><span>Мультимодальная модель</span><input id="mossModel" type="text" value="moss-vl-1.0" spellcheck="false" readonly></label>
-            <label class="openrouter-check"><input id="mossEnabled" type="checkbox"><span>Включить MOSS-VL для новых схем</span></label>
-            <label class="openrouter-check"><input id="mossOcrEnabled" type="checkbox" checked><span>Использовать MOSS для распознавания подписей</span></label>
-            <label class="openrouter-check"><input id="mossPipeEnabled" type="checkbox" checked><span>Использовать MOSS для трассировки труб</span></label>
-            <div class="openrouter-actions">
-              <button class="secondary-button" id="mossSaveBtn" type="button">Сохранить настройки</button>
-              <button class="secondary-button" id="mossTestBtn" type="button">Проверить открытую схему</button>
-            </div>
-            <button class="tiny-button openrouter-clear" id="mossClearBtn" type="button" hidden>Удалить только ключ и настройки MOSS</button>
-            <p class="template-note">Модель moss-vl-1.0 сейчас указана MOSS как временно бесплатная (0 кредитов); условия могут измениться. Фотография передаётся в MOSS API как временный файл и удаляется после каждого запроса. Не отправляй персональные или конфиденциальные схемы. Если MOSS не ответит или не распознает текст, ScadaProfit использует локальные Qwen и Tesseract. Ключ хранится только в закрытой папке данных сервера и не возвращается в браузер.</p>
+        <section class="card local-ai-card" aria-labelledby="localAiTitle">
+          <div class="card-heading compact-heading">
+            <div><div class="step-label">ЛОКАЛЬНОЕ РАСПОЗНАВАНИЕ</div><h2 id="localAiTitle">Qwen + Tesseract</h2></div>
+            <button class="tiny-button" id="refreshRecognitionStatus" type="button">Проверить</button>
           </div>
-        </details>
-
-        <details class="card openrouter-settings-card" id="openrouterSettings">
-          <summary class="template-settings-summary"><span><strong>Дополнительный провайдер · OpenRouter</strong><small>Не используется, когда включён MOSS-VL</small></span><span class="template-settings-caret">▾</span></summary>
-          <div class="template-settings-body openrouter-settings-body">
-            <div class="openrouter-provider-status" id="openrouterStatus" role="status">Проверяю настройки OpenRouter…</div>
-            <label class="openrouter-field"><span>API-ключ OpenRouter</span><input id="openrouterApiKey" type="password" autocomplete="new-password" placeholder="sk-or-v1-… (сохраняется на сервере)"></label>
-            <label class="openrouter-field"><span>Мультимодальная модель</span><input id="openrouterModel" type="text" value="nvidia/nemotron-3.5-super-vl:free" spellcheck="false" readonly></label>
-            <label class="openrouter-check"><input id="openrouterEnabled" type="checkbox"><span>Включить OpenRouter для новых схем</span></label>
-            <label class="openrouter-check"><input id="openrouterOcrEnabled" type="checkbox" checked><span>Использовать модель для распознавания подписей</span></label>
-            <label class="openrouter-check"><input id="openrouterPipeEnabled" type="checkbox" checked><span>Использовать модель для трассировки труб</span></label>
-            <div class="openrouter-actions">
-              <button class="secondary-button" id="openrouterSaveBtn" type="button">Сохранить настройки</button>
-              <button class="secondary-button" id="openrouterTestBtn" type="button">Проверить на открытой схеме</button>
+          <div class="local-ai-grid">
+            <div class="local-ai-item" id="qwenHealthCard" data-state="checking">
+              <span class="local-ai-indicator" aria-hidden="true"></span>
+              <div><b>Qwen3-VL / Ollama</b><strong id="qwenHealthState">Проверяю…</strong><small id="qwenHealthDetail">Связь с локальной моделью</small></div>
             </div>
-            <button class="tiny-button openrouter-clear" id="openrouterClearBtn" type="button" hidden>Удалить только ключ и настройки OpenRouter</button>
-            <p class="template-note">Локальные Qwen и Tesseract сохраняются как резерв. Бесплатная модель OpenRouter ограничена 50 запросами в сутки. Внимание: запросы бесплатного endpoint могут сохраняться для улучшения модели NVIDIA. Не отправляйте фотографии с адресами, ФИО, телефонами и другими персональными или конфиденциальными данными. Ключ хранится только в закрытой папке данных ScadaProfit и не возвращается в браузер.</p>
+            <div class="local-ai-item" id="tesseractHealthCard" data-state="checking">
+              <span class="local-ai-indicator" aria-hidden="true"></span>
+              <div><b>Tesseract OCR</b><strong id="tesseractHealthState">Проверяю…</strong><small id="tesseractHealthDetail">Русский и английский языки</small></div>
+            </div>
           </div>
-        </details>
+          <p class="local-ai-note">Обработка выполняется на вашем сервере. Qwen распознаёт структуру и трассы, Tesseract дополняет чтение подписей. Внешние AI API отключены.</p>
+        </section>
 
         <section class="card stats-card" id="statsPanel" hidden>
           <div class="card-heading compact-heading"><div><div class="step-label"><span>02</span> РЕЗУЛЬТАТ АНАЛИЗА</div><h2>Сводка геометрии</h2></div><span class="review-badge">Нужна проверка</span></div>

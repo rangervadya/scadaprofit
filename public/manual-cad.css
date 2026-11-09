@@ -26,3 +26,38 @@
 .mc-prop-riser-groups{grid-column:1/-1}.mc-prop-riser-groups textarea{width:100%;min-height:58px;resize:vertical;border:1px solid #e0e7e1;border-radius:5px;background:#fff;padding:7px 8px;font:10px/1.5 Arial,sans-serif;color:#35443a}.mc-prop-riser-groups small{display:block;margin-top:4px;color:#859188;font-size:9px;line-height:1.4}
 
 .mc-pipe-review{stroke:#d97706!important;stroke-dasharray:7 5!important;opacity:.88}.mc-accept-review{width:100%;margin-top:10px;white-space:normal;height:auto;min-height:34px}.mc-statistics{grid-template-columns:1fr 1fr}
+
+/* 4.3.38 — CAD workspace: larger work area, readable controls and direct geometry editing. */
+.mc-shell{grid-template-columns:minmax(218px,250px) minmax(470px,1fr) minmax(250px,290px);gap:13px;padding:14px;max-width:2200px}
+.mc-projects-panel,.mc-inspector{padding:14px}
+.mc-panel-head b{font-size:13px}.mc-panel-head small{font-size:10px}
+.mc-project-item{padding:10px}.mc-project-item b{font-size:11px}.mc-project-item small{font-size:10px}
+.mc-project-help b{font-size:11px}.mc-project-help p{font-size:10px;line-height:1.6}
+.mc-documentbar{padding:13px 15px}.mc-document-name label,.mc-prop label{font-size:10px}
+.mc-document-name input{height:35px;font-size:13px}.mc-button{height:34px;font-size:11px;padding:0 11px}
+.mc-toolbar{padding:10px 12px;gap:10px}.mc-tool{height:39px;min-width:65px;font-size:17px}.mc-tool span{font-size:10px}
+.mc-icon-button{width:35px;height:35px;font-size:19px}.mc-toolbar-divider{width:1px;height:25px;background:#e2e9e3;margin:0 3px}
+.mc-zoom-value{min-width:58px;font-variant-numeric:tabular-nums}
+.mc-propertybar{gap:10px;padding:10px 13px}.mc-prop input,.mc-prop select{height:33px;font-size:11px}.mc-prop-route input{width:132px}.mc-prop-label input{width:240px}
+.mc-check{font-size:10px;height:33px}.mc-prop-snap select{width:94px}
+.mc-canvas-wrap{padding:11px 12px 9px}.mc-canvas-head,.mc-canvas-foot{font-size:10px}
+.mc-canvas-scroll{height:min(72vh,960px);min-height:430px;align-items:flex-start;justify-content:flex-start;background:#e8ede9}
+.mc-canvas-scroll svg{flex:none;max-width:none;min-height:0;background:#fff}
+.mc-vertex{r:7px;stroke-width:2.5}.mc-vertex.is-active{fill:#f59e0b;stroke:#8a4b05;stroke-width:3}
+.mc-pipe-hit{stroke-width:22}
+.mc-property-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}
+.mc-property-grid .mc-prop input{width:100%}
+.mc-inspector .mc-prop input,.mc-inspector .mc-prop select{width:100%;height:35px;font-size:12px}
+.mc-inspector .mc-prop{margin-top:10px}
+.mc-inspector .mc-property-help{font-size:10px;line-height:1.6}
+.mc-empty-properties b{font-size:11px}.mc-empty-properties p{font-size:10px;line-height:1.6}
+.mc-statistics{gap:7px}.mc-statistics div{padding:9px}.mc-statistics span{font-size:10px}.mc-statistics b{font-size:16px}
+.mc-symbol-legend>b{font-size:11px}.mc-symbol-legend div{font-size:10px}
+.mc-toast{font-size:12px;padding:12px 15px}
+.mc-engineering-panel>summary b{font-size:11px}.mc-engineering-panel>summary small{font-size:10px}
+.mc-engineering-fields .mc-prop input,.mc-engineering-fields .mc-prop select{height:34px;font-size:11px}
+.mc-engineering-fields .mc-prop-riser-groups textarea{font-size:11px}
+@media(max-width:1480px){.mc-shell{grid-template-columns:minmax(205px,225px) minmax(440px,1fr) minmax(225px,255px);gap:10px}.mc-tool{min-width:58px;padding:0 6px}}
+@media(max-width:1180px){.mc-shell{grid-template-columns:210px minmax(0,1fr)}.mc-inspector{grid-column:1/-1;display:grid;grid-template-columns:minmax(200px,260px) minmax(0,1fr) minmax(200px,260px);gap:14px}.mc-inspector>#selectionProperties{grid-column:2}.mc-inspector>.mc-statistics{grid-column:3;grid-row:1/span 2}.mc-inspector>.mc-symbol-legend{grid-column:1/-1;display:flex;gap:15px;align-items:center;flex-wrap:wrap}.mc-inspector .mc-symbol-legend>b{margin:0}.mc-inspector .mc-symbol-legend div{margin:0}}
+@media(max-width:900px){.mc-shell{grid-template-columns:1fr}.mc-inspector{display:grid;grid-template-columns:1fr 1fr;grid-column:auto}.mc-inspector>.mc-statistics{grid-column:1;grid-row:auto}.mc-inspector>.mc-symbol-legend{grid-column:2;grid-row:1/span 2;display:block}.mc-inspector .mc-symbol-legend div{margin:6px 0}.mc-inspector .mc-symbol-legend>b{margin-bottom:8px}.mc-canvas-scroll{height:64vh;min-height:360px}}
+@media(max-width:620px){.mc-shell{padding:7px;gap:8px}.mc-toolbar{gap:6px}.mc-toolgroup{width:100%}.mc-toolgroup-right{width:100%;justify-content:flex-start}.mc-tool{flex:1;min-width:0;height:40px}.mc-icon-button{width:36px;flex:none}.mc-propertybar{align-items:stretch}.mc-propertybar>.mc-prop{flex:1 1 42%}.mc-prop-route input,.mc-prop-label input{width:100%}.mc-ortho-check{flex:1 1 100%}.mc-document-actions{gap:5px}.mc-document-actions .mc-button{flex:1}.mc-canvas-scroll{height:56vh;min-height:300px}.mc-inspector{display:block}.mc-inspector>.mc-statistics{display:grid}.mc-inspector>.mc-symbol-legend{display:block}.mc-property-grid{grid-template-columns:1fr 1fr}.mc-engineering-fields{grid-template-columns:1fr 1fr}.mc-engineering-fields .mc-prop-inspection,.mc-engineering-fields .mc-prop-subtitle{grid-column:span 2}}

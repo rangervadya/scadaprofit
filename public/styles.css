@@ -264,3 +264,26 @@ body{background:var(--page);color:var(--ink);font-size:14px}
 
 /* 4.3.29 — primary MOSS-VL provider shares the compact AI settings controls. */
 .moss-settings-card{border-color:#d9e8df}
+
+/* 4.3.38 — local-only recognition status and a clearer workbench hierarchy. */
+.local-ai-card{padding:12px 11px;border-color:#dfe8e1;background:#fbfdfb}
+.local-ai-card .card-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.local-ai-card h2{margin:0;font-size:13px;font-weight:700;color:#293b30}
+.local-ai-card .step-label{display:block!important;font-size:8px;letter-spacing:.08em;color:#829087;margin-bottom:3px}
+.local-ai-grid{display:grid;grid-template-columns:1fr;gap:7px}
+.local-ai-item{display:grid;grid-template-columns:9px minmax(0,1fr);gap:9px;align-items:start;padding:9px;border:1px solid #e7ede8;border-radius:6px;background:#fff;min-width:0}
+.local-ai-indicator{width:8px;height:8px;border-radius:50%;background:#a5afa8;margin-top:4px;box-shadow:0 0 0 3px #f0f3f0}
+.local-ai-item[data-state="ready"] .local-ai-indicator{background:#27915c;box-shadow:0 0 0 3px #e8f4ec}
+.local-ai-item[data-state="warning"] .local-ai-indicator{background:#c58a2d;box-shadow:0 0 0 3px #fbf3e5}
+.local-ai-item b,.local-ai-item strong,.local-ai-item small{display:block;overflow-wrap:anywhere}
+.local-ai-item b{font-size:10px;color:#435349;font-weight:700}
+.local-ai-item strong{font-size:10px;color:#34483b;margin-top:2px}
+.local-ai-item small{font-size:9px;line-height:1.4;color:#849087;margin-top:3px}
+.local-ai-note{margin:8px 1px 0;font-size:9px;line-height:1.5;color:#748279}
+.local-ai-card .tiny-button{min-height:28px;padding:0 9px}
+#serverState{max-width:130px;font-size:9px;line-height:1.3;text-align:right;color:#6b7e71}
+#serverState::before{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:#c18a32;vertical-align:1px}
+#serverState[title*="Qwen3-VL"],#serverState[title*="локальный режим"]{color:#39724f}
+@media(min-width:821px){.workspace-grid{grid-template-columns:minmax(270px,292px) minmax(0,1fr);gap:13px}.sidebar{gap:9px}.card{border-radius:7px}.library-card,.upload-card,.local-ai-card{padding:12px}.library-heading{padding-bottom:9px}.library-tree{max-height:min(43vh,460px)}}
+@media(max-width:820px){.local-ai-grid{grid-template-columns:1fr 1fr}.local-ai-card{grid-column:1/-1}.sidebar{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}.library-card{grid-row:span 2}.local-ai-card{order:4}}
+@media(max-width:560px){.local-ai-grid{grid-template-columns:1fr}.sidebar{display:flex}.local-ai-card{order:0}.local-ai-note{font-size:10px}}

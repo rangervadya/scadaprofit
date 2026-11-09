@@ -1776,259 +1776,37 @@ if (templateFileInput) {
 }
 
 
-// MOSS-VL is the primary cloud provider. Its key is write-only in the browser
-// and is stored in the existing private app data volume; Qwen/Tesseract remain fallbacks.
-const mossApiKeyInput = $('mossApiKey');
-const mossModelInput = $('mossModel');
-const mossEnabledInput = $('mossEnabled');
-const mossOcrEnabledInput = $('mossOcrEnabled');
-const mossPipeEnabledInput = $('mossPipeEnabled');
-const mossSaveBtn = $('mossSaveBtn');
-const mossTestBtn = $('mossTestBtn');
-const mossClearBtn = $('mossClearBtn');
-
-function setMossStatus(message, kind = '') {
-  const box = $('mossStatus');
-  if (!box) return;
-  box.textContent = message;
-  box.dataset.kind = kind;
-}
-
-async function loadMossSettings() {
+async function refreshRecognitionStatus() {
+  const button = $('refreshRecognitionStatus');
+  if (button) button.disabled = true;
   try {
-    const response = await fetch('/api/moss-settings', { cache: 'no-store' });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки MOSS.');
-    const cfg = data.moss || {};
-    mossModelInput.value = cfg.model || 'moss-vl-1.0';
-    mossEnabledInput.checked = Boolean(cfg.enabled);
-    mossOcrEnabledInput.checked = cfg.ocrEnabled !== false;
-    mossPipeEnabledInput.checked = cfg.pipeEnabled !== false;
-    mossClearBtn.hidden = !cfg.configured;
-    setMossStatus(cfg.configured
-      ? `Ключ сохранён · ${cfg.enabled ? 'MOSS-VL включён' : 'MOSS-VL выключен'} · модель ${cfg.model}. Qwen и Tesseract сохранены.`
-      : 'API-ключ MOSS ещё не настроен. Локальные Qwen и Tesseract работают как раньше.');
+    const response = await fetch('/api/health', { cache: 'no-store' });
+    const health = await response.json();
+    if (!response.ok) throw new Error(health.error || 'Не удалось проверить локальные распознаватели.');
+    const qwen = health.ollama || {};
+    const tess = health.localRecognition?.tesseract || {};
+    const qwenReady = qwen.reachable && qwen.modelInstalled;
+    const tessReady = tess.available && tess.russianEnglishReady;
+    $('qwenHealthState').textContent = !qwen.reachable ? 'Ollama недоступна' : qwen.modelInstalled ? 'Модель установлена' : 'Модель не установлена';
+    $('qwenHealthDetail').textContent = qwenReady ? `${health.qwenModel} · серверная модель` : (qwen.hint || qwen.error || health.qwenModel);
+    $('tesseractHealthState').textContent = tessReady ? 'Готов · rus + eng' : tess.available ? 'Нет языкового пакета' : 'Недоступен';
+    $('tesseractHealthDetail').textContent = tessReady ? `Языки: ${(tess.languages || []).join(', ')}` : (tess.error || 'Установите tesseract-ocr-rus и tesseract-ocr-eng.');
+    $('qwenHealthCard').dataset.state = qwenReady ? 'ready' : 'warning';
+    $('tesseractHealthCard').dataset.state = tessReady ? 'ready' : 'warning';
+    $('serverState').textContent = qwenReady ? (tessReady ? 'Qwen + OCR готовы' : 'Qwen готов · OCR требует проверки') : 'Проверь Qwen';
+    $('serverState').title = [qwen.error, tess.error].filter(Boolean).join(' · ') || `Локальный режим: ${health.qwenModel} + Tesseract`;
   } catch (error) {
-    setMossStatus(error.message || 'Не удалось загрузить настройки MOSS.', 'error');
+    $('serverState').textContent = 'Ошибка проверки';
+    $('serverState').title = error.message || 'Не удалось проверить локальный режим';
+    $('qwenHealthState').textContent = 'Нет связи с сервером';
+    $('tesseractHealthState').textContent = 'Нет связи с сервером';
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
-if (mossSaveBtn) {
-  mossSaveBtn.addEventListener('click', async () => {
-    mossSaveBtn.disabled = true;
-    setMossStatus('Сохраняю настройки на сервере…');
-    try {
-      const response = await fetch('/api/moss-settings', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: mossApiKeyInput.value,
-          model: mossModelInput.value.trim() || 'moss-vl-1.0',
-          enabled: mossEnabledInput.checked,
-          ocrEnabled: mossOcrEnabledInput.checked,
-          pipeEnabled: mossPipeEnabledInput.checked,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить настройки MOSS.');
-      mossApiKeyInput.value = '';
-      mossClearBtn.hidden = !data.moss?.configured;
-      setMossStatus(`Настройки сохранены. ${data.moss?.enabled ? 'MOSS будет использоваться для новых схем.' : 'MOSS выключен.'} Qwen и Tesseract не изменены.`, 'success');
-    } catch (error) {
-      setMossStatus(error.message || 'Ошибка сохранения настроек MOSS.', 'error');
-    } finally {
-      mossSaveBtn.disabled = false;
-    }
-  });
-}
-
-if (mossTestBtn) {
-  mossTestBtn.addEventListener('click', async () => {
-    if (!selectedJobId) {
-      setMossStatus('Сначала создай тестовую схему и открой её исходную фотографию. Тест использует именно открытое изображение.');
-      return;
-    }
-    mossTestBtn.disabled = true;
-    mossTestBtn.textContent = 'Тестирую…';
-    setMossStatus('Отправляю открытую фотографию в MOSS-VL. Проверяются OCR и трассировка труб; существующий чертёж не изменяется.');
-    try {
-      const response = await fetch('/api/moss-settings/test', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId: selectedJobId }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Тест MOSS не выполнен.');
-      const ocr = data.result?.ocr || {};
-      const vision = data.result?.vision || {};
-      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} подписей` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
-      const visionText = vision.ok ? `Vision: ${vision.routes} маршрутов труб` : `Vision: ошибка — ${vision.error || 'неизвестно'}`;
-      setMossStatus(`${data.ok ? 'Оба теста завершились успешно.' : 'Проверка завершилась частично или с ошибкой.'} ${ocrText}. ${visionText}. Тест не изменил существующий чертёж.`, data.ok ? 'success' : 'error');
-    } catch (error) {
-      setMossStatus(error.message || 'Не удалось выполнить тест MOSS.', 'error');
-    } finally {
-      mossTestBtn.disabled = false;
-      mossTestBtn.textContent = 'Проверить открытую схему';
-    }
-  });
-}
-
-if (mossClearBtn) {
-  mossClearBtn.addEventListener('click', async () => {
-    if (!window.confirm('Удалить только сохранённый API-ключ и настройки MOSS? Локальные Qwen и Tesseract останутся без изменений.')) return;
-    mossClearBtn.disabled = true;
-    try {
-      const response = await fetch('/api/moss-settings', { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось удалить настройки MOSS.');
-      mossApiKeyInput.value = '';
-      mossEnabledInput.checked = false;
-      mossOcrEnabledInput.checked = true;
-      mossPipeEnabledInput.checked = true;
-      mossClearBtn.hidden = true;
-      setMossStatus('Настройки MOSS удалены. Локальные Qwen и Tesseract продолжают работать.', 'success');
-    } catch (error) {
-      setMossStatus(error.message || 'Не удалось удалить настройки MOSS.', 'error');
-    } finally {
-      mossClearBtn.disabled = false;
-    }
-  });
-}
-
-loadMossSettings();
-
-// Optional OpenRouter multimodal integration. The API key is write-only in
-// the browser and stored in the private app data volume; local Qwen/Tesseract stay live.
-const openrouterApiKeyInput = $('openrouterApiKey');
-const openrouterModelInput = $('openrouterModel');
-const openrouterEnabledInput = $('openrouterEnabled');
-const openrouterOcrEnabledInput = $('openrouterOcrEnabled');
-const openrouterPipeEnabledInput = $('openrouterPipeEnabled');
-const openrouterSaveBtn = $('openrouterSaveBtn');
-const openrouterTestBtn = $('openrouterTestBtn');
-const openrouterClearBtn = $('openrouterClearBtn');
-
-function setOpenRouterStatus(message, kind = '') {
-  const box = $('openrouterStatus');
-  if (!box) return;
-  box.textContent = message;
-  box.dataset.kind = kind;
-}
-
-async function loadOpenRouterSettings() {
-  try {
-    const response = await fetch('/api/openrouter-settings', { cache: 'no-store' });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось прочитать настройки OpenRouter.');
-    const cfg = data.openrouter || {};
-    openrouterModelInput.value = cfg.model || 'nvidia/nemotron-3.5-super-vl:free';
-    openrouterEnabledInput.checked = Boolean(cfg.enabled);
-    openrouterOcrEnabledInput.checked = cfg.ocrEnabled !== false;
-    openrouterPipeEnabledInput.checked = cfg.pipeEnabled !== false;
-    openrouterClearBtn.hidden = !cfg.configured;
-    setOpenRouterStatus(cfg.configured
-      ? `Ключ сохранён · ${cfg.enabled ? 'OpenRouter включён' : 'OpenRouter выключен'} · модель ${cfg.model}. Локальные Qwen и Tesseract сохранены.`
-      : 'API-ключ ещё не настроен. Локальные Qwen и Tesseract работают как раньше.');
-  } catch (error) {
-    setOpenRouterStatus(error.message || 'Не удалось загрузить настройки OpenRouter.', 'error');
-  }
-}
-
-if (openrouterSaveBtn) {
-  openrouterSaveBtn.addEventListener('click', async () => {
-    openrouterSaveBtn.disabled = true;
-    setOpenRouterStatus('Сохраняю настройки на сервере…');
-    try {
-      const response = await fetch('/api/openrouter-settings', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: openrouterApiKeyInput.value,
-          model: openrouterModelInput.value.trim() || 'nvidia/nemotron-3.5-super-vl:free',
-          enabled: openrouterEnabledInput.checked,
-          ocrEnabled: openrouterOcrEnabledInput.checked,
-          pipeEnabled: openrouterPipeEnabledInput.checked,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить настройки.');
-      openrouterApiKeyInput.value = '';
-      openrouterClearBtn.hidden = !data.openrouter?.configured;
-      setOpenRouterStatus(`Настройки сохранены. ${data.openrouter?.enabled ? 'OpenRouter будет использоваться для новых обработок.' : 'OpenRouter выключен.'} Qwen и Tesseract не изменены.`, 'success');
-    } catch (error) {
-      setOpenRouterStatus(error.message || 'Ошибка сохранения настроек.', 'error');
-    } finally {
-      openrouterSaveBtn.disabled = false;
-    }
-  });
-}
-
-if (openrouterTestBtn) {
-  openrouterTestBtn.addEventListener('click', async () => {
-    if (!selectedJobId) {
-      setOpenRouterStatus('Сначала выбери и открой фотографию схемы, которую нужно проверить.');
-      return;
-    }
-    openrouterTestBtn.disabled = true;
-    openrouterTestBtn.textContent = 'Тестирую…';
-    setOpenRouterStatus('Отправляю открытую фотографию в бесплатную мультимодальную модель OpenRouter. Выполняются два запроса — OCR и трассировка.');
-    try {
-      const response = await fetch('/api/openrouter-settings/test', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId: selectedJobId }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Тест OpenRouter не выполнен.');
-      const ocr = data.result?.ocr || {};
-      const vision = data.result?.vision || {};
-      const ocrText = ocr.ok ? `OCR: ${ocr.annotations} надписей` : `OCR: ошибка — ${ocr.error || 'неизвестно'}`;
-      const visionText = vision.ok ? `Vision: ${vision.routes} маршрутов труб` : `Vision: ошибка — ${vision.error || 'неизвестно'}`;
-      setOpenRouterStatus(`${data.ok ? 'Оба теста завершились успешно.' : 'Проверка завершилась частично или с ошибкой.'} ${ocrText}. ${visionText}. Тест не изменил существующий чертёж.`, data.ok ? 'success' : 'error');
-    } catch (error) {
-      setOpenRouterStatus(error.message || 'Не удалось выполнить тест OpenRouter.', 'error');
-    } finally {
-      openrouterTestBtn.disabled = false;
-      openrouterTestBtn.textContent = 'Проверить на открытой схеме';
-    }
-  });
-}
-
-if (openrouterClearBtn) {
-  openrouterClearBtn.addEventListener('click', async () => {
-    if (!window.confirm('Удалить только сохранённый API-ключ и настройки OpenRouter? Локальные Qwen и Tesseract останутся без изменений.')) return;
-    openrouterClearBtn.disabled = true;
-    try {
-      const response = await fetch('/api/openrouter-settings', { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось удалить настройки.');
-      openrouterApiKeyInput.value = '';
-      openrouterEnabledInput.checked = false;
-      openrouterOcrEnabledInput.checked = true;
-      openrouterPipeEnabledInput.checked = true;
-      openrouterClearBtn.hidden = true;
-      setOpenRouterStatus('Настройки OpenRouter удалены. Локальные Qwen и Tesseract продолжают работать.', 'success');
-    } catch (error) {
-      setOpenRouterStatus(error.message || 'Не удалось удалить настройки.', 'error');
-    } finally {
-      openrouterClearBtn.disabled = false;
-    }
-  });
-}
-
-loadOpenRouterSettings();
-
-fetch('/api/health', { cache: 'no-store' }).then(response => response.json()).then(health => {
-  const ollama = health.ollama || {};
-  if (!ollama.reachable) {
-    $('serverState').textContent = 'Ollama недоступна';
-    $('serverState').title = ollama.error || 'Проверьте контейнер Ollama';
-  } else if (!ollama.modelInstalled) {
-    $('serverState').textContent = `Не загружена ${health.qwenModel || 'Qwen'}`;
-    $('serverState').title = ollama.hint || 'Выполните ollama pull для указанной модели';
-  } else {
-    $('serverState').textContent = 'Qwen готов';
-    $('serverState').title = `Ollama доступна · ${health.qwenModel}`;
-  }
-}).catch(() => {
-  $('serverState').textContent = 'Проверить сервер';
-});
+$('refreshRecognitionStatus')?.addEventListener('click', refreshRecognitionStatus);
+refreshRecognitionStatus();
 
 loadAddressLibrary();
 loadTemplateInfo();

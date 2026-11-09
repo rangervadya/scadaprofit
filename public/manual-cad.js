@@ -5,7 +5,7 @@ const state = {
   projects: [], project: null, tool: 'select', selected: null,
   draft: [], draftStart: null, draftEnd: null, dimensionStart: null,
   sourceVisible: true, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
-  undo: [], redo: [], drag: null, justDragged: false, lastSaved: null, toastTimer: null
+  undo: [], redo: [], drag: null, activeVertex: null, justDragged: false, lastSaved: null, toastTimer: null, zoom: 1, ortho: false
 };
 
 function uid(prefix='item') { return `${prefix}_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`).replaceAll('-', '')}`; }
@@ -73,7 +73,7 @@ async function createProject(showToast=true) {
   try {
     const data = await api('/api/manual-cad/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: 'Новая схема' }) });
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; clearDraft(); state.showReviewCandidates = false;
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.showReviewCandidates = false;
     await refreshProjectList();
     syncControls(); renderAll();
     if (showToast) toast('Создан новый чертёж. Загрузи исходный эскиз или начни строить схему.');
@@ -89,14 +89,14 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = false;
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = false;
     syncControls(); renderAll(); setSaveState('Сохранено', 'saved'); await refreshProjectList();
   } catch (error) { toast(error.message); }
 }
 
 function pushUndo() {
   if (!state.project) return;
-  state.undo.push(clone({ project: state.project, selected: state.selected }));
+  state.undo.push(clone({ project: state.project, selected: state.selected, activeVertex: state.activeVertex }));
   if (state.undo.length > 80) state.undo.shift();
   state.redo = [];
   updateHistoryButtons();
@@ -107,14 +107,14 @@ function updateHistoryButtons() {
 }
 function undo() {
   if (!state.undo.length || !state.project) return;
-  state.redo.push(clone({ project: state.project, selected: state.selected }));
-  const previous = state.undo.pop(); state.project = previous.project; state.selected = previous.selected;
+  state.redo.push(clone({ project: state.project, selected: state.selected, activeVertex: state.activeVertex }));
+  const previous = state.undo.pop(); state.project = previous.project; state.selected = previous.selected; state.activeVertex = previous.activeVertex || null;
   clearDraft(); syncControls(); renderAll(); scheduleSave(); updateHistoryButtons();
 }
 function redo() {
   if (!state.redo.length || !state.project) return;
-  state.undo.push(clone({ project: state.project, selected: state.selected }));
-  const next = state.redo.pop(); state.project = next.project; state.selected = next.selected;
+  state.undo.push(clone({ project: state.project, selected: state.selected, activeVertex: state.activeVertex }));
+  const next = state.redo.pop(); state.project = next.project; state.selected = next.selected; state.activeVertex = next.activeVertex || null;
   clearDraft(); syncControls(); renderAll(); scheduleSave(); updateHistoryButtons();
 }
 function scheduleSave() {
@@ -165,6 +165,7 @@ function syncControls() {
   $('schemeChecker').value = p.schemeChecker || '';
   $('riserGroups').value = (p.riserGroups || []).map(group => `${group.name}: ${(group.apartments || []).join(', ')}`).join('\n');
   $('canvasDimensions').textContent = `${p.width} × ${p.height} px`;
+  $('orthoMode').checked = state.ortho;
   const hasSource = Boolean(p.sourceUrl);
   $('toggleSourceBtn').disabled = !hasSource;
   $('sourceVisible').disabled = !hasSource;
@@ -190,14 +191,15 @@ function updateToolButtons() {
     select:'Выбор: нажми на трубу или символ. У выбранной трубы можно перетаскивать вершины.',
     pipe:'Труба: кликай по поворотам маршрута. Двойной щелчок или Enter завершает линию.',
     branch:'Ответвление: первая точка должна попасть на существующую трубу — создастся узел Т-образного соединения.',
+    node:'Узел: щёлкни по существующему отрезку, чтобы вставить вершину. Выбери инструмент «Выбор», чтобы перетащить её.',
     label:'Подпись: введи текст справа от панели инструментов и щёлкни по месту размещения.',
     symbol:'Символ: выбери тип условного обозначения и щёлкни по месту установки.',
     dimension:'Размер: щёлкни две точки, затем будет создана размерная линия.'
   })[state.tool];
 }
-function updateDeleteButton() { $('deleteBtn').disabled = !state.selected; }
+function updateDeleteButton() { $('deleteBtn').disabled = !state.selected; $('duplicateBtn').disabled = !state.selected; $('deleteBtn').title = state.activeVertex ? 'Удалить выбранную вершину (Del)' : 'Удалить выбранный элемент (Del)'; }
 function setTool(tool) {
-  if (!['select','pipe','branch','label','symbol','dimension'].includes(tool)) return;
+  if (!['select','pipe','branch','node','label','symbol','dimension'].includes(tool)) return;
   if (state.draft.length && tool !== state.tool) clearDraft();
   state.tool = tool;
   for (const selector of ['.mc-prop-route','.mc-prop-label','.mc-prop-symbol','.mc-prop-dimension']) {
@@ -267,13 +269,75 @@ function addPipePoint(point, isStart=false) {
   if (isStart && state.tool === 'branch' && !attachment) {
     toast('Для ответвления начни линию рядом с существующей трубой. Увеличь радиус привязки, если нужно.'); return;
   }
-  const actual = attachment ? {x:attachment.point.x,y:attachment.point.y} : point;
+  let actual = attachment ? {x:attachment.point.x,y:attachment.point.y} : {x:point.x,y:point.y};
+  if (state.ortho && state.draft.length) {
+    const previous = state.draft[state.draft.length - 1];
+    const dx = Math.abs(actual.x - previous.x), dy = Math.abs(actual.y - previous.y);
+    actual = dx >= dy ? { x: actual.x, y: previous.y } : { x: previous.x, y: actual.y };
+  }
   if (state.draft.length && distance(actual,state.draft[state.draft.length-1]) < 1.5) return;
   state.draft.push(actual);
   if (isStart) state.draftStart = attachment;
   state.draftEnd = attachment;
   renderCanvas(); updateToolButtons();
 }
+function insertVertexAt(point) {
+  const attachment = nearestPipeProjection(point);
+  if (!attachment) { toast('Щёлкни ближе к отрезку трубы или увеличь радиус привязки.'); return; }
+  const pipe = state.project.pipes.find(item => item.id === attachment.pipeId);
+  if (!pipe) return;
+  const segmentIndex = attachment.segment;
+  const a = pipe.points[segmentIndex], b = pipe.points[segmentIndex + 1];
+  if (!a || !b || distance({x:a[0],y:a[1]}, attachment.point) < 3 || distance({x:b[0],y:b[1]}, attachment.point) < 3) {
+    toast('В этой точке уже есть вершина. Выбери середину сегмента.'); return;
+  }
+  pushUndo();
+  const index = segmentIndex + 1;
+  pipe.points.splice(index, 0, [attachment.point.x, attachment.point.y]);
+  state.selected = { type: 'pipe', id: pipe.id };
+  state.activeVertex = { pipeId: pipe.id, index };
+  setTool('select');
+  renderAll();
+  scheduleSave();
+  toast('Вершина добавлена. Перетащи маркер, чтобы изменить форму трассы.');
+}
+
+function removeSelectedVertex() {
+  if (!state.activeVertex || state.selected?.type !== 'pipe') return false;
+  const pipe = state.project.pipes.find(item => item.id === state.activeVertex.pipeId);
+  if (!pipe) { state.activeVertex = null; return false; }
+  const index = state.activeVertex.index;
+  const pair = pipe.points[index];
+  if (!pair) { state.activeVertex = null; return false; }
+  const junction = state.project.junctions.find(item => Math.hypot(item.x - pair[0], item.y - pair[1]) <= 2 && item.pipeIds?.length > 1);
+  if (junction) {
+    toast('Это узел соединения нескольких труб. Сначала перестрой или отсоедини ответвление, чтобы не потерять топологию.');
+    return true;
+  }
+  if (pipe.points.length <= 2) {
+    toast('У линии только две опорные точки. Чтобы удалить всю трубу, выбери её линию и нажми ⌫.');
+    state.activeVertex = null;
+    renderCanvas();
+  } else {
+    pushUndo();
+    pipe.points.splice(index, 1);
+    state.activeVertex = null;
+    renderAll();
+    scheduleSave();
+    toast('Вершина удалена. Трубопровод сохранён.');
+  }
+  return true;
+}
+
+function deletePipeById(id) {
+  state.project.pipes = state.project.pipes.filter(item => item.id !== id);
+  state.project.junctions = state.project.junctions.map(item => ({ ...item, pipeIds: item.pipeIds.filter(pipeId => pipeId !== id) })).filter(item => item.pipeIds.length >= 2);
+  state.selected = null;
+  state.activeVertex = null;
+  renderAll();
+  scheduleSave();
+}
+
 function finishRoute() {
   if (state.draft.length < 2) { toast('Для трубы нужно хотя бы две точки.'); return; }
   pushUndo();
@@ -293,6 +357,7 @@ function handleCanvasClick(event) {
   if (state.justDragged) { state.justDragged = false; return; }
   const point=getCanvasPoint(event);
   $('cursorPosition').textContent=`X: ${Math.round(point.x)} · Y: ${Math.round(point.y)}`;
+  if (state.tool === 'node') { insertVertexAt(point); return; }
   if (state.tool==='pipe' || state.tool==='branch') {
     if (event.detail >= 2) { finishRoute(); return; }
     addPipePoint(point,state.draft.length===0); return;
@@ -318,7 +383,8 @@ function handleCanvasClick(event) {
   const hit=event.target.closest('[data-element-type][data-element-id]');
   if (hit) {
     state.selected={type:hit.dataset.elementType,id:hit.dataset.elementId};
-  } else state.selected=null;
+    state.activeVertex=null;
+  } else { state.selected=null; state.activeVertex=null; }
   renderAll();
 }
 
@@ -331,7 +397,8 @@ function symbolSvg(symbol) {
   if (symbol.type==='consumer') shape=`<circle r="${s*1.15}"/><path d="M 0 ${s*.8} C ${-s*1.2} 0 ${s*.5} ${-s*.2} 0 ${-s*.8} C ${s*1.2} 0 ${s*.5} ${s*.4} 0 ${s*.8}"/>`;
   if (symbol.type==='riser') shape=`<path d="M 0 ${s*1.5} V ${-s*1.5} M ${-s*.8} ${-s*1.5} H ${s*.8}"/>`;
   if (symbol.type==='filter') shape=`<rect x="${-s}" y="${-s*.85}" width="${s*2}" height="${s*1.7}"/><path d="M ${-s*.7} ${s*.65} L ${s*.7} ${-s*.65}"/>`;
-  const caption=symbol.label?`<text x="0" y="${s*1.8}" text-anchor="middle">${esc(symbol.label)}</text>`:'';
+  if (symbol.type==='callout') shape=`<rect x="${-s*1.45}" y="${-s}" width="${s*2.9}" height="${s*2}"/><text x="0" y="${s*.38}" text-anchor="middle">${esc(symbol.label||'')}</text>`;
+  const caption=symbol.label&&symbol.type!=='callout'?`<text x="0" y="${s*1.8}" text-anchor="middle">${esc(symbol.label)}</text>`:'';
   return `<g class="mc-cad-symbol ${state.selected?.type==='symbol'&&state.selected.id===symbol.id?'is-selected':''}" data-element-type="symbol" data-element-id="${esc(symbol.id)}" transform="translate(${x} ${y}) rotate(${rotate})">${shape}${caption}</g>`;
 }
 function renderCanvas() {
@@ -344,7 +411,7 @@ function renderCanvas() {
     const points=pipe.points.map(pair=>`${safeNum(pair[0])},${safeNum(pair[1])}`).join(' ');
     const selected=state.selected?.type==='pipe'&&state.selected.id===pipe.id;
     const reviewClass = pipe.reviewOnly === true ? 'mc-pipe-review' : '';
-    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${reviewClass} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="8"/>`).join(''):''}</g>`;
+    return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${reviewClass} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex ${state.activeVertex?.pipeId===pipe.id&&state.activeVertex.index===index?'is-active':''}" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="${state.activeVertex?.pipeId===pipe.id&&state.activeVertex.index===index?10:7}"/>`).join(''):''}</g>`;
   }).join('');
   const junctions=p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('');
   const symbols=p.symbols.map(symbolSvg).join('');
@@ -355,6 +422,7 @@ function renderCanvas() {
   if(state.dimensionStart) draft+=`<circle class="mc-snap-ring" cx="${state.dimensionStart[0]}" cy="${state.dimensionStart[1]}" r="7"/>`;
   svg.innerHTML=`<defs><pattern id="mcGrid" width="25" height="25" patternUnits="userSpaceOnUse"><path d="M25 0H0V25" fill="none" stroke="#dce4de" stroke-width="1"/></pattern></defs><rect width="${p.width}" height="${p.height}" fill="#fff"/>${grid}${source}${pipes}${junctions}${dimensions}${symbols}${labels}${draft}`;
   svg.className.baseVal=`tool-${state.tool}`;
+  updateZoom(state.zoom);
   updateToolButtons(); updateStatistics(); renderProperties();
 }
 function updateStatistics() {
@@ -377,25 +445,63 @@ function renderProperties() {
   $('selectedName').value=item.name??item.text??item.label??item.type??'';
   $('selectedDiameter').value=item.diameter||'';
   $('selectedDiameterWrap').hidden=state.selected.type!=='pipe';
+  $('selectedKindWrap').hidden=state.selected.type!=='pipe';
+  if (state.selected.type==='pipe') $('selectedKind').value=item.kind||'pipe';
   $('selectedSymbolWrap').hidden=state.selected.type!=='symbol';
   $('selectedSymbolLabel').value=item.label||'';
-  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'В режиме «Выбор» перетаскивай круглые маркеры вершин на линии. Ответвления соединяются только в точке привязки.'):'Перетаскивай элемент мышью, чтобы изменить положение.';
+  if (state.selected.type==='symbol') $('selectedSymbolType').value=item.type||'valve';
+  const isPointElement=['symbol','label'].includes(state.selected.type);
+  $('selectedPositionWrap').hidden=!isPointElement;
+  $('selectedTransformWrap').hidden=!isPointElement;
+  if (isPointElement) { $('selectedX').value=Math.round(safeNum(item.x)); $('selectedY').value=Math.round(safeNum(item.y)); $('selectedRotation').value=Math.round(safeNum(item.rotation)); }
+  $('selectedScaleWrap').hidden=state.selected.type!=='symbol';
+  $('selectedFontSizeWrap').hidden=state.selected.type!=='label';
+  if (state.selected.type==='symbol') $('selectedScale').value=safeNum(item.scale,1);
+  if (state.selected.type==='label') $('selectedFontSize').value=safeNum(item.size,18);
+  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину; перетаскивание линии двигает всю ветку с сохранением стыков.'):'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
   $('acceptReviewPipeBtn').hidden=!(state.selected.type==='pipe' && item.reviewOnly===true);
   updateDeleteButton();
 }
 function renderAll(){syncControls();renderCanvas();renderProjectList();}
 
+function duplicateSelected() {
+  const item=selectedItem();
+  if(!item||!state.project)return;
+  pushUndo();
+  const copy=clone(item);
+  copy.id=uid(state.selected.type);
+  if(state.selected.type==='pipe') {
+    copy.points=copy.points.map(([x,y])=>[Math.min(state.project.width,x+24),Math.min(state.project.height,y+24)]);
+    state.project.pipes.push(copy);
+  } else if(state.selected.type==='symbol'||state.selected.type==='label') {
+    copy.x=Math.min(state.project.width,copy.x+24); copy.y=Math.min(state.project.height,copy.y+24);
+    state.project[state.selected.type==='symbol'?'symbols':'labels'].push(copy);
+  } else {
+    copy.a=[Math.min(state.project.width,copy.a[0]+24),Math.min(state.project.height,copy.a[1]+24)];
+    copy.b=[Math.min(state.project.width,copy.b[0]+24),Math.min(state.project.height,copy.b[1]+24)];
+    state.project.dimensions.push(copy);
+  }
+  state.selected={type:state.selected.type,id:copy.id};
+  state.activeVertex=null; renderAll(); scheduleSave();
+  toast('Копия создана со смещением 24 px. Её можно переместить отдельно.');
+}
+
 function deleteSelected() {
   if(!state.selected||!state.project)return;
-  const {type,id}=state.selected; pushUndo();
-  if(type==='pipe'){
-    state.project.pipes=state.project.pipes.filter(x=>x.id!==id);
-    state.project.junctions=state.project.junctions.map(j=>({...j,pipeIds:j.pipeIds.filter(pid=>pid!==id)})).filter(j=>j.pipeIds.length>=2);
+  if (removeSelectedVertex()) return;
+  const {type,id}=state.selected;
+  pushUndo();
+  if(type==='pipe') {
+    state.project.pipes=state.project.pipes.filter(item=>item.id!==id);
+    state.project.junctions=state.project.junctions
+      .map(item=>({...item,pipeIds:(item.pipeIds||[]).filter(pipeId=>pipeId!==id)}))
+      .filter(item=>item.pipeIds.length>=2);
   } else if(type==='symbol') state.project.symbols=state.project.symbols.filter(x=>x.id!==id);
   else if(type==='label') state.project.labels=state.project.labels.filter(x=>x.id!==id);
   else if(type==='dimension') state.project.dimensions=state.project.dimensions.filter(x=>x.id!==id);
-  state.selected=null; renderAll(); scheduleSave();
+  state.selected=null; state.activeVertex=null; renderAll(); scheduleSave();
 }
+
 
 function startDrag(event) {
   if(state.tool!=='select'||!state.project)return;
@@ -405,15 +511,32 @@ function startDrag(event) {
     state.selected={type:'pipe',id:vertex.dataset.vertexPipe};
     const pipe=state.project.pipes.find(x=>x.id===state.selected.id); if(!pipe)return;
     const index=Number(vertex.dataset.vertexIndex);
+    state.activeVertex={pipeId:pipe.id,index};
     const coordinate=pipe.points[index];
     const junction=state.project.junctions.find(j=>Math.hypot(j.x-coordinate[0],j.y-coordinate[1])<=2);
     pushUndo(); state.drag=junction?{type:'junction',id:junction.id}:{type:'vertex',id:pipe.id,index};
     svg.setPointerCapture?.(event.pointerId); event.preventDefault(); renderCanvas(); return;
   }
-  if(item&&['symbol','label'].includes(item.dataset.elementType)){
-    state.selected={type:item.dataset.elementType,id:item.dataset.elementId};
+  if(item?.dataset.elementType==='pipe'){
+    const pipe=state.project.pipes.find(x=>x.id===item.dataset.elementId); if(!pipe)return;
+    state.selected={type:'pipe',id:pipe.id}; state.activeVertex=null;
+    const origin=getCanvasPoint(event);
+    const attachedJunctions=state.project.junctions.filter(j=>j.pipeIds?.includes(pipe.id)).map(j=>({
+      id:j.id, x:j.x, y:j.y,
+      neighbors:(j.pipeIds||[]).filter(id=>id!==pipe.id).map(id=>({
+        id, indexes:(state.project.pipes.find(candidate=>candidate.id===id)?.points||[])
+          .map((pair,index)=>Math.hypot(pair[0]-j.x,pair[1]-j.y)<=3?index:-1).filter(index=>index>=0)
+      }))
+    }));
+    pushUndo();
+    state.drag={type:'pipe',id:pipe.id,origin,startPoints:clone(pipe.points),attachedJunctions};
+    svg.setPointerCapture?.(event.pointerId); event.preventDefault(); renderCanvas(); return;
+  }
+  if(item&&['symbol','label','dimension'].includes(item.dataset.elementType)){
+    state.selected={type:item.dataset.elementType,id:item.dataset.elementId}; state.activeVertex=null;
     const value=selectedItem(); if(!value)return;
-    pushUndo(); state.drag={type:item.dataset.elementType,id:value.id,origin:getCanvasPoint(event),start:{x:value.x,y:value.y}};
+    const point=getCanvasPoint(event); pushUndo();
+    state.drag={type:item.dataset.elementType,id:value.id,origin:point,start:{x:value.x,y:value.y},startA:value.a?clone(value.a):null,startB:value.b?clone(value.b):null};
     svg.setPointerCapture?.(event.pointerId); event.preventDefault(); renderCanvas();
   }
 }
@@ -433,13 +556,43 @@ function moveDrag(event) {
         if(nearest>=0&&best<=3)pipe.points[nearest]=[pt.x,pt.y];
       }
     }
+  } else if(drag.type==='pipe') {
+    const pipe=state.project.pipes.find(x=>x.id===drag.id); if(!pipe)return;
+    const dx=pt.x-drag.origin.x, dy=pt.y-drag.origin.y;
+    pipe.points=drag.startPoints.map(pair=>[pair[0]+dx,pair[1]+dy]);
+    for(const linked of drag.attachedJunctions||[]){
+      const junction=state.project.junctions.find(x=>x.id===linked.id); if(!junction)continue;
+      junction.x=linked.x+dx; junction.y=linked.y+dy;
+      for(const neighbor of linked.neighbors){
+        const other=state.project.pipes.find(x=>x.id===neighbor.id); if(!other)continue;
+        for(const index of neighbor.indexes){ if(other.points[index])other.points[index]=[linked.x+dx,linked.y+dy]; }
+      }
+    }
   } else {
-    const collection=drag.type==='symbol'?'symbols':'labels'; const item=state.project[collection].find(x=>x.id===drag.id);
-    if(item){item.x=Math.max(0,Math.min(state.project.width,drag.start.x+pt.x-drag.origin.x));item.y=Math.max(0,Math.min(state.project.height,drag.start.y+pt.y-drag.origin.y));}
+    const collection=drag.type==='symbol'?'symbols':drag.type==='label'?'labels':'dimensions'; const item=state.project[collection].find(x=>x.id===drag.id);
+    if(item){
+      const dx=pt.x-drag.origin.x, dy=pt.y-drag.origin.y;
+      if(drag.type==='dimension'){
+        item.a=[drag.startA[0]+dx,drag.startA[1]+dy]; item.b=[drag.startB[0]+dx,drag.startB[1]+dy];
+      } else {
+        item.x=Math.max(0,Math.min(state.project.width,drag.start.x+dx));
+        item.y=Math.max(0,Math.min(state.project.height,drag.start.y+dy));
+      }
+    }
   }
   renderCanvas();
 }
 function endDrag(){if(!state.drag)return;state.drag=null;state.justDragged=true;setTimeout(()=>{state.justDragged=false;},0);scheduleSave();renderAll();}
+
+function updateZoom(value) {
+  state.zoom=Math.max(0.5,Math.min(2.5,Math.round(value*100)/100));
+  svg.style.width=`${Math.round(state.zoom*100)}%`;
+  svg.style.height='auto';
+  svg.style.maxWidth='none';
+  $('zoomResetBtn').textContent=`${Math.round(state.zoom*100)}%`;
+  $('zoomResetBtn').setAttribute('aria-label',`Масштаб ${Math.round(state.zoom*100)} процентов; нажми, чтобы сбросить`);
+}
+
 
 async function uploadSource(file) {
   if(!state.project||!file)return;
@@ -459,7 +612,7 @@ async function uploadSource(file) {
 $('newProjectBtn').addEventListener('click',()=>createProject(true));
 document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>setTool(button.dataset.tool)));
 $('finishRouteBtn').addEventListener('click',finishRoute);
-$('undoBtn').addEventListener('click',undo);$('redoBtn').addEventListener('click',redo);$('deleteBtn').addEventListener('click',deleteSelected);
+$('undoBtn').addEventListener('click',undo);$('redoBtn').addEventListener('click',redo);$('duplicateBtn').addEventListener('click',duplicateSelected);$('deleteBtn').addEventListener('click',deleteSelected);
 $('sourceFile').addEventListener('change',event=>uploadSource(event.target.files?.[0]));
 $('toggleSourceBtn').addEventListener('click',()=>{state.sourceVisible=!state.sourceVisible;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
 $('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
@@ -487,6 +640,10 @@ $('riserGroups').addEventListener('change',event=>{
   toast(`Групп стояков: ${state.project.riserGroups.length}. Номера квартир перенесены в чистовой лист.`);
 });
 $('saveNowBtn').addEventListener('click',()=>saveProject());
+$('orthoMode').addEventListener('change',event=>{state.ortho=event.target.checked;toast(state.ortho?'Ортогональное построение включено.':'Свободное построение включено.');});
+$('zoomInBtn').addEventListener('click',()=>updateZoom(state.zoom+.1));
+$('zoomOutBtn').addEventListener('click',()=>updateZoom(state.zoom-.1));
+$('zoomResetBtn').addEventListener('click',()=>updateZoom(1));
 svg.addEventListener('click',handleCanvasClick);
 svg.addEventListener('pointerdown',startDrag);
 svg.addEventListener('pointermove',moveDrag);
@@ -498,7 +655,10 @@ window.addEventListener('keydown',event=>{
   if(event.target.matches('input,textarea,select'))return;
   if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'){event.preventDefault();event.shiftKey?redo():undo();return;}
   if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='y'){event.preventDefault();redo();return;}
-  if(event.key==='Escape'){clearDraft();renderCanvas();return;}
+  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='d'){event.preventDefault();duplicateSelected();return;}
+  if(event.key==='Escape'){clearDraft();state.activeVertex=null;renderCanvas();return;}
+  if(event.key.toLowerCase()==='o'&&!event.ctrlKey&&!event.metaKey){state.ortho=!state.ortho;$('orthoMode').checked=state.ortho;return;}
+  if(event.key.toLowerCase()==='n'&&!event.ctrlKey&&!event.metaKey){setTool('node');return;}
   if(event.key==='Enter'&&['pipe','branch'].includes(state.tool)){event.preventDefault();finishRoute();return;}
   if(event.key==='Backspace'&&state.draft.length){state.draft.pop();if(!state.draft.length)state.draftStart=null;renderCanvas();return;}
   if((event.key==='Delete'||event.key==='Backspace')&&state.selected){event.preventDefault();deleteSelected();}
@@ -515,6 +675,11 @@ $('selectedName').addEventListener('change',event=>{
 });
 $('selectedDiameter').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.diameter=event.target.value;renderCanvas();scheduleSave();});
 $('selectedSymbolLabel').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.label=event.target.value;renderCanvas();scheduleSave();});
+$('selectedSymbolType').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.type=event.target.value;renderCanvas();scheduleSave();});
+$('selectedKind').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.kind=event.target.value;renderCanvas();scheduleSave();});
+for (const [id,key] of [['selectedX','x'],['selectedY','y'],['selectedRotation','rotation'],['selectedScale','scale'],['selectedFontSize','size']]) {
+  $(id).addEventListener('change',event=>{const item=selectedItem();if(!item)return;const value=Number(event.target.value);if(!Number.isFinite(value))return;pushUndo();item[key]=key==='scale'?Math.max(.25,Math.min(4,value)):key==='size'?Math.max(6,Math.min(120,value)):key==='rotation'?Math.max(-360,Math.min(360,value)):Math.max(0,Math.min(key==='x'?state.project.width:state.project.height,value));renderCanvas();scheduleSave();});
+}
 $('showReviewCandidates').addEventListener('change',event=>{state.showReviewCandidates=event.target.checked;renderCanvas();});
 $('acceptReviewPipeBtn').addEventListener('click',()=>{
   const item=selectedItem();

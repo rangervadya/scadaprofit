@@ -1,6 +1,6 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.3.37",
+  "version": "4.3.38",
   "private": true,
   "description": "OCR-aware topology reconstruction of handwritten piping schematics",
   "type": "module",

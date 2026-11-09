@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter']);
+const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout']);
 const MAX_PIPES = 1200;
 const MAX_POINTS_PER_PIPE = 1200;
 const MAX_LABELS = 2000;
@@ -454,16 +454,21 @@ function lpgCadPageMap(project) {
   const pageH = a3 ? (landscape ? 297 : 420) : (landscape ? 210 : 297);
   const groups = Array.isArray(project.riserGroups) ? project.riserGroups.filter(group => group.apartments?.length) : [];
   const maxRows = groups.reduce((max, group) => Math.max(max, group.apartments.length), 0);
-  const legendY = pageH - 43;
+  // Match the supplied engineering sheet: riser columns occupy the lower-left
+  // block while the legend and signatures remain in the lower-right block.
+  const legendY = pageH - 58;
+  const legendX = pageW - (landscape ? 112 : 82);
+  const riserHeight = Math.max(68, maxRows * 8 + 24);
+  const riserWidth = Math.min(pageW - 20, pageW * 0.54);
   const riserLayout = groups.length ? {
-    x: 10, y: legendY - 5 - Math.max(42, maxRows * 4.7 + 14),
-    w: pageW - 20, h: Math.max(42, maxRows * 4.7 + 14), maxRows
+    x: 10, y: pageH - 17 - riserHeight,
+    w: riserWidth, h: riserHeight, maxRows
   } : null;
   const area = {
     x: landscape ? 12 : 10,
     y: 38,
     w: pageW - (landscape ? 24 : 20),
-    h: Math.max(30, (riserLayout ? riserLayout.y - 8 : pageH - 50) - 38)
+    h: Math.max(30, (riserLayout ? riserLayout.y - 8 : pageH - 68) - 38)
   };
   const bounds = collectBounds(project);
   const bw = Math.max(1, bounds.maxX - bounds.minX);
@@ -488,7 +493,8 @@ function symbolMarkup(symbol, map) {
   if (symbol.type === 'consumer') body = `<circle r="${s * 1.35}" ${common}/><path d="M 0 ${s} C ${-s * 1.5} ${s * 0.1}, ${s * 0.6} ${-s * 0.3}, 0 ${-s}" fill="none" stroke="#111" stroke-width="0.48"/>`;
   if (symbol.type === 'riser') body = `<path d="M 0 ${s * 1.8} V ${-s * 1.8} M ${-s} ${-s * 1.8} H ${s}" fill="none" stroke="#111" stroke-width="0.55"/>`;
   if (symbol.type === 'filter') body = `<path d="M ${-s * 1.25} ${-s} L ${s * 1.25} ${-s} L ${s * 1.25} ${s} L ${-s * 1.25} ${s} Z" ${common}/><path d="M ${-s} ${s} L ${s} ${-s}" stroke="#111" stroke-width="0.4"/>`;
-  return `<g transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
+  if (symbol.type === 'callout') body = `<rect x="${-s * 1.45}" y="${-s}" width="${s * 2.9}" height="${s * 2}" ${common}/><text y="${s * 0.43}" text-anchor="middle" font-size="${s * 1.05}" font-weight="700" fill="#111" stroke="none">${esc(symbol.label || '')}</text>`;
+  return `<g transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label && symbol.type !== 'callout' ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
 }
 
 export function renderManualCadSvg(rawProject) {
@@ -623,33 +629,35 @@ function renderLpgCadR1Svg(project) {
   }
 
   const legendX = pageW - (project.page === 'landscape' ? 112 : 82);
-  const legendY = pageH - 43;
+  const legendY = pageH - 58;
   parts.push(`<g id="LEGEND" font-family="Arial,sans-serif" fill="#111" stroke="#111" stroke-width="0.2"><rect x="${fmt(legendX)}" y="${fmt(legendY)}" width="${fmt(pageW - legendX - 6)}" height="31" fill="none"/>`);
   parts.push(`<text x="${fmt(legendX + 2)}" y="${fmt(legendY + 4)}" font-size="2.1" font-weight="700" stroke="none">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ</text>`);
   const legendRows = [
     ['line', 'расположение контролируемого участка'],
     ['number', 'номер контролируемого участка'],
     ['junction', 'узел соединения трубопровода'],
-    ['riser', 'стояк / вертикальный участок']
+    ['casing', 'определение наличия на контакте «труба-футляр»']
   ];
   legendRows.forEach(([kind, label], index) => {
     const y = legendY + 8 + index * 5.1;
     if (kind === 'line') parts.push(`<path d="M ${fmt(legendX + 2)} ${fmt(y)} h 7"/>`);
     if (kind === 'number') parts.push(`<rect x="${fmt(legendX + 3)}" y="${fmt(y - 2)}" width="5" height="3.5" fill="#fff"/><text x="${fmt(legendX + 5.5)}" y="${fmt(y + 0.5)}" text-anchor="middle" font-size="2" stroke="none">1</text>`);
     if (kind === 'junction') parts.push(`<circle cx="${fmt(legendX + 5.5)}" cy="${fmt(y - 0.3)}" r="1"/>`);
-    if (kind === 'riser') parts.push(`<path d="M ${fmt(legendX + 5.5)} ${fmt(y - 2)} v 4 m -1.5 -4 h 3"/>`);
+    if (kind === 'casing') parts.push(`<circle cx="${fmt(legendX + 5.5)}" cy="${fmt(y - 0.3)}" r="1.7" fill="none"/><circle cx="${fmt(legendX + 5.5)}" cy="${fmt(y - 0.3)}" r="0.8" fill="none"/>`);
     parts.push(`<text x="${fmt(legendX + 11)}" y="${fmt(y + 0.6)}" font-size="1.85" stroke="none">${esc(label)}</text>`);
   });
   parts.push('</g>');
 
   if (project.notes) {
-    parts.push(`<text x="10" y="${fmt(pageH - 22)}" font-family="Arial,sans-serif" font-size="1.9" fill="#333">Примечание: ${esc(project.notes)}</text>`);
+    const noteY = riserLayout ? riserLayout.y - 2 : legendY - 4;
+    parts.push(`<text x="10" y="${fmt(noteY)}" font-family="Arial,sans-serif" font-size="1.7" fill="#333">Примечание: ${esc(project.notes)}</text>`);
   }
 
   const signY = pageH - 7;
+  const signatureX = legendX;
   parts.push(`<g id="SIGNATURES" font-family="Arial,sans-serif" fill="#111" font-size="2.3">`);
-  parts.push(`<text x="10" y="${fmt(signY - 8)}">Схему составил: ${esc(project.schemeAuthor || project.preparedBy || '________________')}</text>`);
-  parts.push(`<text x="10" y="${fmt(signY - 3)}">Схему начертил: ${esc(project.schemeChecker || '________________')}</text>`);
+  parts.push(`<text x="${fmt(signatureX)}" y="${fmt(signY - 12)}">Схему составил: ${esc(project.schemeAuthor || project.preparedBy || '________________')}</text>`);
+  parts.push(`<text x="${fmt(signatureX)}" y="${fmt(signY - 7)}">Схему начертил: ${esc(project.schemeChecker || '________________')}</text>`);
   parts.push(`<text x="${fmt(pageW - 6)}" y="${fmt(signY - 3)}" text-anchor="end">Лист 1 / 1</text>`);
   parts.push('</g></svg>');
   return parts.join('\n');
@@ -699,11 +707,19 @@ export function renderManualCadDxf(rawProject) {
     const p = dxfPoint([symbol.x, symbol.y]);
     const s = 2.4 * symbol.scale;
     if (symbol.type === 'meter' || symbol.type === 'consumer') addDxfCircle(out, 'SYMBOLS', p, s * (symbol.type === 'meter' ? 1.25 : 1.35));
+    if (symbol.type === 'callout') {
+      const x = p[0], y = p[1], halfW = s * 1.45, halfH = s;
+      addDxfLine(out, 'SYMBOLS', [x-halfW,y-halfH], [x+halfW,y-halfH]);
+      addDxfLine(out, 'SYMBOLS', [x+halfW,y-halfH], [x+halfW,y+halfH]);
+      addDxfLine(out, 'SYMBOLS', [x+halfW,y+halfH], [x-halfW,y+halfH]);
+      addDxfLine(out, 'SYMBOLS', [x-halfW,y+halfH], [x-halfW,y-halfH]);
+      if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [x,y+s*.35], s*1.05);
+    }
     else {
       addDxfLine(out, 'SYMBOLS', [p[0] - s, p[1] - s], [p[0] + s, p[1] + s]);
       addDxfLine(out, 'SYMBOLS', [p[0] - s, p[1] + s], [p[0] + s, p[1] - s]);
     }
-    if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [p[0] + s * 1.6, p[1] + s * 1.6], 2);
+    if (symbol.label && symbol.type !== 'callout') addDxfText(out, 'TEXT', symbol.label, [p[0] + s * 1.6, p[1] + s * 1.6], 2);
   }
   for (const label of project.labels) {
     const p = dxfPoint([label.x, label.y]);
@@ -787,6 +803,14 @@ function renderLpgCadR1Dxf(project) {
   for (const symbol of project.symbols) {
     const p = toDxf([symbol.x, symbol.y]), s = 2.2 * symbol.scale;
     if (['meter','consumer'].includes(symbol.type)) addDxfCircle(out, 'SYMBOLS', p, s * 1.15);
+    if (symbol.type === 'callout') {
+      const x=p[0], y=p[1], hw=s*1.45, hh=s;
+      addDxfLine(out,'SYMBOLS',[x-hw,y-hh],[x+hw,y-hh]);
+      addDxfLine(out,'SYMBOLS',[x+hw,y-hh],[x+hw,y+hh]);
+      addDxfLine(out,'SYMBOLS',[x+hw,y+hh],[x-hw,y+hh]);
+      addDxfLine(out,'SYMBOLS',[x-hw,y+hh],[x-hw,y-hh]);
+      if (symbol.label) addTextAtPage('TEXT', symbol.label, [x,y+hh*.25], Math.max(1.6, s*.9));
+    }
     else {
       addDxfLine(out, 'SYMBOLS', [p[0]-s,p[1]-s], [p[0]+s,p[1]+s]);
       addDxfLine(out, 'SYMBOLS', [p[0]-s,p[1]+s], [p[0]+s,p[1]-s]);
@@ -803,18 +827,24 @@ function renderLpgCadR1Dxf(project) {
   addTextAtPage('HEADER', 'СХЕМА', [pageW/2,23], 3.0);
   addTextAtPage('HEADER', project.schemeSubtitle, [pageW/2,28], 2.4);
   addTextAtPage('HEADER', `по адресу: ${[project.siteAddress, project.entrance ? `подъезд ${project.entrance}` : ''].filter(Boolean).join(', ') || 'адрес не указан'}`, [pageW/2,34], 2.2);
-  const lx=pageW-(project.page==='landscape'?112:82), ly=pageH-43;
+  const lx=pageW-(project.page==='landscape'?112:82), ly=pageH-58;
   addPolyline('LEGEND',[[lx,ly],[pageW-6,ly],[pageW-6,ly+31],[lx,ly+31]],true);
   addTextAtPage('LEGEND','УСЛОВНЫЕ ОБОЗНАЧЕНИЯ',[lx+2,ly+4],1.8);
-  const legendLabels=['расположение контролируемого участка','номер контролируемого участка','узел соединения трубопровода','стояк / вертикальный участок'];
+  const legendLabels=['расположение контролируемого участка','номер контролируемого участка','узел соединения трубопровода','определение наличия на контакте «труба-футляр»'];
   legendLabels.forEach((label,i)=>addTextAtPage('LEGEND',label,[lx+11,ly+8+i*5.1],1.6));
   addDxfLine(out,'LEGEND',[lx+2,pageH-(ly+8)],[lx+9,pageH-(ly+8)]);
-  addDxfCircle(out,'LEGEND',[lx+5.5,pageH-(ly+13.1)],0.8);
-  addDxfLine(out,'LEGEND',[lx+5.5,pageH-(ly+21.2)],[lx+5.5,pageH-(ly+17.2)]);
-  addTextAtPage('SIGNATURES',`Схему составил: ${project.schemeAuthor || project.preparedBy || '________________'}`,[10,pageH-15],2.0);
-  addTextAtPage('SIGNATURES',`Схему начертил: ${project.schemeChecker || '________________'}`,[10,pageH-10],2.0);
+  const legendYNumber = ly + 13.1;
+  const numberBox = [[lx+3,legendYNumber-2],[lx+8,legendYNumber-2],[lx+8,legendYNumber+1.5],[lx+3,legendYNumber+1.5]];
+  numberBox.forEach((point,index)=>addDxfLine(out,'LEGEND',toDxf(point),toDxf(numberBox[(index+1)%numberBox.length])));
+  const junctionPoint = toDxf([lx+5.5,ly+18.2]);
+  addDxfCircle(out,'LEGEND',junctionPoint,0.8);
+  const casingPoint = toDxf([lx+5.5,ly+23.3]);
+  addDxfCircle(out,'LEGEND',casingPoint,1.5);
+  addDxfCircle(out,'LEGEND',casingPoint,0.7);
+  addTextAtPage('SIGNATURES',`Схему составил: ${project.schemeAuthor || project.preparedBy || '________________'}`,[lx,pageH-19],2.0);
+  addTextAtPage('SIGNATURES',`Схему начертил: ${project.schemeChecker || '________________'}`,[lx,pageH-14],2.0);
   addTextAtPage('SIGNATURES','Лист 1 / 1',[pageW-6,pageH-10],2.0);
-  if (project.notes) addTextAtPage('SIGNATURES',`Примечание: ${project.notes}`,[10,pageH-22],1.7);
+  if (project.notes) addTextAtPage('SIGNATURES',`Примечание: ${project.notes}`,[10,(riserLayout ? riserLayout.y-2 : ly-4)],1.7);
   out.push('0','ENDSEC','0','EOF');
   return out.join('\n')+'\n';
 }
