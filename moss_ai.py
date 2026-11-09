@@ -567,16 +567,30 @@ def _point_sequence(value: Any) -> list[Any] | None:
     return None
 
 
+def _normalize_route_point_container(value: Any) -> list[Any] | None:
+    """Normalize a route's points while preserving a single point as one point.
+
+    A one-point array such as [[x, y]] must become [[x, y]], not [x, y].
+    The latter was mistakenly interpreted as two scalar points and rejected as
+    invalid-point. It is still not a valid pipe route; the caller classifies it
+    as a single-point/too-short candidate and may request one focused retry.
+    """
+    result = _point_sequence(value)
+    if result is not None and _is_point(result):
+        return [result]
+    return result
+
+
 def _route_point_list(raw: Any) -> list[Any] | None:
     if isinstance(raw, list):
-        return _point_sequence(raw)
+        return _normalize_route_point_container(raw)
     if not isinstance(raw, dict):
-        return _point_sequence(raw)
+        return _normalize_route_point_container(raw)
     key_map = {_norm_key(key): key for key in raw.keys()}
     for alias in _POINT_ARRAY_KEYS:
         actual = key_map.get(_norm_key(alias))
         if actual is not None:
-            result = _point_sequence(raw.get(actual))
+            result = _normalize_route_point_container(raw.get(actual))
             if result is not None:
                 return result
     keys = {_norm_key(k): v for k, v in raw.items()}
@@ -638,6 +652,8 @@ def _route_shape_summary(raw: Any) -> dict[str, Any]:
             "points_count": len(point_value) if isinstance(point_value, (list, dict)) else None,
             "first_point_type": type(first).__name__ if first is not None else None,
             "first_point_keys": sorted(str(k)[:24] for k in first.keys())[:12] if isinstance(first, dict) else None,
+            "first_point_length": len(first) if isinstance(first, (list, tuple, dict)) else None,
+            "first_point_item_types": [type(item).__name__ for item in first[:4]] if isinstance(first, (list, tuple)) else None,
             "confidence_type": type(confidence).__name__ if confidence is not None else None,
         }
     return {"type": type(raw).__name__}
@@ -660,6 +676,7 @@ def _coordinate_mode(parsed: dict[str, Any], raw: Any) -> str:
 
 def moss_semantic_routes(
     image_path: str | Path, api_key: str, model: str = DEFAULT_MODEL, *, timeout: float = 300.0,
+    _retry_attempt: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Propose visible pipe center-lines; caller validates every candidate against source ink."""
     model = str(model or DEFAULT_MODEL).strip()
@@ -673,21 +690,39 @@ def moss_semantic_routes(
     )
     file_id = _upload_image(api_key, image_bytes, timeout=timeout)
     try:
-        prompt = (
-            "Ты трассируешь только реально видимые трубопроводы на рукописной инженерной схеме. "
-            "Верни компактный JSON без Markdown и пояснений: верхний ключ routes — массив "
-            "объектов {id, points, confidence}. Каждый отдельный непрерывный видимый участок — "
-            "отдельный маршрут. Для прямой линии укажи начало и конец; для изгибов добавь точки "
-            "видимых углов. Т-ответвления разделяй на ветви. Пересечение не считай соединением, "
-            "если на рисунке нет явного узла. Не включай надписи, цифры, размеры, выноски, стрелки, "
-            "рамки и условные символы. Не дорисовывай невидимые части и не соединяй разрывы. "
-            "Допускай кандидаты с умеренной уверенностью, но каждая точка должна лежать на видимом "
-            "штрихе трубы. Координаты — пиксели отправленного изображения "
-            f"{width}x{height}, начало слева сверху. points — 2..64 пары [x,y]; confidence — "
-            "число 35..100. Максимум 32 маршрута. Верни только JSON вида "
-            '{"routes":[{"id":"R1","points":[[20,80],[180,80]],"confidence":65}]}. '
-            "Если видимых труб действительно нет, верни {\"routes\":[]}."
-        )
+        if _retry_attempt:
+            prompt = (
+                "Повторно внимательно проследи реальные линии труб на изображении. "
+                "Предыдущий ответ содержал маршрут только с одной точкой: это НЕ линия. "
+                "Каждый маршрут обязан содержать минимум ДВЕ РАЗНЫЕ точки на одной непрерывной "
+                "видимой трубе. Для прямого участка укажи два конца [[x1,y1],[x2,y2]], "
+                "для изгиба добавь точки углов. Не возвращай объект с одной точкой, одиночный "
+                "символ или центр оборудования. Если две точки одной трубы нельзя подтвердить "
+                "по пикселям, пропусти этот маршрут. Разделяй ветви Т-узла; пересечение без "
+                "явного соединения не объединяй. Игнорируй текст, размеры, выноски, стрелки, "
+                "рамки и символы. Координаты — пиксели изображения "
+                f"{width}x{height}, начало слева сверху. Верни только JSON: "
+                '{"routes":[{"id":"R1","points":[[20,80],[180,80]],"confidence":65}]}. '
+                "Каждый points содержит 2..64 различные пары [x,y]. Максимум 32 маршрута. "
+                "Не придумывай невидимую геометрию. Если труб не видно, верни {\"routes\":[]}."
+            )
+        else:
+            prompt = (
+                "Ты трассируешь только реально видимые трубопроводы на рукописной инженерной схеме. "
+                "Верни компактный JSON без Markdown: верхний ключ routes — массив объектов "
+                "{id, points, confidence}. Каждый отдельный непрерывный участок — отдельный маршрут. "
+                "Для прямой линии укажи оба конца; для изгибов добавь точки видимых углов. "
+                "Т-ответвления разделяй на ветви. Пересечение не считай соединением без явного узла. "
+                "Не включай надписи, размеры, выноски, стрелки, рамки и условные символы. "
+                "КРИТИЧНО: каждый маршрут обязан содержать минимум ДВЕ РАЗНЫЕ пары [x,y]. "
+                "Никогда не возвращай маршрут с одной точкой, центром символа или одиночным маркером. "
+                "Все точки должны лежать на видимом штрихе одной непрерывной трубы. "
+                f"Координаты — пиксели изображения {width}x{height}, начало слева сверху. "
+                "Для прямой трубы используй points:[[x1,y1],[x2,y2]], для изгиба 3 или более точек. "
+                "Максимум 32 маршрута и 64 точки на маршрут, confidence 35..100. "
+                'Пример: {"routes":[{"id":"R1","points":[[20,80],[180,80]],"confidence":65}]}. '
+                "Если две разные точки трубы не видны, пропусти маршрут; если труб нет, верни {\"routes\":[]}."
+            )
         payload = {
             "model": model,
             "input": [{"role": "user", "content": [
@@ -727,6 +762,7 @@ def moss_semantic_routes(
     rejected_low_confidence = 0
     rejected_out_of_bounds = 0
     rejected_too_short = 0
+    rejected_single_point = 0
     route_diagnostics: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_routes[:MOSS_PIPE_MAX_ROUTES], 1):
         if isinstance(raw, list):
@@ -735,6 +771,12 @@ def moss_semantic_routes(
             rejected_invalid += 1
             continue
         raw_points = _route_point_list(raw)
+        if isinstance(raw_points, list) and len(raw_points) == 1 and _is_point(raw_points[0]):
+            rejected_single_point += 1
+            rejected_too_short += 1
+            if len(route_diagnostics) < 30:
+                route_diagnostics.append({"index": index, "decision": "reject", "reason": "single-point-route", "shape": _route_shape_summary(raw)})
+            continue
         if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= MOSS_PIPE_MAX_POINTS:
             rejected_invalid += 1
             if len(route_diagnostics) < 30:
@@ -807,6 +849,7 @@ def moss_semantic_routes(
         "rejected_invalid": rejected_invalid,
         "rejected_out_of_bounds": rejected_out_of_bounds,
         "rejected_too_short": rejected_too_short,
+        "rejected_single_point": rejected_single_point,
         "route_diagnostics": route_diagnostics,
         "tiles": 1, "successful_tiles": 1, "failed_tiles": [],
         "image_size_sent": {"width": width, "height": height},
@@ -836,12 +879,40 @@ def moss_semantic_routes(
     _progress(
         f"routes field={route_field}; raw={raw_count}; accepted={len(routes)}; "
         f"invalid={rejected_invalid}; out_of_bounds={rejected_out_of_bounds}; "
-        f"too_short={rejected_too_short}; low_confidence={rejected_low_confidence}; "
+        f"too_short={rejected_too_short}; single_point={rejected_single_point}; "
+        f"low_confidence={rejected_low_confidence}; "
         f"output_tokens={usage.get('output_tokens', 'n/a')}"
     )
     rejected_shapes = [item for item in route_diagnostics if item.get("decision") == "reject"][:8]
     if rejected_shapes:
         _progress("Route rejection schema (keys/types only): " + json.dumps(rejected_shapes, ensure_ascii=False, separators=(",", ":"))[:1100])
+
+    # A completed response containing only one-point candidates is malformed,
+    # not evidence that no pipes exist. Retry MOSS once with a stricter endpoint
+    # instruction before allowing the processor to fall back to local Qwen.
+    if not routes and rejected_single_point > 0 and not _retry_attempt:
+        _progress(
+            f"Only single-point route candidates were returned ({rejected_single_point}); "
+            "retrying MOSS once with endpoint-focused prompt before Qwen fallback"
+        )
+        retry_routes, retry_status = moss_semantic_routes(
+            image_path, api_key, model, timeout=timeout, _retry_attempt=True
+        )
+        retry_status["retry"] = {
+            "attempted": True,
+            "reason": "single-point-route-candidates",
+            "initial_raw_routes": raw_count,
+            "initial_single_point_routes": rejected_single_point,
+            "initial_accepted_routes": len(routes),
+        }
+        _progress(
+            f"Focused MOSS retry result: accepted={len(retry_routes)}; "
+            f"raw={retry_status.get('raw_routes', 0)}; "
+            f"single_point={retry_status.get('rejected_single_point', 0)}"
+        )
+        return retry_routes, retry_status
+    if _retry_attempt:
+        status["retry_attempt"] = True
     return routes, status
 
 

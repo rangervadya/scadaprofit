@@ -293,5 +293,68 @@ class MossImageTests(unittest.TestCase):
         delete.assert_called_once()
 
 
+    def test_route_point_list_preserves_single_coordinate_as_one_point(self):
+        points = moss_ai._route_point_list({"points": [[10, 20]]})
+        self.assertEqual(points, [[10, 20]])
+        self.assertEqual(len(points), 1)
+        self.assertTrue(moss_ai._is_point(points[0]))
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_single_point_candidate_triggers_one_focused_moss_retry(self, upload, request, delete):
+        upload.return_value = "file_single_point_retry"
+
+        def response(routes, output_tokens=40):
+            return {
+                "status": "completed",
+                "output": [{"content": [{"type": "output_text", "text": json.dumps({"routes": routes})}]}],
+                "usage": {"output_tokens": output_tokens},
+            }
+
+        request.side_effect = [
+            response([{"id": "R1", "points": [[10, 20]], "confidence": 90}], 24),
+            response([{"id": "R1", "points": [[10, 20], [220, 20]], "confidence": 80}], 38),
+        ]
+
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[10.0, 20.0], [220.0, 20.0]])
+        self.assertTrue(status["retry"]["attempted"])
+        self.assertEqual(status["retry"]["reason"], "single-point-route-candidates")
+        self.assertEqual(status["retry"]["initial_single_point_routes"], 1)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(upload.call_count, 2)
+        self.assertEqual(delete.call_count, 2)
+        retry_payload = json.loads(request.call_args_list[1].kwargs["body"].decode("utf-8"))
+        retry_prompt = retry_payload["input"][0]["content"][0]["text"]
+        self.assertIn("минимум ДВЕ РАЗНЫЕ точки", retry_prompt)
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_single_point_retry_never_invents_a_second_endpoint(self, upload, request, delete):
+        upload.return_value = "file_single_point_stays_invalid"
+        one_point = {
+            "status": "completed",
+            "output": [{"content": [{"type": "output_text", "text": json.dumps({
+                "routes": [{"id": "R1", "points": [[25, 40]], "confidence": 90}]
+            })}]}],
+            "usage": {"output_tokens": 24},
+        }
+        request.side_effect = [one_point, one_point]
+
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+
+        self.assertEqual(routes, [])
+        self.assertTrue(status["retry_attempt"])
+        self.assertEqual(status["rejected_single_point"], 1)
+        self.assertEqual(status["rejected_too_short"], 1)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(delete.call_count, 2)
+
+
+
 if __name__ == "__main__":
     unittest.main()
