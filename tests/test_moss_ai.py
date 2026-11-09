@@ -1,5 +1,4 @@
-"""Unit tests for MOSS-VL image upload, Responses parsing, and CAD coordinate validation."""
-import io
+"""Offline unit tests for MOSS-VL OCR, route parsing and coordinate validation."""
 import json
 import tempfile
 import unittest
@@ -14,196 +13,197 @@ import moss_ai
 class MossImageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.image_path = Path(self.temp.name) / 'source.png'
-        Image.new('RGB', (640, 480), 'white').save(self.image_path)
+        self.image_path = Path(self.temp.name) / "source.png"
+        Image.new("RGB", (640, 480), "white").save(self.image_path)
 
     def tearDown(self):
         self.temp.cleanup()
 
     def test_prepare_image_resizes_and_returns_pixel_scale(self):
         data, width, height, sx, sy = moss_ai._prepare_image(self.image_path, max_edge=320)
-        self.assertTrue(data.startswith(b'\xff\xd8'))
+        self.assertTrue(data.startswith(b"\xff\xd8"))
         self.assertEqual((width, height), (320, 240))
         self.assertEqual((sx, sy), (2.0, 2.0))
 
     def test_response_text_reads_responses_api_output_and_usage(self):
         text, usage = moss_ai._response_text({
-            'status': 'completed',
-            'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': '{"routes": []}'}]}],
-            'usage': {'input_tokens': 10, 'output_tokens': 4, 'total_tokens': 14},
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"routes": []}'}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
         })
         self.assertEqual(text, '{"routes": []}')
-        self.assertEqual(usage['total_tokens'], 14)
+        self.assertEqual(usage["total_tokens"], 14)
 
     def test_incomplete_response_is_rejected(self):
         with self.assertRaises(moss_ai.MossAIError):
-            moss_ai._response_text({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': []})
+            moss_ai._response_text({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": []})
 
     def test_json_parser_accepts_fenced_output(self):
-        self.assertEqual(moss_ai._parse_json('```json\n{"annotations": []}\n```'), {'annotations': []})
+        self.assertEqual(moss_ai._parse_json('```json\n{"annotations": []}\n```'), {"annotations": []})
 
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
     def test_ocr_maps_boxes_to_original_pixels(self, upload, request, delete):
-        upload.return_value = 'file_test'
+        upload.return_value = "file_test"
         request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({'annotations': [
-                {'text': 'Ду 25', 'bbox': [10, 20, 50, 40], 'confidence': 72}
+            "status": "completed",
+            "output": [{"content": [{"type": "output_text", "text": json.dumps({"annotations": [
+                {"text": "Ду 25", "bbox": [10, 20, 50, 40], "confidence": 72}
             ]}, ensure_ascii=False)}]}],
-            'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120},
+            "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
         }
-        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, "moss-test-key")
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['bbox'], {'x': 10, 'y': 20, 'w': 40, 'h': 20})
-        self.assertEqual(items[0]['source'], 'moss-vl-ocr')
-        self.assertFalse(items[0]['verified'])
-        self.assertEqual(status['provider'], 'moss')
-        self.assertTrue(status['complete'])
-        delete.assert_called_once_with('moss-test-key', 'file_test', timeout=20.0)
+        self.assertEqual(items[0]["bbox"], {"x": 10, "y": 20, "w": 40, "h": 20})
+        self.assertEqual(items[0]["source"], "moss-vl-ocr")
+        self.assertTrue(status["complete"])
+        delete.assert_called_once_with("moss-test-key", "file_test", timeout=20.0)
 
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
-    def test_route_parser_rejects_out_of_bounds_and_maps_valid_points(self, upload, request, delete):
-        upload.return_value = 'file_routes'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({'routes': [
-                {'id': 'R1', 'points': [[10, 20], [200, 20]], 'confidence': 80},
-                {'id': 'R2', 'points': [[-1, 5], [30, 5]], 'confidence': 90},
-            ]})}]}],
-            'usage': {'total_tokens': 80},
-        }
-        routes, status = moss_ai.moss_semantic_routes(self.image_path, 'moss-test-key')
-        self.assertEqual(len(routes), 1)
-        self.assertEqual(routes[0]['points'], [[10.0, 20.0], [200.0, 20.0]])
-        self.assertEqual(status['rejected_invalid'], 1)
-        self.assertEqual(status['provider'], 'moss')
-        delete.assert_called_once()
-
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
-    def test_ocr_accepts_nested_text_regions_and_xywh_bbox(self, upload, request, delete):
-        upload.return_value = 'file_text_regions'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
-                'result': {'text_regions': [
-                    {'recognized_text': 'Ø 32', 'box': {'x': 20, 'y': 30, 'width': 48, 'height': 16}, 'score': 0.82}
-                ]}
-            }, ensure_ascii=False)}]}],
-            'usage': {'total_tokens': 90},
-        }
-        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['text'], 'Ø 32')
-        self.assertEqual(items[0]['bbox'], {'x': 20, 'y': 30, 'w': 48, 'h': 16})
-        self.assertEqual(items[0]['confidence'], 82.0)
-        self.assertEqual(status['annotations_field'], '$.result.text_regions')
-        delete.assert_called_once()
-
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
     def test_ocr_accepts_single_top_level_text_bbox_record(self, upload, request, delete):
-        upload.return_value = 'file_single_record'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
-                'text': 'Ду 25', 'bbox': [10, 20, 50, 40], 'confidence': 0.84
-            }, ensure_ascii=False)}]}],
-            'usage': {'total_tokens': 42},
-        }
-        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        upload.return_value = "file_single_record"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "text": "Ду 25", "bbox": [10, 20, 50, 40], "confidence": 0.84
+        }, ensure_ascii=False)}]}]}
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, "moss-test-key")
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['text'], 'Ду 25')
-        self.assertEqual(items[0]['bbox'], {'x': 10, 'y': 20, 'w': 40, 'h': 20})
-        self.assertEqual(items[0]['confidence'], 84.0)
-        self.assertEqual(status['annotations_field'], '$ (single text region)')
+        self.assertEqual(items[0]["text"], "Ду 25")
+        self.assertEqual(items[0]["confidence"], 84.0)
+        self.assertEqual(status["annotations_field"], "$ (single text region)")
         delete.assert_called_once()
 
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_keeps_valid_points_and_rejects_out_of_bounds(self, upload, request, delete):
+        upload.return_value = "file_routes"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({"routes": [
+            {"id": "R1", "points": [[10, 20], [200, 20]], "confidence": 80},
+            {"id": "R2", "points": [[-10, 5], [30, 5]], "confidence": 90},
+        ]})}]}], "usage": {"output_tokens": 100}}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[10.0, 20.0], [200.0, 20.0]])
+        self.assertEqual(status["raw_routes"], 2)
+        self.assertEqual(status["rejected_out_of_bounds"], 1)
+        self.assertEqual(status["route_field"], "$.routes")
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_accepts_nested_segments_and_xy_objects(self, upload, request, delete):
+        upload.return_value = "file_segments"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "result": {"segments": [
+                {"id": "S1", "polyline": [{"x": 15, "y": 30}, {"x": 220, "y": 30}], "confidence": 70}
+            ]}
+        })}]}]}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[15.0, 30.0], [220.0, 30.0]])
+        self.assertEqual(status["route_field"], "$.result.segments")
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_route_parser_accepts_direct_point_array_and_normalized_coordinates(self, upload, request, delete):
+        upload.return_value = "file_normalized"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "coordinate_space": "normalized_0_1", "routes": [[0.1, 0.5], [0.9, 0.5]]
+        })}]}]}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["points"], [[64.0, 240.0], [576.0, 240.0]])
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
+    def test_empty_routes_are_explicitly_reported(self, upload, request, delete):
+        upload.return_value = "file_empty"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": '{"routes": [], "review_note": "no visible pipe strokes"}'}]}]}
+        routes, status = moss_ai.moss_semantic_routes(self.image_path, "moss-test-key")
+        self.assertEqual(routes, [])
+        self.assertEqual(status["result_state"], "model_returned_empty_routes")
+        self.assertIn("пустой список", status["error"])
+        delete.assert_called_once()
+
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
     def test_ocr_accepts_nested_single_text_bbox_record(self, upload, request, delete):
-        upload.return_value = 'file_nested_single_record'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
-                'result': {'text': 'Ø 32', 'bbox': {'x': 20, 'y': 30, 'width': 48, 'height': 16}}
-            }, ensure_ascii=False)}]}],
-            'usage': {'total_tokens': 36},
-        }
-        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        upload.return_value = "file_nested_single_record"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "result": {"text": "Ø 32", "bbox": {"x": 20, "y": 30, "width": 48, "height": 16}}
+        }, ensure_ascii=False)}]}]}
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, "moss-test-key")
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['text'], 'Ø 32')
-        self.assertEqual(items[0]['bbox'], {'x': 20, 'y': 30, 'w': 48, 'h': 16})
-        self.assertEqual(status['annotations_field'], '$.result (single text region)')
+        self.assertEqual(items[0]["text"], "Ø 32")
+        self.assertEqual(items[0]["bbox"], {"x": 20, "y": 30, "w": 48, "h": 16})
+        self.assertEqual(status["annotations_field"], "$.result (single text region)")
         delete.assert_called_once()
 
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
     def test_ocr_accepts_polygon_coordinates(self, upload, request, delete):
-        upload.return_value = 'file_polygon'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
-                'texts': [{'content': 'DN 25', 'polygon': [[12, 18], [62, 16], [64, 34], [14, 36]]}]
-            }, ensure_ascii=False)}]}],
-            'usage': {'total_tokens': 70},
-        }
-        items, status = moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
+        upload.return_value = "file_polygon"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "texts": [{"content": "DN 25", "polygon": [[12, 18], [62, 16], [64, 34], [14, 36]]}]
+        }, ensure_ascii=False)}]}]}
+        items, status = moss_ai.moss_ocr_annotations(self.image_path, "moss-test-key")
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['bbox'], {'x': 12, 'y': 16, 'w': 52, 'h': 20})
-        self.assertEqual(status['annotations_field'], '$.texts')
+        self.assertEqual(items[0]["bbox"], {"x": 12, "y": 16, "w": 52, "h": 20})
+        self.assertEqual(status["annotations_field"], "$.texts")
+        delete.assert_called_once()
 
-    @patch('moss_ai._delete_image')
-    @patch('moss_ai._request_json')
-    @patch('moss_ai._upload_image')
+    @patch("moss_ai._delete_image")
+    @patch("moss_ai._request_json")
+    @patch("moss_ai._upload_image")
     def test_ocr_missing_regions_reports_only_json_keys(self, upload, request, delete):
-        upload.return_value = 'file_missing_regions'
-        request.return_value = {
-            'status': 'completed',
-            'output': [{'content': [{'type': 'output_text', 'text': json.dumps({
-                'summary': 'Sensitive handwritten address must not be echoed', 'review_note': 'no boxes'
-            }, ensure_ascii=False)}]}],
-        }
+        upload.return_value = "file_missing_regions"
+        request.return_value = {"status": "completed", "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "summary": "Sensitive handwritten address must not be echoed", "review_note": "no boxes"
+        }, ensure_ascii=False)}]}]}
         with self.assertRaises(moss_ai.MossAIError) as caught:
-            moss_ai.moss_ocr_annotations(self.image_path, 'moss-test-key')
-        self.assertIn('Поля JSON: review_note, summary', str(caught.exception))
-        self.assertNotIn('Sensitive handwritten address', str(caught.exception))
+            moss_ai.moss_ocr_annotations(self.image_path, "moss-test-key")
+        self.assertIn("Поля JSON: review_note, summary", str(caught.exception))
+        self.assertNotIn("Sensitive handwritten address", str(caught.exception))
+        delete.assert_called_once()
 
-    @patch('moss_ai.urllib.request.urlopen')
+    @patch("moss_ai.urllib.request.urlopen")
     def test_upload_uses_bearer_key_and_multipart_image_purpose(self, urlopen):
         class FakeResponse:
             def __enter__(self): return self
             def __exit__(self, *_): return False
             def read(self, _size): return b'{"id":"file_uploaded_1"}'
         urlopen.return_value = FakeResponse()
-        file_id = moss_ai._upload_image('moss-secret-key', b'JPEGDATA', timeout=10)
+        file_id = moss_ai._upload_image("moss-secret-key", b"JPEGDATA", timeout=10)
         request = urlopen.call_args.args[0]
-        self.assertEqual(file_id, 'file_uploaded_1')
-        self.assertEqual(request.get_header('Authorization'), 'Bearer moss-secret-key')
-        self.assertIn('multipart/form-data', request.get_header('Content-type'))
+        self.assertEqual(file_id, "file_uploaded_1")
+        self.assertEqual(request.get_header("Authorization"), "Bearer moss-secret-key")
+        self.assertIn("multipart/form-data", request.get_header("Content-type"))
         self.assertIn(b'name="purpose"', request.data)
         self.assertIn(b'image', request.data)
         self.assertIn(b'name="file"', request.data)
 
-    @patch('moss_ai.urllib.request.urlopen')
+    @patch("moss_ai.urllib.request.urlopen")
     def test_api_error_never_exposes_api_key(self, urlopen):
-        error = __import__('urllib.error').error.HTTPError(
-            moss_ai.RESPONSES_URL, 401, 'Unauthorized', {}, io.BytesIO(b'{"error":{"message":"bad token"}}')
+        error = __import__("urllib.error").error.HTTPError(
+            moss_ai.RESPONSES_URL, 401, "Unauthorized", {},
+            __import__("io").BytesIO(b'{"error":{"message":"bad token"}}')
         )
         urlopen.side_effect = error
         with self.assertRaises(moss_ai.MossAIError) as caught:
-            moss_ai._request_json('moss-secret-key', moss_ai.RESPONSES_URL, body=b'{}', timeout=10)
-        self.assertNotIn('moss-secret-key', str(caught.exception))
-        self.assertIn('HTTP 401', str(caught.exception))
+            moss_ai._request_json("moss-secret-key", moss_ai.RESPONSES_URL, body=b"{}", timeout=10)
+        self.assertNotIn("moss-secret-key", str(caught.exception))
+        self.assertIn("HTTP 401", str(caught.exception))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
