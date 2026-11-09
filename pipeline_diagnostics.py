@@ -68,6 +68,44 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
     blocking_ids = {'source-readable', 'text-recognition-available', 'exports-created'}
     blocking = [item['id'] for item in gates if item['id'] in blocking_ids and not item['passed']]
     advisory = [item['id'] for item in gates if item['id'] not in blocking_ids and not item['passed']]
+
+    classified_symbols = sum(1 for item in symbols if item.get('type'))
+    assigned_dimensions = sum(1 for item in dimensions if item.get('targetId'))
+    readiness_failures = []
+    if primary_edge_count <= 0:
+        readiness_failures.append('primary-geometry-present')
+    endpoint_ratio = open_endpoint_count / segment_count if segment_count else 0.0
+    crossing_ratio = crossing_count / segment_count if segment_count else 0.0
+    if segment_count >= 20 and endpoint_ratio > 0.70:
+        readiness_failures.append('topology-fragmentation-controlled')
+    if segment_count >= 20 and crossing_ratio > 0.12:
+        readiness_failures.append('crossing-density-controlled')
+    if symbols and classified_symbols / len(symbols) < 0.50:
+        readiness_failures.append('symbol-classification-usable')
+    if dimensions and assigned_dimensions / len(dimensions) < 0.50:
+        readiness_failures.append('dimension-assignment-usable')
+    processing_complete = graph.get('complete') is not False and graph.get('analysisStatus') != 'incomplete'
+    if not processing_complete:
+        readiness_failures.append('processing-complete')
+    cad_readiness = {
+        'ready': not readiness_failures,
+        'status': 'ready' if not readiness_failures else 'not_ready',
+        'automaticCadExportAllowed': not readiness_failures,
+        'failedChecks': readiness_failures,
+        'metrics': {
+            'primaryEdges': primary_edge_count,
+            'segments': segment_count,
+            'openEndpoints': open_endpoint_count,
+            'openEndpointRatio': round(endpoint_ratio, 4),
+            'crossings': crossing_count,
+            'crossingRatio': round(crossing_ratio, 4),
+            'symbols': len(symbols),
+            'classifiedSymbols': classified_symbols,
+            'dimensions': len(dimensions),
+            'assignedDimensions': assigned_dimensions,
+        },
+        'note': 'Source trace exports remain available for inspection, but raw ink centerlines are not a semantic pipe drawing.',
+    }
     stages = {
         'geometry':{'segments':segment_count,'primaryPipes':len(primary_pipes),'nodes':len(model.get('nodes') or [])},
         'vectorization':{'centerlinePaths':int((graph.get('centerlineTrace') or {}).get('paths', 0) or 0),
@@ -82,4 +120,5 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
             'status':'blocked' if blocking else ('needs_review' if advisory or open_tasks or open_findings else 'ready'),
             'source':{'name':source.name,'bytes':source.stat().st_size if source.exists() else 0,'sha256':digest},
             'timingsMs':graph.get('timings_ms') or {},'stages':stages,'qualityGates':gates,
-            'blockingGates':blocking,'advisoryGates':advisory,'artifacts':artifacts,'warnings':list(graph.get('warnings') or [])}
+            'blockingGates':blocking,'advisoryGates':advisory,'cadReadiness':cad_readiness,
+            'artifacts':artifacts,'warnings':list(graph.get('warnings') or [])}

@@ -293,7 +293,11 @@ body{background:var(--page);color:var(--ink);font-size:14px}
 .output-view-button{min-height:29px;padding:0 10px;border:1px solid transparent;border-radius:5px;background:transparent;color:#68766e;font:inherit;font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap}
 .output-view-button:hover{background:#fff;color:#344b3a}
 .output-view-button.active{border-color:#cadbd0;background:#fff;color:#285b3b;box-shadow:0 1px 2px rgba(25,55,35,.06)}
-.reference-trace-image{image-rendering:auto;max-width:min(100%,980px);max-height:82vh}
+.reference-trace-image,.source-original-preview{image-rendering:auto;max-width:min(100%,980px);max-height:82vh}
 .clean-stage.manual-cad-preview:has(.reference-trace-image){background:#e9ece9}
 @media(max-width:900px){.output-header{flex-wrap:wrap}.output-view-toggle{order:0}.output-tools{flex-wrap:wrap}}
-@media(max-width:560px){.output-view-button{font-size:8px;padding:0 7px}.reference-trace-image{max-height:68vh}}
+@media(max-width:560px){.output-view-button{font-size:8px;padding:0 7px}.reference-trace-image,.source-original-preview{max-height:68vh}}
+
+/* 4.3.41 — preserve original preview when CAD quality gates fail. */
+.source-original-preview{object-fit:contain;background:#fff}
+.clean-stage.manual-cad-preview:has(.source-original-preview){background:#f0f2f0}

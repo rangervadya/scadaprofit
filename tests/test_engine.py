@@ -425,6 +425,36 @@ class GraphTests(unittest.TestCase):
             self.assertTrue(all(item['passed'] for item in diagnostics['qualityGates']))
             self.assertEqual(len(diagnostics['source']['sha256']), 64)
 
+    def test_pipeline_diagnostics_marks_fragmented_unclassified_drawing_not_cad_ready(self):
+        with TemporaryDirectory() as temporary:
+            source = Path(temporary, 'source.png')
+            source.write_bytes(b'example-source')
+            Path(temporary, 'clean.svg').write_text('<svg/>', encoding='utf-8')
+            Path(temporary, 'drawing.dxf').write_text('0\nEOF\n', encoding='utf-8')
+            graph = {
+                'complete': True, 'analysisStatus': 'complete',
+                'summary': {
+                    'segment_candidates': 428, 'cad_primary_edges': 259,
+                    'open_terminal_nodes': 406, 'crossings_to_review': 173,
+                },
+                'documentModel': {
+                    'nodes': [], 'pipes': [{'id': f'P{i}', 'state': 'primary'} for i in range(259)],
+                    'labels': [], 'symbols': [{'id': f'S{i}', 'type': None} for i in range(11)],
+                    'dimensions': [{'id': f'D{i}', 'targetId': 'P1' if i == 0 else None} for i in range(8)],
+                    'reviewTasks': [], 'validationFindings': [],
+                },
+                'ocr': {'qwen': {'available': True}, 'tesseract': {'available': True}},
+                'warnings': [],
+            }
+            diagnostics = build_pipeline_diagnostics(str(source), temporary, graph)
+            self.assertEqual(diagnostics['status'], 'needs_review')
+            self.assertFalse(diagnostics['cadReadiness']['ready'])
+            self.assertFalse(diagnostics['cadReadiness']['automaticCadExportAllowed'])
+            self.assertIn('topology-fragmentation-controlled', diagnostics['cadReadiness']['failedChecks'])
+            self.assertIn('crossing-density-controlled', diagnostics['cadReadiness']['failedChecks'])
+            self.assertIn('symbol-classification-usable', diagnostics['cadReadiness']['failedChecks'])
+            self.assertIn('dimension-assignment-usable', diagnostics['cadReadiness']['failedChecks'])
+
     def test_pipeline_diagnostics_blocks_incomplete_qwen_coverage(self):
         with TemporaryDirectory() as temporary:
             source = Path(temporary, 'source.png')

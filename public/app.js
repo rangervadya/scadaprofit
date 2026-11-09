@@ -20,7 +20,7 @@ let schemePollToken = 0;
 let expandedStreetIds = new Set();
 let showReviewGeometry = true;
 let showReviewText = false;
-let outputViewMode = 'centerline';
+let outputViewMode = 'original';
 const EDGE_PAGE_SIZE = 140;
 
 const fileInput = $('fileInput');
@@ -679,14 +679,69 @@ $('processSchemeBtn').addEventListener('click', async () => {
   }
 });
 
+function assessCadReadiness(data) {
+  const summary = data?.summary || {};
+  const model = data?.documentModel || {};
+  const segments = Number(summary.segment_candidates ?? 0);
+  const primaryEdges = Number(summary.cad_primary_edges ?? (Array.isArray(model.pipes) ? model.pipes.filter(item => item?.state === 'primary').length : 0));
+  const openEndpoints = Number(summary.open_terminal_nodes ?? 0);
+  const crossings = Number(summary.crossings_to_review ?? data?.crossings?.length ?? 0);
+  const symbols = Array.isArray(model.symbols) ? model.symbols : [];
+  const dimensions = Array.isArray(model.dimensions) ? model.dimensions : [];
+  const classifiedSymbols = symbols.filter(item => Boolean(item?.type)).length;
+  const assignedDimensions = dimensions.filter(item => Boolean(item?.targetId)).length;
+  const reasons = [];
+  if (primaryEdges <= 0) reasons.push('не выделены основные трубные маршруты');
+  if (segments >= 20 && openEndpoints / segments > 0.70) {
+    reasons.push(`слишком много открытых концов (${openEndpoints}/${segments})`);
+  }
+  if (segments >= 20 && crossings / segments > 0.12) {
+    reasons.push(`слишком много неоднозначных пересечений (${crossings}/${segments})`);
+  }
+  if (symbols.length > 0 && classifiedSymbols / symbols.length < 0.50) {
+    reasons.push(`не классифицировано оборудование (${classifiedSymbols}/${symbols.length})`);
+  }
+  if (dimensions.length > 0 && assignedDimensions / dimensions.length < 0.50) {
+    reasons.push(`размеры не привязаны к объектам (${assignedDimensions}/${dimensions.length})`);
+  }
+  if (data?.analysisStatus === 'incomplete' || data?.complete === false) {
+    reasons.push('не завершены все этапы обработки');
+  }
+  return {
+    ready: reasons.length === 0,
+    reasons,
+    metrics: { primaryEdges, segments, openEndpoints, crossings, symbols: symbols.length,
+      classifiedSymbols, dimensions: dimensions.length, assignedDimensions }
+  };
+}
+
+function syncOutputExportButtons() {
+  if (!graph) return;
+  const hasReferenceTrace = Boolean(graph.referenceTrace?.available && graph.referenceTraceSvgUrl);
+  const hasCenterlineTrace = Boolean(graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl);
+  const processingComplete = graph.complete !== false && graph.analysisStatus !== 'incomplete';
+  const cadReady = assessCadReadiness(graph).ready;
+  const sourceOnly = outputViewMode === 'original';
+  const cadDraftBlocked = outputViewMode === 'cad' && !cadReady;
+  $('exportSvg').disabled = sourceOnly || cadDraftBlocked || !(hasCenterlineTrace || hasReferenceTrace || processingComplete);
+  $('exportDxf').disabled = sourceOnly || cadDraftBlocked || !(hasCenterlineTrace || hasReferenceTrace || processingComplete);
+  $('exportPdf').disabled = outputViewMode === 'original'
+    ? !graph.sourceUrl
+    : cadDraftBlocked || !(hasCenterlineTrace || hasReferenceTrace || processingComplete);
+  $('exportJson').disabled = false;
+}
+
 function showResult() {
   const processingComplete = graph.complete !== false && graph.analysisStatus !== 'incomplete';
+  const cadReadiness = assessCadReadiness(graph);
   $('openManualCadBtn').hidden = !graph.jobId;
   $('openManualCadBtn').disabled = false;
-  $('openManualCadBtn').innerHTML = processingComplete
+  $('openManualCadBtn').innerHTML = cadReadiness.ready
     ? '<b>CAD</b><span>Редактировать</span>'
-    : '<b>CAD</b><span>Править черновик</span>';
-  $('openManualCadBtn').title = 'Открыть чистовой лист этой схемы в CAD-редакторе';
+    : '<b>CAD</b><span>Проверить черновик</span>';
+  $('openManualCadBtn').title = cadReadiness.ready
+    ? 'Открыть CAD-редактор'
+    : 'Реконструкция не прошла проверки связности/символов/размеров. Открывается только черновик для ручной проверки.';
   $('processSchemeBtn').hidden = processingComplete;
   $('processSchemeBtn').disabled = false;
   $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
@@ -725,11 +780,13 @@ function showResult() {
   }
   const hasReferenceTrace = Boolean(graph.referenceTrace?.available && graph.referenceTraceSvgUrl);
   const hasCenterlineTrace = Boolean(graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl);
-  $('previewMeta').textContent = hasCenterlineTrace
-    ? `${Number(graph.centerlineTrace.paths || 0).toLocaleString('ru-RU')} открытых линейных полилиний · исходные штрихи превращены в линии. Связность труб требует инженерной проверки.`
-    : hasReferenceTrace
-      ? `Векторная копия оригинала сохранена · ${Number(graph.referenceTrace.contours || 0).toLocaleString('ru-RU')} контуров. CAD-реконструкция ${processingComplete ? 'готова к проверке' : 'неполная и требует продолжения'}.`
-      : (processingComplete ? 'CAD-реконструкция завершена · инженерная проверка обязательна' : 'Распознавание неполное · CAD-черновик только для проверки');
+  $('previewMeta').textContent = !cadReadiness.ready
+    ? `CAD не прошёл проверку качества: ${cadReadiness.reasons.join('; ')}. В результате показан исходник, а не сырые векторные штрихи.`
+    : hasCenterlineTrace
+      ? `${Number(graph.centerlineTrace.paths || 0).toLocaleString('ru-RU')} открытых линейных полилиний · исходные штрихи; не семантическая сеть труб.`
+      : hasReferenceTrace
+        ? `Векторная копия оригинала сохранена · ${Number(graph.referenceTrace.contours || 0).toLocaleString('ru-RU')} контуров. CAD-черновик требует инженерной проверки.`
+        : (processingComplete ? 'CAD-черновик сформирован · инженерная проверка обязательна' : 'Распознавание неполное · CAD-черновик только для проверки');
   const trace = graph.semanticTrace || {};
   const summary = graph.summary || {};
   const qwenRouteCount = Number(summary.semantic_routes ?? graph.semanticRoutes?.length ?? 0);
@@ -762,20 +819,19 @@ function showResult() {
   renderTextList();
   renderJoinList();
   renderReviewList();
-  const canExportSourceTrace = hasCenterlineTrace || hasReferenceTrace;
-  for (const id of ['exportSvg', 'exportDxf', 'exportPdf']) $(id).disabled = !(canExportSourceTrace || processingComplete);
-  $('exportJson').disabled = false;
-  $('exportSvg').title = outputViewMode === 'centerline' ? 'Скачать открытые линейные полилинии исходной схемы' : outputViewMode === 'reference' ? 'Скачать замкнутые контуры исходной схемы' : 'Скачать CAD-черновик SVG';
-  $('exportDxf').title = outputViewMode === 'centerline' ? 'Скачать открытые полилинии для AutoCAD' : outputViewMode === 'reference' ? 'Скачать векторные контуры исходной схемы для AutoCAD' : 'Скачать CAD-черновик DXF';
-  if (!processingComplete && hasReferenceTrace) {
-    setAlert('Векторная копия исходного листа готова. CAD-реконструкция ещё неполная: проверь связи, размеры и условные обозначения по оригиналу. Экспорт копии SVG/DXF/PDF доступен отдельно.');
+  $('exportSvg').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; содержит текст и символы' : outputViewMode === 'reference' ? 'Скачать контуры всех исходных штрихов' : 'Скачать CAD-черновик SVG';
+  $('exportDxf').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; не является трубной сетью' : outputViewMode === 'reference' ? 'Скачать векторные контуры исходных штрихов' : 'Скачать CAD-черновик DXF';
+  if (!cadReadiness.ready) {
+    setAlert(`Автоматическая CAD-реконструкция пока не готова. Показан исходник без искажений. Причины: ${cadReadiness.reasons.join('; ')}. Режимы «Все штрихи» и «Контуры штрихов» являются диагностической векторизацией, а не чистой схемой труб.`);
   } else if (!processingComplete) {
-    setAlert('CAD-реконструкция неполная. Сохрани JSON и диагностику; векторная копия исходного листа недоступна.');
+    setAlert('Обработка не завершена полностью. CAD-черновик доступен только для проверки.');
   } else {
-    setAlert('');
+    setAlert('CAD-черновик сформирован. Перед использованием в технической документации требуется инженерная проверка.');
   }
-  setState(processingComplete ? 'CAD-РЕКОНСТРУКЦИЯ · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА' : (hasReferenceTrace ? 'КОПИЯ ОРИГИНАЛА ГОТОВА · CAD НА ПРОВЕРКЕ' : 'ЧАСТИЧНЫЙ ГРАФ · ТОЛЬКО ПРОВЕРКА'), processingComplete || hasReferenceTrace ? 'ready' : 'error');
-  setOutputViewMode(hasCenterlineTrace ? 'centerline' : hasReferenceTrace ? 'reference' : 'cad');
+  setState(cadReadiness.ready && processingComplete
+    ? 'CAD-ЧЕРНОВИК СФОРМИРОВАН · НУЖНА ПРОВЕРКА'
+    : 'CAD НЕ ПОДТВЕРЖДЁН · ПОКАЗАН ИСХОДНИК', cadReadiness.ready && processingComplete ? 'ready' : 'error');
+  setOutputViewMode(cadReadiness.ready ? 'cad' : 'original');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
 }
 
@@ -1498,13 +1554,14 @@ function buildSheetSvg() {
 }
 
 function setOutputViewMode(mode) {
-  outputViewMode = ['centerline', 'reference', 'cad'].includes(mode) ? mode : 'centerline';
-  for (const [id, key] of [['centerlineTraceView', 'centerline'], ['referenceTraceView', 'reference'], ['cadDraftView', 'cad']]) {
+  outputViewMode = ['original', 'centerline', 'reference', 'cad'].includes(mode) ? mode : 'original';
+  for (const [id, key] of [['originalSourceView', 'original'], ['centerlineTraceView', 'centerline'], ['referenceTraceView', 'reference'], ['cadDraftView', 'cad']]) {
     const button = $(id);
     if (!button) continue;
     button.classList.toggle('active', outputViewMode === key);
     button.setAttribute('aria-pressed', String(outputViewMode === key));
   }
+  syncOutputExportButtons();
   renderClean();
 }
 
@@ -1517,6 +1574,14 @@ function renderClean() {
     return;
   }
   $('cleanStage').classList.remove('manual-cad-preview');
+  if (outputViewMode === 'original' && graph.sourceUrl) {
+    $('cleanStage').classList.add('manual-cad-preview');
+    $('cleanStage').innerHTML = `<img class="manual-cad-preview-image source-original-preview" src="${escapeHtml(graph.sourceUrl)}?v=${Date.now()}" alt="Исходная фотография схемы без векторных искажений" loading="eager"><div class="manual-cad-preview-caption"><b>ИСХОДНИК · КОНТРОЛЬНЫЙ ЭТАЛОН</b><span>Показано исходное изображение. Автоматическая CAD-реконструкция не прошла проверки качества; сырые линии не выдаются за готовую схему.</span></div>`;
+    $('cleanStage').querySelector('img')?.addEventListener('error', () => {
+      $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось загрузить исходное изображение</b><span>Проверь ссылку sourceUrl в диагностике.</span></div>';
+    });
+    return;
+  }
   if (outputViewMode === 'centerline' && graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl) {
     const trace = graph.centerlineTrace;
     $('cleanStage').classList.add('manual-cad-preview');
@@ -1537,7 +1602,9 @@ function renderClean() {
   }
   if (outputViewMode === 'cad' && (graph.cadDraftSvgUrl || graph.svgUrl)) {
     const draftUrl = graph.cadDraftSvgUrl || graph.svgUrl;
-    const completeness = graph.complete === false ? 'ЧЕРНОВИК · НЕПОЛНЫЙ РЕЗУЛЬТАТ' : 'CAD-ЧЕРНОВИК · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА';
+    const completeness = !assessCadReadiness(graph).ready
+      ? 'CAD-ЧЕРНОВИК · НЕ ПРОШЁЛ ПРОВЕРКИ КАЧЕСТВА'
+      : graph.complete === false ? 'ЧЕРНОВИК · НЕПОЛНЫЙ РЕЗУЛЬТАТ' : 'CAD-ЧЕРНОВИК · НУЖНА ИНЖЕНЕРНАЯ ПРОВЕРКА';
     $('cleanStage').classList.add('manual-cad-preview');
     $('cleanStage').innerHTML = `<img class="manual-cad-preview-image cad-draft-preview-image" src="${escapeHtml(draftUrl)}?v=${Date.now()}" alt="CAD-реконструкция исходной схемы" loading="eager"><div class="manual-cad-preview-caption"><b>${completeness}</b><span>${Number(graph.summary?.cad_primary_edges || 0).toLocaleString('ru-RU')} основных CAD-сегментов · ${Number(graph.summary?.crossings_to_review || 0).toLocaleString('ru-RU')} пересечений на проверку · контуры оборудования и соединения сверить с оригиналом</span></div>`;
     $('cleanStage').querySelector('img')?.addEventListener('error', () => {
@@ -1713,6 +1780,7 @@ function downloadJobArtifact(url, filename) {
   link.remove();
   return true;
 }
+$('originalSourceView')?.addEventListener('click', () => setOutputViewMode('original'));
 $('centerlineTraceView')?.addEventListener('click', () => setOutputViewMode('centerline'));
 $('referenceTraceView')?.addEventListener('click', () => setOutputViewMode('reference'));
 $('cadDraftView')?.addEventListener('click', () => setOutputViewMode('cad'));
@@ -1745,6 +1813,19 @@ $('exportDxf').addEventListener('click', () => {
 });
 $('exportJson').addEventListener('click', () => downloadFile('reconstruction-graph.json', JSON.stringify(graph, null, 2), 'application/json'));
 $('exportPdf').addEventListener('click', () => {
+  if (outputViewMode === 'original' && graph?.sourceUrl) {
+    const popup = window.open('', '_blank');
+    if (!popup) { setAlert('Разреши всплывающие окна, чтобы открыть печать в PDF.'); return; }
+    const sourceWidth = Number(graph.image?.width || 0);
+    const sourceHeight = Number(graph.image?.height || 0);
+    const widthMm = sourceWidth >= sourceHeight ? 297 : 210;
+    const heightMm = sourceWidth >= sourceHeight ? 210 : 297;
+    const sourceUrl = `${graph.sourceUrl}?print=${Date.now()}`;
+    popup.document.open();
+    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Исходная схема</title><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}html,body{margin:0;padding:0;width:${widthMm}mm;height:${heightMm}mm}img{display:block;width:100%;height:100%;object-fit:contain}</style></head><body><img src="${escapeHtml(sourceUrl)}" alt="Исходная схема"><script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);
+    popup.document.close();
+    return;
+  }
   const selectedSourceTrace = outputViewMode === 'centerline'
     ? { meta: graph?.centerlineTrace, url: graph?.centerlineTraceSvgUrl, title: 'Линейная векторизация исходной схемы' }
     : outputViewMode === 'reference'
