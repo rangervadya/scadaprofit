@@ -551,9 +551,9 @@ function esc(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 function fmt(value) { return (Math.round(Number(value) * 1000) / 1000).toString(); }
-function collectBounds(project) {
+function collectBounds(project, { includeReview = false } = {}) {
   const pts = [];
-  for (const pipe of project.pipes) if (pipe.reviewOnly !== true) pts.push(...pipe.points);
+  for (const pipe of project.pipes) if (includeReview || pipe.reviewOnly !== true) pts.push(...pipe.points);
   for (const item of project.symbols) pts.push([item.x, item.y]);
   for (const item of project.labels) pts.push([item.x, item.y]);
   for (const item of project.dimensions) pts.push(item.a, item.b);
@@ -562,14 +562,14 @@ function collectBounds(project) {
   const pad = Math.max(20, Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.04);
   return { minX: Math.min(...xs) - pad, minY: Math.min(...ys) - pad, maxX: Math.max(...xs) + pad, maxY: Math.max(...ys) + pad };
 }
-function pageMap(project) {
+function pageMap(project, options = {}) {
   const landscape = project.page === 'landscape';
   const a3 = project.paperSize === 'A3';
   const pageW = a3 ? (landscape ? 420 : 297) : (landscape ? 297 : 210);
   const pageH = a3 ? (landscape ? 297 : 420) : (landscape ? 210 : 297);
   const margin = a3 ? 18 : 12;
   const area = { x: margin, y: margin, w: pageW - margin * 2, h: pageH - margin * 2 - 32 };
-  const b = collectBounds(project);
+  const b = collectBounds(project, options);
   const bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
   const scale = Math.min(area.w / bw, area.h / bh);
   const ox = area.x + (area.w - bw * scale) / 2 - b.minX * scale;
@@ -577,7 +577,7 @@ function pageMap(project) {
   return { pageW, pageH, area, map: ([x, y]) => [ox + x * scale, oy + y * scale], scale };
 }
 
-function lpgCadPageMap(project) {
+function lpgCadPageMap(project, options = {}) {
   const landscape = project.page === 'landscape';
   const a3 = project.paperSize === 'A3';
   const pageW = a3 ? (landscape ? 420 : 297) : (landscape ? 297 : 210);
@@ -600,7 +600,7 @@ function lpgCadPageMap(project) {
     w: pageW - (landscape ? 24 : 20),
     h: Math.max(30, (riserLayout ? riserLayout.y - 8 : pageH - 68) - 38)
   };
-  const bounds = collectBounds(project);
+  const bounds = collectBounds(project, options);
   const bw = Math.max(1, bounds.maxX - bounds.minX);
   const bh = Math.max(1, bounds.maxY - bounds.minY);
   const scale = Math.min(area.w / bw, area.h / bh);
@@ -625,13 +625,13 @@ function symbolMarkup(symbol, map) {
   if (symbol.type === 'filter') body = `<path d="M ${-s * 1.25} ${-s} L ${s * 1.25} ${-s} L ${s * 1.25} ${s} L ${-s * 1.25} ${s} Z" ${common}/><path d="M ${-s} ${s} L ${s} ${-s}" stroke="#111" stroke-width="0.4"/>`;
   if (symbol.type === 'unknown') body = `<circle r="${s * 1.35}" fill="#fff7ed" stroke="#d97706" stroke-width="0.55" stroke-dasharray="1.2 0.9"/><text y="${s * 0.35}" text-anchor="middle" font-size="${s * 1.1}" fill="#b45309" stroke="none">?</text>`;
   if (symbol.type === 'callout') body = `<rect x="${-s * 1.45}" y="${-s}" width="${s * 2.9}" height="${s * 2}" ${common}/><text y="${s * 0.43}" text-anchor="middle" font-size="${s * 1.05}" font-weight="700" fill="#111" stroke="none">${esc(symbol.label || '')}</text>`;
-  return `<g transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label && symbol.type !== 'callout' ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
+  return `<g id="${esc(symbol.id || `symbol-${Math.round(symbol.x)}-${Math.round(symbol.y)}`)}" data-symbol-type="${esc(symbol.type)}" transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label && symbol.type !== 'callout' ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
 }
 
-export function renderManualCadSvg(rawProject) {
+export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   const project = normalizeManualCadProject(rawProject, rawProject);
-  if (project.drawingStyle === 'lpgcad-r1') return renderLpgCadR1Svg(project);
-  const { pageW, pageH, map } = pageMap(project);
+  if (project.drawingStyle === 'lpgcad-r1') return renderLpgCadR1Svg(project, { includeReview });
+  const { pageW, pageH, map } = pageMap(project, { includeReview });
   const parts = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`);
   parts.push('<title>' + esc(project.title) + '</title><rect width="100%" height="100%" fill="#fff"/>');
@@ -643,6 +643,15 @@ export function renderManualCadSvg(rawProject) {
     parts.push(`<polyline id="${esc(pipe.id)}" points="${points}"/>`);
   }
   parts.push('</g>');
+  if (includeReview) {
+    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#d97706" stroke-width="0.52" stroke-dasharray="2.2 1.5" stroke-linecap="round" stroke-linejoin="round">');
+    for (const pipe of project.pipes) {
+      if (pipe.visible === false || !pipe.reviewOnly) continue;
+      const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
+      parts.push(`<polyline id="${esc(pipe.id)}" points="${points}"/>`);
+    }
+    parts.push('</g>');
+  }
   parts.push('<g id="JUNCTIONS" fill="#111" stroke="#111" stroke-width="0.25">');
   for (const junction of project.junctions) {
     const [x, y] = map([junction.x, junction.y]);
@@ -650,7 +659,7 @@ export function renderManualCadSvg(rawProject) {
   }
   parts.push('</g>');
   parts.push('<g id="SYMBOLS">');
-  for (const symbol of project.symbols) if (!symbol.reviewOnly && symbol.type !== 'unknown') parts.push(symbolMarkup(symbol, map));
+  for (const symbol of project.symbols) if ((!symbol.reviewOnly && symbol.type !== 'unknown') || (includeReview && (symbol.reviewOnly || symbol.type === 'unknown'))) parts.push(symbolMarkup(symbol, map));
   parts.push('</g>');
   parts.push('<g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.28">');
   for (const dim of project.dimensions) {
@@ -679,8 +688,8 @@ export function renderManualCadSvg(rawProject) {
   return parts.join('\n');
 }
 
-function renderLpgCadR1Svg(project) {
-  const { pageW, pageH, area, riserLayout, map } = lpgCadPageMap(project);
+function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
+  const { pageW, pageH, area, riserLayout, map } = lpgCadPageMap(project, { includeReview });
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`,
     `<title>${esc(project.title || 'Схема газоснабжения')}</title>`,
@@ -703,13 +712,22 @@ function renderLpgCadR1Svg(project) {
     }
     parts.push('</g>');
   }
+  if (includeReview) {
+    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#d97706" stroke-width="0.42" stroke-dasharray="1.7 1.25" stroke-linecap="round" stroke-linejoin="round">');
+    for (const pipe of project.pipes) {
+      if (pipe.visible === false || !pipe.reviewOnly) continue;
+      const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
+      parts.push(`<polyline id="${esc(pipe.id)}" points="${points}"/>`);
+    }
+    parts.push('</g>');
+  }
   parts.push('<g id="JUNCTIONS" fill="#111" stroke="#111" stroke-width="0.2">');
   for (const junction of project.junctions) {
     const [x, y] = map([junction.x, junction.y]);
     parts.push(`<circle cx="${fmt(x)}" cy="${fmt(y)}" r="0.62"/>`);
   }
   parts.push('</g><g id="SYMBOLS">');
-  for (const symbol of project.symbols) if (!symbol.reviewOnly && symbol.type !== 'unknown') parts.push(symbolMarkup(symbol, map));
+  for (const symbol of project.symbols) if ((!symbol.reviewOnly && symbol.type !== 'unknown') || (includeReview && (symbol.reviewOnly || symbol.type === 'unknown'))) parts.push(symbolMarkup(symbol, map));
   parts.push('</g><g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.25">');
   for (const dim of project.dimensions) {
     const a = map(dim.a), b = map(dim.b);

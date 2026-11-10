@@ -417,21 +417,19 @@ function renderHouseSchemeCadPreview(project) {
   button.dataset.projectId = project.id;
   button.innerHTML = '<b>CAD</b><span>Редактировать</span>';
   button.title = 'Открыть этот чертёж в ручном CAD; изменения сохраняются в проекте дома';
-  const previewUrl = `${graph.manualCadPreviewUrl}?v=${encodeURIComponent(project.updatedAt || Date.now())}`;
+  const previewUrl = `${graph.manualCadPreviewUrl}${graph.manualCadPreviewUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(project.updatedAt || Date.now())}`;
   const pipes = Array.isArray(project.pipes) ? project.pipes : [];
   const pipeCount = pipes.filter(pipe => pipe.reviewOnly !== true).length;
   const reviewCount = pipes.filter(pipe => pipe.reviewOnly === true).length;
-  const completeness = pipeCount === 0 ? 'ПОДТВЕРЖДЁННАЯ ГЕОМЕТРИЯ НЕ НАЙДЕНА · НУЖНА РУЧНАЯ ТРАССИРОВКА' : project.analysisComplete === false ? 'НЕПОЛНЫЙ CAD-ЧЕРНОВИК · ТОЛЬКО ПРОВЕРКА' : 'АВТОМАТИЧЕСКИЙ CAD-ЧЕРНОВИК · ПРОВЕРИТЬ В РЕДАКТОРЕ';
+  const completeness = pipeCount === 0 && reviewCount === 0 ? 'АВТОЧЕРНОВИК НЕ СОДЕРЖИТ ТРАСС · ПРОВЕРЬ ИСХОДНИК' : 'АВТОМАТИЧЕСКИЙ РЕДАКТИРУЕМЫЙ ЧЕРНОВИК · ПРОВЕРИТЬ В РЕДАКТОРЕ';
   $('cleanStage').classList.add('manual-cad-preview');
-  $('cleanStage').innerHTML = `<img class="manual-cad-preview-image" src="${escapeHtml(previewUrl)}" alt="Предварительный CAD-лист LPGCad R1 для ${escapeHtml(project.title || 'схемы дома')}" loading="eager"><div class="manual-cad-preview-caption"><b>${escapeHtml(completeness)}</b><span>${escapeHtml(project.siteAddress || activeScheme?.streetName || 'Адрес из папки дома')} · ${pipeCount} основных трасс · ${reviewCount} кандидатов на проверку · ${Number(project.labels?.length || 0)} подписей</span></div>`;
+  $('cleanStage').innerHTML = `<img class="manual-cad-preview-image" src="${escapeHtml(previewUrl)}" alt="Автоматический редактируемый CAD-черновик LPGCad R1 для ${escapeHtml(project.title || 'схемы дома')}" loading="eager"><div class="manual-cad-preview-caption"><b>${escapeHtml(completeness)}</b><span>${escapeHtml(project.siteAddress || activeScheme?.streetName || 'Адрес из папки дома')} · ${pipeCount} основных маршрутов · ${reviewCount} непроверенных кандидатов · ${Number(project.symbols?.length || 0)} символов · ${Number(project.labels?.length || 0)} подписей. Чёрное — основное, оранжевый пунктир — автоматические кандидаты.</span></div>`;
   $('cleanStage').querySelector('img')?.addEventListener('error', () => {
     $('cleanStage').innerHTML = '<div class="stage-empty clean-empty"><b>Не удалось показать чистовой лист</b><span>Проект CAD сохранён. Открой его кнопкой «Редактировать».</span></div>';
   }, { once: true });
-  $('previewMeta').textContent = pipeCount === 0
-    ? 'Не найдено подтверждённых трубных трасс. Проект создан с исходной подложкой: начерти маршруты вручную в CAD-редакторе.'
-    : project.analysisComplete === false
-      ? 'Показан неполный CAD-черновик. Доступные линии можно исправить, а недостающие маршруты начертить по подложке.'
-      : 'Показан предварительный CAD-черновик. Проверь линии, соединения и кандидаты на проверку; вручную добавь оборудование, подписи и размеры. Чистовой экспорт делай после сверки с оригиналом.';
+  $('previewMeta').textContent = pipeCount === 0 && reviewCount === 0
+    ? 'Автоматический черновик создан, но трубные маршруты не выделены. Открой редактор: исходник и объекты распознавания сохранены.'
+    : 'Автоматический черновик показан сразу. Чёрные линии — основной отбор, оранжевые пунктирные — кандидаты. Открой редактор, чтобы перемещать и редактировать трубы, узлы, символы и подписи; экспорт чистового листа делай после проверки.';
 }
 
 async function ensureHouseSchemeCadProject(jobId) {
@@ -738,12 +736,8 @@ function showResult() {
   const cadReadiness = assessCadReadiness(graph);
   $('openManualCadBtn').hidden = !graph.jobId;
   $('openManualCadBtn').disabled = false;
-  $('openManualCadBtn').innerHTML = cadReadiness.ready
-    ? '<b>CAD</b><span>Редактировать</span>'
-    : '<b>CAD</b><span>Помощник трассировки</span>';
-  $('openManualCadBtn').title = cadReadiness.ready
-    ? 'Открыть CAD-редактор'
-    : 'Автоматическая схема пока не прошла проверку. Открой CAD-помощник: укажи начало, повороты и конец нужной трубы — автотрасса проследит реальные штрихи на фотографии.';
+  $('openManualCadBtn').innerHTML = '<b>CAD</b><span>Редактировать схему</span>';
+  $('openManualCadBtn').title = 'Открыть автоматически собранный CAD-черновик. Все основные и непроверенные объекты доступны для редактирования.';
   $('processSchemeBtn').hidden = processingComplete;
   $('processSchemeBtn').disabled = false;
   $('processSchemeBtn').textContent = processingComplete ? 'Преобразовано' : 'Продолжить обработку →';
@@ -783,7 +777,7 @@ function showResult() {
   const hasReferenceTrace = Boolean(graph.referenceTrace?.available && graph.referenceTraceSvgUrl);
   const hasCenterlineTrace = Boolean(graph.centerlineTrace?.available && graph.centerlineTraceSvgUrl);
   $('previewMeta').textContent = !cadReadiness.ready
-    ? `CAD не прошёл проверку качества: ${cadReadiness.reasons.join('; ')}. В результате показан исходник, а не сырые векторные штрихи.`
+    ? `Автоматический черновик доступен для редактирования, но не прошёл контроль чистового экспорта: ${cadReadiness.reasons.join('; ')}.`
     : hasCenterlineTrace
       ? `${Number(graph.centerlineTrace.paths || 0).toLocaleString('ru-RU')} открытых линейных полилиний · исходные штрихи; не семантическая сеть труб.`
       : hasReferenceTrace
@@ -824,7 +818,7 @@ function showResult() {
   $('exportSvg').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; содержит текст и символы' : outputViewMode === 'reference' ? 'Скачать контуры всех исходных штрихов' : 'Скачать CAD-черновик SVG';
   $('exportDxf').title = outputViewMode === 'centerline' ? 'Скачать все открытые линии исходных штрихов; не является трубной сетью' : outputViewMode === 'reference' ? 'Скачать векторные контуры исходных штрихов' : 'Скачать CAD-черновик DXF';
   if (!cadReadiness.ready) {
-    setAlert(`Автоматическая CAD-реконструкция пока не готова. Показан исходник без искажений. Причины: ${cadReadiness.reasons.join('; ')}. Нажми «Помощник трассировки», чтобы вручную задать ход трубы по исходным штрихам; это безопаснее, чем выдавать шумную векторизацию за готовую схему.`);
+    setAlert(`Автоматический CAD-черновик сформирован и доступен в редакторе. Он пока не прошёл проверку чистового экспорта: ${cadReadiness.reasons.join('; ')}. Основные линии и кандидаты можно редактировать; перед техническим использованием требуется проверка инженером.`);
   } else if (!processingComplete) {
     setAlert('Обработка не завершена полностью. CAD-черновик доступен только для проверки.');
   } else {
@@ -832,8 +826,10 @@ function showResult() {
   }
   setState(cadReadiness.ready && processingComplete
     ? 'CAD-ЧЕРНОВИК СФОРМИРОВАН · НУЖНА ПРОВЕРКА'
-    : 'CAD НЕ ПОДТВЕРЖДЁН · ПОКАЗАН ИСХОДНИК', cadReadiness.ready && processingComplete ? 'ready' : 'error');
-  setOutputViewMode(cadReadiness.ready ? 'cad' : 'original');
+    : 'АВТОЧЕРНОВИК · ТРЕБУЕТСЯ РЕДАКТИРОВАНИЕ', cadReadiness.ready && processingComplete ? 'ready' : 'busy');
+  // Show the generated editable CAD draft regardless of final-export readiness.
+  // The quality gate still controls clean export buttons, not whether users can see/edit the draft.
+  setOutputViewMode('cad');
   document.querySelectorAll('.flow-step').forEach((el, index) => el.classList.toggle('active', index < 3));
 }
 

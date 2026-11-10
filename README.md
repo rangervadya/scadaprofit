@@ -1,4 +1,4 @@
-# ScadaProfit 4.3.45 — guided fitter-sketch tracing and unified PROFIT menu
+# ScadaProfit 4.3.46 — guided fitter-sketch tracing and unified PROFIT menu
 
 
 ## 4.3.45 — guided ink tracing
@@ -57,3 +57,7 @@ Run checks with `npm run check`.
 ## Important limitation
 
 This release prevents raw pixel skeletons from being presented as a clean engineering drawing. It does not itself solve semantic recognition of all pipes, valves, meters, dimensions and connections. The current source photo still requires improved symbol classification, geometry grouping and engineer review before a true clean CAD reconstruction can be claimed.
+
+## ScadaProfit 4.3.46 — автоматический редактируемый черновик
+
+После распознавания автоматически создаётся CAD-проект с основными маршрутами и отдельным слоем непроверенных кандидатов. В редакторе доступны переключение слоёв, поиск и список объектов, переход к выбранному объекту, автоматическое вписывание листа и редактирование свойств/вершин. Непроверенные объекты не попадают в чистовой экспорт автоматически; черновик требует инженерной проверки.

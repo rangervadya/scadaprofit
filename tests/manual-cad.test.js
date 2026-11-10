@@ -453,3 +453,28 @@ test('sketch-assist treats a four-way crossing as two continuous routes, not one
   assert.equal(horizontal.reviewOnly, true);
   assert.equal(vertical.reviewOnly, true);
 });
+
+test('automatic draft preview shows unverified candidates without promoting them to clean export', () => {
+  const base = createManualCadProject({ title: 'Черновик эскиза' });
+  const project = normalizeManualCadProject({
+    ...base,
+    drawingStyle: 'lpgcad-r1',
+    width: 1000,
+    height: 700,
+    pipes: [
+      { id: 'main-preview', points: [[80, 100], [420, 100], [420, 350]], reviewOnly: false },
+      { id: 'candidate-preview', points: [[120, 220], [360, 220], [360, 500]], reviewOnly: true }
+    ],
+    symbols: [{ id: 'unknown-preview', type: 'unknown', x: 420, y: 350, reviewOnly: true }]
+  }, base);
+
+  const clean = renderManualCadSvg(project);
+  const draft = renderManualCadSvg(project, { includeReview: true });
+  assert.match(clean, /main-preview/);
+  assert.doesNotMatch(clean, /candidate-preview/);
+  assert.doesNotMatch(clean, /unknown-preview/);
+  assert.match(draft, /id="PIPE_REVIEW"/);
+  assert.match(draft, /candidate-preview/);
+  assert.match(draft, /unknown-preview/);
+  assert.match(draft, /stroke-dasharray/);
+});

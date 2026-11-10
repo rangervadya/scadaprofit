@@ -1,0 +1,23 @@
+ScadaProfit 4.3.46 — Git patch only
+
+Изменённые файлы:
+- server.js
+- manual-cad-core.js
+- package.json
+- public/index.html
+- public/app.js
+- public/manual-cad.html
+- public/manual-cad.css
+- public/manual-cad.js
+- tests/manual-cad.test.js
+- MANUAL-CAD-USER-GUIDE-RU.md
+- README.md
+- README-RU.md
+- CHANGELOG-4.3.46-RU.md
+- README-4.3.46-RU.txt
+- UPDATE-MANIFEST-4.3.46.txt
+
+Разворачивать только сервис app.
+Не включать и не менять: vdgo/, compose.yaml, .env, Docker volumes, PostgreSQL, Ollama, Nginx/gateway, сторонние контейнеры.
+
+Поведение: CAD-проект автоматически создаётся после распознавания. Основные линии и review-кандидаты видны в черновике и редакторе. Review-кандидаты не переходят в чистовой экспорт без подтверждения.

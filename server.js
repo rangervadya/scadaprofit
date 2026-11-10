@@ -319,7 +319,7 @@ function manualProjectResponse(project) {
   return {
     ...project,
     sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null,
-    previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg`,
+    previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg?draft=1`,
     editUrl: `/manual-cad.html?project=${encodeURIComponent(project.id)}`,
     returnUrl: project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
   };
@@ -1636,7 +1636,7 @@ app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
     const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    return res.send(renderManualCadSvg(project));
+    return res.send(renderManualCadSvg(project, { includeReview: req.query.draft === '1' }));
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать предпросмотр CAD.' });
   }

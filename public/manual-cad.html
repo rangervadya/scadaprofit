@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f3f5f3">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
   <title>CAD-редактор · ПРОФИТ</title>
-  <link rel="stylesheet" href="/manual-cad.css?v=4.3.45">
-  <script type="module" src="/manual-cad.js?v=4.3.45"></script>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.3.46">
+  <script type="module" src="/manual-cad.js?v=4.3.46"></script>
 </head>
 <body class="manual-cad-page">
   <nav class="suite-nav" aria-label="ПРОФИТ — модули">
@@ -49,9 +49,24 @@
       <div class="mc-panel-head"><div><b>Мои чертежи</b><small>Сохраняются на сервере</small></div><span id="projectCount" class="mc-count">0</span></div>
       <div id="projectList" class="mc-project-list"><div class="mc-muted-block">Загружаю список…</div></div>
       <div class="mc-project-help">
-        <b>Как работать</b>
-        <p>Загрузи фото как подложку и обведи трассу. Вершины можно двигать, добавлять инструментом «Узел» и удалять отдельно. Перетаскивай линию целиком, чтобы сдвинуть ветку; ответвления сохраняют точки соединения. Ctrl+D дублирует выбранный элемент.</p>
+        <b>Работа с чертежом</b>
+        <p>Система автоматически создаёт редактируемый черновик. Выбирай объект на листе или в списке, меняй его свойства справа. Вершины трубы можно перетаскивать; ветви привязываются к узлам. Ctrl+Z отменяет действие, Ctrl+Y повторяет.</p>
       </div>
+      <section class="mc-object-manager" aria-label="Слои и объекты чертежа">
+        <div class="mc-object-manager-head"><b>Слои и объекты</b><span id="objectCount" class="mc-count">0</span></div>
+        <div class="mc-layer-list">
+          <label><input type="checkbox" data-layer="pipes" checked><span class="mc-layer-swatch mc-layer-main"></span><span>Основные трассы</span><b id="layerPipesCount">0</b></label>
+          <label><input type="checkbox" data-layer="candidates" checked><span class="mc-layer-swatch mc-layer-review"></span><span>Кандидаты</span><b id="layerCandidatesCount">0</b></label>
+          <label><input type="checkbox" data-layer="symbols" checked><span class="mc-layer-swatch mc-layer-symbols"></span><span>Оборудование</span><b id="layerSymbolsCount">0</b></label>
+          <label><input type="checkbox" data-layer="labels" checked><span class="mc-layer-swatch mc-layer-labels"></span><span>Надписи</span><b id="layerLabelsCount">0</b></label>
+          <label><input type="checkbox" data-layer="dimensions" checked><span class="mc-layer-swatch mc-layer-dimensions"></span><span>Размеры</span><b id="layerDimensionsCount">0</b></label>
+          <label><input type="checkbox" data-layer="junctions" checked><span class="mc-layer-swatch mc-layer-junctions"></span><span>Узлы</span><b id="layerJunctionsCount">0</b></label>
+          <label><input type="checkbox" id="layerSource" checked><span class="mc-layer-swatch mc-layer-source"></span><span>Исходная фотография</span></label>
+        </div>
+        <div class="mc-object-list-head"><b>Список объектов</b><small>Найди объект по типу или обозначению, затем выбери его для редактирования</small></div>
+        <div class="mc-object-search"><input id="objectSearch" type="search" placeholder="Поиск: труба, DN, кран, номер…" autocomplete="off"><span id="objectListMeta">0 объектов</span></div>
+        <div id="objectList" class="mc-object-list"><div class="mc-muted-block">Объекты появятся после загрузки схемы.</div></div>
+      </section>
     </aside>
 
     <section class="mc-workspace">
@@ -67,7 +82,7 @@
       </div>
 
       <section class="mc-sketch-assist" id="mcSketchAssistPanel" aria-label="Помощник восстановления эскиза">
-        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Эскиз слесаря → инженерная схема</b><p>Нажми «Автотрасса»: укажи начало и конец прямого участка по штриху. На каждом повороте добавляй промежуточную точку. Помощник прослеживает синюю и тёмную ручку в узком коридоре. Предпросмотр нужно проверить и только затем применить. Оранжевые кандидаты остаются отдельным слоем.</p><small id="mcSketchCandidateStats">Кандидаты появятся после импорта распознанного эскиза.</small></div></div>
+        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Автоматический черновик уже собран</b><p>После распознавания система сама переносит найденные трассы, узлы, символы и подписи в редактируемый лист. Чёрные объекты — основной отбор; оранжевые пунктирные — дополнительные кандидаты, которые нужно проверить. Выбирай объект в списке или на листе, редактируй его свойства и вершины. «Коррекция трассы» — вспомогательный инструмент для участков, которые автоматике не удалось восстановить.</p><small id="mcSketchCandidateStats">Состав объектов появится после импорта распознанного эскиза.</small></div></div>
         <button class="mc-button mc-button-review" id="mcShowSketchCandidatesBtn" type="button" disabled>Показать кандидаты</button>
       </section>
 
@@ -92,7 +107,7 @@
           <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
           <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
           <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
-          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Укажи начало, повороты и конец трубы — помощник проследит реальные пиксели ручки">⌁ <span>Автотрасса</span></button>
+          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Вспомогательная коррекция: проведи участок по реальным пикселям ручки, если автоматическая трасса требует правки">⌁ <span>Коррекция трассы</span></button>
           <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
           <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
           <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
@@ -108,6 +123,7 @@
           <button class="mc-icon-button" id="zoomOutBtn" type="button" title="Уменьшить масштаб">−</button>
           <button class="mc-button mc-button-light mc-zoom-value" id="zoomResetBtn" type="button" title="Сбросить масштаб">100%</button>
           <button class="mc-icon-button" id="zoomInBtn" type="button" title="Увеличить масштаб">＋</button>
+          <button class="mc-button mc-button-light" id="fitViewBtn" type="button" title="Вписать весь чертёж в рабочую область">Вписать лист</button>
         </div>
       </div>
 

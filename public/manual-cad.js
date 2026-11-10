@@ -7,7 +7,8 @@ const state = {
   draft: [], draftStart: null, draftEnd: null, dimensionStart: null,
   sourceVisible: true, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
   undo: [], redo: [], drag: null, activeVertex: null, justDragged: false, lastSaved: null, toastTimer: null, zoom: 1, ortho: false,
-  traceRaster: null, traceLastPoint: null, traceSegments: 0, traceMetrics: [], traceSegmentStartIndices: [], traceWaypoints: [], traceAttachments: [], traceBusy: false
+  traceRaster: null, traceLastPoint: null, traceSegments: 0, traceMetrics: [], traceSegmentStartIndices: [], traceWaypoints: [], traceAttachments: [], traceBusy: false,
+  layers: { pipes: true, candidates: true, symbols: true, labels: true, dimensions: true, junctions: true }, objectFilter: ''
 };
 
 function uid(prefix='item') { return `${prefix}_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`).replaceAll('-', '')}`; }
@@ -78,7 +79,7 @@ async function createProject(showToast=true) {
     const data = await api('/api/manual-cad/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: 'Новая схема' }) });
     state.project = ensureProjectDefaults(data.project);
     state.traceRaster = null;
-    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.showReviewCandidates = false;
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.showReviewCandidates = false; $('sourceOpacity').value = '58';
     await refreshProjectList();
     syncControls(); renderAll();
     if (showToast) toast('Создан новый чертёж. Загрузи исходный эскиз или начни строить схему.');
@@ -94,9 +95,12 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = Boolean(state.project.sketchAssist?.enabled && state.project.pipes.some(pipe => pipe.reviewOnly));
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = state.project.pipes.some(pipe => pipe.reviewOnly);
+    state.layers = { pipes: true, candidates: true, symbols: true, labels: true, dimensions: true, junctions: true };
+    state.objectFilter = ''; $('objectSearch').value = '';
+    $('sourceOpacity').value = state.project.sketchAssist?.enabled ? '28' : '58';
     await loadTraceRaster(state.project);
-    syncControls(); renderAll(); setSaveState('Сохранено', 'saved'); await refreshProjectList();
+    syncControls(); renderAll(); requestAnimationFrame(() => fitCanvasToView()); setSaveState('Сохранено', 'saved'); await refreshProjectList();
   } catch (error) { toast(error.message); }
 }
 
@@ -298,14 +302,17 @@ function syncControls() {
   const assistPanel = $('mcSketchAssistPanel');
   if (assistPanel) assistPanel.hidden = !p.sourceUrl;
   const assistStats = $('mcSketchCandidateStats');
-  if (assistStats) assistStats.textContent = `${reviewCount} маршрутов-кандидатов · ${unknownSymbols} знаков для классификации · автотрасса по ручке: ${state.traceRaster ? 'готова' : 'недоступна'}`;
+  if (assistStats) assistStats.textContent = `${reviewCount} маршрутов-кандидатов · ${unknownSymbols} знаков для классификации · коррекция штриха: ${state.traceRaster ? 'готова' : 'недоступна'}`;
   const assistButton = $('mcShowSketchCandidatesBtn');
   if (assistButton) { assistButton.disabled = reviewCount === 0; assistButton.textContent = state.showReviewCandidates ? 'Скрыть кандидаты' : 'Показать кандидаты'; }
   $('exportSvgBtn').href = `/api/manual-cad/projects/${p.id}/export.svg`;
   $('exportDxfBtn').href = `/api/manual-cad/projects/${p.id}/export.dxf`;
   $('exportSvgBtn').setAttribute('aria-disabled', 'false'); $('exportDxfBtn').setAttribute('aria-disabled', 'false');
   $('sourceOpacity').value = $('sourceOpacity').value || '58';
+  $('layerSource').checked = state.sourceVisible;
+  document.querySelectorAll('[data-layer]').forEach(input => { input.checked = state.layers[input.dataset.layer] !== false; });
   updateHistoryButtons(); updateDeleteButton();
+  renderObjectManager();
 }
 function updateToolButtons() {
   document.querySelectorAll('[data-tool]').forEach(button => button.classList.toggle('is-active', button.dataset.tool === state.tool));
@@ -319,7 +326,7 @@ function updateToolButtons() {
     select:'Выбор: нажми на трубу или символ. У выбранной трубы можно перетаскивать вершины.',
     pipe:'Труба: кликай по поворотам маршрута. Двойной щелчок или Enter завершает линию.',
     branch:'Ответвление: первая точка должна попасть на существующую трубу — создастся узел Т-образного соединения.',
-    trace:'Автотрасса: кликни начало, затем конец каждого прямого участка по штриху. На поворотах ставь промежуточные точки. Backspace отменяет последний участок, Escape очищает маршрут. Применяй только после проверки синего предпросмотра.',
+    trace:'Коррекция трассы: используй только для участка, который автоматическая реконструкция пропустила или провела неверно. Отметь начало, повороты и конец по исходному штриху; проверь синий пунктир и нажми «Применить маршрут». Этот инструмент не заменяет автоматическое распознавание всего эскиза.',
     node:'Узел: щёлкни по существующему отрезку, чтобы вставить вершину. Выбери инструмент «Выбор», чтобы перетащить её.',
     label:'Подпись: введи текст справа от панели инструментов и щёлкни по месту размещения.',
     symbol:'Символ: выбери тип условного обозначения и щёлкни по месту установки.',
@@ -554,16 +561,16 @@ function renderCanvas() {
   const source = p.sourceUrl && state.sourceVisible ? `<image class="mc-source-image" href="${esc(p.sourceUrl)}?v=${encodeURIComponent(p.source?.uploadedAt||'1')}" x="0" y="0" width="${p.width}" height="${p.height}" preserveAspectRatio="none" opacity="${safeNum($('sourceOpacity').value,58)/100}"/>` : '';
   const grid = p.sourceUrl ? '' : `<rect width="${p.width}" height="${p.height}" fill="url(#mcGrid)"/>`;
   const pipes=p.pipes.map(pipe=>{
-    if(pipe.visible===false)return '';
+    if(pipe.visible===false || (pipe.reviewOnly ? (!state.showReviewCandidates || !state.layers.candidates) : !state.layers.pipes))return '';
     const points=pipe.points.map(pair=>`${safeNum(pair[0])},${safeNum(pair[1])}`).join(' ');
     const selected=state.selected?.type==='pipe'&&state.selected.id===pipe.id;
     const reviewClass = pipe.reviewOnly === true ? 'mc-pipe-review' : '';
     return `<g data-element-type="pipe" data-element-id="${esc(pipe.id)}"><polyline class="mc-pipe-hit" points="${points}"/><polyline class="mc-pipe mc-pipe-${esc(pipe.kind||'pipe')} ${reviewClass} ${selected?'is-selected':''}" points="${points}"/>${selected?pipe.points.map((pair,index)=>`<circle class="mc-vertex ${state.activeVertex?.pipeId===pipe.id&&state.activeVertex.index===index?'is-active':''}" data-vertex-pipe="${esc(pipe.id)}" data-vertex-index="${index}" cx="${pair[0]}" cy="${pair[1]}" r="${state.activeVertex?.pipeId===pipe.id&&state.activeVertex.index===index?10:7}"/>`).join(''):''}</g>`;
   }).join('');
-  const junctions=p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('');
-  const symbols=p.symbols.map(symbolSvg).join('');
-  const labels=p.labels.map(item=>`<text class="mc-cad-label ${state.selected?.type==='label'&&state.selected.id===item.id?'is-selected':''}" data-element-type="label" data-element-id="${esc(item.id)}" x="${item.x}" y="${item.y}" font-size="${item.size}" text-anchor="${item.anchor||'start'}" transform="rotate(${item.rotation||0} ${item.x} ${item.y})">${esc(item.text)}</text>`).join('');
-  const dimensions=p.dimensions.map(item=>`<g data-element-type="dimension" data-element-id="${esc(item.id)}"><path class="mc-dimension" d="M ${item.a[0]} ${item.a[1]} L ${item.b[0]} ${item.b[1]} M ${item.a[0]-5} ${item.a[1]-5} l 10 10 M ${item.b[0]-5} ${item.b[1]-5} l 10 10"/><text class="mc-dimension-text" x="${(item.a[0]+item.b[0])/2}" y="${(item.a[1]+item.b[1])/2-8}" text-anchor="middle">${esc(item.text)}</text></g>`).join('');
+  const junctions=state.layers.junctions ? p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('') : '';
+  const symbols=state.layers.symbols ? p.symbols.map(symbolSvg).join('') : '';
+  const labels=state.layers.labels ? p.labels.map(item=>`<text class="mc-cad-label ${state.selected?.type==='label'&&state.selected.id===item.id?'is-selected':''}" data-element-type="label" data-element-id="${esc(item.id)}" x="${item.x}" y="${item.y}" font-size="${item.size}" text-anchor="${item.anchor||'start'}" transform="rotate(${item.rotation||0} ${item.x} ${item.y})">${esc(item.text)}</text>`).join('') : '';
+  const dimensions=state.layers.dimensions ? p.dimensions.map(item=>`<g data-element-type="dimension" data-element-id="${esc(item.id)}"><path class="mc-dimension" d="M ${item.a[0]} ${item.a[1]} L ${item.b[0]} ${item.b[1]} M ${item.a[0]-5} ${item.a[1]-5} l 10 10 M ${item.b[0]-5} ${item.b[1]-5} l 10 10"/><text class="mc-dimension-text" x="${(item.a[0]+item.b[0])/2}" y="${(item.a[1]+item.b[1])/2-8}" text-anchor="middle">${esc(item.text)}</text></g>`).join('') : '';
   let draft='';
   if(state.draft.length){const points=state.draft.map(pt=>`${pt.x},${pt.y}`).join(' ');const traceClass=state.tool==='trace'?'mc-draft-trace':'';draft=`<polyline class="mc-draft ${traceClass}" points="${points}"/>${state.draft.map((pt,index)=>`<circle class="mc-snap-ring ${state.tool==='trace'?'mc-trace-waypoint':''}" cx="${pt.x}" cy="${pt.y}" r="${index===0||index===state.draft.length-1?8:5}"/>`).join('')}`;}
   if(state.dimensionStart) draft+=`<circle class="mc-snap-ring" cx="${state.dimensionStart[0]}" cy="${state.dimensionStart[1]}" r="7"/>`;
@@ -609,7 +616,30 @@ function renderProperties() {
   $('acceptReviewPipeBtn').hidden=!(state.selected.type==='pipe' && item.reviewOnly===true);
   updateDeleteButton();
 }
-function renderAll(){syncControls();renderCanvas();renderProjectList();}
+function renderAll(){syncControls();renderCanvas();renderProjectList();renderObjectManager();}
+
+function renderObjectManager(){
+  const p=state.project; if(!p) return;
+  const groups=[
+    ...p.pipes.map(item=>({type:'pipe',item,review:item.reviewOnly===true,title:item.name||`${item.kind==='riser'?'Стояк':item.kind==='branch'?'Ответвление':'Газопровод'} · ${item.id.slice(0,8)}`,sub:`${item.points.length} вершин${item.diameter?` · DN ${item.diameter}`:''}`})),
+    ...p.symbols.map(item=>({type:'symbol',item,review:item.reviewOnly===true,title:({valve:'Кран / клапан',meter:'Счётчик',regulator:'Регулятор',consumer:'Потребитель',riser:'Стояк',filter:'Фильтр',callout:'Выноска',unknown:'Неизвестный знак'}[item.type]||'Оборудование'),sub:item.label||`X ${Math.round(item.x)} · Y ${Math.round(item.y)}`})),
+    ...p.labels.map(item=>({type:'label',item,title:item.text,sub:'Текстовая подпись'})),
+    ...p.dimensions.map(item=>({type:'dimension',item,title:item.text,sub:'Размерная линия'}))
+  ];
+  $('objectCount').textContent=String(groups.length);
+  const counters={pipes:p.pipes.filter(x=>!x.reviewOnly).length,candidates:p.pipes.filter(x=>x.reviewOnly).length,symbols:p.symbols.length,labels:p.labels.length,dimensions:p.dimensions.length,junctions:p.junctions.length};
+  for(const [key,value] of Object.entries(counters)){const node=$(`layer${key[0].toUpperCase()}${key.slice(1)}Count`);if(node)node.textContent=String(value);}
+  const query=String(state.objectFilter||'').trim().toLocaleLowerCase('ru-RU');
+  const filtered=query?groups.filter(({type,item,title,sub})=>`${type} ${title} ${sub||''} ${item.id||''} ${item.reviewOnly?'проверить кандидат':''}`.toLocaleLowerCase('ru-RU').includes(query)):groups;
+  const visible=filtered.slice(0,500);
+  $('objectListMeta').textContent=query?`${visible.length} из ${groups.length}`:`${groups.length} объектов`;
+  $('objectList').innerHTML=visible.length?visible.map(({type,item,review,title,sub})=>`<button class="mc-object-item ${state.selected?.type===type&&state.selected.id===item.id?'is-selected':''}" type="button" data-object-type="${type}" data-object-id="${esc(item.id)}"><span class="mc-object-dot ${review?'is-review':type}"></span><span class="mc-object-copy"><b>${esc(title)}</b><small>${esc(sub||'')}</small></span><span class="mc-object-status">${review?'ПРОВЕРИТЬ':'CAD'}</span></button>`).join(''):'<div class="mc-muted-block">В проекте пока нет объектов.</div>';
+  $('objectList').querySelectorAll('[data-object-id]').forEach(button=>button.addEventListener('click',()=>{
+    state.selected={type:button.dataset.objectType,id:button.dataset.objectId};state.activeVertex=null;setTool('select');renderAll();
+    const target=[...svg.querySelectorAll('[data-element-type][data-element-id]')].find(node=>node.dataset.elementId===state.selected.id);
+    if(target){const box=target.getBBox(),scroll=$('canvasScroll'),rect=svg.getBoundingClientRect(),sx=rect.width/state.project.width,sy=rect.height/state.project.height;scroll.scrollTo({left:Math.max(0,(box.x+box.width/2)*sx-scroll.clientWidth/2),top:Math.max(0,(box.y+box.height/2)*sy-scroll.clientHeight/2),behavior:'smooth'});}
+  }));
+}
 
 function duplicateSelected() {
   const item=selectedItem();
@@ -732,12 +762,21 @@ function moveDrag(event) {
 function endDrag(){if(!state.drag)return;state.drag=null;state.justDragged=true;setTimeout(()=>{state.justDragged=false;},0);scheduleSave();renderAll();}
 
 function updateZoom(value) {
-  state.zoom=Math.max(0.5,Math.min(2.5,Math.round(value*100)/100));
+  state.zoom=Math.max(0.25,Math.min(2.5,Math.round(value*100)/100));
   svg.style.width=`${Math.round(state.zoom*100)}%`;
   svg.style.height='auto';
   svg.style.maxWidth='none';
   $('zoomResetBtn').textContent=`${Math.round(state.zoom*100)}%`;
   $('zoomResetBtn').setAttribute('aria-label',`Масштаб ${Math.round(state.zoom*100)} процентов; нажми, чтобы сбросить`);
+}
+
+function fitCanvasToView() {
+  if(!state.project)return;
+  const scroll=$('canvasScroll');
+  const width=Math.max(200,scroll.clientWidth-36), height=Math.max(180,scroll.clientHeight-36);
+  const fit=Math.min(width/state.project.width,height/state.project.height);
+  updateZoom(Math.max(.25,Math.min(2.5,fit)));
+  scroll.scrollTo({left:0,top:0,behavior:'smooth'});
 }
 
 
@@ -762,7 +801,9 @@ $('finishRouteBtn').addEventListener('click',finishRoute);
 $('undoBtn').addEventListener('click',undo);$('redoBtn').addEventListener('click',redo);$('duplicateBtn').addEventListener('click',duplicateSelected);$('deleteBtn').addEventListener('click',deleteSelected);
 $('sourceFile').addEventListener('change',event=>uploadSource(event.target.files?.[0]));
 $('toggleSourceBtn').addEventListener('click',()=>{state.sourceVisible=!state.sourceVisible;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
-$('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
+$('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('layerSource').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
+$('layerSource').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
+document.querySelectorAll('[data-layer]').forEach(input=>input.addEventListener('change',event=>{state.layers[event.target.dataset.layer]=event.target.checked;renderCanvas();}));
 $('sourceOpacity').addEventListener('input',renderCanvas);
 $('projectTitle').addEventListener('input',event=>{if(!state.project)return;state.project.title=event.target.value;scheduleSave();});
 $('pageOrientation').addEventListener('change',event=>{if(!state.project)return;pushUndo();state.project.page=event.target.value;scheduleSave();});
@@ -787,10 +828,12 @@ $('riserGroups').addEventListener('change',event=>{
   toast(`Групп стояков: ${state.project.riserGroups.length}. Номера квартир перенесены в чистовой лист.`);
 });
 $('saveNowBtn').addEventListener('click',()=>saveProject());
+$('objectSearch').addEventListener('input',event=>{state.objectFilter=event.target.value||'';renderObjectManager();});
 $('orthoMode').addEventListener('change',event=>{state.ortho=event.target.checked;toast(state.ortho?'Ортогональное построение включено.':'Свободное построение включено.');});
 $('zoomInBtn').addEventListener('click',()=>updateZoom(state.zoom+.1));
 $('zoomOutBtn').addEventListener('click',()=>updateZoom(state.zoom-.1));
 $('zoomResetBtn').addEventListener('click',()=>updateZoom(1));
+$('fitViewBtn').addEventListener('click',()=>fitCanvasToView());
 svg.addEventListener('click',handleCanvasClick);
 svg.addEventListener('pointerdown',startDrag);
 svg.addEventListener('pointermove',moveDrag);
@@ -806,6 +849,7 @@ window.addEventListener('keydown',event=>{
   if(event.key==='Escape'){clearDraft();state.activeVertex=null;renderCanvas();return;}
   if(event.key.toLowerCase()==='o'&&!event.ctrlKey&&!event.metaKey){state.ortho=!state.ortho;$('orthoMode').checked=state.ortho;return;}
   if(event.key.toLowerCase()==='n'&&!event.ctrlKey&&!event.metaKey){setTool('node');return;}
+  if(event.key.toLowerCase()==='f'&&!event.ctrlKey&&!event.metaKey){event.preventDefault();fitCanvasToView();return;}
   if(event.key==='Enter'&&['pipe','branch','trace'].includes(state.tool)){event.preventDefault();finishRoute();return;}
   if(event.key==='Backspace'&&state.tool==='trace'&&state.traceSegments>0){event.preventDefault();const cut=state.traceSegmentStartIndices.pop()??1;state.draft=state.draft.slice(0,cut);state.traceSegments=Math.max(0,state.traceSegments-1);state.traceMetrics.pop();state.traceWaypoints.pop();state.traceAttachments.pop();state.traceLastPoint=state.traceWaypoints.at(-1)||null;state.draftEnd=state.traceAttachments.at(-1)||null;updateToolButtons();renderCanvas();return;}
   if(event.key==='Backspace'&&state.draft.length){state.draft.pop();if(!state.draft.length)state.draftStart=null;renderCanvas();return;}
