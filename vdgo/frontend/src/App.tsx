@@ -61,6 +61,9 @@ function App() {
   const [dbState, setDbState] = useState<ServiceState>('checking');
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [activeSection, setActiveSection] = useState('main');
+  const [searchMessage, setSearchMessage] = useState('');
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [historyActive, setHistoryActive] = useState(window.location.hash === '#history');
   const [details, setDetails] = useState(false);
   const [report, setReport] = useState({ number: '', address: '', date: '' });
   const [file, setFile] = useState<File | null>(null);
@@ -98,6 +101,22 @@ function App() {
     const id = window.setInterval(() => void refreshStatus(), 15000);
     return () => window.clearInterval(id);
   }, [refreshStatus]);
+
+  useEffect(() => {
+    const syncHash = () => {
+      const active = window.location.hash === '#history';
+      setHistoryActive(active);
+      if (active) document.getElementById('history')?.scrollIntoView({ block: 'nearest' });
+    };
+    syncHash();
+    window.addEventListener('hashchange', syncHash);
+    return () => window.removeEventListener('hashchange', syncHash);
+  }, []);
+
+  const matchesHistory = (item: ReportRun, query: string) =>
+    [item.report_number, item.report_date, item.output_filename].some(value => value?.toLocaleLowerCase('ru').includes(query));
+
+  const shownReports = (historyQuery ? reports.filter(item => matchesHistory(item, historyQuery)) : reports).slice(0, 6);
 
   const navigateToSection = (id: string) => {
     setActiveSection(id);
@@ -170,27 +189,36 @@ function App() {
           <span className="sidebar-brand-name">PROFIT</span>
         </a>
         <nav className="sidebar-nav" aria-label="Модули ПРОФИТ">
-          <a className="sidebar-link active" href="/vdgo/" aria-current="page"><span>⌂</span>Рабочий стол</a>
-          <button className="sidebar-link" onClick={() => { setActiveSection('main'); setDetails(true); }}><span>▤</span>Заключения</button>
-          <a className="sidebar-link" href="/"><span>⌂</span>Схемы домов</a>
-          <a className="sidebar-link" href="#attachments"><span>▣</span>Вложения</a>
-          <a className="sidebar-link" href="#history"><span>◷</span>История</a>
-          <a className="sidebar-link" href="/manual-cad.html"><span>⚙</span>CAD-редактор</a>
+          <a className={historyActive ? "sidebar-link" : "sidebar-link active"} href="/vdgo/" aria-current={historyActive ? undefined : "page"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg>Рабочий стол</a>
+          <a className="sidebar-link" href="/vdgo/legacy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключение</a>
+          <a className="sidebar-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l5-4 4 4 5-7 4 4M4 12v8h16V9M9 20v-5h5v5"/></svg>Схемы домов</a>
+          <a className="sidebar-link" href="/#object-library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg>Архив</a>
+          <a className={historyActive ? "sidebar-link active" : "sidebar-link"} href="/vdgo/#history" aria-current={historyActive ? "location" : undefined}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2 6m-2-2v4h4m5-13v5l3 2"/></svg>История</a>
+          <a className="sidebar-link" href="/#settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg>Настройки</a>
         </nav>
         <a className="sidebar-bottom" href="/vdgo/legacy" target="_blank" rel="noreferrer">ⓘ　Полная форма</a>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
-          <form className="search" onSubmit={(event) => {
+          <form className="search" role="search" onSubmit={(event) => {
             event.preventDefault();
-            const query = new FormData(event.currentTarget).get('query')?.toString().trim().toLowerCase();
-            const section = reportSections.find(([, label]) => query && label.toLowerCase().includes(query));
+            const query = String(new FormData(event.currentTarget).get('query') || '').trim().toLocaleLowerCase('ru');
+            if (!query) return;
+            setSearchMessage('');
+            const section = reportSections.find(([, label]) => label.toLocaleLowerCase('ru').includes(query));
             if (section) navigateToSection(section[0]);
+            else if ([report.number, report.address, report.date].some(value => value.toLocaleLowerCase('ru').includes(query))) navigateToSection('main');
+            else if (reports.some(item => matchesHistory(item, query))) {
+              setHistoryQuery(query);
+              window.location.hash = 'history';
+              document.getElementById('history')?.scrollIntoView({ block: 'nearest' });
+            } else setSearchMessage('Ничего не найдено');
           }}>
             <span aria-hidden="true">⌕</span>
-            <input name="query" type="search" placeholder="Поиск по разделам заключения…" aria-label="Поиск по разделам заключения" />
+            <input name="query" type="search" placeholder="Поиск по адресу, номеру и разделам…" aria-label="Поиск по адресу, номеру и разделам" onChange={() => { setSearchMessage(''); setHistoryQuery(''); }} />
             <button title="Найти" aria-label="Найти">↵</button>
+            <output aria-live="polite">{searchMessage}</output>
           </form>
           <button className="service-status" onClick={() => void refreshStatus()} title={health?.database?.message || 'Обновить состояние сервисов'}>
             <i className={healthState} />{healthState === 'checking' ? 'Проверяем сервисы…' : healthState === 'ok' && dbState !== 'error' ? 'Сервисы работают' : 'Проверьте сервисы'}
@@ -269,7 +297,7 @@ function App() {
         <section className="bottom-grid">
           <article id="history" className="card bottom-card">
             <h2>◷　Журнал действий</h2>
-            {reports.length ? <ul>{reports.slice(0, 3).map((item) => <li key={item.id}>{formatDate(item.created_at)}　 ·　{item.report_number || item.output_filename}　{item.output_format.toUpperCase()}</li>)}</ul> : <p>Документы пока не формировались</p>}
+            {shownReports.length ? <ul>{shownReports.map((item) => <li key={item.id}>{formatDate(item.created_at)}　 ·　{item.report_number || item.output_filename}　{item.output_format.toUpperCase()}</li>)}</ul> : <p>Документы пока не формировались</p>}
           </article>
           <article id="attachments" className="card bottom-card">
             <h2>♧　Файлы и вложения</h2>

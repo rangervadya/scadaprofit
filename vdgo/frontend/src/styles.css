@@ -124,3 +124,7 @@ h2 { font-size: 12px; }
   .report-tabs button { flex: 0 0 110px; }
   .workbench, .bottom-grid { grid-template-columns: minmax(0,1fr); }
 }
+.sidebar-link svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.search { position: relative; }
+.search output:not(:empty) { position: absolute; top: 100%; left: 0; z-index: 5; padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); }
+#history:target { outline: 2px solid #9bbce4; outline-offset: 2px; }

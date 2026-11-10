@@ -233,6 +233,20 @@ $('addStreetBtn').addEventListener('click', () => openLibraryDialog('street'));
 $('addBuildingBtn').addEventListener('click', () => openLibraryDialog('building'));
 $('cancelLibraryDialog').addEventListener('click', () => $('libraryDialog').close());
 $('librarySearch').addEventListener('input', renderLibrary);
+$('librarySearchForm').addEventListener('submit', event => {
+  event.preventDefault();
+  $('object-library').scrollIntoView({ block: 'nearest' });
+});
+
+function highlightLibraryNavigation() {
+  const locationLink = ['#object-library', '#settings'].includes(location.hash) ? '/' + location.hash : '/';
+  document.querySelectorAll('.profit-links a').forEach(link => {
+    if (link.getAttribute('href') === locationLink) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+}
+window.addEventListener('hashchange', highlightLibraryNavigation);
+highlightLibraryNavigation();
 $('libraryDialogForm').addEventListener('submit', async event => {
   event.preventDefault();
   const name = $('libraryNameInput').value.trim();

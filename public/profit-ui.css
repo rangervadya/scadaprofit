@@ -208,3 +208,9 @@
   .manual-cad-page .profit-topbar, .manual-cad-page .profit-tabs { margin-inline: 12px; }
   .manual-cad-page .mc-topbar { padding-inline: 12px; }
 }
+.profit-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.profit-secondary-link, .profit-topbar .library-search button { border: 1px solid var(--profit-line); border-radius: 5px; background: #f7faff; color: var(--profit-blue); }
+.profit-secondary-link { padding: 8px 10px; font-size: 11px; text-decoration: none; }
+.profit-topbar .library-search button { padding: 2px 6px; font: inherit; }
+.recognition-inspector #settings { display: grid; gap: 7px; min-width: 0; }
+#settings:target, #object-library:target { outline: 2px solid #9bbce4; outline-offset: 2px; border-radius: 6px; }
