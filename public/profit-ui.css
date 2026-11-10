@@ -1,10 +1,10 @@
 :root {
   --profit-navy: #102744;
   --profit-blue: #174982;
-  --profit-bg: #edf2fa;
-  --profit-line: #dce5f1;
+  --profit-bg: #eff3fa;
+  --profit-line: #e1e8f3;
   --profit-text: #18304d;
-  --profit-rail-width: 142px;
+  --profit-rail-width: 130px;
   --page: var(--profit-bg);
   --surface-muted: #f4f7fc;
   --line: var(--profit-line);
@@ -27,10 +27,10 @@
   width: var(--profit-rail-width);
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 26px;
   padding: 16px 9px;
   color: #dbe9fb;
-  background: linear-gradient(160deg, #10243d, #133558);
+  background: linear-gradient(155deg, #102741, #102c4c 67%, #13263f);
 }
 .profit-brand {
   display: flex;
@@ -46,10 +46,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 7px;
+  min-height: 33px;
+  padding: 6px 8px;
   border-radius: 7px;
   color: inherit;
-  font-size: 12px;
+  font-size: 10px;
   text-decoration: none;
 }
 .profit-links a:hover { background: #1c406a; }
@@ -80,7 +81,7 @@
   margin-bottom: 16px;
 }
 .profit-breadcrumb { margin: 0 0 7px; color: #536c89; font-size: 11px; }
-.profit-heading h1, .mc-brand h1 { margin: 0; color: var(--profit-text); font-size: clamp(21px, 2.3vw, 28px); line-height: 1.2; }
+.profit-heading h1, .mc-brand h1 { margin: 0; color: var(--profit-text); font-size: 20px; line-height: 1.2; }
 .profit-subtitle { margin: 6px 0 0; color: #546b87; font-size: 12px; }
 .profit-heading-link, .recognition-page .primary-button {
   background: var(--profit-blue);
@@ -107,8 +108,8 @@
   font-size: 10px;
 }
 .recognition-page .card, .mc-projects-panel, .mc-workspace, .mc-inspector {
-  border-radius: 9px;
-  box-shadow: 0 3px 12px #17385d0a;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px #173b6507;
 }
 .recognition-page .library-search, .recognition-page .dropzone { background: #f5f8fd; border-color: #c9d9ed; }
 .recognition-page .canvas-description { font-size: 11px; color: #526982; }
@@ -124,44 +125,86 @@
 .manual-cad-page .mc-canvas-scroll { background: #eaf0f8; border-color: var(--profit-line); }
 .manual-cad-page .mc-sketch-assist { background: #f1f6fe; border-color: var(--profit-line); }
 
-@media (min-width: 1130px) {
-  .recognition-page .workspace-grid { grid-template-columns: minmax(230px, 260px) minmax(0, 1fr); }
-  .recognition-page .main-column {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: auto auto auto auto auto;
-    gap: 0 10px;
-  }
-  .recognition-page .canvas-card, .recognition-page .output-card {
-    display: grid;
-    grid-template-rows: subgrid;
-    grid-row: span 5;
-    min-width: 0;
-  }
-  .recognition-page .image-stage, .recognition-page .clean-stage { grid-row: 3; margin-top: 10px; }
-  .recognition-page .canvas-footer, .recognition-page .review-banner { grid-row: 4; }
+.recognition-page, .manual-cad-page {
+  min-height: 100vh;
+  background: linear-gradient(150deg, #e7eef9, #f3f6fc 65%);
+}
+.profit-links { gap: 2px; }
+.profit-rail-caption { margin-bottom: 54px; }
+.recognition-page .app-shell { padding: 17px 12px 12px 28px; }
+.profit-topbar { display: flex; align-items: center; gap: 10px; min-height: 34px; margin-bottom: 19px; }
+.profit-topbar .library-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(462px, 62%);
+  height: 31px;
+  padding: 0 10px;
+  border: 1px solid var(--profit-line);
+  border-radius: 7px;
+  background: #f9fbff;
+  box-shadow: 0 2px 6px #173b6510;
+  color: var(--profit-blue);
+}
+.profit-topbar input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--profit-text); font: inherit; }
+.profit-topbar .server-state, .profit-topbar .mc-save-state { margin-left: auto; }
+.profit-avatar { display: grid; place-items: center; flex: 0 0 26px; height: 26px; border-radius: 50%; background: #112d50; color: #fff; font-size: 10px; }
+.profit-tabs { display: flex; min-height: 47px; margin-bottom: 11px; overflow-x: auto; border-radius: 6px; background: #e8eef8; }
+.profit-tabs a { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 11px; border-right: 1px solid #dfe7f2; border-bottom: 2px solid transparent; color: var(--profit-text); font-size: 10px; text-decoration: none; }
+.profit-tabs a:is(:hover,:focus-visible) { border-bottom-color: #2766a8; background: #f2f6fc; }
+.profit-tabs span { min-width: 18px; padding: 2px; border-radius: 4px; background: #dce7f8; color: #1b548d; text-align: center; }
+.profit-panel-heading { margin: 0 0 7px; padding: 9px 0 7px; border-bottom: 2px solid #245d9b; color: var(--profit-text); font-size: 11px; }
+.recognition-page .card, .manual-cad-page :is(.mc-projects-panel,.mc-workspace,.mc-inspector) { background: #f9fbff; border-color: var(--profit-line); }
+.recognition-page .workspace-grid { gap: 7px; }
+.recognition-inspector { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.recognition-inspector > .profit-panel-heading { padding-inline: 8px; }
+.recognition-inspector .local-ai-grid { grid-template-columns: minmax(0, 1fr); }
+.recognition-inspector .local-ai-heading { flex-wrap: wrap; }
+.recognition-page .source-main-header, .recognition-page .output-header { align-content: start; }
+.recognition-page .image-stage { background: radial-gradient(ellipse at 60% 32%, #f2f0ea, #e7e2da); }
+.recognition-page .clean-stage {
+  background: linear-gradient(#dce7f444 1px, transparent 1px), linear-gradient(90deg, #dce7f444 1px, transparent 1px), #fcfdff;
+  background-size: 15px 15px;
+}
+.manual-cad-page .profit-topbar, .manual-cad-page .profit-tabs { margin-inline: 28px 12px; }
+.manual-cad-page .profit-topbar { padding-top: 17px; }
+.manual-cad-page .mc-topbar { min-height: 0; margin-bottom: 16px; padding: 0 12px 0 28px; border: 0; }
+.manual-cad-page .mc-shell { gap: 7px; padding: 0 12px 12px 28px; }
+.manual-cad-page .mc-tools-panel { grid-column: 1 / -1; margin-bottom: 9px; }
+.mc-tools-panel .mc-toolgroup { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 3px; }
+.mc-tools-panel .mc-tool { display: flex; justify-content: flex-start; gap: 6px; width: 100%; min-width: 0; min-height: 29px; height: auto; padding: 5px; text-align: left; border-radius: 4px; }
+.manual-cad-page :is(.mc-panel-head,.mc-documentbar,.mc-toolbar,.mc-propertybar,.mc-lowerbar,.mc-status-note,.mc-symbol-legend) { border-color: var(--profit-line); }
+.manual-cad-page :is(.mc-documentbar,.mc-toolbar,.mc-propertybar,.mc-statistics div,.mc-property-help) { background: #f4f7fc; }
+.manual-cad-page :is(.mc-tool.is-active,.mc-project-item.is-active) { background: #e3effd; border-color: #c7daf2; color: #174982; }
+.manual-cad-page .mc-button-primary { background: #103761; border-color: #103761; color: #fff; }
+.manual-cad-page :is(.mc-pipe.is-selected,.mc-vertex,.mc-cad-symbol.is-selected > *) { stroke: #2766a8; }
+.manual-cad-page .mc-cad-label.is-selected { fill: #2766a8; }
+
+@media (min-width: 1120px) {
+  .recognition-page .workspace-grid { grid-template-columns: minmax(205px, 23.5%) minmax(0, 1fr) minmax(166px, 17.5%); }
+  .recognition-page .main-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
+  .recognition-page :is(.canvas-card,.output-card) { display: grid; grid-template-rows: subgrid; grid-row: span 5; min-width: 0; padding: 8px; }
+  .recognition-page .canvas-card { border-radius: 6px 0 0 6px; }
+  .recognition-page .output-card { border-left: 0; border-radius: 0 6px 6px 0; }
+  .recognition-page :is(.image-stage,.clean-stage) { grid-row: 3; margin-top: 7px; }
+  .recognition-page :is(.canvas-footer,.review-banner) { grid-row: 4; }
   .recognition-page .diagnostic-links { grid-row: 5; }
+  .manual-cad-page .mc-shell { grid-template-columns: minmax(165px, 21%) minmax(0, 1fr) minmax(150px, 17%); }
+  .manual-cad-page .mc-workspace { grid-column: 2; grid-row: 1; }
+  .manual-cad-page .mc-inspector { grid-column: 3; grid-row: 1; display: block; }
+  .manual-cad-page .mc-inspector > .mc-symbol-legend { display: block; }
+  .manual-cad-page .mc-inspector .mc-symbol-legend div { margin: 6px 0; }
 }
-@media (min-width: 1181px) {
-  .manual-cad-page .mc-shell { grid-template-columns: minmax(165px, 210px) minmax(0, 1fr) minmax(180px, 225px); }
-}
-@media (min-width: 901px) {
-  .recognition-page .sidebar, .manual-cad-page .mc-projects-panel, .manual-cad-page .mc-inspector {
-    top: 12px;
-    max-height: calc(100vh - 24px);
-  }
+@media (max-width: 1119px) {
+  .recognition-inspector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); align-items: start; }
+  .recognition-inspector > .profit-panel-heading { grid-column: 1 / -1; }
 }
 @media (max-width: 900px) {
   .recognition-page, .manual-cad-page { padding-left: 0; }
-  .profit-rail {
-    position: static;
-    width: auto;
-    flex-direction: row;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px 16px;
-    padding: 8px;
-  }
+  .profit-rail { position: static; width: auto; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 6px 16px; padding: 8px; }
   .profit-links { display: flex; flex-wrap: wrap; }
   .profit-rail-caption { display: none; }
+  .recognition-page .app-shell, .manual-cad-page .mc-shell { padding-inline: 12px; }
+  .manual-cad-page .profit-topbar, .manual-cad-page .profit-tabs { margin-inline: 12px; }
+  .manual-cad-page .mc-topbar { padding-inline: 12px; }
 }

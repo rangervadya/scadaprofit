@@ -7,8 +7,8 @@
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
   <title>CAD-редактор · ПРОФИТ</title>
   <link rel="stylesheet" href="/manual-cad.css?v=4.3.46">
-  <link rel="stylesheet" href="/profit-ui.css?v=1">
-  <script type="module" src="/manual-cad.js?v=4.3.46"></script>
+  <link rel="stylesheet" href="/profit-ui.css?v=2">
+  <script type="module" src="/manual-cad.js?v=4.3.46-profit2"></script>
 </head>
 <body class="manual-cad-page">
   <nav class="profit-rail" aria-label="Модули ПРОФИТ">
@@ -21,18 +21,26 @@
     <div class="profit-rail-caption">Инженерные сервисы</div>
   </nav>
 
+  <div class="profit-topbar">
+    <label class="library-search"><span aria-hidden="true">⌕</span><input id="projectSearch" type="search" placeholder="Поиск по чертежам…" aria-label="Поиск по чертежам"></label>
+    <span class="mc-save-state" id="saveState" aria-live="polite">Загружаю проекты…</span><span class="profit-avatar" aria-label="Профит">П</span>
+  </div>
   <header class="mc-topbar">
     <div class="mc-brand">
       <div><p class="profit-breadcrumb">Рабочий стол / CAD-редактор</p><h1>CAD-редактор</h1></div>
     </div>
     <div class="mc-top-actions">
-      <span class="mc-save-state" id="saveState" aria-live="polite">Загружаю проекты…</span>
       <button class="mc-button mc-button-primary" id="newProjectBtn" type="button">＋ Новый чертёж</button>
     </div>
   </header>
 
+  <nav class="profit-tabs" aria-label="Рабочая область">
+    <a href="#cad-projects"><span>1</span>Мои чертежи</a>
+    <a href="#cad-sheet"><span>2</span>Редактор чертежа</a>
+    <a href="#cad-tools"><span>3</span>Инструменты и свойства</a>
+  </nav>
   <main class="mc-shell">
-    <aside class="mc-projects-panel">
+    <aside class="mc-projects-panel" id="cad-projects">
       <div class="mc-panel-head"><div><b>Мои чертежи</b><small>Сохраняются на сервере</small></div><span id="projectCount" class="mc-count">0</span></div>
       <div id="projectList" class="mc-project-list"><div class="mc-muted-block">Загружаю список…</div></div>
       <div class="mc-project-help">
@@ -56,7 +64,7 @@
       </section>
     </aside>
 
-    <section class="mc-workspace">
+    <section class="mc-workspace" id="cad-sheet">
       <div class="mc-documentbar">
         <div class="mc-document-name"><label for="projectTitle">Название чертежа</label><input id="projectTitle" maxlength="140" value="Новая схема" placeholder="Например, Газоснабжение · подъезд 2"></div>
         <div class="mc-document-actions">
@@ -90,16 +98,6 @@
       </details>
 
       <div class="mc-toolbar" role="toolbar" aria-label="Инструменты черчения">
-        <div class="mc-toolgroup">
-          <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
-          <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
-          <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
-          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Вспомогательная коррекция: проведи участок по реальным пикселям ручки, если автоматическая трасса требует правки">⌁ <span>Коррекция трассы</span></button>
-          <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
-          <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
-          <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
-          <button class="mc-tool" type="button" data-tool="dimension" title="Поставить размер между двумя точками">↔ <span>Размер</span></button>
-        </div>
         <div class="mc-toolgroup mc-toolgroup-right">
           <button class="mc-button mc-button-light" id="finishRouteBtn" type="button" disabled>Завершить линию ↵</button>
           <button class="mc-icon-button" id="undoBtn" type="button" title="Отменить Ctrl+Z" disabled>↶</button>
@@ -152,7 +150,20 @@
       <div class="mc-status-note" id="statusNote" role="status" aria-live="polite">Совет: двойной щелчок или Enter завершает построение трубы. Esc отменяет текущую линию.</div>
     </section>
 
-    <aside class="mc-inspector">
+    <aside class="mc-inspector" id="cad-tools">
+      <section class="mc-tools-panel" aria-label="Инструменты черчения">
+        <h2 class="profit-panel-heading">Инструменты</h2>
+        <div class="mc-toolgroup">
+          <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
+          <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
+          <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
+          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Вспомогательная коррекция: проведи участок по реальным пикселям ручки, если автоматическая трасса требует правки">⌁ <span>Коррекция трассы</span></button>
+          <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
+          <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
+          <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
+          <button class="mc-tool" type="button" data-tool="dimension" title="Поставить размер между двумя точками">↔ <span>Размер</span></button>
+        </div>
+      </section>
       <div class="mc-panel-head"><div><b>Свойства</b><small>Выбранный элемент</small></div><span class="mc-count" id="selectionType">—</span></div>
       <div id="selectionEmpty" class="mc-empty-properties"><div class="mc-empty-icon">⌖</div><b>Ничего не выбрано</b><p>Выбери трубу, вершину, символ или подпись. Перетаскивай объект, меняй координаты и свойства справа. Ctrl+D создаёт копию; Del удаляет вершину или объект.</p></div>
       <div id="selectionProperties" hidden>

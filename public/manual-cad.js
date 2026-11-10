@@ -67,11 +67,13 @@ async function loadProjects(preferId=null) {
   }
 }
 function renderProjectList() {
-  $('projectList').innerHTML = state.projects.length ? state.projects.map(item => `
+  const query = $('projectSearch').value.trim().toLocaleLowerCase('ru');
+  const projects = state.projects.filter(item => (item.title || 'Без названия').toLocaleLowerCase('ru').includes(query));
+  $('projectList').innerHTML = projects.length ? projects.map(item => `
     <button class="mc-project-item ${item.id === projectId() ? 'is-active' : ''}" data-project-id="${esc(item.id)}" type="button">
       <b>${esc(item.title || 'Без названия')}</b>
       <small>${new Date(item.updatedAt || item.createdAt || Date.now()).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} · ${item.pipeCount || 0} труб</small>
-    </button>`).join('') : '<div class="mc-muted-block">Пока нет чертежей. Создай первый проект.</div>';
+    </button>`).join('') : `<div class="mc-muted-block">${query ? 'Чертежи не найдены.' : 'Пока нет чертежей. Создай первый проект.'}</div>`;
   $('projectList').querySelectorAll('[data-project-id]').forEach(button => button.addEventListener('click', () => openProject(button.dataset.projectId)));
 }
 async function createProject(showToast=true) {
@@ -885,4 +887,5 @@ $('acceptReviewPipeBtn').addEventListener('click',()=>{
 window.addEventListener('beforeunload',event=>{
   if(state.saveTimer){event.preventDefault();event.returnValue='';}
 });
+$('projectSearch').addEventListener('input', renderProjectList);
 loadProjects(new URLSearchParams(window.location.search).get('project'));

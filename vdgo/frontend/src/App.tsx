@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 
 type ServiceState = 'checking' | 'ok' | 'error' | 'not-configured' | 'unknown';
 
@@ -20,27 +21,37 @@ type ReportRun = {
 };
 
 const reportSections = [
-  { id: 'main', number: '01', label: 'Основные данные', icon: '⌂' },
-  { id: 'people', number: '02', label: 'Заказчик и специалисты', icon: '♙' },
-  { id: 'calc', number: '03', label: 'УЗТ и ресурс', icon: '⌁' },
-  { id: 'defects', number: '04', label: 'Дефекты', icon: '◇' },
-  { id: 'valves', number: '05', label: 'Арматура', icon: '◈' },
-  { id: 'photos', number: '06', label: 'Фотографии', icon: '▧' },
-  { id: 'materials', number: '07', label: 'Схемы и акты', icon: '▤' },
-  { id: 'test', number: '08', label: 'Герметичность', icon: '◉' },
-  { id: 'finish', number: '09', label: 'Контроль перед выпуском', icon: '✓' },
+  ['main', 'Основные данные'],
+  ['people', 'Заказчик и специалисты'],
+  ['calc', 'УЗТ и ресурс'],
+  ['defects', 'Дефекты'],
+  ['valves', 'Арматура и проверки'],
+  ['photos', 'Фото и приложения'],
+  ['test', 'Герметичность'],
+  ['finish', 'Контроль перед выпуском'],
+  ['materials', 'Схемы и акты'],
 ];
 
-function ServicePill({ label, state, hint }: { label: string; state: ServiceState; hint?: string }) {
-  const text: Record<ServiceState, string> = {
-    checking: 'Проверка…', ok: 'Работает', error: 'Ошибка', 'not-configured': 'Локальный режим', unknown: 'Нет данных',
-  };
+function Drawing({ sketch = false }: { sketch?: boolean }) {
   return (
-    <div className={`service-pill service-${state}`} title={hint || text[state]}>
-      <span className="service-dot" aria-hidden="true" />
-      <span className="service-label">{label}</span>
-      <strong>{text[state]}</strong>
-    </div>
+    <svg className={sketch ? 'drawing sketch' : 'drawing'} viewBox="0 0 320 285" role="img" aria-label={sketch ? 'Пример исходного эскиза' : 'Пример реконструкции'}>
+      <g fill="none" stroke="currentColor">
+        <path strokeWidth=".6" d="M39 32H95M39 81H74M30 182H100M55 235H112M46 32V235m-4-199 8-8m-8 57 8-8m-8 109 8-8m-8 61 8-8M100 224V262m75-47v47m110-52v52M100 254h185m-189 4 8-8m67 8 8-8m102 8 8-8M276 55h27m-25 92h25m-25 69h25M298 55v161m-4-157 8-8m-8 100 8-8m-8 77 8-8"/>
+        <path strokeWidth={sketch ? 1 : 4} d="M73 33h106v22h105v161H175v25h-71v-59H73V33m0 87h102V55m0 65v96m0-68h109m-180 34h71"/>
+        <path stroke={sketch ? 'currentColor' : '#8ab8de'} strokeWidth="1.1" d="M73 33h106v22h105v161H175v25h-71v-59H73V33m0 87h102V55m0 65v96m0-68h109m-180 34h71"/>
+        <path strokeWidth=".8" d="m109 120 14-15h18m79 43 14-14h18m-70-88 17-19"/>
+        <circle cx="204" cy="21" r="10" strokeWidth=".8"/>
+        <g fill="#f7f9fc" strokeWidth="1">
+          <path d="M65 77h16v6H65zm57 39h18v8h-18zm48 46h10v18h-10zm53-111h18v8h-18zm-2 93h18v8h-18zm0 68h18v8h-18zm-126-13h17v7H95zm183-20h12v7h-12z"/>
+        </g>
+      </g>
+      <g fill="currentColor" fontSize="8" fontStyle={sketch ? 'italic' : undefined}>
+        <text x="202" y="24">1</text><text x="122" y="102">⌀32</text><text x="231" y="131">⌀25</text>
+        <text x="22" y="79">630</text><text x="19" y="180">⌀29</text><text x="266" y="141">⌀35</text>
+        <text x="123" y="249">315</text><text x="219" y="249">590</text>
+        {sketch && <text x="139" y="16" fontSize="12">Эскиз газопровода</text>}
+      </g>
+    </svg>
   );
 }
 
@@ -49,8 +60,13 @@ function App() {
   const [healthState, setHealthState] = useState<ServiceState>('checking');
   const [dbState, setDbState] = useState<ServiceState>('checking');
   const [reports, setReports] = useState<ReportRun[]>([]);
-  const [lastChecked, setLastChecked] = useState<string>('');
   const [activeSection, setActiveSection] = useState('main');
+  const [details, setDetails] = useState(false);
+  const [report, setReport] = useState({ number: '', address: '', date: '' });
+  const [file, setFile] = useState<File | null>(null);
+  const [fileUrl, setFileUrl] = useState('');
+  const [preview, setPreview] = useState<'both' | 'source' | 'result'>('both');
+  const [zoom, setZoom] = useState(100);
   const reportFrame = useRef<HTMLIFrameElement | null>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -62,7 +78,6 @@ function App() {
       setHealthState(data.backend === 'ok' ? 'ok' : 'error');
       const db = data.database?.status;
       setDbState(db === 'ok' ? 'ok' : db === 'not-configured' ? 'not-configured' : 'error');
-      setLastChecked(new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       try {
         const recent = await fetch('/vdgo/api/reports', { headers: { Accept: 'application/json' }, cache: 'no-store' });
         if (recent.ok) {
@@ -86,12 +101,8 @@ function App() {
 
   const navigateToSection = (id: string) => {
     setActiveSection(id);
-    try {
-      const target = reportFrame.current?.contentWindow?.document.getElementById(id);
-      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch {
-      // Navigation is only a visual convenience; the original form remains available in the frame.
-    }
+    setDetails(id !== 'main');
+    requestAnimationFrame(() => reportFrame.current?.contentDocument?.getElementById(id)?.scrollIntoView({ block: 'start' }));
   };
 
   const formatDate = (value: string | null) => {
@@ -99,6 +110,57 @@ function App() {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
   };
+
+  const upload = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!file) {
+      setFileUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setFileUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  useLayoutEffect(() => {
+    reportFrame.current?.contentDocument?.documentElement.classList.toggle('workspace-summary', !details);
+  }, [details]);
+
+  function connectForm() {
+    const doc = reportFrame.current?.contentDocument;
+    if (!doc) return;
+    doc.documentElement.classList.toggle('workspace-summary', !details);
+    const form = doc.querySelector<HTMLFormElement>('#form');
+    if (!form) return;
+    const syncHeader = () => {
+      const data = new FormData(form);
+      setReport({
+        number: String(data.get('report_number') || ''),
+        address: String(data.get('address') || ''),
+        date: String(data.get('report_date') || ''),
+      });
+    };
+    form.addEventListener('input', syncHeader);
+    form.addEventListener('change', syncHeader);
+    form.addEventListener('reset', () => requestAnimationFrame(syncHeader));
+    syncHeader();
+  }
+
+  function runFormAction(action: string) {
+    if (action !== 'save') {
+      flushSync(() => {
+        setDetails(true);
+        setActiveSection('finish');
+      });
+    }
+    reportFrame.current?.contentDocument?.querySelector<HTMLButtonElement>(`[data-workspace-action="${action}"]`)?.click();
+  }
+
+  function selectFile(image: File) {
+    setFile(image);
+    setPreview('both');
+    navigateToSection('main');
+  }
 
   return (
     <div className="app-shell">
@@ -108,113 +170,125 @@ function App() {
           <span className="sidebar-brand-name">PROFIT</span>
         </a>
         <nav className="sidebar-nav" aria-label="Модули ПРОФИТ">
-          <a className="sidebar-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg>Схемы домов</a>
-          <a className="sidebar-link" href="/manual-cad.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 12-12-3-3L5 16zM14 7l3 3"/></svg>CAD-редактор</a>
-          <a className="sidebar-link active" href="/vdgo/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключения</a>
+          <a className="sidebar-link active" href="/vdgo/" aria-current="page"><span>⌂</span>Рабочий стол</a>
+          <button className="sidebar-link" onClick={() => { setActiveSection('main'); setDetails(true); }}><span>▤</span>Заключения</button>
+          <a className="sidebar-link" href="/"><span>⌂</span>Схемы домов</a>
+          <a className="sidebar-link" href="#attachments"><span>▣</span>Вложения</a>
+          <a className="sidebar-link" href="#history"><span>◷</span>История</a>
+          <a className="sidebar-link" href="/manual-cad.html"><span>⚙</span>CAD-редактор</a>
         </nav>
-        <div className="sidebar-bottom">
-          <span className="sidebar-bottom-mark" aria-hidden="true">●</span>
-          <span>Локальная система</span>
-        </div>
+        <a className="sidebar-bottom" href="/vdgo/legacy" target="_blank" rel="noreferrer">ⓘ　Полная форма</a>
       </aside>
 
-      <div className="app-main">
+      <main className="workspace">
         <header className="topbar">
-          <div className="topbar-path">
-            <span className="home-glyph" aria-hidden="true">⌂</span>
-            <span>Заключения</span>
-            <span className="path-separator">›</span>
-            <strong>Конструктор ВДГО</strong>
-          </div>
-          <div className="topbar-meta">
-            <span className="version-tag">{health?.version ?? 'v5.3.7'}</span>
-            <ServicePill label="Сервисы" state={healthState} />
-            <ServicePill label="База данных" state={dbState} hint={health?.database?.message} />
-            <button className="icon-button" type="button" onClick={() => void refreshStatus()} title="Обновить состояние сервисов" aria-label="Обновить состояние сервисов">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5.6 9A7 7 0 0 1 18 6.6L20 12M4 12l2 5.4A7 7 0 0 0 18.4 15" /></svg>
-            </button>
-          </div>
+          <form className="search" onSubmit={(event) => {
+            event.preventDefault();
+            const query = new FormData(event.currentTarget).get('query')?.toString().trim().toLowerCase();
+            const section = reportSections.find(([, label]) => query && label.toLowerCase().includes(query));
+            if (section) navigateToSection(section[0]);
+          }}>
+            <span aria-hidden="true">⌕</span>
+            <input name="query" type="search" placeholder="Поиск по разделам заключения…" aria-label="Поиск по разделам заключения" />
+            <button title="Найти" aria-label="Найти">↵</button>
+          </form>
+          <button className="service-status" onClick={() => void refreshStatus()} title={health?.database?.message || 'Обновить состояние сервисов'}>
+            <i className={healthState} />{healthState === 'checking' ? 'Проверяем сервисы…' : healthState === 'ok' && dbState !== 'error' ? 'Сервисы работают' : 'Проверьте сервисы'}
+          </button>
+          <span className="avatar" aria-hidden="true">ВД</span><span>ВДГО</span>
         </header>
 
-        <main className="workspace">
-          <section className="page-heading">
-            <div className="page-heading-copy">
-              <div className="breadcrumb"><span>Рабочий стол</span><span>›</span><strong>Техническое заключение ВДГО</strong></div>
-              <div className="title-line">
-                <h1>Техническое заключение ВДГО</h1>
-                <span className="working-state"><i aria-hidden="true" />В работе</span>
-              </div>
-              <p>Заполнение фактических данных, проверка приложений и формирование итогового документа.</p>
+        <div className="breadcrumb">⌂　　Заключения　›　 Техническое заключение ВДГО</div>
+        <section className="page-heading">
+          <div>
+            <div className="title-line"><h1>Техническое заключение {report.number ? `№ ${report.number}` : 'ВДГО'}</h1><span className="working-state">В работе</span></div>
+            <p>♧　{report.address || 'Адрес объекта'}　　▦　{report.date || 'Дата заключения'}</p>
+          </div>
+          <div className="heading-actions">
+            <button onClick={() => runFormAction('save')}>▣　Сохранить</button>
+            <button onClick={() => runFormAction('preview')}>✓　Проверить</button>
+            <button className="primary" onClick={() => runFormAction('generate')}>Сформировать документ　 →</button>
+          </div>
+        </section>
+
+        <nav className="report-tabs" aria-label="Разделы заключения">
+          {reportSections.map(([id, label], index) => (
+            <button key={id} aria-current={activeSection === id ? 'location' : undefined} onClick={() => navigateToSection(id)}>
+              <span>{index + 1}</span>{label}
+            </button>
+          ))}
+        </nav>
+
+        <div className={details ? 'workbench details' : 'workbench'}>
+          <section className="card form-panel" aria-label="Данные заключения">
+            <header><h2>▤　{details ? 'Данные заключения' : 'Основные данные'}</h2>
+              <button onClick={() => details ? navigateToSection('main') : setDetails(true)}>{details ? 'К чертежу' : 'Все поля ↗'}</button>
+            </header>
+            <iframe ref={reportFrame} src="/vdgo/legacy" title="Форма технического заключения" onLoad={connectForm} />
+          </section>
+
+          <section className="card drawing-panel" aria-label="Сравнение чертежей" hidden={details}>
+            <header className="drawing-tabs">
+              <button aria-pressed={preview !== 'result'} onClick={() => setPreview(preview === 'source' ? 'both' : 'source')}>▧　Исходный чертёж</button>
+              <button aria-pressed={preview === 'result'} onClick={() => setPreview(preview === 'result' ? 'both' : 'result')}>◇　Результат реконструкции</button>
+            </header>
+            <div className="drawing-grid" data-preview={preview}>
+              {preview !== 'result' && <div className="drawing-pane">
+                <div className="drawing-bar"><button title="Загрузить чертёж" onClick={() => upload.current?.click()}>↑</button><a title="Открыть распознавание эскизов" href="/">⌕</a></div>
+                <div className="drawing-surface source-surface">{fileUrl ? <img src={fileUrl} alt="Загруженный эскиз" /> : <Drawing sketch />}</div>
+              </div>}
+              {preview !== 'source' && <div className="drawing-pane">
+                <div className="drawing-bar">
+                  <a href="/manual-cad.html" title="Открыть CAD-редактор">↗</a>
+                  <label className="zoom"><select value={zoom} aria-label="Масштаб чертежа" onChange={(event) => setZoom(Number(event.target.value))}>{[75, 100, 125, 150].map((value) => <option key={value} value={value}>{value}%</option>)}</select></label>
+                  <button title={preview === 'result' ? 'Показать оба чертежа' : 'Развернуть результат'} onClick={() => setPreview(preview === 'result' ? 'both' : 'result')}>⤢</button>
+                </div>
+                <div className="drawing-surface">
+                  {file ? <a className="recognize-link" href="/">Перейти к распознаванию эскиза →</a> : <div className="drawing-zoom" style={{ width: `${zoom}%` }}><Drawing /></div>}
+                </div>
+              </div>}
+              {preview === 'both' && <button className="compare-toggle" aria-label="Развернуть результат" onClick={() => setPreview('result')}>↔</button>}
             </div>
-            <a className="outline-button" href="/vdgo/legacy" target="_blank" rel="noreferrer">
-              Открыть форму отдельно <span aria-hidden="true">↗</span>
-            </a>
+            {!file && <small className="sample-label">Демонстрационный чертёж</small>}
           </section>
 
-          <nav className="report-tabs" aria-label="Разделы заключения">
-            {reportSections.map((section) => (
-              <button
-                key={section.id}
-                type="button"
-                aria-current={activeSection === section.id ? 'location' : undefined}
-                className={`report-tab${activeSection === section.id ? ' active' : ''}`}
-                onClick={() => navigateToSection(section.id)}
-                title={section.label}
-              >
-                <span className="report-tab-number" aria-hidden="true">{section.number}</span>
-                <span>{section.label}</span>
-              </button>
-            ))}
-          </nav>
-
-          <section className="form-panel" aria-label="Форма технического заключения">
-            <div className="panel-heading">
-              <div className="panel-title-line"><span className="panel-file-icon" aria-hidden="true">▤</span><div><h2>Данные заключения</h2><p>Основные данные, измерения, проверки и приложения.</p></div></div>
-              <span className="form-version">PDF · DOCX</span>
+          <aside className="card tool-panel" hidden={details}>
+            <header><h2>Инструменты</h2></header>
+            <a href="/manual-cad.html">↗　CAD-редактор</a>
+            <a href="/">⌕　Распознавание</a>
+            <button onClick={() => setPreview('both')}>↔　Сравнение</button>
+            <button onClick={() => upload.current?.click()}>↑　Загрузить эскиз</button>
+            <div className="tool-properties">
+              <h3>Чертёж</h3>
+              <p><i />{file ? 'Загруженный эскиз' : 'Демонстрационный'}</p>
+              <p>Масштаб　{zoom}%</p>
             </div>
-            <div className="frame-wrap">
-              <iframe
-                ref={reportFrame}
-                className="legacy-frame"
-                src="/vdgo/legacy"
-                name="reportFrame"
-                title="Форма заполнения технического заключения ВДГО"
-                loading="eager"
-                onLoad={() => {
-                  try {
-                    const hash = reportFrame.current?.contentWindow?.location.hash.replace('#', '');
-                    if (hash && reportSections.some((section) => section.id === hash)) setActiveSection(hash);
-                  } catch {
-                    // Keep the selected section when frame access is unavailable.
-                  }
-                }}
-              />
-            </div>
-          </section>
+          </aside>
+        </div>
 
-          <section className="bottom-grid">
-            <article className="info-card">
-              <span className="info-icon blue" aria-hidden="true">✓</span>
-              <div><h3>Контроль перед выпуском</h3><p>Проверьте измерения, остаточный ресурс, фотографии и актуальность приложений перед формированием документа.</p></div>
-            </article>
-            <article className="info-card">
-              <span className="info-icon slate" aria-hidden="true">◷</span>
-              <div><h3>Состояние сервисов</h3><p>{lastChecked ? `Последняя проверка: ${lastChecked}.` : 'Проверяем доступность сервера и базы данных.'} {health?.database?.message ?? ''}</p></div>
-            </article>
-          </section>
-
-          <section className="history-panel" aria-label="История формирования документов">
-            <div className="history-heading"><div><div className="history-title-row"><span className="history-icon" aria-hidden="true">◷</span><h2>Журнал действий</h2></div><p>Последние сформированные документы. Содержимое отчётов в PostgreSQL не сохраняется.</p></div><span className="history-count">{reports.length} записей</span></div>
-            {reports.length > 0 ? (
-              <div className="history-table-wrap"><table className="history-table"><thead><tr><th>Время</th><th>Номер</th><th>Дата</th><th>Формат</th><th>Страницы</th></tr></thead><tbody>
-                {reports.slice(0, 6).map((report) => <tr key={report.id}><td>{formatDate(report.created_at)}</td><td>{report.report_number || '—'}</td><td>{report.report_date || '—'}</td><td><span className="format-tag">{report.output_format.toUpperCase()}</span></td><td>{report.page_count}</td></tr>)}
-              </tbody></table></div>
-            ) : <div className="empty-history"><span className="empty-icon" aria-hidden="true">↗</span><strong>Документы пока не формировались</strong><span>После первого успешного экспорта журнал появится здесь, если PostgreSQL подключён.</span></div>}
-          </section>
-
-          <footer className="footer"><span>Профит · ВДГО</span><span>PDF / DOCX · локальная обработка</span></footer>
-        </main>
-      </div>
+        <section className="bottom-grid">
+          <article id="history" className="card bottom-card">
+            <h2>◷　Журнал действий</h2>
+            {reports.length ? <ul>{reports.slice(0, 3).map((item) => <li key={item.id}>{formatDate(item.created_at)}　 ·　{item.report_number || item.output_filename}　{item.output_format.toUpperCase()}</li>)}</ul> : <p>Документы пока не формировались</p>}
+          </article>
+          <article id="attachments" className="card bottom-card">
+            <h2>♧　Файлы и вложения</h2>
+            {file && fileUrl ? <div className="file-row"><img src={fileUrl} alt="" /><a href={fileUrl} download={file.name}>{file.name}　↓</a><button onClick={() => setFile(null)} aria-label="Удалить эскиз">×</button></div> : <button onClick={() => navigateToSection('materials')}>Открыть вложения заключения　→</button>}
+          </article>
+          <div className="card upload-card" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+            event.preventDefault();
+            const image = event.dataTransfer.files[0];
+            if (image && /^image\/(jpeg|png|webp)$/.test(image.type)) selectFile(image);
+          }}>
+            <input ref={upload} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(event) => {
+              const image = event.currentTarget.files?.[0];
+              if (image) selectFile(image);
+              event.currentTarget.value = '';
+            }} />
+            <button onClick={() => upload.current?.click()}><span aria-hidden="true">⇧</span>Загрузить эскиз<small>или перетащите сюда</small></button>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }

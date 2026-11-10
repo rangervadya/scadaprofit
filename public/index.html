@@ -8,7 +8,7 @@
   <title>Распознавание эскизов · ПРОФИТ</title>
   <link rel="preconnect" href="/" crossorigin>
   <link rel="stylesheet" href="/styles.css?v=4.3.45">
-  <link rel="stylesheet" href="/profit-ui.css?v=1">
+  <link rel="stylesheet" href="/profit-ui.css?v=2">
   <script src="/app.js?v=4.3.46" defer></script>
 </head>
 <body class="recognition-page">
@@ -22,20 +22,25 @@
     <div class="profit-rail-caption">Инженерные сервисы</div>
   </nav>
   <main class="app-shell">
+    <div class="profit-topbar"><label class="library-search"><span aria-hidden="true">⌕</span><input id="librarySearch" type="search" placeholder="Поиск улицы, дома или схемы…" aria-label="Поиск улицы и дома"></label><span id="serverState" class="server-state">Проверка Qwen…</span><span class="profit-avatar" aria-label="Профит">П</span></div>
     <header class="profit-heading">
       <div><p class="profit-breadcrumb">Рабочий стол / Схемы домов</p><h1>Распознавание эскизов</h1>
       <p class="profit-subtitle">От фотографии слесаря до редактируемой схемы газопровода</p></div>
       <a class="profit-heading-link" href="#upload-sketch">↑ Загрузить эскиз</a>
     </header>
+    <nav class="profit-tabs" aria-label="Рабочая область">
+      <a href="#object-library"><span>1</span>Объекты</a>
+      <a href="#source-drawing"><span>2</span>Исходный чертёж</a>
+      <a href="#reconstructed-drawing"><span>3</span>Результат реконструкции</a>
+      <a href="#recognition-tools"><span>4</span>Инструменты и проверка</a>
+    </nav>
     <div class="workspace-grid">
       <aside class="sidebar">
-        <section class="card library-card" aria-label="Папки объектов">
+        <section id="object-library" class="card library-card" aria-label="Папки объектов">
           <div class="library-heading">
             <div><h2>Адресный архив</h2><p>Найди улицу и дом · входящие схемы</p></div>
-            <span id="serverState" class="server-state">Проверка Qwen…</span>
             <button class="icon-action" id="addStreetBtn" type="button" title="Добавить улицу" aria-label="Добавить улицу">＋</button>
           </div>
-          <label class="library-search"><span aria-hidden="true">⌕</span><input id="librarySearch" type="search" placeholder="Поиск улицы, дома или схемы…" aria-label="Поиск улицы и дома"></label>
           <div class="library-tree" id="libraryTree"><div class="library-empty"><b>Загружаю папки…</b></div></div>
           <div class="library-footer"><button class="secondary-button" id="addBuildingBtn" type="button" disabled>＋ Добавить дом</button></div>
         </section>
@@ -72,6 +77,60 @@
         </section>
 
 
+      </aside>
+
+      <section class="main-column">
+        <section class="card canvas-card" id="source-drawing">
+          <div class="profit-pane-label"><span>01</span> Исходный эскиз</div>
+          <div class="canvas-header source-main-header">
+            <div class="source-title">
+              <div class="scheme-status-label" id="activeSchemeStatus">ОБЩИЙ АРХИВ</div>
+              <h2 id="mainTitle">Выбери схему во входящих дома</h2>
+              <p class="canvas-description" id="activeSchemeMeta">Найди улицу и дом слева. Новые фото автоматически поступают в очередь обработки.</p>
+            </div>
+            <button class="primary-button process-scheme-button" id="processSchemeBtn" type="button" hidden>Преобразовать в чистовой чертёж →</button>
+            <div class="canvas-tools">
+              <label class="check-control"><input type="checkbox" id="showNodes"><span class="check-ui"></span>Узлы</label>
+              <label class="check-control"><input type="checkbox" id="showCrossings" checked><span class="check-ui"></span>Пересечения</label>
+            </div>
+          </div>
+          <div class="legend-row" hidden><span class="mode-label" id="selectMode">Режим: просмотр</span></div>
+          <div class="image-stage" id="sourceStage">
+            <div class="stage-empty" id="sourceEmpty"><div class="empty-art"><span>01</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M12 74H48L67 54H101L124 30H148M48 74V88M101 54V17"/><circle cx="48" cy="74" r="4"/><circle cx="101" cy="54" r="4"/><circle cx="124" cy="30" r="4"/></svg></div><b>Выбери схему во входящих дома</b><span>Загрузите фото в папку дома слева или выберите сохранённый эскиз.</span></div>
+            <div class="image-frame" id="imageFrame" hidden><img id="sourceImage" alt="Исходная инженерная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-label="Наложение найденной геометрии"></svg></div>
+          </div>
+          <div class="canvas-footer"><span id="canvasMeta">Ожидает изображения</span><span class="live-status"><i></i><span id="analysisState">ГОТОВ К РАБОТЕ</span></span></div>
+          <div class="diagnostic-links" id="diagnosticLinks" hidden></div>
+        </section>
+
+        <section class="card output-card" id="reconstructed-drawing">
+          <div class="profit-pane-label"><span>02</span> Результат реконструкции</div>
+          <div class="output-header">
+            <div><h2>Векторный чертёж</h2><p class="canvas-description">Выберите вид для сверки с исходным эскизом.</p></div>
+            <div class="output-tools">
+              <div class="output-view-toggle" role="group" aria-label="Вид результата">
+                <button type="button" class="output-view-button active" id="originalSourceView" aria-pressed="true">Исходник</button>
+                <button type="button" class="output-view-button" id="cadDraftView" aria-pressed="false">CAD-черновик</button>
+                <button type="button" class="output-view-button" id="centerlineTraceView" aria-pressed="false">Все штрихи</button>
+                <button type="button" class="output-view-button" id="referenceTraceView" aria-pressed="false">Контуры штрихов</button>
+              </div>
+              <label class="check-control"><input type="checkbox" id="showReviewGeometry" checked><span class="check-ui"></span>Линии на проверку</label>
+              <label class="check-control"><input type="checkbox" id="showReviewText"><span class="check-ui"></span>Сомнительный текст</label>
+            </div>
+            <div class="export-actions">
+              <button class="export-button" id="openManualCadBtn" type="button" hidden><b>CAD</b><span>Редактировать</span></button>
+              <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
+              <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
+              <button class="export-button" id="exportJson" type="button" disabled><b>JSON</b><span>Граф</span></button>
+              <button class="export-button" id="exportPdf" type="button" disabled><b>PDF</b><span>Печать</span></button>
+            </div>
+          </div>
+          <div class="clean-stage" id="cleanStage"><div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M14 75H54V48H95V26H145M54 48L79 73H125"/><circle cx="54" cy="48" r="5"/><circle cx="95" cy="26" r="5"/><circle cx="79" cy="73" r="5"/></svg></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div></div>
+          <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
+        </section>
+      </section>
+      <aside class="recognition-inspector" id="recognition-tools" aria-label="Инструменты и проверка">
+        <h2 class="profit-panel-heading">Инструменты</h2>
         <details class="card template-settings-card" id="templateSettings">
           <summary class="template-settings-summary"><span><strong>Шаблон оформления</strong><small>Общий эталон для чертежей</small></span><span class="template-settings-caret">▾</span></summary>
           <div class="template-settings-body">
@@ -142,57 +201,6 @@
           <div class="scrolllist review-list" id="reviewList"></div>
         </details>
       </aside>
-
-      <section class="main-column">
-        <section class="card canvas-card">
-          <div class="profit-pane-label"><span>01</span> Исходный эскиз</div>
-          <div class="canvas-header source-main-header">
-            <div class="source-title">
-              <div class="scheme-status-label" id="activeSchemeStatus">ОБЩИЙ АРХИВ</div>
-              <h2 id="mainTitle">Выбери схему во входящих дома</h2>
-              <p class="canvas-description" id="activeSchemeMeta">Найди улицу и дом слева. Новые фото автоматически поступают в очередь обработки.</p>
-            </div>
-            <button class="primary-button process-scheme-button" id="processSchemeBtn" type="button" hidden>Преобразовать в чистовой чертёж →</button>
-            <div class="canvas-tools">
-              <label class="check-control"><input type="checkbox" id="showNodes"><span class="check-ui"></span>Узлы</label>
-              <label class="check-control"><input type="checkbox" id="showCrossings" checked><span class="check-ui"></span>Пересечения</label>
-            </div>
-          </div>
-          <div class="legend-row" hidden><span class="mode-label" id="selectMode">Режим: просмотр</span></div>
-          <div class="image-stage" id="sourceStage">
-            <div class="stage-empty" id="sourceEmpty"><div class="empty-art"><span>01</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M12 74H48L67 54H101L124 30H148M48 74V88M101 54V17"/><circle cx="48" cy="74" r="4"/><circle cx="101" cy="54" r="4"/><circle cx="124" cy="30" r="4"/></svg></div><b>Выбери схему во входящих дома</b><span>Загрузите фото в папку дома слева или выберите сохранённый эскиз.</span></div>
-            <div class="image-frame" id="imageFrame" hidden><img id="sourceImage" alt="Исходная инженерная схема"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-label="Наложение найденной геометрии"></svg></div>
-          </div>
-          <div class="canvas-footer"><span id="canvasMeta">Ожидает изображения</span><span class="live-status"><i></i><span id="analysisState">ГОТОВ К РАБОТЕ</span></span></div>
-          <div class="diagnostic-links" id="diagnosticLinks" hidden></div>
-        </section>
-
-        <section class="card output-card">
-          <div class="profit-pane-label"><span>02</span> Результат реконструкции</div>
-          <div class="output-header">
-            <div><h2>Векторный чертёж</h2><p class="canvas-description">Выберите вид для сверки с исходным эскизом.</p></div>
-            <div class="output-tools">
-              <div class="output-view-toggle" role="group" aria-label="Вид результата">
-                <button type="button" class="output-view-button active" id="originalSourceView" aria-pressed="true">Исходник</button>
-                <button type="button" class="output-view-button" id="cadDraftView" aria-pressed="false">CAD-черновик</button>
-                <button type="button" class="output-view-button" id="centerlineTraceView" aria-pressed="false">Все штрихи</button>
-                <button type="button" class="output-view-button" id="referenceTraceView" aria-pressed="false">Контуры штрихов</button>
-              </div>
-              <label class="check-control"><input type="checkbox" id="showReviewGeometry" checked><span class="check-ui"></span>Линии на проверку</label>
-              <label class="check-control"><input type="checkbox" id="showReviewText"><span class="check-ui"></span>Сомнительный текст</label>
-            </div>
-            <div class="export-actions">
-              <button class="export-button" id="openManualCadBtn" type="button" hidden><b>CAD</b><span>Редактировать</span></button>
-              <button class="export-button" id="exportSvg" type="button" disabled><b>SVG</b><span>Вектор</span></button>
-              <button class="export-button" id="exportDxf" type="button" disabled><b>DXF</b><span>AutoCAD</span></button>
-              <button class="export-button" id="exportJson" type="button" disabled><b>JSON</b><span>Граф</span></button>
-              <button class="export-button" id="exportPdf" type="button" disabled><b>PDF</b><span>Печать</span></button>
-            </div>
-          </div>
-          <div class="clean-stage" id="cleanStage"><div class="stage-empty clean-empty"><div class="empty-art blue"><span>CAD</span><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M14 75H54V48H95V26H145M54 48L79 73H125"/><circle cx="54" cy="48" r="5"/><circle cx="95" cy="26" r="5"/><circle cx="79" cy="73" r="5"/></svg></div><b>Векторный лист пока пуст</b><span>После анализа здесь появится предварительная CAD-схема.</span></div></div>
-          <div class="review-banner"><span class="review-icon">!</span><div><b>Статус: требуется инженерная проверка</b><p>Qwen может пропустить ответвление или неверно поставить угол. Все маршруты, пересечения, размеры и подписи необходимо сверить с исходной схемой до использования в проекте.</p></div></div>
-        </section>
-      </section>
     </div>
   </main>
   <dialog class="library-dialog" id="libraryDialog">
