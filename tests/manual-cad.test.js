@@ -478,3 +478,28 @@ test('automatic draft preview shows unverified candidates without promoting them
   assert.match(draft, /unknown-preview/);
   assert.match(draft, /stroke-dasharray/);
 });
+
+test('SVG and DXF preserve label size, alignment and rotation on both sheet styles', () => {
+  for (const drawingStyle of ['standard', 'lpgcad-r1']) {
+    for (const paperSize of ['A4', 'A3']) {
+      const project = createManualCadProject({ title: 'Text placement', drawingStyle, paperSize });
+      project.labels = [{ id: 'position-check', text: 'POSITION_CHECK', x: 240, y: 180, size: 18, rotation: 30, anchor: 'middle' }];
+      const svg = renderManualCadSvg(project);
+      const svgLabel = svg.match(/<text[^>]*>POSITION_CHECK<\/text>/)[0];
+      const svgHeight = Number(svgLabel.match(/font-size="([^"]+)"/)[1]);
+      assert.match(svgLabel, /text-anchor="middle"/);
+      assert.match(svgLabel, /rotate\(30(?:\.0+)? /);
+      const pairs = renderManualCadDxf(project).trim().split('\n');
+      const textIndex = pairs.indexOf('POSITION_CHECK');
+      let start = textIndex;
+      while (start > 0 && !(pairs[start] === '0' && pairs[start + 1] === 'TEXT')) start--;
+      const entity = {};
+      for (let i = start + 2; i < pairs.length && pairs[i] !== '0'; i += 2) entity[pairs[i]] = pairs[i + 1];
+      assert.equal(Number(entity['40']), svgHeight);
+      assert.equal(entity['72'], '1');
+      assert.equal(Number(entity['50']), 330);
+      assert.equal(entity['11'], entity['10']);
+      assert.equal(entity['21'], entity['20']);
+    }
+  }
+});

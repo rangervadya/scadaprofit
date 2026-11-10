@@ -632,7 +632,7 @@ function symbolMarkup(symbol, map) {
 export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   const project = normalizeManualCadProject(rawProject, rawProject);
   if (project.drawingStyle === 'lpgcad-r1') return renderLpgCadR1Svg(project, { includeReview });
-  const { pageW, pageH, map } = pageMap(project, { includeReview });
+  const { pageW, pageH, map, scale } = pageMap(project, { includeReview });
   const parts = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`);
   parts.push('<title>' + esc(project.title) + '</title><rect width="100%" height="100%" fill="#fff"/>');
@@ -672,7 +672,7 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   parts.push('<g id="TEXT" fill="#111" font-family="Arial,sans-serif">');
   for (const label of project.labels) {
     const [x, y] = map([label.x, label.y]);
-    parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(Math.max(2, label.size * 0.12))}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
+    parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(label.size * scale)}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
   }
   for (const pipe of project.pipes) {
     if (!pipe.name && !pipe.diameter) continue;
@@ -690,7 +690,7 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
 }
 
 function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
-  const { pageW, pageH, area, riserLayout, map } = lpgCadPageMap(project, { includeReview });
+  const { pageW, pageH, area, riserLayout, map, scale } = lpgCadPageMap(project, { includeReview });
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`,
     `<title>${esc(project.title || 'Схема газоснабжения')}</title>`,
@@ -738,7 +738,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
   parts.push('</g><g id="TEXT" fill="#111" font-family="Arial,sans-serif">');
   for (const label of project.labels) {
     const [x, y] = map([label.x, label.y]);
-    parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(Math.max(1.7, label.size * 0.105))}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
+    parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(label.size * scale)}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
   }
   for (const pipe of project.pipes) {
     if (pipe.visible === false || pipe.reviewOnly || (!pipe.name && !pipe.diameter)) continue;
@@ -827,8 +827,12 @@ function escapeDxfText(value) {
     return `\\U+${high.toString(16).toUpperCase()}\\U+${low.toString(16).toUpperCase()}`;
   });
 }
-function addDxfText(out, layer, value, p, height = 2.5) {
+function addDxfText(out, layer, value, p, height = 2.5, anchor = 'start', rotation = 0) {
   out.push('0','TEXT','8',layer,'10',dxfNumber(p[0]),'20',dxfNumber(p[1]),'30','0','40',dxfNumber(height),'1',escapeDxfText(value));
+  out.push('50', dxfNumber((360 - rotation % 360) % 360));
+  if (anchor !== 'start') {
+    out.push('72', anchor === 'middle' ? '1' : '2', '11', dxfNumber(p[0]), '21', dxfNumber(p[1]), '31', '0');
+  }
 }
 function addDxfCircle(out, layer, p, radius) {
   out.push('0','CIRCLE','8',layer,'10',dxfNumber(p[0]),'20',dxfNumber(p[1]),'30','0','40',dxfNumber(radius));
@@ -837,7 +841,7 @@ function addDxfCircle(out, layer, p, radius) {
 export function renderManualCadDxf(rawProject) {
   const project = normalizeManualCadProject(rawProject, rawProject);
   if (project.drawingStyle === 'lpgcad-r1') return renderLpgCadR1Dxf(project);
-  const { pageW, pageH, map } = pageMap(project);
+  const { pageW, pageH, map, scale } = pageMap(project);
   const dxfPoint = p => { const mapped = map(p); return [mapped[0], pageH - mapped[1]]; };
   const out = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','9','$INSUNITS','70','4','9','$DWGCODEPAGE','3','ANSI_1251','0','ENDSEC','0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','6'];
   for (const [name, color] of [['PIPE_MAIN',7],['JUNCTIONS',7],['SYMBOLS',7],['TEXT',7],['DIMENSIONS',7],['TITLE_BLOCK',8]]) {
@@ -874,7 +878,7 @@ export function renderManualCadDxf(rawProject) {
   }
   for (const label of project.labels) {
     const p = dxfPoint([label.x, label.y]);
-    addDxfText(out, 'TEXT', label.text, p, Math.max(2, label.size * 0.12));
+    addDxfText(out, 'TEXT', label.text, p, label.size * scale, label.anchor, label.rotation);
   }
   for (const dim of project.dimensions) {
     const a = dxfPoint(dim.a), b = dxfPoint(dim.b);
@@ -901,7 +905,7 @@ export function renderManualCadDxf(rawProject) {
 }
 
 function renderLpgCadR1Dxf(project) {
-  const { pageW, pageH, map, area, riserLayout } = lpgCadPageMap(project);
+  const { pageW, pageH, map, area, riserLayout, scale } = lpgCadPageMap(project);
   const toDxf = p => { const mapped = map(p); return [mapped[0], pageH - mapped[1]]; };
   const out = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','9','$INSUNITS','70','4','9','$DWGCODEPAGE','3','ANSI_1251','0','ENDSEC','0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','12'];
   for (const [name, color] of [['SHEET',8],['PIPE_MAIN',7],['BRANCH',7],['RISERS',7],['RISER_GROUPS',7],['JUNCTIONS',7],['SYMBOLS',7],['TEXT',7],['DIMENSIONS',7],['HEADER',7],['LEGEND',7],['SIGNATURES',7]]) {
@@ -969,7 +973,7 @@ function renderLpgCadR1Dxf(project) {
     }
     if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [p[0]+s*1.5,p[1]+s*1.5], 1.8);
   }
-  for (const label of project.labels) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), Math.max(1.8,label.size*0.105));
+  for (const label of project.labels) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation);
   for (const dim of project.dimensions) {
     const a=toDxf(dim.a), b=toDxf(dim.b); addDxfLine(out,'DIMENSIONS',a,b);
     addDxfText(out,'DIMENSIONS',dim.text,[(a[0]+b[0])/2,(a[1]+b[1])/2+1],2);
