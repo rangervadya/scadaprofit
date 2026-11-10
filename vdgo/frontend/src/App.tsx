@@ -189,7 +189,6 @@ function App() {
           <a className={historyActive ? "sidebar-link" : "sidebar-link active"} href="/vdgo/" aria-current={historyActive ? undefined : "page"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключение</a>
           <a className="sidebar-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l5-4 4 4 5-7 4 4M4 12v8h16V9M9 20v-5h5v5"/></svg>Схемы домов</a>
           <a className="sidebar-link" href="/archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg>Архив</a>
-          <a className={historyActive ? "sidebar-link active" : "sidebar-link"} href="/vdgo/?view=history" aria-current={historyActive ? "page" : undefined}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2 6m-2-2v4h4m5-13v5l3 2"/></svg>История</a>
           <a className="sidebar-link" href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg>Настройки</a>
         </nav>
         <a className="sidebar-bottom" href="/vdgo/legacy" target="_blank" rel="noreferrer">ⓘ　Полная форма</a>
