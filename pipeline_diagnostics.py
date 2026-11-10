@@ -19,7 +19,7 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
              'primary-overlay.png','text-region-mask.png','handwritten-text-blocks.png',
              'clean.svg','drawing.dxf','cad-draft.svg','cad-draft.dxf',
              'reference-trace.svg','reference-trace.dxf','centerline-trace.svg','centerline-trace.dxf',
-             'graph.json','progress.log']
+             'cad-alignment-overlay.png','graph.json','progress.log']
     artifacts = []
     for name in names:
         path = Path(out_dir, name)
@@ -120,6 +120,13 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
                        'symbolSuggestions':sum(1 for item in symbols if item.get('suggestedTypes')),
                        'dimensions':len(dimensions),'assignedDimensions':sum(1 for item in dimensions if item.get('targetId'))},
         'review':{'openTasks':len(open_tasks),'openFindings':len(open_findings)},
+        'drawing':{
+            'qualityStatus':(graph.get('drawingQuality') or {}).get('status', 'unknown'),
+            'qualityCounts':(graph.get('drawingQuality') or {}).get('counts', {}),
+            'scaleCalibration':(graph.get('cleanLayout') or {}).get('scaleCalibration', {}),
+            'provisionalSectionNumbers':len((graph.get('cleanLayout') or {}).get('sectionTags') or []),
+            'alignmentOverlayAvailable':bool((graph.get('cadAlignmentOverlay') or {}).get('available')),
+        },
     }
     return {'schema':'cad-pipeline-diagnostics/1.0',
             'status':'blocked' if blocking else ('needs_review' if advisory or open_tasks or open_findings else 'ready'),

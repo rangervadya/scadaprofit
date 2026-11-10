@@ -35,6 +35,8 @@ from engineering_validation import validate_engineering_model
 from clean_layout import build_clean_layout
 from clean_export import build_layout_svg, build_layout_dxf
 from drawing_template import build_drawing_template
+from drawing_quality import validate_clean_layout
+from cad_overlay import render_cad_alignment_overlay
 from pipeline_diagnostics import build_pipeline_diagnostics
 from reference_vectorization import build_reference_trace
 from centerline_vectorization import build_centerline_trace
@@ -4778,6 +4780,17 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     clean_layout, clean_layout_diagnostics = build_clean_layout(
         document_model, template=drawing_template, review_only=not processing_complete
     )
+    drawing_quality = validate_clean_layout(clean_layout, engineering_validation)
+    clean_layout_diagnostics["drawingQuality"] = drawing_quality
+    cad_alignment_overlay = {"available": False, "error": "not-generated"}
+    try:
+        cad_alignment_overlay = render_cad_alignment_overlay(
+            bgr, document_model, Path(out_dir, "cad-alignment-overlay.png")
+        )
+        _progress("CAD", "Source-photo / CAD alignment overlay written")
+    except Exception as overlay_error:
+        cad_alignment_overlay = {"available": False, "error": str(overlay_error)[:220]}
+        _progress("CAD", f"Source-photo / CAD overlay failed: {str(overlay_error)[:180]}")
     cad_draft_svg = build_layout_svg(clean_layout)
     cad_draft_dxf = build_layout_dxf(clean_layout)
     Path(out_dir,'clean.svg').write_text(cad_draft_svg, encoding='utf-8')
@@ -4794,6 +4807,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
            "topologyDiagnostics":{**topology_diagnostics, "tJunctions": t_junction_diagnostics},
            "annotationLinkingDiagnostics":annotation_linking_diagnostics,
            "engineeringValidation":engineering_validation,
+           "drawingQuality":drawing_quality,"cadAlignmentOverlay":cad_alignment_overlay,
            "cleanLayout":clean_layout,"cleanLayoutDiagnostics":clean_layout_diagnostics,
            "referenceTrace":reference_trace_meta,
            "centerlineTrace":centerline_trace_meta,

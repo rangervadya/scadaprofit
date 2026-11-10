@@ -1,5 +1,4 @@
 import { prepareInkTrace, traceInkRoute } from './manual-cad-ink-trace.js';
-import { analyzeManualCadQuality } from './manual-cad-quality.js';
 
 const $ = id => document.getElementById(id);
 const svg = $('cadCanvas');
@@ -16,31 +15,6 @@ function uid(prefix='item') { return `${prefix}_${(globalThis.crypto?.randomUUID
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function safeNum(value, fallback=0) { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
-function parseDimensionMeasurement(value) {
-  const match = String(value ?? '').trim().replace(/\s+/g, ' ').replace(',', '.').match(/^(\d+(?:\.\d+)?)\s*(мм|mm|см|cm|м|m)$/i);
-  if (!match) return null;
-  const amount = Number(match[1]), unit = match[2].toLowerCase();
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  return { amount, unit, valueMm: amount * (['м','m'].includes(unit) ? 1000 : ['см','cm'].includes(unit) ? 10 : 1) };
-}
-function polylineLength(points) {
-  return (points || []).slice(1).reduce((sum, point, index) => sum + Math.hypot(point[0] - points[index][0], point[1] - points[index][1]), 0);
-}
-function pointSegmentDistance(point, start, end) {
-  const dx=end[0]-start[0],dy=end[1]-start[1],lengthSq=dx*dx+dy*dy;
-  if(lengthSq<1e-9)return Math.hypot(point[0]-start[0],point[1]-start[1]);
-  const t=Math.max(0,Math.min(1,((point[0]-start[0])*dx+(point[1]-start[1])*dy)/lengthSq));
-  return Math.hypot(point[0]-(start[0]+t*dx),point[1]-(start[1]+t*dy));
-}
-function linkManualCadDimension(project, dimension, preferredPipeId=null) {
-  const midpoint=[(dimension.a[0]+dimension.b[0])/2,(dimension.a[1]+dimension.b[1])/2];
-  const candidates=(project.pipes||[]).filter(pipe=>pipe.reviewOnly!==true&&pipe.visible!==false&&pipe.points?.length>=2).map(pipe=>({id:String(pipe.id),distance:Math.min(...pipe.points.slice(1).map((point,index)=>pointSegmentDistance(midpoint,pipe.points[index],point)))})).sort((a,b)=>a.distance-b.distance);
-  const preferred=candidates.find(item=>item.id===String(preferredPipeId||''));
-  if(preferred&&preferred.distance<=48)return {...dimension,targetPipeId:preferred.id,linkStatus:'operator-selected'};
-  const nearest=candidates[0],second=candidates[1],limit=Math.max(24,Math.min(72,Math.min(project.width||1600,project.height||1000)*.055));
-  const clear=nearest&&nearest.distance<=limit&&(!second||second.distance-nearest.distance>=Math.max(7,nearest.distance*.35));
-  return clear?{...dimension,targetPipeId:nearest.id,linkStatus:'auto'}:{...dimension,targetPipeId:null,linkStatus:candidates.length?'ambiguous':'unassigned',candidatePipeIds:candidates.slice(0,3).map(item=>item.id)};
-}
 function projectId() { return state.project?.id || ''; }
 function setSaveState(message, kind='') {
   const el = $('saveState'); el.textContent = message; el.dataset.kind = kind;
@@ -336,11 +310,7 @@ function syncControls() {
   if (assistButton) { assistButton.disabled = reviewCount === 0; assistButton.textContent = state.showReviewCandidates ? 'Скрыть кандидаты' : 'Показать кандидаты'; }
   $('exportSvgBtn').href = `/api/manual-cad/projects/${p.id}/export.svg`;
   $('exportDxfBtn').href = `/api/manual-cad/projects/${p.id}/export.dxf`;
-  $('exportPdfBtn').href = `/api/manual-cad/projects/${p.id}/export.pdf`;
   $('exportSvgBtn').setAttribute('aria-disabled', 'false'); $('exportDxfBtn').setAttribute('aria-disabled', 'false');
-  $('exportPdfBtn').setAttribute('aria-disabled', 'false');
-  $('exportCompareBtn').href = p.sourceUrl ? `/api/manual-cad/projects/${p.id}/compare.svg` : '#';
-  $('exportCompareBtn').setAttribute('aria-disabled', p.sourceUrl ? 'false' : 'true');
   $('sourceOpacity').value = $('sourceOpacity').value || '58';
   $('layerSource').checked = state.sourceVisible;
   document.querySelectorAll('[data-layer]').forEach(input => { input.checked = state.layers[input.dataset.layer] !== false; });
@@ -563,24 +533,7 @@ function handleCanvasClick(event) {
     const value=$('dimensionText').value.trim();
     if (!value) { toast('Введи значение размера в панели инструментов.'); return; }
     if (distance({x:state.dimensionStart[0],y:state.dimensionStart[1]},point)<2) { toast('Точки размера должны быть разнесены.'); return; }
-    pushUndo();
-    const dimension = {id:uid('dim'),a:state.dimensionStart,b:[point.x,point.y],text:value};
-    const preferredPipeId = state.selected?.type === 'pipe' ? state.selected.id : null;
-    const linkedDimension = linkManualCadDimension(state.project, dimension, preferredPipeId);
-    const measurement = parseDimensionMeasurement(value);
-    if (measurement) {
-      linkedDimension.valueMm = measurement.valueMm;
-      linkedDimension.unit = measurement.unit;
-      linkedDimension.measuredPx = Math.hypot(point.x - state.dimensionStart[0], point.y - state.dimensionStart[1]);
-      if (!state.project.calibration && linkedDimension.measuredPx >= 2) {
-        state.project.calibration = {
-          mmPerPixel: measurement.valueMm / linkedDimension.measuredPx,
-          sourceDimensionId: linkedDimension.id,
-          status: 'confirmed'
-        };
-      }
-    }
-    state.project.dimensions.push(linkedDimension);
+    pushUndo(); state.project.dimensions.push({id:uid('dim'),a:state.dimensionStart,b:[point.x,point.y],text:value});
     state.dimensionStart=null; renderAll(); scheduleSave(); return;
   }
   const hit=event.target.closest('[data-element-type][data-element-id]');
@@ -652,28 +605,8 @@ function renderProperties() {
   $('selectedKindWrap').hidden=state.selected.type!=='pipe';
   if (state.selected.type==='pipe') $('selectedKind').value=item.kind||'pipe';
   $('selectedSymbolWrap').hidden=state.selected.type!=='symbol';
-  $('selectedSymbolPortsWrap').hidden=state.selected.type!=='symbol';
   $('selectedSymbolLabel').value=item.label||'';
   if (state.selected.type==='symbol') $('selectedSymbolType').value=item.type||'valve';
-  if (state.selected.type==='symbol') {
-    const ports = Array.isArray(item.connections) ? item.connections : [];
-    $('selectedSymbolPorts').textContent = ports.length
-      ? ports.map(port => `${port.portId}: ${port.pipeId ? `труба ${port.pipeId}` : 'не подключено'}`).join(' · ')
-      : (['callout', 'unknown'].includes(item.type) ? 'Для этого обозначения нет автоматических портов.' : 'Точки подключения не обнаружены. Проверь положение символа и труб.');
-  }
-  $('selectedDimensionTargetWrap').hidden=state.selected.type!=='dimension';
-  if (state.selected.type==='dimension') {
-    const select = $('selectedDimensionTarget');
-    const selectedTarget = String(item.targetPipeId || '');
-    select.innerHTML = '<option value="">Не назначен</option>' + state.project.pipes
-      .filter(pipe => pipe.reviewOnly !== true)
-      .map(pipe => `<option value="${esc(pipe.id)}">${esc(pipe.name || pipe.id)}${pipe.diameter ? ` · DN ${esc(pipe.diameter)}` : ''}</option>`).join('');
-    select.value = selectedTarget;
-    const calibration = state.project.calibration;
-    const calculated = calibration?.mmPerPixel ? (item.measuredPx || Math.hypot(item.b[0]-item.a[0],item.b[1]-item.a[1])) * calibration.mmPerPixel : null;
-    const status = item.linkStatus === 'ambiguous' ? ' · неоднозначная привязка' : item.linkStatus === 'auto' ? ' · автоматически' : item.linkStatus === 'operator-selected' ? ' · назначено вручную' : '';
-    $('selectedDimensionCalibration').textContent = `${item.valueMm ? `${Math.round(item.valueMm * 100) / 100} мм` : 'Значение без единиц — масштаб не установлен'}${calculated ? ` · по масштабу ${Math.round(calculated)} мм` : ''}${status}`;
-  }
   const isPointElement=['symbol','label'].includes(state.selected.type);
   $('selectedPositionWrap').hidden=!isPointElement;
   $('selectedTransformWrap').hidden=!isPointElement;
@@ -682,10 +615,7 @@ function renderProperties() {
   $('selectedFontSizeWrap').hidden=state.selected.type!=='label';
   if (state.selected.type==='symbol') $('selectedScale').value=safeNum(item.scale,1);
   if (state.selected.type==='label') $('selectedFontSize').value=safeNum(item.size,18);
-  const pipeLength = state.selected.type === 'pipe' ? polylineLength(item.points) : 0;
-  const calibratedLength = pipeLength && state.project.calibration?.mmPerPixel
-    ? pipeLength * state.project.calibration.mmPerPixel : null;
-  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : `Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину. Длина по геометрии: ${Math.round(pipeLength)} px${calibratedLength ? ` · ${calibratedLength >= 1000 ? `${(calibratedLength / 1000).toFixed(2)} м` : `${Math.round(calibratedLength)} мм`} по калибровке` : ' · масштаб не задан'}.`) : state.selected.type==='symbol' && item.reviewOnly ? (item.reviewReason || 'Знак распознан, но не классифицирован. Выбери его точный тип по исходному эскизу.') : 'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
+  $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину; перетаскивание линии двигает всю ветку с сохранением стыков.') : state.selected.type==='symbol' && item.reviewOnly ? (item.reviewReason || 'Знак распознан, но не классифицирован. Выбери его точный тип по исходному эскизу.') : 'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
   $('acceptReviewPipeBtn').textContent = state.selected.type === 'label' ? 'Подтвердить подпись' : 'Подтвердить линию';
   $('acceptReviewPipeBtn').hidden=!(['pipe','label'].includes(state.selected.type) && item.reviewOnly===true);
   updateDeleteButton();
@@ -942,53 +872,6 @@ $('selectedName').addEventListener('change',event=>{
 $('selectedDiameter').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.diameter=event.target.value;renderCanvas();scheduleSave();});
 $('selectedSymbolLabel').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.label=event.target.value;renderCanvas();scheduleSave();});
 $('selectedSymbolType').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='symbol')return;pushUndo();item.type=event.target.value;item.reviewOnly=item.type==='unknown';item.reviewReason=item.reviewOnly?'Знак оставлен неопределённым.':'Оператор классифицировал условный знак; проверь положение и ориентацию.';renderAll();scheduleSave();toast(item.reviewOnly?'Знак оставлен на классификацию.':'Классификация знака сохранена.');});
-$('selectedDimensionTarget').addEventListener('change',event=>{
-  const item=selectedItem();
-  if(!item||state.selected.type!=='dimension')return;
-  pushUndo();
-  item.targetPipeId=event.target.value||null;
-  item.linkStatus=item.targetPipeId?'operator-selected':'operator-unassigned';
-  renderCanvas();
-  scheduleSave();
-});
-$('qualityCheckBtn').addEventListener('click', async () => {
-  if (!state.project) return;
-  const button = $('qualityCheckBtn'), output = $('qualityResults');
-  button.disabled = true;
-  button.textContent = 'Проверяю…';
-  output.className = 'mc-quality-results';
-  try {
-    const data = await api(`/api/manual-cad/projects/${encodeURIComponent(projectId())}/quality`);
-    const report = data.report || analyzeManualCadQuality(state.project);
-    const { error = 0, warning = 0, review = 0 } = report.counts || {};
-    const labelSuggestions = (report.findings || []).filter(item => Array.isArray(item.suggestions) && item.suggestions.length)
-      .slice(0, 3).map(item => `Подпись ${item.targetIds?.[0] || 'без ID'}: варианты ${item.suggestions.slice(0, 3).map(point => `(${Math.round(point.x)}, ${Math.round(point.y)})`).join(', ')}.`);
-    output.textContent = report.total
-      ? `Найдено замечаний: ${report.total} · ошибки: ${error} · предупреждения: ${warning} · проверить: ${review}. ${report.findings.slice(0, 3).map(item => item.message).join(' ')} ${labelSuggestions.join(' ')}`
-      : `Явных геометрических конфликтов не найдено. Проверено: ${report.checked?.pipes || 0} труб, ${report.checked?.symbols || 0} символов, ${report.checked?.labels || 0} подписей, ${report.checked?.dimensions || 0} размеров.`;
-    if (error) output.classList.add('is-error'); else if (report.total) output.classList.add('is-warning');
-  } catch (error) {
-    output.classList.add('is-error'); output.textContent = error.message || 'Не удалось выполнить проверку.';
-  } finally {
-    button.disabled = false; button.textContent = 'Проверить чертёж';
-  }
-});
-$('revisionCompareBtn').addEventListener('click', async () => {
-  if (!state.project) return;
-  const button=$('revisionCompareBtn'), output=$('revisionCompareResults');
-  button.disabled=true;button.textContent='Сравниваю…';output.className='mc-quality-results';
-  try {
-    const history=await api(`/api/manual-cad/projects/${encodeURIComponent(projectId())}/revisions`);
-    const previous=history.revisions?.[0];
-    if(!previous){output.textContent='Сохранённых предыдущих редакций пока нет. После следующего изменения появится точка сравнения.';return;}
-    const data=await api(`/api/manual-cad/projects/${encodeURIComponent(projectId())}/compare/${previous.revision}`);
-    const comparison=data.comparison, sections=comparison.changes||{};
-    const summary=Object.entries(sections).map(([name,value])=>`${name}: +${value.counts.added} / −${value.counts.removed} / изменено ${value.counts.modified}`).join(' · ');
-    output.textContent=`Сравнение с редакцией ${previous.revision}: ${summary}. Новых замечаний качества: ${comparison.newQualityFindings?.length||0}.`;
-    if(comparison.newQualityFindings?.length)output.classList.add('is-warning');
-  } catch(error) { output.classList.add('is-error');output.textContent=error.message||'Не удалось сравнить редакции.'; }
-  finally {button.disabled=false;button.textContent='Сравнить с прошлой редакцией';}
-});
 $('selectedKind').addEventListener('change',event=>{const item=selectedItem();if(!item||state.selected.type!=='pipe')return;pushUndo();item.kind=event.target.value;renderCanvas();scheduleSave();});
 for (const [id,key] of [['selectedX','x'],['selectedY','y'],['selectedRotation','rotation'],['selectedScale','scale'],['selectedFontSize','size']]) {
   $(id).addEventListener('change',event=>{const item=selectedItem();if(!item)return;const value=Number(event.target.value);if(!Number.isFinite(value))return;pushUndo();item[key]=key==='scale'?Math.max(.25,Math.min(4,value)):key==='size'?Math.max(6,Math.min(120,value)):key==='rotation'?Math.max(-360,Math.min(360,value)):Math.max(0,Math.min(key==='x'?state.project.width:state.project.height,value));renderCanvas();scheduleSave();});

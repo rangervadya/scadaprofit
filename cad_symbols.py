@@ -46,6 +46,70 @@ SYMBOL_CATALOG: dict[str, dict[str, Any]] = {
             {"kind": "line", "from": [0.72, 0], "to": [1, 0]},
         ],
     },
+    "regulator": {
+        "label": "Регулятор давления",
+        "ports": [{"id": "in", "x": -1.0, "y": 0.0}, {"id": "out", "x": 1.0, "y": 0.0}],
+        "primitives": [
+            {"kind": "line", "from": [-1, 0], "to": [-0.55, 0]},
+            {"kind": "polyline", "points": [[-0.55, -0.58], [0.48, -0.58], [0.48, 0.58], [-0.55, 0.58], [-0.55, -0.58]]},
+            {"kind": "line", "from": [0.48, 0], "to": [1, 0]},
+            {"kind": "line", "from": [0, -0.58], "to": [0, -0.92]},
+        ],
+    },
+    "filter": {
+        "label": "Фильтр газовый",
+        "ports": [{"id": "in", "x": -1.0, "y": 0.0}, {"id": "out", "x": 1.0, "y": 0.0}],
+        "primitives": [
+            {"kind": "line", "from": [-1, 0], "to": [-0.58, 0]},
+            {"kind": "polyline", "points": [[-0.58, -0.58], [0.58, -0.58], [0.58, 0.58], [-0.58, 0.58], [-0.58, -0.58]]},
+            {"kind": "line", "from": [-0.45, 0.42], "to": [0.45, -0.42]},
+            {"kind": "line", "from": [0.58, 0], "to": [1, 0]},
+        ],
+    },
+    "tee": {
+        "label": "Тройник",
+        "ports": [{"id": "left", "x": -1.0, "y": 0.0}, {"id": "right", "x": 1.0, "y": 0.0}, {"id": "branch", "x": 0.0, "y": -1.0}],
+        "primitives": [
+            {"kind": "line", "from": [-1, 0], "to": [1, 0]},
+            {"kind": "line", "from": [0, 0], "to": [0, -1]},
+            {"kind": "circle", "center": [0, 0], "radius": 0.12},
+        ],
+    },
+    "reducer": {
+        "label": "Переход диаметра",
+        "ports": [{"id": "large", "x": -1.0, "y": 0.0}, {"id": "small", "x": 1.0, "y": 0.0}],
+        "primitives": [
+            {"kind": "line", "from": [-1, -0.62], "to": [-0.35, -0.28]},
+            {"kind": "line", "from": [-1, 0.62], "to": [-0.35, 0.28]},
+            {"kind": "line", "from": [-0.35, -0.28], "to": [1, -0.28]},
+            {"kind": "line", "from": [-0.35, 0.28], "to": [1, 0.28]},
+        ],
+    },
+    "pressure_gauge": {
+        "label": "Манометр",
+        "ports": [{"id": "pipe", "x": 0.0, "y": 1.0}],
+        "primitives": [
+            {"kind": "circle", "center": [0, 0], "radius": 0.72},
+            {"kind": "line", "from": [0, 0], "to": [0.35, -0.35]},
+            {"kind": "line", "from": [0, 0.72], "to": [0, 1]},
+        ],
+    },
+    "riser_marker": {
+        "label": "Маркер стояка",
+        "ports": [{"id": "bottom", "x": 0.0, "y": 1.0}, {"id": "top", "x": 0.0, "y": -1.0}],
+        "primitives": [
+            {"kind": "line", "from": [0, -1], "to": [0, 1]},
+            {"kind": "circle", "center": [0, 0], "radius": 0.48},
+        ],
+    },
+    "gas_consumer": {
+        "label": "Газоиспользующее оборудование",
+        "ports": [{"id": "in", "x": -1.0, "y": 0.0}],
+        "primitives": [
+            {"kind": "line", "from": [-1, 0], "to": [-0.55, 0]},
+            {"kind": "polyline", "points": [[-0.55, -0.62], [0.62, 0], [-0.55, 0.62], [-0.55, -0.62]]},
+        ],
+    },
 }
 
 

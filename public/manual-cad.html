@@ -8,7 +8,7 @@
   <title>CAD-редактор · ПРОФИТ</title>
   <link rel="stylesheet" href="/manual-cad.css?v=4.3.46">
   <link rel="stylesheet" href="/profit-ui.css?v=8">
-  <script type="module" src="/manual-cad.js?v=4.3.48-label-review"></script>
+  <script type="module" src="/manual-cad.js?v=4.3.52-professional-sheet"></script>
 </head>
 <body class="manual-cad-page">
   <nav class="profit-rail" aria-label="Модули ПРОФИТ">
@@ -75,8 +75,6 @@
           <button class="mc-button mc-button-light" id="toggleSourceBtn" type="button" disabled>Скрыть подложку</button>
           <a class="mc-button mc-button-export" id="exportSvgBtn" href="#" aria-disabled="true">Экспорт SVG</a>
           <a class="mc-button mc-button-export" id="exportDxfBtn" href="#" aria-disabled="true">Экспорт DXF</a>
-          <a class="mc-button mc-button-export" id="exportPdfBtn" href="#" aria-disabled="true">Экспорт PDF</a>
-          <a class="mc-button mc-button-export" id="exportCompareBtn" href="#" target="_blank" rel="noopener" aria-disabled="true">Сверка с фото</a>
         </div>
       </div>
 
@@ -175,8 +173,6 @@
         <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
         <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
         <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolType">Тип условного обозначения</label><select id="selectedSymbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option><option value="unknown">Не определён — классифицировать</option></select><label for="selectedSymbolLabel">Подпись / номер</label><input id="selectedSymbolLabel" maxlength="80"></div>
-        <div class="mc-prop mc-full" id="selectedSymbolPortsWrap" hidden><label>Подключения оборудования</label><div class="mc-property-help" id="selectedSymbolPorts">Точки подключения появятся после выбора символа.</div></div>
-        <div class="mc-prop mc-full" id="selectedDimensionTargetWrap" hidden><label for="selectedDimensionTarget">Размер относится к трубе</label><select id="selectedDimensionTarget"><option value="">Не назначен</option></select><small id="selectedDimensionCalibration"></small></div>
         <div class="mc-prop mc-full" id="selectedKindWrap" hidden><label for="selectedKind">Тип трубопровода</label><select id="selectedKind"><option value="pipe">Газопровод</option><option value="branch">Ответвление</option><option value="riser">Стояк</option></select></div>
         <div class="mc-property-grid" id="selectedPositionWrap" hidden>
           <div class="mc-prop"><label for="selectedX">Координата X</label><input id="selectedX" type="number" step="1"></div>
@@ -191,7 +187,6 @@
         <div class="mc-property-help" id="selectedHelp">Измени свойства, затем они автоматически сохранятся.</div>
       </div>
       <div class="mc-statistics" id="drawingStats"><div><span>Трубы</span><b>0</b></div><div><span>Узлы</span><b>0</b></div><div><span>Символы</span><b>0</b></div><div><span>Подписи</span><b>0</b></div></div>
-      <div class="mc-quality-tools"><button class="mc-button mc-button-light" id="qualityCheckBtn" type="button">Проверить чертёж</button><div id="qualityResults" class="mc-quality-results" role="status" aria-live="polite">Проверка геометрии и подписей запускается по запросу.</div><button class="mc-button mc-button-light" id="revisionCompareBtn" type="button">Сравнить с прошлой редакцией</button><div id="revisionCompareResults" class="mc-quality-results" role="status" aria-live="polite">История появится после первого изменения чертежа.</div></div>
       <div class="mc-symbol-legend"><b>Библиотека символов</b><div><span class="mc-legend-symbol">◇</span>Кран / клапан</div><div><span class="mc-legend-symbol">◉</span>Счётчик газа</div><div><span class="mc-legend-symbol">□</span>Регулятор</div><div><span class="mc-legend-symbol">│</span>Стояк</div><div><span class="mc-legend-symbol">○</span>Потребитель</div></div>
     </aside>
   </main>

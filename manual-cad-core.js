@@ -8,17 +8,6 @@ const MAX_SYMBOLS = 1000;
 const MAX_JUNCTIONS = 3000;
 const MAX_DIMENSIONS = 1000;
 
-const SYMBOL_PORT_OFFSETS = Object.freeze({
-  valve: [[-24, 0], [24, 0]],
-  meter: [[-24, 0], [24, 0]],
-  regulator: [[-28, 0], [28, 0]],
-  filter: [[-24, 0], [24, 0]],
-  consumer: [[0, 24]],
-  riser: [[0, -24], [0, 24]],
-  callout: [],
-  unknown: []
-});
-
 export function isManualCadId(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
@@ -39,88 +28,6 @@ function point(value, width, height) {
 function safeId(value, prefix) {
   const id = text(value, 64);
   return /^[a-zA-Z0-9_-]{1,64}$/.test(id) ? id : `${prefix}_${randomUUID()}`;
-}
-
-export function parseDimensionMeasurement(value) {
-  const normalized = String(value ?? '').trim().replace(/\s+/g, ' ').replace(',', '.');
-  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(мм|mm|см|cm|м|m)$/i);
-  if (!match) return null;
-  const amount = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  const factor = ['м', 'm'].includes(unit) ? 1000 : ['см', 'cm'].includes(unit) ? 10 : 1;
-  const valueMm = amount * factor;
-  if (!Number.isFinite(valueMm) || valueMm <= 0 || valueMm > 1e9) return null;
-  return { valueMm, unit, amount };
-}
-
-export function polylineLength(points) {
-  if (!Array.isArray(points) || points.length < 2) return 0;
-  let length = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    const a = points[index - 1], b = points[index];
-    if (!Array.isArray(a) || !Array.isArray(b)) continue;
-    length += Math.hypot(Number(b[0]) - Number(a[0]), Number(b[1]) - Number(a[1]));
-  }
-  return Number.isFinite(length) ? length : 0;
-}
-
-function pointSegmentDistance(pointValue, start, end) {
-  const dx = end[0] - start[0], dy = end[1] - start[1];
-  const lengthSq = dx * dx + dy * dy;
-  if (lengthSq < 1e-9) return Math.hypot(pointValue[0] - start[0], pointValue[1] - start[1]);
-  const t = Math.max(0, Math.min(1, ((pointValue[0] - start[0]) * dx + (pointValue[1] - start[1]) * dy) / lengthSq));
-  return Math.hypot(pointValue[0] - (start[0] + t * dx), pointValue[1] - (start[1] + t * dy));
-}
-
-function distancePointToPipe(pointValue, pipe) {
-  let best = Infinity;
-  for (let index = 1; index < (pipe.points || []).length; index += 1) {
-    best = Math.min(best, pointSegmentDistance(pointValue, pipe.points[index - 1], pipe.points[index]));
-  }
-  return best;
-}
-
-export function linkManualCadDimension(project, dimension, preferredPipeId = null) {
-  const a = dimension?.a, b = dimension?.b;
-  if (!Array.isArray(a) || !Array.isArray(b)) return { ...dimension, targetPipeId: null, linkStatus: 'unassigned' };
-  const midpoint = [(Number(a[0]) + Number(b[0])) / 2, (Number(a[1]) + Number(b[1])) / 2];
-  const candidates = (project?.pipes || [])
-    .filter(pipe => pipe.reviewOnly !== true && pipe.visible !== false && (pipe.points || []).length >= 2)
-    .map(pipe => ({ id: String(pipe.id), distance: distancePointToPipe(midpoint, pipe) }))
-    .sort((left, right) => left.distance - right.distance);
-  const selected = candidates.find(item => item.id === String(preferredPipeId || ''));
-  if (selected && selected.distance <= 48) {
-    return { ...dimension, targetPipeId: selected.id, linkStatus: 'operator-selected', assignmentDistancePx: Math.round(selected.distance * 100) / 100 };
-  }
-  const nearest = candidates[0], second = candidates[1];
-  const limit = Math.max(24, Math.min(72, Math.min(Number(project?.width) || 1600, Number(project?.height) || 1000) * 0.055));
-  const unambiguous = nearest && nearest.distance <= limit && (!second || second.distance - nearest.distance >= Math.max(7, nearest.distance * 0.35));
-  if (!unambiguous) return { ...dimension, targetPipeId: null, linkStatus: candidates.length ? 'ambiguous' : 'unassigned', candidatePipeIds: candidates.slice(0, 3).map(item => item.id) };
-  return { ...dimension, targetPipeId: nearest.id, linkStatus: 'auto', assignmentDistancePx: Math.round(nearest.distance * 100) / 100,
-    candidatePipeIds: candidates.slice(0, 3).map(item => item.id) };
-}
-
-function symbolPortConnections(symbol, pipes) {
-  const offsets = SYMBOL_PORT_OFFSETS[symbol.type] || [];
-  const radians = Number(symbol.rotation || 0) * Math.PI / 180;
-  const cos = Math.cos(radians), sin = Math.sin(radians);
-  return offsets.map((offset, index) => {
-    const x = Number(symbol.x) + offset[0] * cos - offset[1] * sin;
-    const y = Number(symbol.y) + offset[0] * sin + offset[1] * cos;
-    const ranked = pipes.filter(pipe => pipe.reviewOnly !== true && pipe.visible !== false)
-      .map(pipe => ({ id: String(pipe.id), distance: distancePointToPipe([x, y], pipe) }))
-      .sort((a, b) => a.distance - b.distance);
-    const nearest = ranked[0], second = ranked[1];
-    const connected = nearest && nearest.distance <= 14 && (!second || second.distance - nearest.distance >= 3);
-    return {
-      portId: index === 0 ? 'in' : index === offsets.length - 1 ? 'out' : `port_${index + 1}`,
-      x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100,
-      pipeId: connected ? nearest.id : null,
-      state: connected ? 'connected' : 'unconnected',
-      distancePx: nearest ? Math.round(nearest.distance * 100) / 100 : null
-    };
-  });
 }
 
 export function createManualCadProject({ id = randomUUID(), title = 'Новая схема' } = {}) {
@@ -156,7 +63,6 @@ export function createManualCadProject({ id = randomUUID(), title = 'Новая 
     symbols: [],
     labels: [],
     dimensions: [],
-    calibration: null,
     sketchAssist: null
   };
 }
@@ -567,7 +473,6 @@ export function normalizeManualCadProject(input, existing = null) {
     })).filter(group => group.apartments.length),
     notes: text(input?.notes ?? base.notes, 1000),
     pipes: [], junctions: [], symbols: [], labels: [], dimensions: [],
-    calibration: null,
     sketchAssist: input?.sketchAssist && typeof input.sketchAssist === 'object' ? {
       enabled: input.sketchAssist.enabled === true,
       method: text(input.sketchAssist.method, 80),
@@ -623,8 +528,7 @@ export function normalizeManualCadProject(input, existing = null) {
       label: text(raw.label, 80), scale: Math.max(0.5, Math.min(4, num(raw.scale, 1))),
       reviewOnly: raw.reviewOnly === true,
       reviewReason: text(raw.reviewReason, 240),
-      confidence: Math.max(0, Math.min(1, num(raw.confidence, 0))),
-      connections: []
+      confidence: Math.max(0, Math.min(1, num(raw.confidence, 0)))
     });
   }
 
@@ -647,37 +551,8 @@ export function normalizeManualCadProject(input, existing = null) {
     const a = point(raw?.a, width, height), b = point(raw?.b, width, height);
     const value = text(raw?.text, 60);
     if (!a || !b || Math.hypot(a[0] - b[0], a[1] - b[1]) < 1 || !value) continue;
-    const parsed = parseDimensionMeasurement(value);
-    const dimension = {
-      id: safeId(raw.id, 'dim'), a, b, text: value,
-      targetPipeId: raw.targetPipeId ? String(raw.targetPipeId) : null,
-      linkStatus: ['operator-selected', 'operator-unassigned', 'auto', 'ambiguous', 'unassigned'].includes(raw.linkStatus) ? raw.linkStatus : 'unassigned',
-      valueMm: parsed?.valueMm ?? (Number.isFinite(Number(raw.valueMm)) && Number(raw.valueMm) > 0 ? Number(raw.valueMm) : null),
-      unit: parsed?.unit || text(raw.unit, 8) || null,
-      measuredPx: Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) * 100) / 100
-    };
-    const linked = dimension.targetPipeId && pipeIds.has(dimension.targetPipeId)
-      ? dimension : dimension.linkStatus === 'operator-unassigned'
-        ? { ...dimension, targetPipeId: null, linkStatus: 'operator-unassigned' }
-        : linkManualCadDimension(result, dimension);
-    result.dimensions.push(linked);
+    result.dimensions.push({ id: safeId(raw.id, 'dim'), a, b, text: value });
   }
-  const rawCalibration = input?.calibration && typeof input.calibration === 'object' ? input.calibration : base.calibration;
-  const mmPerPixel = num(rawCalibration?.mmPerPixel, NaN);
-  result.calibration = Number.isFinite(mmPerPixel) && mmPerPixel > 0 && mmPerPixel <= 1e6
-    ? { mmPerPixel, sourceDimensionId: text(rawCalibration.sourceDimensionId, 64) || null, status: 'confirmed' }
-    : null;
-  // The first explicitly unit-labelled manual dimension establishes scale.
-  // It never changes geometry; it only gives coordinates a physical meaning.
-  if (!result.calibration) {
-    const source = result.dimensions.find(item => item.valueMm && item.measuredPx >= 2 && item.linkStatus !== 'ambiguous');
-    if (source) result.calibration = {
-      mmPerPixel: source.valueMm / source.measuredPx,
-      sourceDimensionId: source.id,
-      status: 'confirmed'
-    };
-  }
-  for (const symbol of result.symbols) symbol.connections = symbolPortConnections(symbol, result.pipes);
   return result;
 }
 
@@ -820,34 +695,6 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   parts.push(`<g fill="#111" font-family="Arial,sans-serif"><text x="9" y="${blockY + 7}" font-size="3.2" font-weight="bold">${esc(project.title || 'СХЕМА ТРУБОПРОВОДА')}</text><text x="9" y="${blockY + 19}" font-size="2.2">${esc(project.notes || 'Схема восстановлена по исходному эскизу; соединения проверить перед применением.')}</text><text x="${pageW - 78}" y="${blockY + 7}" font-size="2.2">ИСПОЛНИТЕЛЬ</text><text x="${pageW - 78}" y="${blockY + 19}" font-size="2.5">${esc(project.preparedBy || '—')}</text><text x="${pageW - 39}" y="${blockY + 7}" font-size="2.2">ЛИСТ</text><text x="${pageW - 39}" y="${blockY + 19}" font-size="2.5">1 / 1</text></g>`);
   parts.push('</svg>');
   return parts.join('\n');
-}
-
-export function renderManualCadComparisonSvg(rawProject, sourceDataUri) {
-  const project = normalizeManualCadProject(rawProject);
-  const width = project.width, height = project.height;
-  const parts = [
-    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}px" height="${height}px" viewBox="0 0 ${width} ${height}">`,
-    '<title>Сверка исходной фотографии и CAD-геометрии</title>',
-    `<image x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="none" href="${esc(sourceDataUri)}" xlink:href="${esc(sourceDataUri)}"/>`,
-    '<g fill="none" stroke-linecap="round" stroke-linejoin="round" pointer-events="none">'
-  ];
-  for (const pipe of project.pipes) {
-    if (pipe.visible === false || pipe.points.length < 2) continue;
-    const points = pipe.points.map(pair => `${fmt(pair[0])},${fmt(pair[1])}`).join(' ');
-    const review = pipe.reviewOnly === true;
-    parts.push(`<polyline id="compare-${esc(pipe.id)}" points="${points}" stroke="${review ? '#d97706' : '#00a85a'}" stroke-width="${review ? 3 : 2.5}" opacity="${review ? 0.82 : 0.9}" ${review ? 'stroke-dasharray="9 6"' : ''}/>`);
-  }
-  parts.push('</g><g pointer-events="none">');
-  for (const junction of project.junctions) {
-    parts.push(`<circle cx="${fmt(junction.x)}" cy="${fmt(junction.y)}" r="5" fill="#00a85a" stroke="#fff" stroke-width="1.5"/>`);
-  }
-  for (const symbol of project.symbols) {
-    const review = symbol.reviewOnly === true || symbol.type === 'unknown';
-    parts.push(`<circle cx="${fmt(symbol.x)}" cy="${fmt(symbol.y)}" r="13" fill="${review ? '#fff7ed' : '#eff6ff'}" fill-opacity="0.65" stroke="${review ? '#d97706' : '#2563eb'}" stroke-width="2" stroke-dasharray="${review ? '4 3' : 'none'}"/>`);
-    parts.push(`<text x="${fmt(symbol.x)}" y="${fmt(symbol.y + 4)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="700" fill="${review ? '#92400e' : '#1d4ed8'}">${esc(symbol.type === 'unknown' ? '?' : symbol.type.slice(0, 2).toUpperCase())}</text>`);
-  }
-  parts.push('</g></svg>');
-  return parts.join('');
 }
 
 function renderLpgCadR1Svg(project, { includeReview = false } = {}) {

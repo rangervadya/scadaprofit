@@ -1,3 +1,9 @@
+# ScadaProfit 4.3.52 — professional engineering CAD sheet layout
+
+Version 4.3.52 improves content-fitted CAD sheet composition, keeps engineering topology intact, adds editable dimension graphics, provisional section tags, a broader symbol catalog, post-layout quality checks, and a source-photo/CAD alignment overlay. See `CHANGELOG-4.3.52-RU.md` and `INSTALL-4.3.52-RU.md` for scope and deployment notes.
+
+---
+
 # ScadaProfit 4.3.46 — guided fitter-sketch tracing and unified PROFIT menu
 
 

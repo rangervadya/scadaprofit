@@ -790,6 +790,7 @@ function showResult() {
   if (diagnostics) {
     const links = [
       graph.primaryOverlayUrl ? `<a href="${escapeHtml(graph.primaryOverlayUrl)}" target="_blank" rel="noreferrer">Отбор PIPE_MAIN</a>` : '',
+      graph.cadAlignmentOverlayUrl ? `<a href="${escapeHtml(graph.cadAlignmentOverlayUrl)}" target="_blank" rel="noreferrer">Наложение CAD на исходное фото</a>` : '',
       graph.textMaskUrl ? `<a href="${escapeHtml(graph.textMaskUrl)}" target="_blank" rel="noreferrer">Маска OCR-областей</a>` : '',
       graph.geometryInkUrl ? `<a href="${escapeHtml(graph.geometryInkUrl)}" target="_blank" rel="noreferrer">Чернила без текста</a>` : '',
       graph.handwrittenTextBlocksUrl ? `<a href="${escapeHtml(graph.handwrittenTextBlocksUrl)}" target="_blank" rel="noreferrer">Текстовые блоки OCR</a>` : '',
@@ -1433,38 +1434,87 @@ function buildCleanLayoutSvg(layout) {
   const pageHeight = Number(page.height || 1200);
   const widthMm = Number(page.widthMm || 210);
   const heightMm = Number(page.heightMm || 297);
+  const landscape = pageHeight < pageWidth;
+  const margin = Number(layout.frame?.margin || 18);
+  const headerBottom = Number(layout.frame?.headerBottom || (landscape ? 132 : 150));
+  const footerTop = Number(layout.frame?.footerTop || (landscape ? 680 : 936));
   const center = pageWidth / 2;
-  const right = pageWidth - 32;
+  const right = pageWidth - 30;
   const output = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${pageWidth} ${pageHeight}">`,
-    `<rect width="${pageWidth}" height="${pageHeight}" fill="#fff"/>`
+    `<rect width="${pageWidth}" height="${pageHeight}" fill="#fff"/>`,
+    `<rect data-layer="SHEET" x="${margin}" y="${margin}" width="${pageWidth - margin * 2}" height="${pageHeight - margin * 2}" fill="none" stroke="#1c2329" stroke-width="1.1"/>`,
+    `<line data-layer="SHEET" x1="${margin}" y1="${headerBottom}" x2="${pageWidth - margin}" y2="${headerBottom}" stroke="#1c2329" stroke-width=".75"/>`,
+    `<line data-layer="SHEET" x1="${margin}" y1="${footerTop}" x2="${pageWidth - margin}" y2="${footerTop}" stroke="#68727b" stroke-width=".55"/>`
   ];
   const addSheetText = (value, x, y, anchor = 'start', size = 8, bold = false) => {
     if (!String(value || '').trim()) return;
     output.push(`<text data-layer="SHEET" x="${x.toFixed(2)}" y="${y.toFixed(2)}" text-anchor="${anchor}" font-family="Arial,sans-serif" font-size="${size}"${bold ? ' font-weight="bold"' : ''} fill="#15191d">${svgEscape(value)}</text>`);
   };
-  addSheetText(fields.documentTitle, center, 24, 'middle', 9.2, true);
-  addSheetText(fields.appendix, right, 53, 'end', 12, true);
-  addSheetText(fields.title, center, 115, 'middle', 15);
-  addSheetText(fields.subtitle, center, 137, 'middle', 11);
-  if (fields.address) addSheetText(`по адресу: ${fields.address}`, center, 159, 'middle', 9);
+  const zones = template.zones || {};
+  for (const [zoneName, zone] of Object.entries({ legend: zones.legend, signatures: zones.signatures })) {
+    if (!zone || !['x','y','w','h'].every(key => Number.isFinite(Number(zone[key])))) continue;
+    output.push(`<rect data-layer="SHEET_BLOCKS" data-zone="${zoneName}" x="${Number(zone.x)}" y="${Number(zone.y)}" width="${Number(zone.w)}" height="${Number(zone.h)}" fill="none" stroke="#68727b" stroke-width=".5"/>`);
+  }
+  const titleRows = landscape ? [28, 52, 79, 99, 119] : [36, 59, 91, 113, 137];
+  addSheetText(fields.documentTitle, center, titleRows[0], 'middle', landscape ? 8.8 : 9.2, true);
+  addSheetText(fields.appendix, right, titleRows[1], 'end', landscape ? 10 : 11, true);
+  addSheetText(fields.title, center, titleRows[2], 'middle', 14, true);
+  addSheetText(fields.subtitle, center, titleRows[3], 'middle', 9.5);
+  if (fields.address) addSheetText(`по адресу: ${fields.address}`, center, titleRows[4], 'middle', 8.2);
+  if (fields.documentNumber) addSheetText(`Обозначение: ${fields.documentNumber}`, 32, titleRows[4], 'start', 7.2);
+  const scaleLabel = String(layout.scaleCalibration?.scaleLabel || '').trim();
+  if (scaleLabel) addSheetText(scaleLabel, 32, landscape ? 145 : 165, 'start', 7.2, true);
 
+  if (landscape) {
+    const legendZone = zones.legend || { x: 50, y: 690 };
+    const signatureZone = zones.signatures || { x: 790, y: 690 };
+    addSheetText('УСЛОВНЫЕ ОБОЗНАЧЕНИЯ', Number(legendZone.x) + 8, Number(legendZone.y) + 15, 'start', 6.8, true);
+    addSheetText('ПОДПИСИ', Number(signatureZone.x) + 8, Number(signatureZone.y) + 15, 'start', 6.8, true);
+  } else {
+    const legendZone = zones.legend || { x: pageWidth - 345, y: pageHeight - 254 };
+    const signatureZone = zones.signatures || { x: pageWidth - 345, y: pageHeight - 116 };
+    addSheetText('УСЛОВНЫЕ ОБОЗНАЧЕНИЯ', Number(legendZone.x) + 8, Number(legendZone.y) + 16, 'start', 6.8, true);
+    addSheetText('ПОДПИСИ', Number(signatureZone.x) + 8, Number(signatureZone.y) + 15, 'start', 6.8, true);
+  }
   (template.legend || []).forEach((item, index) => {
-    const y = pageHeight - 222 + index * 18;
-    addSheetText(item.code || '—', pageWidth - 322, y, 'start', 8);
-    addSheetText(item.label || '', pageWidth - 292, y, 'start', 7.4);
+    if (landscape) {
+      const column = index < 3 ? 0 : 1;
+      const row = column === 0 ? index : index - 3;
+      const x = column === 0 ? 48 : 410;
+      const y = pageHeight - 90 + row * 25;
+      addSheetText(item.code || '—', x, y, 'start', 7.2, true);
+      addSheetText(item.label || '', x + 33, y, 'start', 6.8);
+    } else {
+      const legendZone = zones.legend || { x: pageWidth - 345, y: pageHeight - 254 };
+      const x = Number(legendZone.x) + 12;
+      const y = Number(legendZone.y) + 36 + index * 18;
+      addSheetText(item.code || '—', x, y, 'start', 7.5, true);
+      addSheetText(item.label || '', x + 32, y, 'start', 7);
+    }
   });
-  addSheetText(fields.preparedBy ? `Схему составил: ${fields.preparedBy}` : 'Схему составил', pageWidth - 322, pageHeight - 75, 'start', 8);
-  addSheetText(fields.drawnBy ? `Схему начертил: ${fields.drawnBy}` : 'Схему начертил', pageWidth - 322, pageHeight - 36, 'start', 8);
+  if (landscape) {
+    const signatureZone = zones.signatures || { x: pageWidth - 410, y: pageHeight - 160 };
+    const sx = Number(signatureZone.x) + 12, sy = Number(signatureZone.y) + 69;
+    addSheetText(fields.preparedBy ? `Схему составил: ${fields.preparedBy}` : 'Схему составил', sx, sy - 35, 'start', 7.5);
+    addSheetText(fields.drawnBy ? `Схему начертил: ${fields.drawnBy}` : 'Схему начертил', sx, sy - 13, 'start', 7.5);
+    if (fields.checkedBy) addSheetText(`Проверил: ${fields.checkedBy}`, sx, sy + 9, 'start', 7.5);
+  } else {
+    const signatureZone = zones.signatures || { x: pageWidth - 345, y: pageHeight - 116 };
+    const sx = Number(signatureZone.x) + 12;
+    addSheetText(fields.preparedBy ? `Схему составил: ${fields.preparedBy}` : 'Схему составил', sx, Number(signatureZone.y) + 42, 'start', 7.5);
+    addSheetText(fields.drawnBy ? `Схему начертил: ${fields.drawnBy}` : 'Схему начертил', sx, Number(signatureZone.y) + 62, 'start', 7.5);
+    if (fields.checkedBy) addSheetText(`Проверил: ${fields.checkedBy}`, sx, Number(signatureZone.y) + 80, 'start', 7.5);
+  }
 
-  output.push('<g data-layer="PIPE_MAIN" fill="none" stroke="#15191d" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round">');
+  output.push('<g data-layer="PIPE_MAIN" fill="none" stroke="#15191d" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">');
   for (const pipe of (layout.pipes || [])) {
     const points = (pipe.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
     if (points) output.push(`<polyline data-id="${svgEscape(pipe.id || '')}" points="${points}"/>`);
   }
   output.push('</g>');
   if (showReviewGeometry) {
-    output.push('<g data-layer="DETAIL_REVIEW" fill="none" stroke="#9ba3aa" stroke-width=".75" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round">');
+    output.push('<g data-layer="DETAIL_REVIEW" fill="none" stroke="#929ba3" stroke-width=".75" stroke-dasharray="4 3" stroke-linecap="round" stroke-linejoin="round">');
     for (const pipe of (layout.reviewPipes || [])) {
       const points = (pipe.geometry || []).map(point => `${Number(point[0]).toFixed(2)},${Number(point[1]).toFixed(2)}`).join(' ');
       if (points) output.push(`<polyline data-id="${svgEscape(pipe.id || '')}" points="${points}"/>`);
@@ -1479,21 +1529,34 @@ function buildCleanLayoutSvg(layout) {
   }
   output.push('</g>');
   for (const dimension of (layout.dimensions || [])) {
-    const position = dimension.position || [0, 0];
-    output.push(`<text data-layer="DIMENSIONS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8.5" fill="#111">${svgEscape(dimension.rawText ?? dimension.value ?? '')}</text>`);
+    const graphic = dimension.graphic || {};
+    for (const [a, b] of (graphic.extensionLines || [])) output.push(`<line data-layer="DIMENSION_LINES" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#303840" stroke-width=".65"/>`);
+    if (graphic.dimensionLine?.length === 2) {
+      const [a, b] = graphic.dimensionLine;
+      output.push(`<line data-layer="DIMENSION_LINES" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#303840" stroke-width=".75"/>`);
+    }
+    for (const arrow of (graphic.arrowLines || [])) if (arrow.length === 2) {
+      output.push(`<line data-layer="DIMENSION_LINES" x1="${arrow[0][0]}" y1="${arrow[0][1]}" x2="${arrow[1][0]}" y2="${arrow[1][1]}" stroke="#303840" stroke-width=".75"/>`);
+    }
+    const position = dimension.position || graphic.textPosition || [0, 0];
+    output.push(`<text data-layer="DIMENSIONS" x="${position[0]}" y="${position[1]}" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" paint-order="stroke" stroke="#fff" stroke-width="3" fill="#15191d">${svgEscape(dimension.displayText ?? dimension.rawText ?? dimension.value ?? '')}</text>`);
   }
   for (const label of (layout.labels || [])) {
     const position = label.position || [0, 0];
-    output.push(`<text data-layer="LABELS" x="${position[0]}" y="${position[1]}" font-family="Arial,sans-serif" font-size="8.5" fill="#20262b">${svgEscape(label.text || '')}</text>`);
+    output.push(`<text data-layer="LABELS" x="${position[0]}" y="${position[1]}" text-anchor="middle" font-family="Arial,sans-serif" font-size="8.2" paint-order="stroke" stroke="#fff" stroke-width="2.8" fill="#20262b">${svgEscape(label.text || '')}</text>`);
   }
-  if (layout.reviewOnly) {
-    addSheetText('НЕПОЛНЫЙ РЕЗУЛЬТАТ — ТОЛЬКО ПРОВЕРКА', center, pageHeight - 12, 'middle', 11, true);
+  for (const tag of (layout.sectionTags || [])) {
+    const box = tag.bbox || {}, position = tag.position || [0, 0];
+    output.push(`<rect data-layer="SECTION_TAGS" data-provisional="true" data-target="${svgEscape(tag.targetId || '')}" x="${box.x ?? position[0] - 8}" y="${box.y ?? position[1] - 7}" width="${box.w ?? 16}" height="${box.h ?? 13}" fill="#fff" stroke="#1d252c" stroke-width=".75"/>`);
+    output.push(`<text data-layer="SECTION_TAGS" data-provisional="true" x="${position[0]}" y="${position[1] + 2.6}" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.3" font-weight="bold" fill="#15191d">${svgEscape(tag.number || '')}</text>`);
   }
+  if (layout.reviewOnly) addSheetText('НЕПОЛНЫЙ РЕЗУЛЬТАТ — ТОЛЬКО ПРОВЕРКА', center, pageHeight - 25, 'middle', 10, true);
+  if ((layout.sectionTags || []).length) addSheetText('Нумерация участков предложена автоматически — подтвердить перед выпуском.', 28, pageHeight - 28, 'start', 6.2);
   output.push('</svg>');
   return output.join('\n');
 }
 function buildSheetSvg() {
-  if (['cad-clean-layout/1.0', 'cad-clean-layout/1.1'].includes(graph.cleanLayout?.schema)) return buildCleanLayoutSvg(graph.cleanLayout);
+  if (['cad-clean-layout/1.0', 'cad-clean-layout/1.1', 'cad-clean-layout/1.2'].includes(graph.cleanLayout?.schema)) return buildCleanLayoutSvg(graph.cleanLayout);
   const width = graph.image.width;
   const height = graph.image.height;
   const pageWidth = 1200, pageHeight = 850;

@@ -9,8 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, renderManualCadComparisonSvg, isManualCadId } from './manual-cad-core.js';
-import { analyzeManualCadQuality, compareManualCadProjects } from './public/manual-cad-quality.js';
+import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -323,43 +322,6 @@ const manualSourceUpload = multer({
 function manualProjectPath(id) {
   return path.join(MANUAL_CAD_DIR, id, 'project.json');
 }
-function manualProjectHistoryPath(id, revision) {
-  return path.join(MANUAL_CAD_DIR, id, 'history', `revision-${revision}.json`);
-}
-function svgToPdfBuffer(svg) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(PYTHON, ['-c', 'import sys,cairosvg; sys.stdout.buffer.write(cairosvg.svg2pdf(bytestring=sys.stdin.buffer.read()))'], {
-      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-      env: { ...process.env, ...localRecognitionPythonEnvironment(), PYTHONUNBUFFERED: '1' }
-    });
-    const chunks = [];
-    let outputSize = 0, stderr = '', settled = false;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL'); finish(new Error('Превышено время формирования PDF.'));
-    }, 45_000);
-    const finish = (error, buffer = null) => {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      if (error) reject(error); else resolve(buffer);
-    };
-    child.stdout.on('data', chunk => {
-      outputSize += chunk.length;
-      if (outputSize > 32 * 1024 * 1024) {
-        child.kill('SIGKILL'); finish(new Error('PDF превышает допустимый размер.'));
-      } else chunks.push(chunk);
-    });
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4000); });
-    child.on('error', error => finish(error));
-    child.on('close', code => {
-      if (code !== 0) return finish(new Error(stderr.trim() || `PDF renderer exited with code ${code}`));
-      const buffer = Buffer.concat(chunks);
-      if (!buffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) return finish(new Error('PDF renderer returned an invalid document.'));
-      finish(null, buffer);
-    });
-    child.stdin.on('error', error => finish(error));
-    child.stdin.end(svg);
-  });
-}
 function manualProjectResponse(project) {
   return {
     ...project,
@@ -409,6 +371,7 @@ function attachJobUrls(jobId, graph, sourceName = null) {
     graph.cadDraftSvgUrl = `/jobs/${jobId}/cad-draft.svg`;
     graph.cadDraftDxfUrl = `/jobs/${jobId}/cad-draft.dxf`;
   }
+  if (graph.cadAlignmentOverlay?.available) graph.cadAlignmentOverlayUrl = `/jobs/${jobId}/cad-alignment-overlay.png`;
   graph.diagnosticsUrl = `/jobs/${jobId}/diagnostics.json`;
   graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
   graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
@@ -1620,26 +1583,6 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
     project.source = current.source || null;
     project.manualEditRevision = Math.max(0, Number(current.manualEditRevision || 0)) + 1;
     const target = manualProjectPath(id);
-    const contentSignature = value => {
-      const { updatedAt: _updatedAt, manualEditRevision: _revision, ...content } = value || {};
-      return JSON.stringify(content);
-    };
-    if (contentSignature(current) !== contentSignature(project)) {
-      try {
-        const historyDir = path.join(path.dirname(target), 'history');
-        await mkdir(historyDir, { recursive: true });
-        await writeFile(manualProjectHistoryPath(id, Math.max(0, Number(current.manualEditRevision || 0))), JSON.stringify(current, null, 2), 'utf8');
-        const historyFiles = (await readdir(historyDir)).filter(name => /^revision-\d+\.json$/.test(name))
-          .sort((a, b) => Number(a.match(/\d+/)?.[0] || 0) - Number(b.match(/\d+/)?.[0] || 0));
-        for (const oldFile of historyFiles.slice(0, Math.max(0, historyFiles.length - 20))) {
-          await rm(path.join(historyDir, oldFile), { force: true }).catch(() => {});
-        }
-      } catch (historyError) {
-        // History is a convenience feature; its failure must never block saving
-        // the current engineering drawing.
-        console.warn(`[CAD] Revision history snapshot skipped for ${id}: ${historyError.message || historyError}`);
-      }
-    }
     const temporary = `${target}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
     await rename(temporary, target);
@@ -1707,73 +1650,6 @@ app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
   }
 });
 
-app.get('/api/manual-cad/projects/:id/quality', async (req, res) => {
-  const { id } = req.params;
-  if (!isManualCadId(id)) return res.status(400).end();
-  try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
-    return res.json({ ok: true, report: analyzeManualCadQuality(project) });
-  } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: error.message || 'Не удалось проверить чертёж.' });
-  }
-});
-
-app.get('/api/manual-cad/projects/:id/revisions', async (req, res) => {
-  const { id } = req.params;
-  if (!isManualCadId(id)) return res.status(400).end();
-  try {
-    const historyDir = path.join(path.dirname(manualProjectPath(id)), 'history');
-    const files = await readdir(historyDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error));
-    const revisions = [];
-    for (const file of files.filter(name => /^revision-\d+\.json$/.test(name)).sort((a, b) => Number(b.match(/\d+/)?.[0] || 0) - Number(a.match(/\d+/)?.[0] || 0))) {
-      try {
-        const snapshot = JSON.parse(await readFile(path.join(historyDir, file), 'utf8'));
-        revisions.push({ revision: Number(snapshot.manualEditRevision || file.match(/\d+/)?.[0] || 0), updatedAt: snapshot.updatedAt || null,
-          title: snapshot.title || '', pipeCount: (snapshot.pipes || []).length, symbolCount: (snapshot.symbols || []).length });
-      } catch { /* ignore an incomplete snapshot */ }
-    }
-    return res.json({ ok: true, revisions: revisions.slice(0, 20) });
-  } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: error.message || 'Не удалось получить историю чертежа.' });
-  }
-});
-
-app.get('/api/manual-cad/projects/:id/compare/:revision', async (req, res) => {
-  const { id, revision } = req.params;
-  if (!isManualCadId(id) || !/^\d{1,10}$/.test(revision)) return res.status(400).end();
-  try {
-    const [current, previous] = await Promise.all([
-      readFile(manualProjectPath(id), 'utf8').then(JSON.parse),
-      readFile(manualProjectHistoryPath(id, Number(revision)), 'utf8').then(JSON.parse)
-    ]);
-    return res.json({ ok: true, comparison: compareManualCadProjects(previous, current) });
-  } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Редакция не найдена или не удалось выполнить сравнение.' });
-  }
-});
-
-app.get('/api/manual-cad/projects/:id/compare.svg', async (req, res) => {
-  const { id } = req.params;
-  if (!isManualCadId(id)) return res.status(400).end();
-  try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
-    const fileName = path.basename(String(project.source?.fileName || ''));
-    if (!/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName)) return res.status(404).json({ error: 'Для сверки не загружена исходная фотография.' });
-    const imagePath = path.join(path.dirname(manualProjectPath(id)), fileName);
-    const image = await readFile(imagePath);
-    const extension = path.extname(fileName).toLowerCase();
-    const mime = ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff' })[extension];
-    const dataUri = `data:${mime};base64,${image.toString('base64')}`;
-    const svg = renderManualCadComparisonSvg(project, dataUri);
-    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="cad-comparison-${id.slice(0, 8)}.svg"`);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.send(svg);
-  } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: error.message || 'Не удалось сформировать сверку фотографии и CAD.' });
-  }
-});
-
 app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
@@ -1785,22 +1661,6 @@ app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
     return res.send(svg);
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать SVG.' });
-  }
-});
-
-app.get('/api/manual-cad/projects/:id/export.pdf', async (req, res) => {
-  const { id } = req.params;
-  if (!isManualCadId(id)) return res.status(400).end();
-  try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
-    const pdf = await svgToPdfBuffer(renderManualCadSvg(project));
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Length', String(pdf.length));
-    res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.pdf"`);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.send(pdf);
-  } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: error.message || 'Не удалось сформировать PDF.' });
   }
 });
 
