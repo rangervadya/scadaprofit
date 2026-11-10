@@ -212,7 +212,7 @@ button { min-height: 35px; padding: 8px 12px; border-radius: 7px; font-size: 11p
 .workspace-summary #main { padding: 0; border: 0; margin: 0; background: transparent; box-shadow: none; }
 .workspace-summary #main .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .workspace-summary #main .grid > div:has([name="address"]) { order: -1; }
-.workspace-summary #main label { font-size: 11px; margin-bottom: 4px; }
+.workspace-summary #main label { font-size: 13px; margin-bottom: 4px; }
 .workspace-summary #main input:not(.native-date-picker) { min-height: 25px; padding-block: 4px; background: #f0f4fa; }
 .workspace-summary #main .date-hint { font-size: 9px; }
 
@@ -220,14 +220,14 @@ html:not(.embedded), html:not(.embedded) body {
   background: linear-gradient(150deg, #e7eef9, #f3f6fc 65%);
   color: #172e4a;
 }
-html:not(.embedded) .app { grid-template-columns: 130px minmax(0, 1fr); }
+html:not(.embedded) .app { grid-template-columns: 176px minmax(0, 1fr); }
 html:not(.embedded) .side {
   padding: 16px 8px;
   background: linear-gradient(155deg, #102741, #102c4c 67%, #13263f);
 }
 .standalone-brand { display: flex; align-items: center; gap: 5px; padding: 0 12px; margin-bottom: 26px; color: white; text-decoration: none; font-size: 15px; }
 html:not(.embedded) .nav { display: grid; gap: 2px; }
-html:not(.embedded) .nav a { min-height: 33px; padding: 5px 8px; border: 0; border-radius: 5px; font-size: 10px; color: #dfebf9; }
+html:not(.embedded) .nav a { min-height: 44px; padding: 6px 8px; border: 0; border-radius: 7px; font-size: 14px; color: #dfebf9; }
 html:not(.embedded) .nav a[aria-current] { background: #214775; color: #fff; }
 html:not(.embedded) .main { padding: 24px 12px 22px 28px; }
 html:not(.embedded) .main > h1 { font-size: 20px; color: #102744; }
@@ -253,6 +253,7 @@ html:not(.embedded) .nav a { display: flex; align-items: center; gap: 8px; }
 .standalone-search button { min-height: 0; padding: 2px 6px; border-radius: 5px; }
 .standalone-search output:not(:empty) { position: absolute; top: 100%; left: 0; z-index: 25; padding: 6px 9px; background: #f9fbff; border: 1px solid #e1e8f3; border-radius: 5px; }
 .embedded .standalone-search { display: none; }
+.validation-issues button { padding: 5px 0; border: 0; background: transparent; color: inherit; text-align: left; text-decoration: underline; box-shadow: none; }
 </style>
 <script>
 if (window.self !== window.top) {
@@ -461,37 +462,50 @@ function showStatus(kind,message){
  status.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function hideStatus(){const status=document.getElementById('status');if(status){status.hidden=true;status.className='status';}}
-function checkRequiredFields(form){
- const invalid=[...form.querySelectorAll('[required]')].filter(el=>{
-  if(el.disabled)return false;
-  if(el.type==='checkbox'||el.type==='radio')return !el.checked;
-  if(el.type==='file')return !el.files||!el.files.length;
-  return !String(el.value||'').trim();
- });
- if(!invalid.length)return true;
- const first=invalid[0],details=first.closest('details');
- if(details)details.open=true;
- const names=invalid.slice(0,16).map((el,i)=>`${i+1}. ${requiredFieldLabel(el)}`);
- let message=`Не заполнены обязательные поля (${invalid.length}). Кнопка работает, но формирование остановлено до заполнения данных:\n\n${names.join('\n')}`;
- if(invalid.length>names.length)message+=`\n… и ещё ${invalid.length-names.length}.`;
- message+='\n\nПерейдите к указанным полям, заполните их и нажмите кнопку ещё раз.';
- showStatus('err',message);
- first.scrollIntoView({behavior:'smooth',block:'center'});
- try{first.focus({preventScroll:true});}catch{}
- return false;
+function showValidationIssues(form){
+ const issues=[];
+ for(const field of form.querySelectorAll('input,textarea,select')){
+  if(field.disabled||!field.willValidate)continue;
+  let message='';
+  if(field.type!=='file'&&field.value.includes('\uFFFD'))message='Исправьте повреждённые символы';
+  else if(field.matches('.date-text')&&field.value.trim()&&!isValidRussianDate(field.value))message='Введите существующую дату в формате ДД.ММ.ГГГГ';
+  else if(field.required&&!field.value.trim())message='Заполните обязательное поле';
+  else if(!field.validity.valid)message=field.validationMessage;
+  if(message)issues.push({field,label:requiredFieldLabel(field),message});
+ }
+ for(const slot of form.querySelectorAll('[data-material-required]')){
+  const field=slot.querySelector('input[type="file"]');
+  if(!field.files.length&&!slot.querySelector('input[type="checkbox"]').checked){
+   issues.push({field,label:slot.querySelector('.attachment-head b').textContent,message:'Загрузите документ или отметьте «Не включать»'});
+  }
+ }
+ if(!issues.length)return false;
+ showStatus('err',`Исправьте замечания (${issues.length}). Нажмите на пункт, чтобы перейти к полю.`);
+ const list=document.createElement('ul');
+ list.className='validation-issues';
+ for(const {field,label,message} of issues){
+  const item=document.createElement('li');
+  const button=document.createElement('button');
+  button.type='button';
+  const section=field.closest('section')?.querySelector('h2')?.textContent;
+  button.textContent=[section,label,message].filter(Boolean).join(' · ');
+  button.addEventListener('click',()=>{
+   for(let parent=field.parentElement;parent&&parent!==form;parent=parent.parentElement){
+    if(parent.tagName==='DETAILS')parent.open=true;
+   }
+   field.focus({preventScroll:true});
+   field.scrollIntoView({behavior:'smooth',block:'center'});
+  });
+  item.append(button);
+  list.append(item);
+ }
+ document.querySelector('#status .status-message').append(list);
+ return true;
 }
 async function submitAction(url,preview){
  const form=document.getElementById('form'),status=document.getElementById('status');
  if(form.dataset.submitting==='1')return;
- const badText=[...form.querySelectorAll('input[name],textarea[name],select[name]')].filter(el=>el.type!=='file'&&String(el.value||'').includes('\uFFFD'));
- if(badText.length){showStatus('err','В одном или нескольких полях уже есть повреждённые символы кодировки. Исправьте текст в отмеченных полях и повторите попытку.');badText[0].scrollIntoView({behavior:'smooth',block:'center'});badText[0].focus();return;}
- // Explicitly validate Russian dates before submitting the form.
- const dateInputs=[...form.querySelectorAll('input.date-text:not(:disabled)')];
- const invalidDate=dateInputs.find(el=>el.value.trim() && !isValidRussianDate(el.value));
- if(invalidDate){showStatus('err',`Поле «${requiredFieldLabel(invalidDate)}»: введите существующую дату в формате ДД.ММ.ГГГГ или выберите её в календаре.`);invalidDate.scrollIntoView({behavior:'smooth',block:'center'});invalidDate.focus();return;}
- // Native reportValidity() silently fails for required inputs inside collapsed <details>.
- // Validate explicitly so users always see what needs attention.
- if(!checkRequiredFields(form))return;
+ if(showValidationIssues(form))return;
  const previewWin=preview?window.open('about:blank','_blank'):null;
  const actionButtons=[...document.querySelectorAll('.sticky button[onclick^="submitAction("]')];
  form.dataset.submitting='1';actionButtons.forEach(b=>{b.disabled=true;b.dataset.oldText=b.textContent;b.textContent='Обработка…'});

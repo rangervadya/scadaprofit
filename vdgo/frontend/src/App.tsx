@@ -72,6 +72,8 @@ function App() {
   const [fileUrl, setFileUrl] = useState('');
   const [preview, setPreview] = useState<'both' | 'source' | 'result'>('both');
   const [zoom, setZoom] = useState(100);
+  const [progress, setProgress] = useState<Record<string, { filled: number; total: number }>>({});
+  const [fullScreenMessage, setFullScreenMessage] = useState('');
   const reportFrame = useRef<HTMLIFrameElement | null>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -149,6 +151,11 @@ function App() {
     if (!form) return;
     const syncHeader = () => {
       const data = new FormData(form);
+      setProgress(Object.fromEntries(reportSections.map(([id]) => {
+        const fields = [...(doc.getElementById(id)?.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[required]') ?? [])]
+          .filter(field => field.willValidate);
+        return [id, { filled: fields.filter(field => field.validity.valid && field.value.trim()).length, total: fields.length }];
+      })));
       setReport({
         number: String(data.get('report_number') || ''),
         address: String(data.get('address') || ''),
@@ -191,7 +198,6 @@ function App() {
           <a className="sidebar-link" href="/archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg>Архив</a>
           <a className="sidebar-link" href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg>Настройки</a>
         </nav>
-        <a className="sidebar-bottom" href="/vdgo/legacy" target="_blank" rel="noreferrer">ⓘ　Полная форма</a>
       </aside>
 
       <main className="workspace">
@@ -251,6 +257,8 @@ function App() {
             <p>♧　{report.address || 'Адрес объекта'}　　▦　{report.date || 'Дата заключения'}</p>
           </div>
           <div className="heading-actions">
+            <a className="history-action" href="/vdgo/legacy" target="_blank" rel="noreferrer">Полная форма</a>
+
             <button onClick={() => runFormAction('save')}>▣　Сохранить</button>
             <button onClick={() => runFormAction('preview')}>✓　Проверить</button>
             <button className="primary" onClick={() => runFormAction('generate')}>Сформировать документ　 →</button>
@@ -260,7 +268,10 @@ function App() {
         <nav className="report-tabs" aria-label="Разделы заключения">
           {reportSections.map(([id, label], index) => (
             <button key={id} aria-current={activeSection === id ? 'location' : undefined} onClick={() => navigateToSection(id)}>
-              <span>{index + 1}</span>{label}
+              <span>{index + 1}</span>
+              <div>{label}{progress[id]?.total > 0 && <small className="section-progress" data-complete={progress[id].filled === progress[id].total}>
+                {progress[id].filled}/{progress[id].total}<span className="visually-hidden"> обязательных полей заполнено</span>
+              </small>}</div>
             </button>
           ))}
         </nav>
@@ -277,7 +288,21 @@ function App() {
             <header className="drawing-tabs">
               <button aria-pressed={preview !== 'result'} onClick={() => setPreview(preview === 'source' ? 'both' : 'source')}>▧　Исходный чертёж</button>
               <button aria-pressed={preview === 'result'} onClick={() => setPreview(preview === 'result' ? 'both' : 'result')}>◇　Результат реконструкции</button>
+              <button className="fullscreen-button" onClick={async (event) => {
+                const panel = event.currentTarget.closest('.drawing-panel');
+                setFullScreenMessage('');
+                try {
+                  if (document.fullscreenElement === panel) await document.exitFullscreen();
+                  else if (panel) {
+                    setPreview('both');
+                    await panel.requestFullscreen();
+                  }
+                } catch {
+                  setFullScreenMessage('Полноэкранный режим недоступен в этом браузере.');
+                }
+              }}><span className="enter-fullscreen">На весь экран</span><span className="exit-fullscreen">Свернуть</span></button>
             </header>
+            {fullScreenMessage && <p role="status">{fullScreenMessage}</p>}
             <div className="drawing-grid" data-preview={preview}>
               {preview !== 'result' && <div className="drawing-pane">
                 <div className="drawing-bar"><button title="Загрузить чертёж" onClick={() => upload.current?.click()}>↑</button><a title="Открыть распознавание эскизов" href="/">⌕</a></div>

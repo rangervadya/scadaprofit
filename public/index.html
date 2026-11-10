@@ -8,8 +8,8 @@
   <title>Распознавание эскизов · ПРОФИТ</title>
   <link rel="preconnect" href="/" crossorigin>
   <link rel="stylesheet" href="/styles.css?v=4.3.45">
-  <link rel="stylesheet" href="/profit-ui.css?v=4">
-  <script src="/app.js?v=4.3.46-profit4" defer></script>
+  <link rel="stylesheet" href="/profit-ui.css?v=6">
+  <script src="/app.js?v=4.3.46-profit5" defer></script>
 </head>
 <body class="recognition-page">
   <nav class="profit-rail" aria-label="Модули ПРОФИТ">
@@ -86,7 +86,8 @@
 
       <section class="main-column">
         <section class="card canvas-card" id="source-drawing">
-          <div class="profit-pane-label"><span>01</span> Исходный эскиз</div>
+          <div class="profit-pane-label"><span>01</span> Исходный эскиз <button type="button" id="compareFullscreen" class="profit-secondary-link">На весь экран</button></div>
+          <p id="compareFullscreenStatus" role="status" hidden></p>
           <div class="canvas-header source-main-header">
             <div class="source-title">
               <div class="scheme-status-label" id="activeSchemeStatus">ОБЩИЙ АРХИВ</div>

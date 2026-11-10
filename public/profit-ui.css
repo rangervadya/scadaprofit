@@ -4,7 +4,7 @@
   --profit-bg: #eff3fa;
   --profit-line: #e1e8f3;
   --profit-text: #18304d;
-  --profit-rail-width: 130px;
+  --profit-rail-width: 176px;
   --page: var(--profit-bg);
   --surface-muted: #f4f7fc;
   --line: var(--profit-line);
@@ -46,11 +46,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 33px;
+  min-height: 44px;
   padding: 6px 8px;
   border-radius: 7px;
   color: inherit;
-  font-size: 10px;
+  font-size: 14px;
   text-decoration: none;
 }
 .profit-links a:hover { background: #1c406a; }
@@ -81,7 +81,7 @@
   margin-bottom: 16px;
 }
 .profit-breadcrumb { margin: 0 0 7px; color: #536c89; font-size: 11px; }
-.profit-heading h1, .mc-brand h1 { margin: 0; color: var(--profit-text); font-size: 20px; line-height: 1.2; }
+.profit-heading h1, .mc-brand h1 { margin: 0; color: var(--profit-text); font-size: 26px; line-height: 1.2; }
 .profit-subtitle { margin: 6px 0 0; color: #546b87; font-size: 12px; }
 .profit-heading-link, .recognition-page .primary-button {
   background: var(--profit-blue);
@@ -150,7 +150,7 @@
 .profit-topbar .server-state, .profit-topbar .mc-save-state { margin-left: auto; }
 .profit-avatar { display: grid; place-items: center; flex: 0 0 26px; height: 26px; border-radius: 50%; background: #112d50; color: #fff; font-size: 10px; }
 .profit-tabs { display: flex; min-height: 47px; margin-bottom: 11px; overflow-x: auto; border-radius: 6px; background: #e8eef8; }
-.profit-tabs a { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 11px; border-right: 1px solid #dfe7f2; border-bottom: 2px solid transparent; color: var(--profit-text); font-size: 10px; text-decoration: none; }
+.profit-tabs a { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 11px; border-right: 1px solid #dfe7f2; border-bottom: 2px solid transparent; color: var(--profit-text); font-size: 12px; text-decoration: none; }
 .profit-tabs a:is(:hover,:focus-visible) { border-bottom-color: #2766a8; background: #f2f6fc; }
 .profit-tabs span { min-width: 18px; padding: 2px; border-radius: 4px; background: #dce7f8; color: #1b548d; text-align: center; }
 .profit-panel-heading { margin: 0 0 7px; padding: 9px 0 7px; border-bottom: 2px solid #245d9b; color: var(--profit-text); font-size: 11px; }
@@ -229,3 +229,7 @@
 .dashboard-card span { display: inline-block; padding: 3px 5px; border-radius: 4px; background: #e4edfa; color: var(--profit-blue); font-size: 10px; }
 .dashboard-card h2 { margin: 8px 0 4px; font-size: 14px; }
 .dashboard-card p { margin: 0; color: #536b87; font-size: 12px; line-height: 1.5; }
+#compareFullscreen { margin-left: auto; cursor: pointer; }
+.recognition-page .main-column:fullscreen { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; padding: 12px; overflow: auto; background: var(--profit-bg); }
+.recognition-page .main-column:fullscreen :is(.image-stage,.clean-stage) { min-height: 65vh; }
+#compareFullscreenStatus:not([hidden]) { grid-column: 1 / -1; }

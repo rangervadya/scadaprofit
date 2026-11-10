@@ -3773,7 +3773,8 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
                     kept_fragments.append(current); current = []
                 rejected_segment_reasons.append('text-overlap')
                 continue
-            support_floor = 0.13 if confidence >= 60 else 0.18
+            # Model confidence cannot substitute for visible ink along the route.
+            support_floor = 0.70
             if support < support_floor:
                 if len(current) >= 2:
                     kept_fragments.append(current); current = []
@@ -3848,7 +3849,7 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
         'accepted_source_routes': reasons.get('accepted', 0),
         'reasons': reasons,
         'min_length_px': round(min_length, 1),
-        'minimum_ink_support': 0.13,
+        'minimum_ink_support': 0.70,
         'ink_support_kernel': '9x9',
         'route_diagnostics': route_diagnostics,
     }

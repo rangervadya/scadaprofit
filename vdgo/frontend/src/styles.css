@@ -2,7 +2,7 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
   color: #172e4a;
   background: #eff3fa;
-  font-size: 11px;
+  font-size: 13px;
   --blue: #174d86;
   --line: #e1e8f3;
   --card: #f9fbff;
@@ -21,20 +21,19 @@ h1, h2, h3, p { margin: 0; }
   position: sticky;
   top: 0;
   display: flex;
-  flex: 0 0 130px;
+  flex: 0 0 176px;
   flex-direction: column;
   height: 100vh;
-  padding: 16px 8px 36px;
+  padding: 16px 9px;
   color: #dfebf9;
   background: linear-gradient(155deg,#102741,#102c4c 67%,#13263f);
   border-right: 1px solid #284869;
 }
-.sidebar-brand { display: flex; align-items: center; gap: 5px; padding: 0 12px; color: white; font-weight: 750; font-size: 15px; }
+.sidebar-brand { display: flex; align-items: center; gap: 7px; padding: 0 7px; color: white; font-weight: 750; font-size: 15px; }
 .sidebar-nav { display: grid; gap: 2px; margin-top: 26px; }
-.sidebar-link { display: flex; align-items: center; gap: 8px; min-height: 33px; padding: 5px 8px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 10px; text-align: left; }
+.sidebar-link { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 8px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 14px; text-align: left; }
 .sidebar-link span { width: 19px; font-size: 20px; line-height: 1; text-align: center; }
 .sidebar-link.active, .sidebar-link:hover { color: white; background: #214775; }
-.sidebar-bottom { margin: auto 8px 38px; color: #dce7f8; font-size: 10px; }
 .workspace { flex: 1; min-width: 0; padding: 17px 12px 12px 28px; }
 .topbar { display: flex; align-items: center; gap: 10px; min-height: 34px; margin-bottom: 19px; }
 .search { display: flex; align-items: center; gap: 8px; width: min(462px, 55%); padding: 4px 7px 4px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); box-shadow: 0 2px 6px #173b6510; }
@@ -49,21 +48,21 @@ h1, h2, h3, p { margin: 0; }
 .breadcrumb { margin-bottom: 7px; font-size: 10px; color: var(--blue); }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
 .title-line { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-h1 { font-size: 20px; line-height: 1.35; color: #102744; }
+h1 { font-size: 26px; line-height: 1.35; color: #102744; }
 .working-state { padding: 3px 9px; border-radius: 10px; color: #207764; background: #d6f0ea; font-weight: 650; }
 .page-heading p { margin-top: 6px; }
-.heading-actions { display: flex; gap: 7px; }
+.heading-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .heading-actions button { min-height: 31px; white-space: nowrap; box-shadow: 0 1px 4px #173b6510; }
 .heading-actions .primary { background: #103761; color: white; border-color: #103761; }
 .report-tabs { display: grid; grid-template-columns: repeat(9,minmax(0,1fr)); min-height: 47px; margin-bottom: 11px; border-radius: 6px; background: #e8eef8; }
-.report-tabs button { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 10px 8px 5px; background: transparent; border: 0; border-right: 1px solid #dfe7f2; border-bottom: 2px solid transparent; border-radius: 0; text-align: left; font-size: 10px; line-height: 1.35; }
+.report-tabs button { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 10px 8px 5px; background: transparent; border: 0; border-right: 1px solid #dfe7f2; border-bottom: 2px solid transparent; border-radius: 0; text-align: left; font-size: 12px; line-height: 1.35; }
 .report-tabs button[aria-current] { color: #11385f; border-bottom-color: #2766a8; font-weight: 650; }
 .report-tabs span { flex: 0 0 18px; padding: 2px; border-radius: 4px; background: #dce7f8; color: #1b548d; text-align: center; }
 .workbench { display: grid; grid-template-columns: minmax(210px,24.5%) minmax(0,1fr) minmax(128px,13.5%); gap: 7px; }
 .workbench.details { grid-template-columns: minmax(0,1fr); }
 .card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--card); box-shadow: 0 1px 4px #173b6507; }
 .card > header { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 10px; border-bottom: 1px solid var(--line); }
-h2 { font-size: 12px; }
+h2 { font-size: 15px; }
 .form-panel header button { padding: 3px 5px; font-size: 9px; }
 .form-panel iframe { display: block; width: 100%; height: 341px; border: 0; }
 .details .form-panel iframe { height: max(520px, 70vh); }
@@ -116,7 +115,6 @@ h2 { font-size: 12px; }
   .app-shell { display: block; }
   .app-sidebar { position: static; width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; padding: 7px; gap: 8px; }
   .sidebar-nav { display: flex; flex-wrap: wrap; margin: 0; }
-  .sidebar-bottom { margin: 0; align-self: center; }
   .workspace { padding: 12px; }
   .page-heading { flex-direction: column; }
   .heading-actions { flex-wrap: wrap; }
@@ -137,3 +135,16 @@ h2 { font-size: 12px; }
 .history-screen tr:last-child td { border-bottom: 0; }
 .history-empty { padding: 18px 12px; color: #536b87; }
 .history-link { display: inline-block; margin-top: 6px; }
+
+.section-progress { display: block; margin-top: 3px; color: #536b87; font-variant-numeric: tabular-nums; }
+.section-progress[data-complete=true] { color: #207764; font-weight: 700; }
+.report-tabs .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.drawing-tabs { flex-wrap: wrap; }
+.drawing-tabs .fullscreen-button { margin-left: auto; }
+.drawing-panel .exit-fullscreen, .drawing-panel:fullscreen .enter-fullscreen { display: none; }
+.drawing-panel:fullscreen .exit-fullscreen { display: inline; }
+.drawing-panel:fullscreen { display: flex; flex-direction: column; padding: 12px; }
+.drawing-panel:fullscreen .drawing-grid { flex: 1; min-height: 0; }
+.drawing-panel:fullscreen .drawing-pane { display: flex; flex-direction: column; min-height: 0; }
+.drawing-panel:fullscreen .drawing-surface { flex: 1; height: auto; }
+.drawing-panel:fullscreen .drawing-surface > :is(img,svg) { height: 100%; min-height: 0; }

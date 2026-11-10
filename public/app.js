@@ -2021,3 +2021,21 @@ refreshRecognitionStatus();
 loadAddressLibrary();
 loadTemplateInfo();
 if (!workspaceView) restoreSavedJobFromUrl();
+
+const compareFullscreen = $('compareFullscreen');
+const comparison = compareFullscreen.closest('.main-column');
+compareFullscreen.addEventListener('click', async () => {
+  const status = $('compareFullscreenStatus');
+  status.hidden = true;
+  try {
+    if (document.fullscreenElement === comparison) await document.exitFullscreen();
+    else await comparison.requestFullscreen();
+  } catch {
+    status.textContent = 'Полноэкранный режим недоступен в этом браузере.';
+    status.hidden = false;
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  compareFullscreen.textContent = document.fullscreenElement === comparison ? 'Свернуть' : 'На весь экран';
+  requestAnimationFrame(fitImageFrame);
+});
