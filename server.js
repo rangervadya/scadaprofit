@@ -13,6 +13,7 @@ import { createManualCadProject, createManualCadProjectFromGraph, normalizeManua
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+if (process.env.TRUST_GATEWAY_PROXY === "1") app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
@@ -268,7 +269,13 @@ app.use(helmet({
 }));
 
 app.use(express.json({ limit: '15mb' }));
-app.use(rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }));
+const limitHeavyRequests = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' }
+});
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0,
   setHeaders(res, filePath) {
@@ -703,7 +710,7 @@ app.get('/api/template/file', async (_req, res) => {
   }
 });
 
-app.post('/api/template', templateUpload.single('template'), async (req, res) => {
+app.post('/api/template', limitHeavyRequests, templateUpload.single('template'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Выберите PDF, SVG, DXF, PNG, JPG, WEBP или TIFF.' });
   const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
   if (!templateExtensions.has(ext)) {
@@ -800,7 +807,7 @@ app.post('/api/library/buildings', async (req, res) => {
 
 // Upload stores the original in the selected house and automatically queues
 // its reconstruction. The GPU queue serializes Qwen jobs to protect VRAM.
-app.post('/api/library/schemes/upload', upload.single('image'), async (req, res) => {
+app.post('/api/library/schemes/upload', limitHeavyRequests, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
   const streetId = String(req.body?.streetId || '');
   const buildingId = String(req.body?.buildingId || '');
@@ -905,7 +912,7 @@ app.get('/api/library/schemes/:jobId/status', async (req, res) => {
   }
 });
 
-app.post('/api/library/schemes/:jobId/analyze', async (req, res) => {
+app.post('/api/library/schemes/:jobId/analyze', limitHeavyRequests, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
   try {
@@ -1235,7 +1242,7 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
-app.post('/api/analyze', upload.single('image'), async (req, res) => {
+app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
 
   const streetId = String(req.body?.streetId || '');
@@ -1381,7 +1388,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
 // Manual CAD editor API. This module only reads/writes DATA/.private/manual-cad;
 // it does not call, proxy, or modify any VDGO route, service, database, or file.
-app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
+app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
   let projectDir = null;
@@ -1461,7 +1468,7 @@ app.post('/api/manual-cad/import-job/:jobId', async (req, res) => {
 // Source-only CAD fallback: a stored house photo can still be traced manually
 // even when OCR/Qwen failed before graph.json or prepared-input.png was written.
 // This route touches only the primary app's DATA/.private/manual-cad directory.
-app.post('/api/manual-cad/import-source-job/:jobId', async (req, res) => {
+app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
   let projectDir = null;
@@ -1585,7 +1592,7 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
   }
 });
 
-app.post('/api/manual-cad/projects/:id/source', manualSourceUpload.single('source'), async (req, res) => {
+app.post('/api/manual-cad/projects/:id/source', limitHeavyRequests, manualSourceUpload.single('source'), async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) {
     if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
