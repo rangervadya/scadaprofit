@@ -5,7 +5,7 @@ const svg = $('cadCanvas');
 const state = {
   projects: [], project: null, tool: 'select', selected: null,
   draft: [], draftStart: null, draftEnd: null, dimensionStart: null,
-  sourceVisible: true, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
+  sourceVisible: false, highlightReview: false, showReviewCandidates: false, saveTimer: null, saveChain: Promise.resolve(),
   undo: [], redo: [], drag: null, activeVertex: null, justDragged: false, lastSaved: null, toastTimer: null, zoom: 1, ortho: false,
   traceRaster: null, traceLastPoint: null, traceSegments: 0, traceMetrics: [], traceSegmentStartIndices: [], traceWaypoints: [], traceAttachments: [], traceBusy: false,
   layers: { pipes: true, candidates: true, symbols: true, labels: true, dimensions: true, junctions: true }, objectFilter: ''
@@ -97,7 +97,7 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = true; state.showReviewCandidates = state.project.pipes.some(pipe => pipe.reviewOnly);
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = false; state.highlightReview = false; state.showReviewCandidates = state.project.pipes.some(pipe => pipe.reviewOnly);
     state.layers = { pipes: true, candidates: true, symbols: true, labels: true, dimensions: true, junctions: true };
     state.objectFilter = ''; $('objectSearch').value = '';
     $('sourceOpacity').value = state.project.sketchAssist?.enabled ? '28' : '58';
@@ -299,6 +299,7 @@ function syncControls() {
   const reviewCount = p.pipes.filter(pipe => pipe.reviewOnly === true).length;
   $('reviewCandidatesLabel').hidden = reviewCount === 0;
   $('showReviewCandidates').checked = state.showReviewCandidates;
+  $('highlightReview').checked = state.highlightReview;
   $('reviewCandidatesCount').textContent = String(reviewCount);
   const unknownSymbols = p.symbols.filter(symbol => symbol.type === 'unknown' || symbol.reviewOnly).length;
   const assistPanel = $('mcSketchAssistPanel');
@@ -577,7 +578,7 @@ function renderCanvas() {
   if(state.draft.length){const points=state.draft.map(pt=>`${pt.x},${pt.y}`).join(' ');const traceClass=state.tool==='trace'?'mc-draft-trace':'';draft=`<polyline class="mc-draft ${traceClass}" points="${points}"/>${state.draft.map((pt,index)=>`<circle class="mc-snap-ring ${state.tool==='trace'?'mc-trace-waypoint':''}" cx="${pt.x}" cy="${pt.y}" r="${index===0||index===state.draft.length-1?8:5}"/>`).join('')}`;}
   if(state.dimensionStart) draft+=`<circle class="mc-snap-ring" cx="${state.dimensionStart[0]}" cy="${state.dimensionStart[1]}" r="7"/>`;
   svg.innerHTML=`<defs><pattern id="mcGrid" width="25" height="25" patternUnits="userSpaceOnUse"><path d="M25 0H0V25" fill="none" stroke="#dce4de" stroke-width="1"/></pattern></defs><rect width="${p.width}" height="${p.height}" fill="#fff"/>${grid}${source}${pipes}${junctions}${dimensions}${symbols}${labels}${draft}`;
-  svg.className.baseVal=`tool-${state.tool}`;
+  svg.className.baseVal=`tool-${state.tool}${state.highlightReview ? " highlight-review" : ""}`;
   updateZoom(state.zoom);
   updateToolButtons(); updateStatistics(); renderProperties();
 }
@@ -889,3 +890,8 @@ window.addEventListener('beforeunload',event=>{
 });
 $('projectSearch').addEventListener('input', renderProjectList);
 loadProjects(new URLSearchParams(window.location.search).get('project'));
+
+$('highlightReview').addEventListener('change', event => {
+  state.highlightReview = event.target.checked;
+  renderCanvas();
+});

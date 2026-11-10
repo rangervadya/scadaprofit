@@ -233,3 +233,11 @@
 .recognition-page .main-column:fullscreen { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; padding: 12px; overflow: auto; background: var(--profit-bg); }
 .recognition-page .main-column:fullscreen :is(.image-stage,.clean-stage) { min-height: 65vh; }
 #compareFullscreenStatus:not([hidden]) { grid-column: 1 / -1; }
+
+.conclusion-frame { display: block; width: 100%; height: calc(100vh - 140px); min-height: 500px; border: 1px solid var(--profit-line); border-radius: 6px; background: #f9fbff; }
+
+/* Review status is retained while the default drafting view is monochrome. */
+#cadCanvas:not(.highlight-review) .mc-pipe-review { stroke: #1c2820 !important; stroke-dasharray: none !important; stroke-width: 3 !important; opacity: 1; }
+#cadCanvas:not(.highlight-review) .mc-symbol-review circle { fill: #fff; stroke: #1c2820; stroke-dasharray: none; }
+#cadCanvas:not(.highlight-review) .mc-symbol-review text { fill: #1c2820; }
+#cadCanvas:not(.highlight-review) .mc-pipe-review.is-selected { stroke: #2766a8 !important; }
