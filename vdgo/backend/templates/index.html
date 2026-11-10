@@ -197,7 +197,17 @@ button { min-height: 35px; padding: 8px 12px; border-radius: 7px; font-size: 11p
   .sticky button:first-child { grid-column: 1 / -1; }
 }
 
+/* The workspace already supplies navigation and the page title. */
+.embedded .app { display: block; }
+.embedded .side, .embedded .main > h1, .embedded .main > .sub { display: none; }
+.embedded .main { max-width: none; padding: 12px; }
+.embedded { --radius: 8px; --accent: #174982; --accent-strong: #102744; }
 </style>
+<script>
+if (window.self !== window.top) {
+  document.documentElement.classList.add('embedded');
+}
+</script>
 <script>
 function toggleDefect(i){let c=document.getElementById('defect_'+i+'_enabled');document.getElementById('defectbox_'+i).classList.toggle('off',!c.checked)}
 function toggleValve(i){let c=document.getElementById('valve_'+i+'_enabled');document.getElementById('valvebox_'+i).classList.toggle('off',!c.checked)}

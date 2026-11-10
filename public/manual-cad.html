@@ -3,40 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f3f5f3">
+  <meta name="theme-color" content="#edf2fa">
   <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
   <title>CAD-редактор · ПРОФИТ</title>
   <link rel="stylesheet" href="/manual-cad.css?v=4.3.46">
+  <link rel="stylesheet" href="/profit-ui.css?v=1">
   <script type="module" src="/manual-cad.js?v=4.3.46"></script>
 </head>
 <body class="manual-cad-page">
-  <nav class="suite-nav" aria-label="ПРОФИТ — модули">
-    <a class="suite-brand" href="/" aria-label="ПРОФИТ — главная">
-      <span class="suite-brand-mark" aria-hidden="true">П</span>
-      <span class="suite-brand-copy"><strong>ПРОФИТ</strong><small>Инженерные сервисы</small></span>
-    </a>
-    <details class="suite-menu">
-      <summary aria-label="Открыть меню модулей"><span class="suite-burger" aria-hidden="true"><i></i><i></i><i></i></span><span>Модули</span><span class="suite-chevron" aria-hidden="true">▾</span></summary>
-      <div class="suite-menu-panel">
-        <div class="suite-menu-heading">РАБОЧИЕ МОДУЛИ</div>
-        <a class="suite-menu-item" href="/">
-          <span class="suite-menu-icon">↗</span><span><b>Распознавание эскизов</b><small>Фото слесаря → чистовая схема</small></span><span class="suite-menu-arrow">›</span>
-        </a>
-        <a class="suite-menu-item is-active" href="/manual-cad.html" aria-current="page">
-          <span class="suite-menu-icon">⌁</span><span><b>CAD-редактор</b><small>Трубы, узлы, символы и размеры</small></span><span class="suite-menu-arrow">›</span>
-        </a>
-        <a class="suite-menu-item" href="/vdgo/">
-          <span class="suite-menu-icon">▤</span><span><b>Технические заключения ВДГО</b><small>Формирование PDF и DOCX</small></span><span class="suite-menu-arrow">›</span>
-        </a>
-        <div class="suite-menu-footer"><span class="suite-menu-status-dot"></span>Все модули на одном сервере · независимые сервисы</div>
-      </div>
-    </details>
+  <nav class="profit-rail" aria-label="Модули ПРОФИТ">
+    <a class="profit-brand" href="/"><svg viewBox="0 0 32 36" width="29" height="33" aria-hidden="true"><path fill="#63b9ff" d="M19 1c1 8-7 10-7 17 0 2 1 3 2 4-5-1-8-4-7-8C9 9 15 6 19 1Z"/><path fill="#3189e4" d="M21 12c7 5 9 10 6 16-2 4-6 6-11 7 4-3 5-6 3-9-1-2-4-3-4-6 0-3 3-6 6-8Z"/><path fill="#a2d6ff" d="M6 19c0 5 6 7 7 11l-2 4C5 31 2 26 6 19Z"/></svg><strong>PROFIT</strong></a>
+    <div class="profit-links">
+      <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg><span>Схемы домов</span></a>
+      <a href="/manual-cad.html" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 12-12-3-3L5 16zM14 7l3 3"/></svg><span>CAD-редактор</span></a>
+      <a href="/vdgo/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg><span>Заключения</span></a>
+    </div>
+    <div class="profit-rail-caption">Инженерные сервисы</div>
   </nav>
 
   <header class="mc-topbar">
     <div class="mc-brand">
-      <div class="mc-brand-mark">SP</div>
-      <div><strong>ScadaProfit · Manual CAD</strong><small>Редактор трубопроводных схем</small></div>
+      <div><p class="profit-breadcrumb">Рабочий стол / CAD-редактор</p><h1>CAD-редактор</h1></div>
     </div>
     <div class="mc-top-actions">
       <span class="mc-save-state" id="saveState" aria-live="polite">Загружаю проекты…</span>
@@ -86,7 +73,7 @@
         <button class="mc-button mc-button-review" id="mcShowSketchCandidatesBtn" type="button" disabled>Показать кандидаты</button>
       </section>
 
-      <details class="mc-engineering-panel" open>
+      <details class="mc-engineering-panel">
         <summary><span><b>Чистовой лист LPGCad R1</b><small>Шапка заключения · адрес · легенда · подписи · A4/A3</small></span><span class="mc-engineering-caret">▾</span></summary>
         <div class="mc-engineering-fields">
           <div class="mc-prop mc-prop-style"><label for="drawingStyle">Профиль оформления</label><select id="drawingStyle"><option value="standard">Стандартный CAD</option><option value="lpgcad-r1">Газовая схема · LPGCad R1</option></select></div>

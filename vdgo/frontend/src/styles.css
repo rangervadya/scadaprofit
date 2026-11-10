@@ -125,3 +125,71 @@ button { cursor: pointer; }
   .panel-heading { padding: 9px 10px; }
   .panel-heading p { max-width: 230px; line-height: 1.4; }
 }
+
+/* PROFIT workspace */
+.app-sidebar {
+  flex-basis: 142px;
+  width: 142px;
+  gap: 22px;
+  background: linear-gradient(160deg, #10243d, #133558);
+}
+.sidebar-link { gap: 8px; font-size: 12px; text-decoration: none; }
+.sidebar-link.active { background: #244b78; box-shadow: inset 2px 0 #64b2ff; }
+.sidebar-link svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.report-tabs {
+  display: flex;
+  overflow-x: auto;
+  margin-bottom: 12px;
+  background: #e4ecf8;
+  border: 1px solid #dce5f1;
+  border-radius: 8px;
+}
+.report-tab {
+  display: flex;
+  flex: 1 0 105px;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 8px;
+  color: #405b7a;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+}
+.report-tab:hover, .report-tab.active { background: #f5f8fd; color: #174982; }
+.report-tab.active { border-bottom-color: #3976b8; }
+.report-tab-number {
+  flex: none;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #d9e7f8;
+  font-size: 10px;
+}
+@media (max-width: 900px) {
+  .app-shell { display: block; }
+  .app-sidebar {
+    position: static;
+    width: auto;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px;
+    gap: 6px 16px;
+  }
+  .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar-link { width: auto; min-height: 34px; }
+  .sidebar-bottom { display: none; }
+}

@@ -104,23 +104,13 @@ function App() {
     <div className="app-shell">
       <aside className="app-sidebar">
         <a className="sidebar-brand" href="/vdgo/" aria-label="Профит — рабочий стол">
-          <span className="sidebar-brand-mark" aria-hidden="true">П</span>
+          <svg viewBox="0 0 32 36" width="29" height="33" aria-hidden="true"><path fill="#63b9ff" d="M19 1c1 8-7 10-7 17 0 2 1 3 2 4-5-1-8-4-7-8C9 9 15 6 19 1Z"/><path fill="#3189e4" d="M21 12c7 5 9 10 6 16-2 4-6 6-11 7 4-3 5-6 3-9-1-2-4-3-4-6 0-3 3-6 6-8Z"/><path fill="#a2d6ff" d="M6 19c0 5 6 7 7 11l-2 4C5 31 2 26 6 19Z"/></svg>
           <span className="sidebar-brand-name">PROFIT</span>
         </a>
-        <div className="sidebar-caption">ТЕХНИЧЕСКОЕ ЗАКЛЮЧЕНИЕ</div>
-        <nav className="sidebar-nav" aria-label="Разделы заключения">
-          {reportSections.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={`sidebar-link${activeSection === section.id ? ' active' : ''}`}
-              onClick={() => navigateToSection(section.id)}
-              title={section.label}
-            >
-              <span className="sidebar-icon" aria-hidden="true">{section.icon}</span>
-              <span className="sidebar-link-copy"><span>{section.label}</span><small>{section.number}</small></span>
-            </button>
-          ))}
+        <nav className="sidebar-nav" aria-label="Модули ПРОФИТ">
+          <a className="sidebar-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg>Схемы домов</a>
+          <a className="sidebar-link" href="/manual-cad.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 12-12-3-3L5 16zM14 7l3 3"/></svg>CAD-редактор</a>
+          <a className="sidebar-link active" href="/vdgo/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключения</a>
         </nav>
         <div className="sidebar-bottom">
           <span className="sidebar-bottom-mark" aria-hidden="true">●</span>
@@ -157,13 +147,29 @@ function App() {
               <p>Заполнение фактических данных, проверка приложений и формирование итогового документа.</p>
             </div>
             <a className="outline-button" href="/vdgo/legacy" target="_blank" rel="noreferrer">
-              Открыть отдельно <span aria-hidden="true">↗</span>
+              Открыть форму отдельно <span aria-hidden="true">↗</span>
             </a>
           </section>
 
+          <nav className="report-tabs" aria-label="Разделы заключения">
+            {reportSections.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                aria-current={activeSection === section.id ? 'location' : undefined}
+                className={`report-tab${activeSection === section.id ? ' active' : ''}`}
+                onClick={() => navigateToSection(section.id)}
+                title={section.label}
+              >
+                <span className="report-tab-number" aria-hidden="true">{section.number}</span>
+                <span>{section.label}</span>
+              </button>
+            ))}
+          </nav>
+
           <section className="form-panel" aria-label="Форма технического заключения">
             <div className="panel-heading">
-              <div className="panel-title-line"><span className="panel-file-icon" aria-hidden="true">▤</span><div><h2>Данные заключения</h2><p>Все поля, проверки, вложения и экспорт сохранены без изменений.</p></div></div>
+              <div className="panel-title-line"><span className="panel-file-icon" aria-hidden="true">▤</span><div><h2>Данные заключения</h2><p>Основные данные, измерения, проверки и приложения.</p></div></div>
               <span className="form-version">PDF · DOCX</span>
             </div>
             <div className="frame-wrap">
