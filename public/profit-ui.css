@@ -214,3 +214,18 @@
 .profit-topbar .library-search button { padding: 2px 6px; font: inherit; }
 .recognition-inspector #settings { display: grid; gap: 7px; min-width: 0; }
 #settings:target, #object-library:target { outline: 2px solid #9bbce4; outline-offset: 2px; border-radius: 6px; }
+
+.recognition-page[data-view] :is(.profit-tabs,.profit-heading-actions,.main-column,.recognition-inspector > .profit-panel-heading) { display: none; }
+.recognition-page[data-view] .workspace-grid { display: block; max-width: 1080px; }
+.recognition-page[data-view=archive] :is(.recognition-inspector,.upload-card) { display: none; }
+.recognition-page[data-view=archive] .sidebar { display: block; position: static; max-height: none; }
+.recognition-page[data-view=archive] .library-tree { max-height: none; min-height: 180px; }
+.recognition-page[data-view=settings] :is(.sidebar,.profit-topbar .library-search,.recognition-inspector > :not(#settings)) { display: none; }
+.recognition-page[data-view=settings] .recognition-inspector { display: block; }
+.recognition-page[data-view=settings] #settings { grid-template-columns: repeat(auto-fit, minmax(min(100%, 315px), 1fr)); align-items: start; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,240px),1fr)); gap: 10px; }
+.dashboard-card { display: block; padding: 16px; color: var(--profit-text); text-decoration: none; }
+.dashboard-card:hover { border-color: #a9c3e3; background: #f2f7ff; }
+.dashboard-card span { display: inline-block; padding: 3px 5px; border-radius: 4px; background: #e4edfa; color: var(--profit-blue); font-size: 10px; }
+.dashboard-card h2 { margin: 8px 0 4px; font-size: 14px; }
+.dashboard-card p { margin: 0; color: #536b87; font-size: 12px; line-height: 1.5; }

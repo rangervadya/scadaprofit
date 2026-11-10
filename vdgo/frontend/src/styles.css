@@ -128,3 +128,12 @@ h2 { font-size: 12px; }
 .search { position: relative; }
 .search output:not(:empty) { position: absolute; top: 100%; left: 0; z-index: 5; padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); }
 #history:target { outline: 2px solid #9bbce4; outline-offset: 2px; }
+
+.history-action { padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); }
+.history-table-wrap { overflow: auto; }
+.history-screen table { width: 100%; border-collapse: collapse; text-align: left; }
+.history-screen th, .history-screen td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.history-screen th { background: #edf3fb; white-space: nowrap; }
+.history-screen tr:last-child td { border-bottom: 0; }
+.history-empty { padding: 18px 12px; color: #536b87; }
+.history-link { display: inline-block; margin-top: 6px; }

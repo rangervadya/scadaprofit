@@ -103,8 +103,9 @@ function renderLibrary() {
   for (const street of addressLibrary.streets || []) {
     const streetMatches = Boolean(query) && street.name.toLocaleLowerCase('ru').includes(query);
     const visibleBuildings = (street.buildings || []).filter(building => {
-      const text = `${building.name} ${(building.schemes || []).map(item => item.title).join(' ')}`.toLocaleLowerCase('ru');
-      return !query || streetMatches || text.includes(query);
+      const address = `${street.name} дом ${building.name}`.toLocaleLowerCase('ru');
+      return !query || streetMatches || query.split(/[,\s]+/).every(word => address.includes(word))
+        || (building.schemes || []).some(item => `${item.title} ${item.jobId}`.toLocaleLowerCase('ru').includes(query));
     });
     if (query && !visibleBuildings.length && !streetMatches) continue;
     const expanded = expandedStreetIds.has(street.id) || Boolean(query);
@@ -116,7 +117,7 @@ function renderLibrary() {
       <div class="tree-children" ${expanded ? '' : 'hidden'}>
         ${visibleBuildings.map(building => {
           const selected = selectedBuildingId === building.id;
-          const buildingMatches = Boolean(query) && String(building.name).toLocaleLowerCase('ru').includes(query);
+          const buildingMatches = Boolean(query) && query.split(/[,\s]+/).every(word => `${street.name} дом ${building.name}`.toLocaleLowerCase('ru').includes(word));
           const schemeList = (building.schemes || []).filter(item => !query || streetMatches || buildingMatches || `${item.title} ${item.jobId}`.toLocaleLowerCase('ru').includes(query));
           const expandedBuilding = selected || Boolean(query);
           return `<div class="tree-building-group">
@@ -152,7 +153,11 @@ function renderLibrary() {
     renderLibrary(); updateLibrarySelection();
     showAddressInbox(selectedStreetId, selectedBuildingId);
   }));
-  root.querySelectorAll('[data-open-job]').forEach(button => button.addEventListener('click', () => openLibraryScheme(button.dataset.openJob))); 
+  root.querySelectorAll('[data-open-job]').forEach(button => button.addEventListener('click', () => {
+    const jobId = button.dataset.openJob;
+    if (workspacePath === '/archive') window.location.assign(`/?job=${encodeURIComponent(jobId)}`);
+    else void openLibraryScheme(jobId);
+  }));
   const addBuilding = $('addBuildingBtn');
   if (addBuilding) addBuilding.disabled = !selectedStreetId;
 }
@@ -238,15 +243,27 @@ $('librarySearchForm').addEventListener('submit', event => {
   $('object-library').scrollIntoView({ block: 'nearest' });
 });
 
-function highlightLibraryNavigation() {
-  const locationLink = ['#object-library', '#settings'].includes(location.hash) ? '/' + location.hash : '/';
-  document.querySelectorAll('.profit-links a').forEach(link => {
-    if (link.getAttribute('href') === locationLink) link.setAttribute('aria-current', 'page');
-    else link.removeAttribute('aria-current');
-  });
+const workspacePath = window.location.pathname.replace(/\/$/, '') || '/';
+const workspaceViews = {
+  '/archive': { title: 'Архив', description: 'Найдите сохранённую схему по адресу или названию и откройте её для просмотра.' },
+  '/settings': { title: 'Настройки', description: 'Управляйте эталоном чертежа и проверяйте доступность сервисов распознавания.' },
+};
+const workspaceView = workspaceViews[workspacePath];
+if (workspaceView) {
+  document.body.dataset.view = workspacePath.slice(1);
+  document.title = `${workspaceView.title} · ПРОФИТ`;
+  $('workspaceTitle').textContent = workspaceView.title;
+  $('workspaceBreadcrumb').textContent = `Рабочий стол / ${workspaceView.title}`;
+  $('workspaceDescription').textContent = workspaceView.description;
+  document.querySelector('.profit-links [aria-current]')?.removeAttribute('aria-current');
+  document.querySelector(`.profit-links a[href="${workspacePath}"]`)?.setAttribute('aria-current', 'page');
 }
-window.addEventListener('hashchange', highlightLibraryNavigation);
-highlightLibraryNavigation();
+if (workspacePath === '/archive') {
+  $('librarySearch').value = new URLSearchParams(window.location.search).get('q') || '';
+}
+if (workspacePath === '/settings') {
+  $('templateSettings').open = true;
+}
 $('libraryDialogForm').addEventListener('submit', async event => {
   event.preventDefault();
   const name = $('libraryNameInput').value.trim();
@@ -2003,4 +2020,4 @@ refreshRecognitionStatus();
 
 loadAddressLibrary();
 loadTemplateInfo();
-restoreSavedJobFromUrl();
+if (!workspaceView) restoreSavedJobFromUrl();

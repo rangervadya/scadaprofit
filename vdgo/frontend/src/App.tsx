@@ -62,8 +62,10 @@ function App() {
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [activeSection, setActiveSection] = useState('main');
   const [searchMessage, setSearchMessage] = useState('');
-  const [historyQuery, setHistoryQuery] = useState('');
-  const [historyActive, setHistoryActive] = useState(window.location.hash === '#history');
+  const initialHistoryQuery = new URLSearchParams(window.location.search).get('q') || '';
+  const [historyQuery, setHistoryQuery] = useState(initialHistoryQuery.toLocaleLowerCase('ru'));
+  const historyActive = window.location.pathname.replace(/\/$/, '') === '/vdgo/history';
+  const [historyState, setHistoryState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [details, setDetails] = useState(false);
   const [report, setReport] = useState({ number: '', address: '', date: '' });
   const [file, setFile] = useState<File | null>(null);
@@ -83,16 +85,17 @@ function App() {
       setDbState(db === 'ok' ? 'ok' : db === 'not-configured' ? 'not-configured' : 'error');
       try {
         const recent = await fetch('/vdgo/api/reports', { headers: { Accept: 'application/json' }, cache: 'no-store' });
-        if (recent.ok) {
-          const result = (await recent.json()) as { items?: ReportRun[] };
-          setReports(result.items ?? []);
-        }
+        if (!recent.ok) throw new Error('Не удалось загрузить историю');
+        const result = (await recent.json()) as { items?: ReportRun[] };
+        setReports(result.items ?? []);
+        setHistoryState('ready');
       } catch {
-        // The report form remains available if the history endpoint is temporarily offline.
+        setHistoryState('error');
       }
     } catch {
       setHealthState('error');
       setDbState('unknown');
+      setHistoryState('error');
     }
   }, []);
 
@@ -103,20 +106,13 @@ function App() {
   }, [refreshStatus]);
 
   useEffect(() => {
-    const syncHash = () => {
-      const active = window.location.hash === '#history';
-      setHistoryActive(active);
-      if (active) document.getElementById('history')?.scrollIntoView({ block: 'nearest' });
-    };
-    syncHash();
-    window.addEventListener('hashchange', syncHash);
-    return () => window.removeEventListener('hashchange', syncHash);
-  }, []);
+    document.title = historyActive ? 'История · ПРОФИТ' : 'Техническое заключение ВДГО · ПРОФИТ';
+  }, [historyActive]);
 
   const matchesHistory = (item: ReportRun, query: string) =>
     [item.report_number, item.report_date, item.output_filename].some(value => value?.toLocaleLowerCase('ru').includes(query));
 
-  const shownReports = (historyQuery ? reports.filter(item => matchesHistory(item, historyQuery)) : reports).slice(0, 6);
+  const shownReports = (historyQuery ? reports.filter(item => matchesHistory(item, historyQuery)) : reports);
 
   const navigateToSection = (id: string) => {
     setActiveSection(id);
@@ -184,17 +180,17 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
-        <a className="sidebar-brand" href="/vdgo/" aria-label="Профит — рабочий стол">
+        <a className="sidebar-brand" href="/dashboard.html" aria-label="Профит — рабочий стол">
           <svg viewBox="0 0 32 36" width="29" height="33" aria-hidden="true"><path fill="#63b9ff" d="M19 1c1 8-7 10-7 17 0 2 1 3 2 4-5-1-8-4-7-8C9 9 15 6 19 1Z"/><path fill="#3189e4" d="M21 12c7 5 9 10 6 16-2 4-6 6-11 7 4-3 5-6 3-9-1-2-4-3-4-6 0-3 3-6 6-8Z"/><path fill="#a2d6ff" d="M6 19c0 5 6 7 7 11l-2 4C5 31 2 26 6 19Z"/></svg>
           <span className="sidebar-brand-name">PROFIT</span>
         </a>
         <nav className="sidebar-nav" aria-label="Модули ПРОФИТ">
-          <a className={historyActive ? "sidebar-link" : "sidebar-link active"} href="/vdgo/" aria-current={historyActive ? undefined : "page"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg>Рабочий стол</a>
-          <a className="sidebar-link" href="/vdgo/legacy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключение</a>
+          <a className="sidebar-link" href="/dashboard.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg>Рабочий стол</a>
+          <a className={historyActive ? "sidebar-link" : "sidebar-link active"} href="/vdgo/" aria-current={historyActive ? undefined : "page"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg>Заключение</a>
           <a className="sidebar-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l5-4 4 4 5-7 4 4M4 12v8h16V9M9 20v-5h5v5"/></svg>Схемы домов</a>
-          <a className="sidebar-link" href="/#object-library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg>Архив</a>
-          <a className={historyActive ? "sidebar-link active" : "sidebar-link"} href="/vdgo/#history" aria-current={historyActive ? "location" : undefined}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2 6m-2-2v4h4m5-13v5l3 2"/></svg>История</a>
-          <a className="sidebar-link" href="/#settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg>Настройки</a>
+          <a className="sidebar-link" href="/archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg>Архив</a>
+          <a className={historyActive ? "sidebar-link active" : "sidebar-link"} href="/vdgo/history" aria-current={historyActive ? "page" : undefined}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2 6m-2-2v4h4m5-13v5l3 2"/></svg>История</a>
+          <a className="sidebar-link" href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg>Настройки</a>
         </nav>
         <a className="sidebar-bottom" href="/vdgo/legacy" target="_blank" rel="noreferrer">ⓘ　Полная форма</a>
       </aside>
@@ -206,17 +202,21 @@ function App() {
             const query = String(new FormData(event.currentTarget).get('query') || '').trim().toLocaleLowerCase('ru');
             if (!query) return;
             setSearchMessage('');
+            if (historyActive) {
+              setHistoryQuery(query);
+              return;
+            }
             const section = reportSections.find(([, label]) => label.toLocaleLowerCase('ru').includes(query));
             if (section) navigateToSection(section[0]);
             else if ([report.number, report.address, report.date].some(value => value.toLocaleLowerCase('ru').includes(query))) navigateToSection('main');
-            else if (reports.some(item => matchesHistory(item, query))) {
-              setHistoryQuery(query);
-              window.location.hash = 'history';
-              document.getElementById('history')?.scrollIntoView({ block: 'nearest' });
-            } else setSearchMessage('Ничего не найдено');
+            else if (reports.some(item => matchesHistory(item, query))) window.location.assign(`/vdgo/history?q=${encodeURIComponent(query)}`);
+            else setSearchMessage('Ничего не найдено');
           }}>
             <span aria-hidden="true">⌕</span>
-            <input name="query" type="search" placeholder="Поиск по адресу, номеру и разделам…" aria-label="Поиск по адресу, номеру и разделам" onChange={() => { setSearchMessage(''); setHistoryQuery(''); }} />
+            <input name="query" type="search" placeholder={historyActive ? 'Поиск по номеру, дате или имени файла…' : 'Поиск по адресу, номеру и разделам…'} aria-label={historyActive ? 'Поиск по истории документов' : 'Поиск по адресу, номеру и разделам'} defaultValue={historyActive ? initialHistoryQuery : undefined} onChange={(event) => {
+              setSearchMessage('');
+              if (historyActive) setHistoryQuery(event.currentTarget.value.trim().toLocaleLowerCase('ru'));
+            }} />
             <button title="Найти" aria-label="Найти">↵</button>
             <output aria-live="polite">{searchMessage}</output>
           </form>
@@ -226,6 +226,25 @@ function App() {
           <span className="avatar" aria-hidden="true">ВД</span><span>ВДГО</span>
         </header>
 
+        {historyActive ? <>
+          <div className="breadcrumb">⌂　Рабочий стол　›　История</div>
+          <section className="page-heading">
+            <div><h1>История</h1><p>Последние сформированные технические заключения.</p></div>
+            <a href="/vdgo/" className="history-action">Подготовить заключение →</a>
+          </section>
+          <section className="card history-screen" aria-label="Журнал формирования документов">
+            <header><h2>Журнал формирования документов</h2><button onClick={() => void refreshStatus()}>Обновить</button></header>
+            {shownReports.length > 0 ? <div className="history-table-wrap">
+              <table>
+                <thead><tr><th>Сформирован</th><th>Номер</th><th>Дата заключения</th><th>Файл</th><th>Страниц</th></tr></thead>
+                <tbody>{shownReports.map(item => <tr key={item.id}>
+                  <td>{formatDate(item.created_at)}</td><td>{item.report_number || '—'}</td><td>{item.report_date || '—'}</td>
+                  <td>{item.output_filename || item.output_format.toUpperCase()}</td><td>{item.page_count}</td>
+                </tr>)}</tbody>
+              </table>
+            </div> : <p className="history-empty" role="status">{historyState === 'loading' ? 'Загружаем журнал…' : historyState === 'error' ? 'Журнал недоступен. Обновите данные, чтобы повторить попытку.' : dbState === 'not-configured' ? 'В локальном режиме журнал документов отключён.' : historyQuery ? 'Документы по этому запросу не найдены.' : 'Документы пока не формировались.'}</p>}
+          </section>
+        </> : <>
         <div className="breadcrumb">⌂　　Заключения　›　 Техническое заключение ВДГО</div>
         <section className="page-heading">
           <div>
@@ -297,7 +316,8 @@ function App() {
         <section className="bottom-grid">
           <article id="history" className="card bottom-card">
             <h2>◷　Журнал действий</h2>
-            {shownReports.length ? <ul>{shownReports.map((item) => <li key={item.id}>{formatDate(item.created_at)}　 ·　{item.report_number || item.output_filename}　{item.output_format.toUpperCase()}</li>)}</ul> : <p>Документы пока не формировались</p>}
+            {reports.length ? <ul>{reports.slice(0, 3).map((item) => <li key={item.id}>{formatDate(item.created_at)}　 ·　{item.report_number || item.output_filename}　{item.output_format.toUpperCase()}</li>)}</ul> : <p>Документы пока не формировались</p>}
+            <a className="history-link" href="/vdgo/history">Вся история →</a>
           </article>
           <article id="attachments" className="card bottom-card">
             <h2>♧　Файлы и вложения</h2>
@@ -316,6 +336,7 @@ function App() {
             <button onClick={() => upload.current?.click()}><span aria-hidden="true">⇧</span>Загрузить эскиз<small>или перетащите сюда</small></button>
           </div>
         </section>
+        </>}
       </main>
     </div>
   );
