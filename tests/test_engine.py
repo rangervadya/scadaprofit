@@ -16,7 +16,7 @@ import processor
 from structured_model import build_document_model, validate_document_model
 from recognition_channels import split_recognition_channels
 from cad_symbols import assign_symbol_type, symbol_primitives
-from topology_reconstruction import attach_pipes_to_symbols
+from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 from annotation_linking import link_annotations
 from engineering_validation import validate_engineering_model
 from clean_layout import build_clean_layout
@@ -2655,6 +2655,120 @@ class ReferenceVectorizationTests(unittest.TestCase):
             self.assertTrue(next(item for item in diagnostics['artifacts'] if item['name'] == 'centerline-trace.svg')['exists'])
             graph_file_artifact = next(item for item in diagnostics['artifacts'] if item['name'] == 'graph.json')
             self.assertTrue(graph_file_artifact['exists'])
+
+
+class CADQualityEnhancementTests(unittest.TestCase):
+    def test_conservative_deskew_requires_horizontal_and_vertical_evidence(self):
+        image = np.full((500, 600, 3), 255, dtype=np.uint8)
+        for y in (80, 160, 240, 320, 400):
+            cv2.line(image, (40, y), (560, y), (0, 0, 0), 3)
+        for x in (100, 200, 300, 400, 500):
+            cv2.line(image, (x, 40), (x, 460), (0, 0, 0), 3)
+        matrix = cv2.getRotationMatrix2D((300, 250), -1.2, 1.0)
+        skewed = cv2.warpAffine(image, matrix, (600, 500), borderValue=(255, 255, 255))
+        result = processor._estimate_document_skew(skewed)
+        self.assertTrue(result['accepted'], result)
+        self.assertAlmostEqual(result['angle_degrees'], 1.2, delta=0.35)
+
+        horizontal_only = np.full((300, 500, 3), 255, dtype=np.uint8)
+        for y in (40, 100, 160, 220):
+            cv2.line(horizontal_only, (20, y), (480, y + 8), (0, 0, 0), 2)
+        self.assertFalse(processor._estimate_document_skew(horizontal_only)['accepted'])
+
+    def test_adaptive_ink_layer_recovers_faint_pencil_without_reclassifying_as_dark(self):
+        image = np.full((100, 180, 3), 245, dtype=np.uint8)
+        cv2.line(image, (15, 50), (165, 50), (190, 190, 190), 1)
+        gray, _ = processor.normalize_document(image)
+        layers = processor.make_ink_layers(image, gray)
+        self.assertGreater(int(np.count_nonzero(layers['faint'])), 60)
+        self.assertEqual(int(np.count_nonzero(layers['dark'])), 0)
+        self.assertGreater(int(np.count_nonzero(layers['combined'])), 60)
+
+    def test_supported_t_junction_splits_host_and_creates_degree_three_node(self):
+        ink = np.zeros((100, 100), dtype=np.uint8)
+        cv2.line(ink, (10, 50), (90, 50), 255, 2)
+        cv2.line(ink, (50, 20), (50, 50), 255, 2)
+        segments = [
+            {'x1': 10, 'y1': 50, 'x2': 90, 'y2': 50, 'length': 80, 'support': .9, 'ocr_overlap': 0},
+            {'x1': 50, 'y1': 20, 'x2': 50, 'y2': 50, 'length': 30, 'support': .9, 'ocr_overlap': 0},
+        ]
+        rebuilt, diagnostics = split_segments_at_endpoint_junctions(segments, ink)
+        self.assertEqual(diagnostics['tJunctionsAdded'], 1)
+        self.assertEqual(len(rebuilt), 3)
+        nodes, _edges, _components = processor.endpoint_clusters(rebuilt, ink=ink)
+        self.assertIn(3, [node['degree'] for node in nodes])
+
+    def test_x_crossing_is_not_promoted_to_t_junction(self):
+        ink = np.zeros((100, 100), dtype=np.uint8)
+        cv2.line(ink, (10, 50), (90, 50), 255, 2)
+        cv2.line(ink, (50, 10), (50, 90), 255, 2)
+        segments = [
+            {'x1': 10, 'y1': 50, 'x2': 90, 'y2': 50, 'length': 80, 'support': .9, 'ocr_overlap': 0},
+            {'x1': 50, 'y1': 10, 'x2': 50, 'y2': 90, 'length': 80, 'support': .9, 'ocr_overlap': 0},
+        ]
+        rebuilt, diagnostics = split_segments_at_endpoint_junctions(segments, ink)
+        self.assertEqual(diagnostics['tJunctionsAdded'], 0)
+        self.assertEqual(len(rebuilt), 2)
+
+    def test_symbol_template_suggestions_are_ranked_but_never_auto_approved(self):
+        from symbol_recognition import _TEMPLATES
+        template = _TEMPLATES['shutoff_valve']
+        component = {
+            'id': 'C1', 'role': 'ambiguous', 'edge_count': 6,
+            'bbox': {'x': 0, 'y': 0, 'w': 64, 'h': 64},
+            'ocr_overlap_ratio': 0.0, 'edge_density': 2.2, 'max_node_degree': 4,
+        }
+        channels = split_recognition_channels(64, 64, [component], [], [], ink_mask=template)
+        candidate = channels['symbolCandidates'][0]
+        self.assertEqual(candidate['suggestedTypes'][0]['type'], 'shutoff_valve')
+        self.assertFalse(candidate['autoClassified'])
+        self.assertEqual(candidate['state'], 'review')
+
+    def test_metric_dimension_notations_normalize_to_millimetres(self):
+        from recognition_channels import _dimension_value
+        self.assertEqual(_dimension_value('DN 50'), ('diameter', 50.0))
+        self.assertEqual(_dimension_value('Ø32'), ('diameter', 32.0))
+        self.assertEqual(_dimension_value('1,5 м'), ('length', 1500.0))
+        self.assertEqual(_dimension_value('125 см'), ('length', 1250.0))
+        self.assertEqual(_dimension_value('L=1800 мм'), ('length', 1800.0))
+        self.assertIsNone(_dimension_value('№ 2'))
+
+    def test_validation_flags_unmodeled_interior_crossing_and_duplicate_geometry(self):
+        model = {
+            'sourceImage': {'width': 120, 'height': 120},
+            'nodes': [
+                {'id': 'N1', 'position': [10, 60]}, {'id': 'N2', 'position': [110, 60]},
+                {'id': 'N3', 'position': [60, 10]}, {'id': 'N4', 'position': [60, 110]},
+                {'id': 'N5', 'position': [10, 60]}, {'id': 'N6', 'position': [110, 60]},
+            ],
+            'pipes': [
+                {'id': 'P1', 'fromNode': 'N1', 'toNode': 'N2', 'geometry': [[10, 60], [110, 60]], 'state': 'primary'},
+                {'id': 'P2', 'fromNode': 'N3', 'toNode': 'N4', 'geometry': [[60, 10], [60, 110]], 'state': 'primary'},
+                {'id': 'P3', 'fromNode': 'N5', 'toNode': 'N6', 'geometry': [[10, 60], [110, 60]], 'state': 'primary'},
+            ],
+            'symbols': [], 'topologyLinks': [], 'dimensions': [], 'labels': [], 'reviewTasks': [],
+        }
+        _updated, report = validate_engineering_model(model)
+        codes = {item['code'] for item in report['findings']}
+        self.assertIn('unmodeled_pipe_crossing', codes)
+        self.assertIn('duplicate_pipe_geometry', codes)
+
+    def test_validation_does_not_flag_proper_shared_t_junction_as_crossing(self):
+        model = {
+            'sourceImage': {'width': 120, 'height': 120},
+            'nodes': [
+                {'id': 'N1', 'position': [10, 60]}, {'id': 'N2', 'position': [60, 60]},
+                {'id': 'N3', 'position': [110, 60]}, {'id': 'N4', 'position': [60, 10]},
+            ],
+            'pipes': [
+                {'id': 'P1', 'fromNode': 'N1', 'toNode': 'N2', 'geometry': [[10, 60], [60, 60]], 'state': 'primary'},
+                {'id': 'P2', 'fromNode': 'N2', 'toNode': 'N3', 'geometry': [[60, 60], [110, 60]], 'state': 'primary'},
+                {'id': 'P3', 'fromNode': 'N4', 'toNode': 'N2', 'geometry': [[60, 10], [60, 60]], 'state': 'primary'},
+            ],
+            'symbols': [], 'topologyLinks': [], 'dimensions': [], 'labels': [], 'reviewTasks': [],
+        }
+        _updated, report = validate_engineering_model(model)
+        self.assertNotIn('unmodeled_pipe_crossing', {item['code'] for item in report['findings']})
 
 
 if __name__ == "__main__":

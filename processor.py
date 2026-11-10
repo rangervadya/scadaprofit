@@ -29,7 +29,7 @@ from PIL import Image, ImageOps
 from structured_model import build_document_model
 from recognition_channels import split_recognition_channels
 from cad_symbols import catalog_manifest
-from topology_reconstruction import attach_pipes_to_symbols
+from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 from annotation_linking import link_annotations
 from engineering_validation import validate_engineering_model
 from clean_layout import build_clean_layout
@@ -218,6 +218,79 @@ def _detect_text_rotation_fallback(bgr: np.ndarray) -> dict[str, Any] | None:
         }
 
 
+def _estimate_document_skew(bgr: np.ndarray) -> dict[str, Any]:
+    """Estimate small page rotation only when horizontal AND vertical evidence agrees."""
+    h, w = bgr.shape[:2]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 45, 130)
+    min_dimension = min(h, w)
+    min_length = max(36, int(min_dimension * 0.035))
+    threshold = max(24, int(min_dimension * 0.018))
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 1800.0, threshold=threshold,
+                            minLineLength=min_length, maxLineGap=max(10, int(min_dimension * 0.012)))
+    horizontal: list[tuple[float, float]] = []
+    vertical: list[tuple[float, float]] = []
+    if lines is not None:
+        for raw in lines[:, 0, :]:
+            x1, y1, x2, y2 = map(float, raw)
+            dx, dy = x2 - x1, y2 - y1
+            length = math.hypot(dx, dy)
+            if length < min_length:
+                continue
+            angle = math.degrees(math.atan2(dy, dx))
+            # Express both horizontal and vertical families as a small signed tilt.
+            horizontal_offset = ((angle + 45.0) % 90.0) - 45.0
+            if abs(horizontal_offset) <= 7.0:
+                if abs(angle) <= 35.0 or abs(angle) >= 145.0:
+                    horizontal.append((horizontal_offset, length))
+                else:
+                    vertical.append((horizontal_offset, length))
+    def weighted_median(values: list[tuple[float, float]]) -> float:
+        ranked = sorted(values, key=lambda item: item[0])
+        half = sum(weight for _, weight in ranked) / 2.0
+        accumulated = 0.0
+        for value, weight in ranked:
+            accumulated += weight
+            if accumulated >= half:
+                return value
+        return ranked[-1][0]
+    min_total_length = max(150.0, math.hypot(w, h) * 0.10)
+    if len(horizontal) < 2 or len(vertical) < 2:
+        return {"accepted": False, "angle_degrees": 0.0, "horizontal_lines": len(horizontal),
+                "vertical_lines": len(vertical), "reason": "insufficient_two_axis_evidence"}
+    h_angle = weighted_median(horizontal)
+    v_angle = weighted_median(vertical)
+    combined = weighted_median(horizontal + vertical)
+    deviations = [abs(value - combined) for value, _ in horizontal + vertical]
+    total_length = sum(length for _, length in horizontal + vertical)
+    max_angle = max(0.25, min(4.0, float(os.getenv('DESKEW_MAX_ANGLE_DEG', '2.5'))))
+    consistent = (abs(h_angle - v_angle) <= 0.85 and
+                  float(np.median(deviations)) <= 0.55 and
+                  max(deviations, default=0.0) <= 1.35)
+    accepted = (consistent and total_length >= min_total_length and
+                0.30 <= abs(combined) <= max_angle)
+    return {"accepted": bool(accepted), "angle_degrees": round(combined, 3) if accepted else 0.0,
+            "horizontal_lines": len(horizontal), "vertical_lines": len(vertical),
+            "horizontal_angle": round(h_angle, 3), "vertical_angle": round(v_angle, 3),
+            "median_deviation": round(float(np.median(deviations)), 3) if deviations else 0.0,
+            "evidence_length_px": round(total_length, 1), "minimum_evidence_length_px": round(min_total_length, 1),
+            "reason": "consistent_two_axis_evidence" if accepted else "weak_or_inconsistent_skew_evidence"}
+
+
+def _rotate_expand(bgr: np.ndarray, angle_degrees: float) -> np.ndarray:
+    """Rotate an image without clipping page content; expose a white canvas."""
+    h, w = bgr.shape[:2]
+    centre = (w / 2.0, h / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, float(angle_degrees), 1.0)
+    radians = math.radians(abs(float(angle_degrees)))
+    new_w = int(math.ceil(w * math.cos(radians) + h * math.sin(radians)))
+    new_h = int(math.ceil(h * math.cos(radians) + w * math.sin(radians)))
+    matrix[0, 2] += new_w / 2.0 - centre[0]
+    matrix[1, 2] += new_h / 2.0 - centre[1]
+    return cv2.warpAffine(bgr, matrix, (new_w, new_h), flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
+
+
 def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
     """Rectify a photographed page and rotate confidently detected text upright."""
     original_h, original_w = bgr.shape[:2]
@@ -248,6 +321,11 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
     rotate_codes = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
     if rotation_degrees in rotate_codes:
         prepared = cv2.rotate(prepared, rotate_codes[rotation_degrees])
+    skew_diagnostics = _estimate_document_skew(prepared)
+    deskew_applied = False
+    if skew_diagnostics.get("accepted"):
+        prepared = _rotate_expand(prepared, float(skew_diagnostics["angle_degrees"]))
+        deskew_applied = True
     return prepared, {
         "original_width": original_w, "original_height": original_h,
         "page_quad_detected": quad is not None,
@@ -259,6 +337,7 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
         "script_min_confidence": max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0'))),
         "orientation_decision": orientation_decision,
         "orientation_fallback": rotation_diagnostics,
+        "deskew": {**skew_diagnostics, "applied": deskew_applied},
         "prepared_width": int(prepared.shape[1]), "prepared_height": int(prepared.shape[0]),
     }
 
@@ -279,20 +358,50 @@ def normalize_document(bgr: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
     return norm, {"background_kernel": int(k), "contrast_p01": float(p1), "contrast_p99": float(p99)}
 
 
-def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, np.ndarray]:
+def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, Any]:
+    """Separate blue, dark and locally-contrasted faint ink without binarizing the source.
+
+    The adaptive layer recovers pale pencil and weak pen marks under uneven
+    illumination. A luminance ceiling prevents bright paper texture from being
+    promoted solely because it is darker than its local neighbourhood.
+    """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    blue = ((h >= 82) & (h <= 155) & (s >= 22) & (v <= 252)).astype(np.uint8) * 255
+    h, saturation, value = cv2.split(hsv)
+    blue = ((h >= 82) & (h <= 155) & (saturation >= 22) & (value <= 252)).astype(np.uint8) * 255
     dark = (norm_gray < 158).astype(np.uint8) * 255
-    combined = cv2.bitwise_or(blue, dark)
-    # Remove isolated sensor speckles while retaining thin strokes.
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(combined, 8)
-    out = np.zeros_like(combined)
+
+    min_side = min(norm_gray.shape[:2])
+    max_odd = min(61, min_side if min_side % 2 else min_side - 1)
+    block_size = max(3, min(max_odd, max(15, (min_side // 30) | 1)))
+    if block_size % 2 == 0:
+        block_size -= 1
+    if block_size >= 3:
+        adaptive = cv2.adaptiveThreshold(
+            norm_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, block_size,
+            max(4, min(12, int(os.getenv("ADAPTIVE_INK_C", "8"))))
+        )
+        faint = cv2.bitwise_and(adaptive, (norm_gray < 226).astype(np.uint8) * 255)
+        faint = cv2.bitwise_and(faint, cv2.bitwise_not(dark))
+        faint = cv2.bitwise_and(faint, cv2.bitwise_not(blue))
+    else:
+        faint = np.zeros_like(norm_gray)
+
+    combined = cv2.bitwise_or(cv2.bitwise_or(blue, dark), faint)
+    # Remove isolated sensor speckles while retaining one- and two-pixel strokes.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(combined, 8)
+    filtered = np.zeros_like(combined)
     min_area = 2 if combined.size < 2_000_000 else 3
-    for i in range(1, n):
-        if stats[i, cv2.CC_STAT_AREA] >= min_area:
-            out[labels == i] = 255
-    return {"blue": cv2.bitwise_and(blue, out), "dark": cv2.bitwise_and(dark, out), "combined": out}
+    for component in range(1, count):
+        if stats[component, cv2.CC_STAT_AREA] >= min_area:
+            filtered[labels == component] = 255
+    return {
+        "blue": cv2.bitwise_and(blue, filtered),
+        "dark": cv2.bitwise_and(dark, filtered),
+        "faint": cv2.bitwise_and(faint, filtered),
+        "combined": filtered,
+        "adaptive_block_size": block_size,
+    }
 
 
 def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
@@ -4503,6 +4612,11 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     # primary CAD geometry; sparse or invalid model output cannot erase OpenCV.
     segments=extract_segments(gray,ink,annotations)
     text_mask = _text_region_mask(gray.shape[:2], annotations)
+    segments, t_junction_diagnostics = split_segments_at_endpoint_junctions(
+        segments, ink, text_mask,
+        max_distance_px=float(os.getenv("T_JUNCTION_MAX_GAP_PX", "3.5")),
+        minimum_branch_length_px=float(os.getenv("T_JUNCTION_MIN_BRANCH_PX", "14")),
+    )
     nodes,edges,components=endpoint_clusters(segments, ink=ink, text_mask=text_mask)
     ink_color_diagnostics = _annotate_edge_ink_color(edges, ink_layers["blue"], ink_layers["dark"])
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
@@ -4602,6 +4716,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     ink_path=str(Path(out_dir)/'ink-mask.png'); cv2.imwrite(ink_path,ink)
     cv2.imwrite(str(Path(out_dir)/'blue-ink-mask.png'), ink_layers['blue'])
     cv2.imwrite(str(Path(out_dir)/'dark-ink-mask.png'), ink_layers['dark'])
+    cv2.imwrite(str(Path(out_dir)/'faint-ink-mask.png'), ink_layers['faint'])
     # Preserve the original contour facsimile for exact ink-shape editing, but
     # also export a true one-pixel centreline version as open CAD polylines.
     # This avoids the thousands of closed contour loops that look like dots in
@@ -4651,7 +4766,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     _progress('CAD', f'Endpoint continuation candidates: total={len(joins)} high={sum(1 for item in joins if item.get("priority")=="high")} review={sum(1 for item in joins if item.get("priority")!="high")}')
     timings_ms['drawing_export_and_candidates'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
-    recognition_channels = split_recognition_channels(w, h, components, edges, annotations)
+    recognition_channels = split_recognition_channels(w, h, components, edges, annotations, ink_mask=ink)
     document_model = build_document_model(
         w, h, nodes, edges, annotations, crossings, joins, recognition_channels,
         semantic_routes=primary_semantic_routes
@@ -4676,7 +4791,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
            "documentModel":document_model,
            "recognitionChannels":recognition_channels,
            "symbolCatalog":catalog_manifest(),
-           "topologyDiagnostics":topology_diagnostics,
+           "topologyDiagnostics":{**topology_diagnostics, "tJunctions": t_junction_diagnostics},
            "annotationLinkingDiagnostics":annotation_linking_diagnostics,
            "engineeringValidation":engineering_validation,
            "cleanLayout":clean_layout,"cleanLayoutDiagnostics":clean_layout_diagnostics,
@@ -4688,6 +4803,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_and_validated_qwen_routes":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "ink_colour_is_advisory_only":True,"unknown_symbols_require_confirmation":True,"polyline_merge_preserves_source_geometry":True,"ambiguous_junctions_are_not_merged":True,
+                    "t_junctions_only_join_supported_endpoint_to_interior_contacts":True,"symbol_template_matches_require_engineer_confirmation":True,"adaptive_faint_ink_is_reviewed_with_source_support":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":qwen_ocr_complete,"ocr_text_available":ocr_complete,"pipe_tiles_complete":pipe_complete,
                       "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
@@ -4706,6 +4822,8 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
                       "cad_primary_qwen_routes":len(primary_semantic_routes),
                       "document_model_qwen_routes":sum(1 for pipe in document_model.get("pipes", []) if pipe.get("source") == "qwen3-vl-validated"),
                       "ink_color_classification":ink_color_diagnostics,
+                      "t_junctions_added": t_junction_diagnostics.get("tJunctionsAdded", 0),
+                      "t_junction_segments_created": t_junction_diagnostics.get("segmentsCreated", 0),
                       "cad_primary_total_paths":len(_cad_edge_chains(edges)) + len(primary_semantic_routes),
                       "semantic_validation":semantic_validation,
                       "primary_geometry_source":"opencv-selected-graph+ink-validated-local-qwen",
@@ -4749,12 +4867,16 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
                       "line_components":sum(1 for c in components if c['role']=='line_structure'),
                       "annotation_components":sum(1 for c in components if c['role']=='text_or_annotation'),
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
-                      "ink_pixels":int(np.count_nonzero(ink)),"preprocessing":prep},
+                      "ink_pixels":int(np.count_nonzero(ink)),
+                      "faint_ink_pixels":int(np.count_nonzero(ink_layers["faint"])),
+                      "t_junctions_added": t_junction_diagnostics.get("tJunctionsAdded", 0),
+                      "t_junction_segments_created": t_junction_diagnostics.get("segmentsCreated", 0),
+                      "preprocessing":prep},
            "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
                        "В 4.3.9 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
                        "Qwen-маршруты проходят проверку по исходным пикселям и добавляются в PIPE_MAIN только при подтверждении чернилами; остальные остаются в QWEN_REVIEW.",
                        "Неотобранные LSD/Hough-отрезки сохранены на замороженном DETAIL_REVIEW.",
-                       "Пересечения не объединяются автоматически; автоматически стыкуются только короткие почти соосные окончания с сильным геометрическим подтверждением.",
+                       "X-пересечения не объединяются автоматически; Т-подключения распознаются только при подтверждённом контакте окончания с внутренней частью штриха и достаточной поддержке исходными чернилами.",
                        "OCR-рамки участвуют в маске геометрии даже при низкой уверенности текста; непрерывная труба через рамку сохраняется при подтверждении с обеих сторон.",
                        "Подтверждённые подписи экспортируются как VERIFIED_TEXT; сомнительные OCR-чтения выводятся отдельно на замороженный TEXT_REVIEW.",
                        "Плотные рукописные заметки повторно читаются построчно отдельным OCR-проходом.",

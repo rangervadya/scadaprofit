@@ -1,0 +1,22 @@
+ScadaProfit 4.3.48 — update manifest
+
+CAD generation changes:
+- processor.py: cautious deskew, faint ink layer, diagnostics and T-junction integration
+- topology_reconstruction.py: evidence-gated T-junction splitting
+- recognition_channels.py: dimension parsing and review-only symbol suggestions
+- symbol_recognition.py: new template-based symbol candidate ranking
+- engineering_validation.py: geometric QA findings
+- pipeline_diagnostics.py: new masks and quality metrics
+- tests/test_engine.py: regression tests for new behavior
+- package.json: version 4.3.48
+
+Preserved previous release changes:
+- 4.3.47 CAD/Qwen route integration and vector cleanup changes
+- VDGO backend/frontend download fixes for PDF and DOCX
+- VDGO PDF templates copied with backend-expected filenames
+
+No UI styling, page layout, navigation, CAD editor design, or document template appearance was changed.
+
+Test results:
+- Root: npm run check — 22 JavaScript tests + 182 Python tests passed
+- VDGO backend: 36 tests passed

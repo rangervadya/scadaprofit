@@ -15,7 +15,7 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
     primary_pipes = [item for item in model.get('pipes', []) if item.get('state') == 'primary']
     open_tasks = [item for item in tasks if item.get('status') == 'open']
     open_findings = [item for item in findings if item.get('status') == 'open']
-    names = ['prepared-input.png','ink-mask.png','blue-ink-mask.png','dark-ink-mask.png',
+    names = ['prepared-input.png','ink-mask.png','blue-ink-mask.png','dark-ink-mask.png','faint-ink-mask.png',
              'primary-overlay.png','text-region-mask.png','handwritten-text-blocks.png',
              'clean.svg','drawing.dxf','cad-draft.svg','cad-draft.dxf',
              'reference-trace.svg','reference-trace.dxf','centerline-trace.svg','centerline-trace.dxf',
@@ -49,6 +49,8 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
          'value':{'segments':segment_count,'openEndpoints':open_endpoint_count,'maximumRatio':0.70}},
         {'id':'crossing-density-controlled','passed':segment_count<20 or crossing_count/segment_count<=0.12,
          'value':{'segments':segment_count,'crossings':crossing_count,'maximumRatio':0.12}},
+        {'id':'geometric-crossings-explicitly-reviewed','passed':not any(item.get('code')=='unmodeled_pipe_crossing' for item in findings),
+         'value':sum(1 for item in findings if item.get('code')=='unmodeled_pipe_crossing')},
         {'id':'no-engineering-errors','passed':not any(item.get('severity')=='error' for item in open_findings),
          'value':sum(1 for item in open_findings if item.get('severity')=='error')},
         {'id':'exports-created','passed':all(next((item['exists'] and item['bytes']>0 for item in artifacts if item['name']==name), False) for name in required_exports),
@@ -107,12 +109,15 @@ def build_pipeline_diagnostics(input_path: str, out_dir: str, graph: dict[str, A
         'note': 'Source trace exports remain available for inspection, but raw ink centerlines are not a semantic pipe drawing.',
     }
     stages = {
-        'geometry':{'segments':segment_count,'primaryPipes':len(primary_pipes),'nodes':len(model.get('nodes') or [])},
+        'geometry':{'segments':segment_count,'primaryPipes':len(primary_pipes),'nodes':len(model.get('nodes') or []),
+                    'tJunctionsAdded':int((graph.get('topologyDiagnostics') or {}).get('tJunctions', {}).get('tJunctionsAdded', 0) or 0),
+                    'unmodeledCrossings':sum(1 for item in findings if item.get('code')=='unmodeled_pipe_crossing')},
         'vectorization':{'centerlinePaths':int((graph.get('centerlineTrace') or {}).get('paths', 0) or 0),
                          'centerlineVertices':int((graph.get('centerlineTrace') or {}).get('vertices', 0) or 0),
                          'sourceContours':int((graph.get('referenceTrace') or {}).get('contours', 0) or 0)},
         'recognition':{'labels':len(model.get('labels') or []),'symbols':len(symbols),
                        'classifiedSymbols':sum(1 for item in symbols if item.get('type')),
+                       'symbolSuggestions':sum(1 for item in symbols if item.get('suggestedTypes')),
                        'dimensions':len(dimensions),'assignedDimensions':sum(1 for item in dimensions if item.get('targetId'))},
         'review':{'openTasks':len(open_tasks),'openFindings':len(open_findings)},
     }
