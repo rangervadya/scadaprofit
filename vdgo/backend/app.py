@@ -1940,6 +1940,21 @@ def normalize_form_dates(form):
     return form
 
 
+def _download_disposition(form: dict[str, str], extension: str) -> str:
+    """Build a safe, useful filename for a browser attachment response."""
+    def clean(value: object, fallback: str) -> str:
+        raw = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._-]+", "_", str(value or "").strip()).strip("._-")
+        return raw[:48] or fallback
+
+    report_number = clean(val(form, "report_number"), "bez_nomera")
+    report_date = clean(val(form, "report_date"), "bez_daty")
+    filename = f"Заключение_{report_number}_{report_date}.{extension}"
+    # ASCII fallback is for older clients; filename* preserves Cyrillic safely.
+    ascii_number = re.sub(r"[^A-Za-z0-9._-]+", "_", report_number)
+    ascii_date = re.sub(r"[^A-Za-z0-9._-]+", "_", report_date)
+    fallback = f"Zaklyuchenie_{ascii_number}_{ascii_date}.{extension}"
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload):
         data=json.dumps(payload,ensure_ascii=False,default=str).encode('utf-8')
@@ -2007,16 +2022,15 @@ class Handler(BaseHTTPRequestHandler):
                 out=OUTPUT/'Заключение_редактируемый_текст.docx'
                 page_count=pdf_to_docx_editable(pdf_path,out)
                 output_format='docx-editable'
-                filename='Zaklyuchenie_redaktiruemyy_tekst.docx'
                 payload=out.read_bytes()
                 content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                disposition=f'attachment; filename="{filename}"'
+                disposition=_download_disposition(form, 'docx')
             else:
                 out=build_pdf(form,files); payload=out.read_bytes()
                 with fitz.open(out) as generated_doc:
                     page_count=len(generated_doc)
                 content_type='application/pdf'
-                disposition='inline; filename="preview.pdf"' if self.path=='/preview' else 'attachment; filename="generated.pdf"'
+                disposition='inline; filename="preview.pdf"' if self.path=='/preview' else _download_disposition(form, 'pdf')
                 output_format='preview' if self.path=='/preview' else 'pdf'
             try:
                 record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
@@ -2025,6 +2039,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type',content_type)
             self.send_header('Content-Disposition',disposition)
+            self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
+            self.send_header('X-Content-Type-Options','nosniff')
             self.send_header('Content-Length',str(len(payload)))
             self.end_headers(); self.wfile.write(payload)
         except Exception as e:

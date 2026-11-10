@@ -27,6 +27,22 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
         length = sum(math.dist(a[:2], b[:2]) for a, b in zip(geometry, geometry[1:]))
         if start == end or length < 1.0:
             add('invalid_pipe_geometry', 'error', [pipe_id], 'Участок имеет нулевую длину или замкнут на один узел.')
+        # A graph endpoint may be shared conservatively by the detector, but
+        # its stored polyline must still physically reach that node. Flag large
+        # disagreements for review; never move or snap the geometry here.
+        if len(geometry) >= 2:
+            for node_id, endpoint, side in ((start, geometry[0], 'начало'), (end, geometry[-1], 'конец')):
+                node = nodes.get(node_id)
+                position = node.get('position') if node else None
+                if isinstance(position, (list, tuple)) and len(position) >= 2:
+                    try:
+                        gap = math.dist([float(endpoint[0]), float(endpoint[1])],
+                                        [float(position[0]), float(position[1])])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if gap > 8.0:
+                        add('pipe_endpoint_mismatch', 'review', [pipe_id, node_id],
+                            f'Геометрия трубы не доходит до узла ({side}); расхождение {gap:.1f} px. Проверьте соединение.')
         if start in incidence:
             incidence[start] += 1
         if end in incidence:

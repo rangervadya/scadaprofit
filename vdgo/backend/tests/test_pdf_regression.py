@@ -10,6 +10,12 @@ import unittest
 from pathlib import Path
 import zipfile
 from io import BytesIO
+from tempfile import TemporaryDirectory
+from http.server import HTTPServer
+from threading import Thread
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 import fitz
 from PIL import Image
@@ -17,9 +23,57 @@ from PIL import Image
 BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
-from app import OUTPUT, TEMPLATE, DEFECTS, build_pdf, normalize_form_dates, PAGE, append_extra_photo_pages, _ordered_uploaded_photos, compact_specialist_certificate  # noqa: E402
+from app import OUTPUT, TEMPLATE, DEFECTS, Handler, build_pdf, normalize_form_dates, PAGE, append_extra_photo_pages, _ordered_uploaded_photos, compact_specialist_certificate, _download_disposition  # noqa: E402
 from pdf_to_docx import pdf_to_docx  # noqa: E402
 from pdf_to_docx_editable import pdf_to_docx_editable  # noqa: E402
+
+
+class DownloadBehaviorRegressionTests(unittest.TestCase):
+    def test_attachment_filename_is_safe_and_contains_report_metadata(self):
+        disposition = _download_disposition({
+            "report_number": 'АБ/12 "опасное"', "report_date": "14.10.2026",
+        }, "pdf")
+        self.assertTrue(disposition.startswith('attachment; filename="Zaklyuchenie_'))
+        self.assertIn("filename*=UTF-8''", disposition)
+        self.assertIn("%D0%97%D0%B0%D0%BA%D0%BB%D1%8E%D1%87%D0%B5%D0%BD%D0%B8%D0%B5", disposition)
+        self.assertNotIn('\"опасное\"', disposition)
+
+    def test_generated_files_use_native_hidden_iframe_download_path(self):
+        self.assertIn('id="vdgoDownloadFrame" name="vdgoDownloadFrame"', PAGE)
+        self.assertIn("form.setAttribute('target','vdgoDownloadFrame')", PAGE)
+        self.assertIn('HTMLFormElement.prototype.submit.call(form)', PAGE)
+        self.assertIn('Unlike fetch()+Blob, it preserves the browser', PAGE)
+
+    def test_generate_endpoint_returns_pdf_as_download_attachment(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stub.pdf"
+            with fitz.open() as document:
+                document.new_page()
+                document.save(path)
+            server = HTTPServer(("127.0.0.1", 0), Handler)
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                body = urlencode({"report_number": "QA-7", "report_date": "14.10.2026"}).encode()
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/generate",
+                    data=body, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                with patch("app.validate_form"), patch("app.build_pdf", return_value=path), patch("app.record_generation"):
+                    with urlopen(request, timeout=10) as response:
+                        payload = response.read()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers.get("Content-Type"), "application/pdf")
+                        disposition = response.headers.get("Content-Disposition", "")
+                        self.assertTrue(disposition.startswith("attachment;"))
+                        self.assertIn("QA-7", disposition)
+                        self.assertIn("filename*=UTF-8''", disposition)
+                        self.assertEqual(len(payload), int(response.headers.get("Content-Length", "0")))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
 
 
 class PdfRegressionTests(unittest.TestCase):

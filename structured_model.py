@@ -36,7 +36,8 @@ def build_document_model(width: int, height: int, nodes: list[dict[str, Any]],
                          edges: list[dict[str, Any]], annotations: list[dict[str, Any]],
                          crossings: list[dict[str, Any]] | None = None,
                          join_candidates: list[dict[str, Any]] | None = None,
-                         recognition_channels: dict[str, Any] | None = None) -> dict[str, Any]:
+                         recognition_channels: dict[str, Any] | None = None,
+                         semantic_routes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Convert detector-specific results into a stable editable contract."""
     model_nodes = []
     for node in nodes:
@@ -65,7 +66,78 @@ def build_document_model(width: int, height: int, nodes: list[dict[str, Any]],
             "state": "primary" if edge.get("cad_include") else "review",
             "source": str(edge.get("detector") or edge.get("source") or "opencv"),
             "confidence": _confidence(edge.get("confidence")),
-            "attributes": {},
+            "attributes": {
+                key: edge[key] for key in ("inkColor", "inkColorConfidence", "inkColorEvidence")
+                if key in edge
+            },
+        })
+
+    # Qwen paths are not raw model guesses at this point: processor.py passes
+    # only routes which have already survived bounds, source-ink and OCR-mask
+    # validation. Keep them in the same editable model as OpenCV geometry so
+    # the final CAD draft cannot silently drop a validated semantic route.
+    # Endpoint coincidence is reused only for a tight, unambiguous tolerance;
+    # a route crossing a pipe in its interior is deliberately NOT auto-joined.
+    used_ids = {item["id"] for item in model_nodes} | {item["id"] for item in pipes}
+
+    def unique_id(base: str) -> str:
+        candidate, suffix = base, 2
+        while candidate in used_ids:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        used_ids.add(candidate)
+        return candidate
+
+    for route_index, route in enumerate(semantic_routes or [], 1):
+        if not isinstance(route, dict) or route.get("include") is False:
+            continue
+        route_points = [point for raw in (route.get("points") or []) if (point := _point(raw))]
+        if len(route_points) < 2:
+            continue
+        route_id = unique_id(f"QWEN{route_index}")
+
+        def endpoint_node(suffix: str, point: list[float]) -> str:
+            nearby = []
+            for node in model_nodes:
+                position = node.get("position") or []
+                if len(position) >= 2:
+                    distance = math.dist(point, [float(position[0]), float(position[1])])
+                    if distance <= 4.5:
+                        nearby.append((distance, str(node["id"])))
+            nearby.sort()
+            # Re-use an endpoint/junction only when the nearest candidate is
+            # clearly better than the next one. Never join through a pipe body.
+            if nearby and (len(nearby) == 1 or nearby[1][0] - nearby[0][0] >= 2.0):
+                return nearby[0][1]
+            node_id = unique_id(f"{route_id}_{suffix}")
+            model_nodes.append({
+                "id": node_id, "position": list(point), "kind": "endpoint",
+                "state": "primary", "source": "qwen3-vl-validated", "confidence": 0.0,
+            })
+            return node_id
+
+        start_node = endpoint_node("A", route_points[0])
+        end_node = endpoint_node("B", route_points[-1])
+        if start_node == end_node:
+            # A route which collapses to one existing node is invalid as a pipe.
+            continue
+        raw_confidence = route.get("confidence", 0)
+        try:
+            raw_confidence = float(raw_confidence)
+            confidence = raw_confidence / 100.0 if raw_confidence > 1.0 else raw_confidence
+        except (TypeError, ValueError):
+            confidence = 0.0
+        pipes.append({
+            "id": route_id, "fromNode": start_node, "toNode": end_node,
+            "geometry": route_points, "state": "primary",
+            "source": "qwen3-vl-validated", "confidence": _confidence(confidence),
+            "attributes": {
+                "inkSupport": _confidence(route.get("ink_support")),
+                "textOverlap": _confidence(route.get("text_overlap")),
+                "opencvDuplicateRatio": _confidence(route.get("opencv_duplicate_ratio")),
+                "sourceRouteId": str(route.get("id") or route_id),
+                "splitFromTextOrWeakSegment": bool(route.get("split_from_text_or_weak_segment")),
+            },
         })
 
     channels = recognition_channels or {}

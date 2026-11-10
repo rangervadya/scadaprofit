@@ -97,6 +97,41 @@ class GraphTests(unittest.TestCase):
         self.assertEqual({task["kind"] for task in model["reviewTasks"]}, {"confirm_pipe", "verify_text"})
         self.assertEqual(validate_document_model(model), [])
 
+    def test_validated_qwen_semantic_routes_are_included_in_document_model(self):
+        model = build_document_model(120, 80, [], [], [], semantic_routes=[{
+            "id": "Q1", "points": [[10, 20], [55, 20], [90, 32]],
+            "confidence": 0.91, "ink_support": 0.88, "text_overlap": 0.0,
+            "opencv_duplicate_ratio": 0.15, "include": True,
+        }])
+        self.assertEqual(len(model["pipes"]), 1)
+        self.assertEqual(model["pipes"][0]["source"], "qwen3-vl-validated")
+        self.assertEqual(model["pipes"][0]["geometry"], [[10.0, 20.0], [55.0, 20.0], [90.0, 32.0]])
+        self.assertEqual(model["pipes"][0]["attributes"]["sourceRouteId"], "Q1")
+        self.assertEqual(validate_document_model(model), [])
+
+    def test_document_model_preserves_ink_colour_evidence(self):
+        model = build_document_model(100, 80, [
+            {"id": "N1", "x": 10, "y": 20, "degree": 1},
+            {"id": "N2", "x": 90, "y": 20, "degree": 1},
+        ], [{
+            "id": "E1", "from": "N1", "to": "N2", "geometry": [[10, 20], [90, 20]],
+            "cad_include": True, "inkColor": "blue", "inkColorConfidence": 0.92,
+            "inkColorEvidence": {"blueCoverage": 0.9, "darkCoverage": 0.1, "samples": 27},
+        }], [])
+        self.assertEqual(model["pipes"][0]["attributes"]["inkColor"], "blue")
+        self.assertEqual(model["pipes"][0]["attributes"]["inkColorEvidence"]["samples"], 27)
+
+    def test_ink_colour_is_recorded_as_evidence_without_changing_geometry(self):
+        blue = np.zeros((30, 50), dtype=np.uint8)
+        dark = np.zeros((30, 50), dtype=np.uint8)
+        blue[15, 5:46] = 255
+        edge = {"id": "E1", "geometry": [[5, 15], [45, 15]]}
+        diagnostics = processor._annotate_edge_ink_color([edge], blue, dark)
+        self.assertEqual(edge["inkColor"], "blue")
+        self.assertGreater(edge["inkColorConfidence"], 0.9)
+        self.assertEqual(diagnostics["classifiedBlue"], 1)
+        self.assertEqual(edge["geometry"], [[5, 15], [45, 15]])
+
     def test_document_model_validation_rejects_broken_references(self):
         model = build_document_model(
             100, 80,
@@ -224,6 +259,19 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(updated["dimensions"][0]["candidateTargetIds"], ["E1", "E2"])
         self.assertEqual(diagnostics["ambiguousDimensions"], 1)
 
+    def test_dimension_box_can_link_when_its_edge_touches_pipe(self):
+        model = {
+            "status": "needs_review", "sourceImage": {"width": 400, "height": 300},
+            "pipes": [{"id": "E1", "geometry": [[20, 100], [300, 100]], "state": "primary"}],
+            "symbols": [],
+            "dimensions": [{"id": "D1", "bbox": {"x": 110, "y": 55, "w": 100, "h": 42}, "state": "review"}],
+            "labels": [], "reviewTasks": [],
+        }
+        updated, diagnostics = link_annotations(model)
+        self.assertEqual(updated["dimensions"][0].get("targetId"), "E1")
+        self.assertEqual(updated["dimensions"][0].get("assignmentDistancePx"), 3.0)
+        self.assertEqual(diagnostics["linkedDimensions"], 1)
+
     def test_engineering_validation_reports_open_ends_and_unassigned_dimension(self):
         model = {
             "status": "confirmed",
@@ -241,6 +289,21 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(report["counts"]["warning"], 1)
         self.assertEqual({item["code"] for item in updated["validationFindings"]}, {"open_endpoint", "unassigned_dimension"})
         self.assertEqual(updated["status"], "needs_review")
+
+    def test_engineering_validation_flags_endpoint_geometry_mismatch_for_review(self):
+        model = {
+            "status": "needs_review",
+            "nodes": [
+                {"id": "N1", "position": [10, 20], "kind": "endpoint"},
+                {"id": "N2", "position": [90, 20], "kind": "endpoint"},
+            ],
+            "pipes": [{"id": "E1", "fromNode": "N1", "toNode": "N2",
+                       "geometry": [[25, 20], [90, 20]], "state": "primary"}],
+            "symbols": [], "topologyLinks": [], "dimensions": [], "labels": [], "reviewTasks": [],
+        }
+        updated, report = validate_engineering_model(model)
+        self.assertIn("pipe_endpoint_mismatch", {item["code"] for item in report["findings"]})
+        self.assertTrue(any("15.0 px" in item["message"] for item in updated["validationFindings"]))
 
     def test_engineering_validation_reports_disconnected_network_and_duplicate_number(self):
         model = {
@@ -281,6 +344,42 @@ class GraphTests(unittest.TestCase):
         self.assertNotEqual(layout["nodes"][0]["position"][1], layout["nodes"][1]["position"][1])
         self.assertEqual(layout["pipes"][0]["geometry"][0], layout["nodes"][0]["position"])
         self.assertEqual(layout["pipes"][0]["geometry"][-1], layout["nodes"][1]["position"])
+
+    def test_clean_layout_merges_fragments_through_degree_two_bends(self):
+        model = {
+            "nodes": [
+                {"id": "N1", "position": [10, 10]},
+                {"id": "N2", "position": [50, 10]},
+                {"id": "N3", "position": [50, 45]},
+            ],
+            "pipes": [
+                {"id": "E1", "fromNode": "N1", "toNode": "N2", "geometry": [[10, 10], [50, 10]], "state": "primary"},
+                {"id": "E2", "fromNode": "N2", "toNode": "N3", "geometry": [[50, 10], [50, 45]], "state": "primary"},
+            ],
+            "symbols": [], "dimensions": [], "labels": [],
+        }
+        layout, diagnostics = build_clean_layout(model)
+        self.assertEqual(len(layout["pipes"]), 1)
+        self.assertEqual(layout["pipes"][0]["sourceEdgeIds"], ["E1", "E2"])
+        self.assertEqual(len(layout["pipes"][0]["geometry"]), 3)
+        self.assertEqual(diagnostics["mergedPrimarySegments"], 1)
+
+    def test_clean_layout_merges_straight_trunk_but_keeps_branch_separate(self):
+        model = {
+            "nodes": [
+                {"id": "L", "position": [10, 30]}, {"id": "J", "position": [50, 30]},
+                {"id": "R", "position": [90, 30]}, {"id": "B", "position": [50, 70]},
+            ],
+            "pipes": [
+                {"id": "E1", "fromNode": "L", "toNode": "J", "geometry": [[10, 30], [50, 30]], "state": "primary"},
+                {"id": "E2", "fromNode": "J", "toNode": "R", "geometry": [[50, 30], [90, 30]], "state": "primary"},
+                {"id": "E3", "fromNode": "J", "toNode": "B", "geometry": [[50, 30], [50, 70]], "state": "primary"},
+            ],
+            "symbols": [], "dimensions": [], "labels": [],
+        }
+        layout, _ = build_clean_layout(model)
+        self.assertEqual(len(layout["pipes"]), 2)
+        self.assertEqual({tuple(item["sourceEdgeIds"]) for item in layout["pipes"]}, {("E1", "E2"), ("E3",)})
 
     def test_clean_layout_places_linked_dimension_and_label(self):
         model = {

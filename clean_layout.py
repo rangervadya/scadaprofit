@@ -17,6 +17,164 @@ def _numeric_text(value: Any) -> bool:
     return bool(text and _NUMERIC_LABEL.fullmatch(text))
 
 
+def _edge_outward_vector(pipe: dict[str, Any], node_id: str) -> tuple[float, float] | None:
+    geometry = pipe.get("geometry") or []
+    if len(geometry) < 2:
+        return None
+    if str(pipe.get("fromNode")) == node_id:
+        first, second = geometry[0], geometry[1]
+    elif str(pipe.get("toNode")) == node_id:
+        first, second = geometry[-1], geometry[-2]
+    else:
+        return None
+    dx, dy = float(second[0]) - float(first[0]), float(second[1]) - float(first[1])
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        return None
+    return dx / length, dy / length
+
+
+def _continuation_pairs(pipes: list[dict[str, Any]]) -> dict[tuple[str, int], int]:
+    """Return only mutually unique, near-opposite edge pairs at shared nodes."""
+    incident: dict[str, list[int]] = {}
+    for index, pipe in enumerate(pipes):
+        for key in ("fromNode", "toNode"):
+            node_id = str(pipe.get(key) or "")
+            if node_id:
+                incident.setdefault(node_id, []).append(index)
+
+    pairs: dict[tuple[str, int], int] = {}
+    for node_id, edge_ids in incident.items():
+        unique_edges = list(dict.fromkeys(edge_ids))
+        if len(unique_edges) < 2:
+            continue
+        vectors = {edge_id: _edge_outward_vector(pipes[edge_id], node_id) for edge_id in unique_edges}
+        vectors = {edge_id: vector for edge_id, vector in vectors.items() if vector is not None}
+        # At a genuine degree-2 node there is no competing branch: preserve the
+        # corner and combine both fragments into one polyline regardless of bend.
+        if len(vectors) == 2:
+            first, second = sorted(vectors)
+            pairs[(node_id, first)] = second
+            pairs[(node_id, second)] = first
+            continue
+        best: dict[int, tuple[int, float, float]] = {}
+        for edge_id, vector in vectors.items():
+            scores = []
+            for other_id, other_vector in vectors.items():
+                if other_id == edge_id:
+                    continue
+                dot = vector[0] * other_vector[0] + vector[1] * other_vector[1]
+                scores.append((dot, other_id))
+            scores.sort()
+            if not scores or scores[0][0] > -0.90:
+                continue
+            margin = scores[1][0] - scores[0][0] if len(scores) > 1 else 2.0
+            # If a branch has two almost equally plausible continuations, leave it
+            # split for review rather than inventing a route through the junction.
+            if margin < 0.12:
+                continue
+            best[edge_id] = (scores[0][1], scores[0][0], margin)
+        for edge_id, (other_id, _score, _margin) in best.items():
+            other = best.get(other_id)
+            if other and other[0] == edge_id:
+                pairs[(node_id, edge_id)] = other_id
+    return pairs
+
+
+def _merge_pipe_network(pipes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join line fragments only across an unambiguous near-collinear continuation.
+
+    Branches remain independent routes; the source edge IDs are retained for
+    annotation references and traceability. Coordinates are never snapped.
+    """
+    if len(pipes) < 2:
+        return [dict(pipe, sourceEdgeIds=list(pipe.get("sourceEdgeIds") or [str(pipe.get("id", ""))])) for pipe in pipes]
+    continuation = _continuation_pairs(pipes)
+    visited: set[int] = set()
+    merged: list[dict[str, Any]] = []
+
+    def trace(first_index: int, start_node: str) -> dict[str, Any]:
+        current_index = first_index
+        current_node = start_node
+        geometry: list[list[float]] = []
+        source_ids: list[str] = []
+        confidence_values: list[float] = []
+        segments: list[dict[str, Any]] = []
+        start_pipe = pipes[first_index]
+        start_node_id = start_node
+        end_node_id = start_node
+        while current_index not in visited:
+            pipe = pipes[current_index]
+            raw_geometry = pipe.get("geometry") or []
+            if len(raw_geometry) < 2:
+                visited.add(current_index)
+                break
+            from_node, to_node = str(pipe.get("fromNode") or ""), str(pipe.get("toNode") or "")
+            if current_node == from_node:
+                ordered = [[float(point[0]), float(point[1])] for point in raw_geometry]
+                next_node = to_node
+            elif current_node == to_node:
+                ordered = [[float(point[0]), float(point[1])] for point in reversed(raw_geometry)]
+                next_node = from_node
+            else:
+                # A malformed endpoint reference is not safe to traverse.
+                visited.add(current_index)
+                break
+            visited.add(current_index)
+            if not geometry:
+                geometry.extend(ordered)
+            else:
+                gap = math.dist(geometry[-1], ordered[0])
+                if gap > 5.0:
+                    # The graph node agrees but the detector endpoints do not;
+                    # keep this as a separate route rather than making a visual bridge.
+                    break
+                if gap > 1e-6:
+                    geometry.append([(geometry[-1][0] + ordered[0][0]) / 2.0,
+                                     (geometry[-1][1] + ordered[0][1]) / 2.0])
+                geometry.extend(ordered[1:])
+            source_ids.extend(str(item) for item in (pipe.get("sourceEdgeIds") or [pipe.get("id", "")]) if item)
+            confidence_values.append(float(pipe.get("confidence", 0.0) or 0.0))
+            segments.append(pipe)
+            end_node_id = next_node
+            next_index = continuation.get((next_node, current_index))
+            if next_index is None or next_index in visited:
+                break
+            current_index = next_index
+            current_node = next_node
+
+        result = dict(start_pipe)
+        result["fromNode"] = start_node_id
+        result["toNode"] = end_node_id
+        result["geometry"] = [[round(point[0], 2), round(point[1], 2)] for point in geometry]
+        result["sourceEdgeIds"] = list(dict.fromkeys(source_ids))
+        if confidence_values:
+            result["confidence"] = round(min(confidence_values), 3)
+        if len(segments) > 1:
+            result["mergedSegmentCount"] = len(segments)
+            result["attributes"] = {**(result.get("attributes") or {}),
+                                    "mergedSourceEdgeIds": result["sourceEdgeIds"]}
+        return result
+
+    # Start traces at endpoints which have no continuation; then handle any
+    # closed cycles by selecting the first remaining edge deterministically.
+    starts: list[tuple[int, str]] = []
+    for index, pipe in enumerate(pipes):
+        for node_id in (str(pipe.get("fromNode") or ""), str(pipe.get("toNode") or "")):
+            if node_id and (node_id, index) not in continuation:
+                starts.append((index, node_id))
+    for index, node_id in starts:
+        if index not in visited:
+            merged.append(trace(index, node_id))
+    for index, pipe in enumerate(pipes):
+        if index not in visited:
+            start_node = str(pipe.get("fromNode") or pipe.get("toNode") or "")
+            merged.append(trace(index, start_node))
+
+    # Keep malformed or degenerate entries visible as their original segments.
+    return [item for item in merged if len(item.get("geometry") or []) >= 2]
+
+
 def build_clean_layout(
     model: dict[str, Any],
     page_width: int | None = None,
@@ -70,8 +228,9 @@ def build_clean_layout(
     ]
     layout_node_by_id = {str(item["id"]): item for item in layout_nodes}
 
+    merged_primary_pipes = _merge_pipe_network(pipes)
     layout_pipes = []
-    for pipe in pipes:
+    for pipe in merged_primary_pipes:
         geometry = [transform(point) for point in pipe.get("geometry", [])]
         start = layout_node_by_id.get(str(pipe.get("fromNode")))
         end = layout_node_by_id.get(str(pipe.get("toNode")))
@@ -105,6 +264,9 @@ def build_clean_layout(
         layout_symbols.append(layout_symbol)
 
     pipe_by_id = {str(item.get("id")): item for item in layout_pipes}
+    for item in layout_pipes:
+        for source_edge_id in item.get("sourceEdgeIds", []):
+            pipe_by_id.setdefault(str(source_edge_id), item)
     symbol_by_id = {str(item.get("id")): item for item in layout_symbols}
 
     def midpoint(target_id: str) -> list[float] | None:
@@ -186,6 +348,9 @@ def build_clean_layout(
         "placedLabels": len(layout_labels),
         "placedDimensions": len(layout_dimensions),
         "reviewPipes": len(layout_review_pipes),
+        "primarySourceSegments": len(pipes),
+        "primaryRoutesAfterMerging": len(layout_pipes),
+        "mergedPrimarySegments": max(0, len(pipes) - len(layout_pipes)),
         "sourceCoordinatesPreserved": True,
         "numericVerifiedLabelsOnly": True,
         "pageOrientation": layout["page"]["orientation"],

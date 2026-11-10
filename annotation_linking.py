@@ -30,6 +30,51 @@ def _distance_to_pipe(point: tuple[float, float], pipe: dict[str, Any]) -> float
     return min(distances, default=float('inf'))
 
 
+def _segments_intersect(a: tuple[float, float], b: tuple[float, float],
+                       c: tuple[float, float], d: tuple[float, float]) -> bool:
+    def orient(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    def on_segment(p, q, r):
+        return (min(p[0], r[0]) - 1e-8 <= q[0] <= max(p[0], r[0]) + 1e-8 and
+                min(p[1], r[1]) - 1e-8 <= q[1] <= max(p[1], r[1]) + 1e-8)
+    o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+    if ((o1 > 0 > o2 or o2 > 0 > o1) and (o3 > 0 > o4 or o4 > 0 > o3)):
+        return True
+    return ((abs(o1) <= 1e-8 and on_segment(a, c, b)) or
+            (abs(o2) <= 1e-8 and on_segment(a, d, b)) or
+            (abs(o3) <= 1e-8 and on_segment(c, a, d)) or
+            (abs(o4) <= 1e-8 and on_segment(c, b, d)))
+
+
+def _distance_box_to_pipe(box: dict[str, Any], pipe: dict[str, Any]) -> float:
+    """Measure the gap from the annotation rectangle to the whole pipe polyline.
+
+    Using the rectangle (rather than only its center) avoids losing long
+    dimension labels whose text box touches a pipe near one edge.
+    """
+    try:
+        x1, y1 = float(box['x']), float(box['y'])
+        x2, y2 = x1 + max(0.0, float(box['w'])), y1 + max(0.0, float(box['h']))
+    except (KeyError, TypeError, ValueError):
+        center = _box_center(box)
+        return _distance_to_pipe(center, pipe) if center else float('inf')
+    corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    rectangle_edges = list(zip(corners, corners[1:] + corners[:1]))
+    geometry = pipe.get('geometry') or []
+    best = float('inf')
+    for raw_a, raw_b in zip(geometry, geometry[1:]):
+        a = (float(raw_a[0]), float(raw_a[1]))
+        b = (float(raw_b[0]), float(raw_b[1]))
+        if (x1 <= a[0] <= x2 and y1 <= a[1] <= y2) or (x1 <= b[0] <= x2 and y1 <= b[1] <= y2):
+            return 0.0
+        if any(_segments_intersect(a, b, c, d) for c, d in rectangle_edges):
+            return 0.0
+        for point in (a, b):
+            dx, dy = max(x1 - point[0], 0.0, point[0] - x2), max(y1 - point[1], 0.0, point[1] - y2)
+            best = min(best, math.hypot(dx, dy))
+        best = min(best, *(_point_segment_distance(corner, [a[0], a[1]], [b[0], b[1]]) for corner in corners))
+    return best
+
 def _distance_to_box(point: tuple[float, float], box: dict[str, Any]) -> float:
     try:
         x1, y1 = float(box['x']), float(box['y'])
@@ -55,10 +100,10 @@ def link_annotations(model: dict[str, Any]) -> tuple[dict[str, Any], dict[str, i
     linked_dimensions = ambiguous_dimensions = linked_labels = 0
 
     for dimension in updated.get('dimensions', []):
-        center = _box_center(dimension.get('bbox') or {})
-        if center is None:
+        box = dimension.get('bbox') or {}
+        if _box_center(box) is None:
             continue
-        ranked = sorted((_distance_to_pipe(center, pipe), str(pipe.get('id'))) for pipe in pipes)
+        ranked = sorted((_distance_box_to_pipe(box, pipe), str(pipe.get('id'))) for pipe in pipes)
         nearby = [(distance, target_id) for distance, target_id in ranked if distance <= dimension_limit]
         dimension['candidateTargetIds'] = [target_id for _, target_id in nearby[:3]]
         unambiguous = len(nearby) == 1 or (len(nearby) >= 2 and nearby[1][0] - nearby[0][0] >= max(7.0, nearby[0][0] * 0.35))
@@ -83,7 +128,7 @@ def link_annotations(model: dict[str, Any]) -> tuple[dict[str, Any], dict[str, i
             continue
         ranked: list[tuple[float, str, str]] = []
         ranked.extend((_distance_to_box(center, symbol.get('bbox') or {}), str(symbol.get('id')), 'symbol') for symbol in symbols)
-        ranked.extend((_distance_to_pipe(center, pipe), str(pipe.get('id')), 'pipe') for pipe in pipes)
+        ranked.extend((_distance_box_to_pipe(label.get('bbox') or {}, pipe), str(pipe.get('id')), 'pipe') for pipe in pipes)
         ranked.sort()
         nearby = [item for item in ranked if item[0] <= label_limit]
         if not nearby:

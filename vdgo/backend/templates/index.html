@@ -502,13 +502,83 @@ function showValidationIssues(form){
  document.querySelector('#status .status-message').append(list);
  return true;
 }
+function restoreFormAttribute(form,name,value){
+ if(value===null)form.removeAttribute(name);else form.setAttribute(name,value);
+}
+function submitNativeDownload(form,url,actionButtons){
+ const frame=document.getElementById('vdgoDownloadFrame');
+ if(!frame){
+  delete form.dataset.submitting;
+  actionButtons.forEach(b=>{b.disabled=false;b.textContent=b.dataset.oldText||b.textContent;delete b.dataset.oldText;});
+  showStatus('err','Не найден встроенный канал скачивания. Обновите страницу и повторите попытку.');
+  return;
+ }
+ const previous={target:form.getAttribute('target'),action:form.getAttribute('action'),method:form.getAttribute('method'),enctype:form.getAttribute('enctype')};
+ let completed=false;
+ let watchdog=null;
+ const doneMessage=url==='/vdgo/generate_docx'
+  ? 'Word с редактируемыми абзацами и таблицами передан браузеру для скачивания. Фото, схемы и настоящие сканы остаются отдельными изображениями в документе.'
+  : 'PDF сформирован и передан браузеру для скачивания. Перед отправкой заказчику проверьте все страницы и приложения.';
+ const release=()=>{
+  if(completed)return;
+  completed=true;
+  if(watchdog)clearTimeout(watchdog);
+  frame.removeEventListener('load',onFrameLoad);
+  delete form.dataset.submitting;
+  actionButtons.forEach(b=>{b.disabled=false;b.textContent=b.dataset.oldText||b.textContent;delete b.dataset.oldText;});
+ };
+ const onFrameLoad=()=>{
+  if(completed)return;
+  let responseText='';
+  try{responseText=(frame.contentDocument?.body?.innerText||frame.contentDocument?.body?.textContent||'').trim();}catch{}
+  if(responseText){
+   try{
+    const data=JSON.parse(responseText);
+    if(data.error){showStatus('err',String(data.error));release();return;}
+   }catch{}
+  }
+  showStatus('ok',doneMessage);
+  release();
+ };
+ frame.addEventListener('load',onFrameLoad);
+ showStatus('busy','Формируем документ и передаём его браузеру для скачивания. Не закрывайте страницу…');
+ try{
+  form.setAttribute('target','vdgoDownloadFrame');
+  form.setAttribute('action',url);
+  form.setAttribute('method','post');
+  form.setAttribute('enctype','multipart/form-data');
+  // Native form navigation is intentionally synchronous in the click handler.
+  // Unlike fetch()+Blob, it preserves the browser's user activation for downloads.
+  HTMLFormElement.prototype.submit.call(form);
+ }catch(e){
+  showStatus('err','Не удалось отправить форму на генерацию: '+(e?.message||String(e)));
+  release();
+ }finally{
+  restoreFormAttribute(form,'target',previous.target);
+  restoreFormAttribute(form,'action',previous.action);
+  restoreFormAttribute(form,'method',previous.method);
+  restoreFormAttribute(form,'enctype',previous.enctype);
+ }
+ // Attachment downloads do not consistently fire iframe load in every browser.
+ // Keep the form locked while normal jobs complete, but provide a safe recovery.
+ watchdog=setTimeout(()=>{
+  if(completed)return;
+  showStatus('info','Запрос отправлен. Формирование или скачивание может ещё выполняться. Проверьте список загрузок браузера; если файла нет, повторите попытку.');
+  release();
+ },270000);
+}
 async function submitAction(url,preview){
- const form=document.getElementById('form'),status=document.getElementById('status');
+ const form=document.getElementById('form');
  if(form.dataset.submitting==='1')return;
  if(showValidationIssues(form))return;
  const previewWin=preview?window.open('about:blank','_blank'):null;
  const actionButtons=[...document.querySelectorAll('.sticky button[onclick^="submitAction("]')];
- form.dataset.submitting='1';actionButtons.forEach(b=>{b.disabled=true;b.dataset.oldText=b.textContent;b.textContent='Обработка…'});
+ form.dataset.submitting='1';
+ actionButtons.forEach(b=>{b.disabled=true;b.dataset.oldText=b.textContent;b.textContent='Обработка…'});
+ if(!preview){
+  submitNativeDownload(form,url,actionButtons);
+  return;
+ }
  showStatus('busy','Проверяем значения и формируем документ. Не закрывайте страницу до завершения…');
  try{
   const res=await fetch(url,{method:'POST',body:new FormData(form)});
@@ -524,17 +594,6 @@ async function submitAction(url,preview){
    if(previewWin){previewWin.location.href=obj;}
    else{const a=document.createElement('a');a.href=obj;a.target='_blank';a.rel='noopener';a.click();}
    showStatus('ok','PDF сформирован для проверки. Просмотрите все страницы и приложения перед отправкой заказчику.');
-  }else{
-   const a=document.createElement('a');
-   const reportEl=form.elements.namedItem('report_number'),dateEl=form.elements.namedItem('report_date');
-   const reportNo=(reportEl?.value||'bez_nomer').replace(/[^a-zA-Z0-9А-Яа-яЁё._-]+/g,'_');
-   const reportDate=(dateEl?.value||'bez_daty').replace(/[^0-9.-]+/g,'_');
-   a.href=obj;a.download=url==='/vdgo/generate_docx'?`Zaklyuchenie_${reportNo}_${reportDate}_redaktiruemyy.docx`:`Zaklyuchenie_${reportNo}_${reportDate}.pdf`;
-   document.body.appendChild(a);a.click();a.remove();
-   const doneMessage = url === '/vdgo/generate_docx'
-    ? 'Word с редактируемыми абзацами и таблицами сформирован. Фото, схемы и настоящие сканы остаются отдельными изображениями; количество страниц и расположение текста могут отличаться от PDF.'
-    : 'PDF сформирован и передан браузеру для скачивания. Перед отправкой заказчику проверьте результат.';
-   showStatus('ok',doneMessage);
   }
   setTimeout(()=>URL.revokeObjectURL(obj),60000);
  }catch(e){
@@ -606,4 +665,4 @@ window.addEventListener('load',()=>{document.getElementById('form').addEventList
 <section id="materials" class="card"><h2>7. Актуальные схемы, удостоверения и акты</h2><div class="note warn"><b>Защита от старых вложений.</b> В исходном образце были встроены чужие схемы/фотографии, удостоверения, рукописные таблицы УЗТ и акты. Эти страницы очищаются полностью. Для каждой страницы ниже либо загрузите актуальный одностраничный PDF/скан (JPG, PNG, WEBP), либо явно отметьте «Не включать». Без одного из этих действий формирование блокируется. Многостраничный PDF разделите на отдельные страницы перед загрузкой.</div><div class="attachment-grid">{{MATERIAL_PAGES}}</div></section>
 <section id="test" class="card"><h2>8. Проверка герметичности</h2><div><label>Результат проверки герметичности</label><textarea name="test_result" placeholder="Опишите фактическую проверку и результат" required></textarea></div><div style="margin-top:10px"><label>Испытательное давление</label><input name="test_pressure" value="" placeholder="Например, значение из протокола" required></div><div style="margin-top:14px"><label>Классификация результатов (для проверки согласованности)</label><select name="finding_status" required><option value="">— Выберите по фактическим результатам —</option><option value="defects">Выявлены неисправности</option><option value="none">Неисправности не выявлены</option></select><p class="muted">Этот выбор не генерирует техническое заключение автоматически; он только проверяет согласованность с отмеченными дефектами.</p></div></section>
 <section id="finish" class="card"><h2>9. Контроль перед выпуском</h2><div class="note warn">Критически важно: схема Приложения 2 на страницах 16–17 сохраняется и получает актуальный адрес. Сканы со страниц 31–36 и 41–47 не наследуются из образца: загрузите актуальный материал либо явно отметьте «Не включать». Пустые фотолисты удаляются автоматически. Основная форма — 49 страниц; при более чем 20 фотографиях добавляются дополнительные фотолисты. Перед отправкой просмотрите все страницы итогового документа.</div><label class="confirm-row"><input type="checkbox" class="check" name="template_review_confirm" value="1" required> Я проверил все страницы итогового документа. Схема Приложения 2 проверена; актуальные вложения загружены, либо страницы 31–36 и 41–47 явно исключены; в фотослоты не загружены SCADA/экраны, удостоверения и акты.</label><div class="kpi"><span class="pill">49 основных страниц</span><span class="pill">Дополнительные фотолисты</span><span class="pill">11 строк дефектов</span><span class="pill">Нет автогенерации вывода</span><span class="pill">Проверка обязательных полей</span></div></section>
-<div class="sticky"><button type="reset" class="secondary">Очистить форму</button><button type="button" class="secondary" data-workspace-action="preview" onclick="submitAction('/vdgo/preview',true)">Проверить PDF</button><button type="button" class="secondary" onclick="submitAction('/vdgo/generate_docx',false)">Word — редактируемый текст</button><button type="button" class="primary" data-workspace-action="generate" onclick="submitAction('/vdgo/generate',false)">Сформировать PDF</button></div></form></main></div></body></html>
+<div class="sticky"><button type="reset" class="secondary">Очистить форму</button><button type="button" class="secondary" data-workspace-action="preview" onclick="submitAction('/vdgo/preview',true)">Проверить PDF</button><button type="button" class="secondary" onclick="submitAction('/vdgo/generate_docx',false)">Word — редактируемый текст</button><button type="button" class="primary" data-workspace-action="generate" onclick="submitAction('/vdgo/generate',false)">Сформировать PDF</button></div></form></main></div><iframe id="vdgoDownloadFrame" name="vdgoDownloadFrame" title="Скачивание сформированного документа" aria-hidden="true" tabindex="-1" style="display:none"></iframe></body></html>

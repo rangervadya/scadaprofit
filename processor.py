@@ -299,6 +299,59 @@ def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
     return make_ink_layers(bgr, norm_gray)["combined"]
 
 
+def _annotate_edge_ink_color(edges: list[dict[str, Any]], blue_mask: np.ndarray,
+                             dark_mask: np.ndarray) -> dict[str, int]:
+    """Attach measured pen-colour evidence without changing line inclusion.
+
+    Blue and dark ink are evidence only: colour is not used to decide whether
+    a stroke is an original pipe or a later correction.
+    """
+    if blue_mask.shape != dark_mask.shape:
+        return {"classifiedBlue": 0, "classifiedDark": 0, "classifiedMixed": 0, "unknown": len(edges)}
+    blue = cv2.dilate(blue_mask, np.ones((3, 3), np.uint8), iterations=1) > 0
+    dark_only_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(blue_mask))
+    dark = cv2.dilate(dark_only_mask, np.ones((3, 3), np.uint8), iterations=1) > 0
+    height, width = blue.shape[:2]
+    counts = {"classifiedBlue": 0, "classifiedDark": 0, "classifiedMixed": 0, "unknown": 0}
+    for edge in edges:
+        samples: list[tuple[int, int]] = []
+        geometry = edge.get("geometry") or []
+        for start, end in zip(geometry, geometry[1:]):
+            try:
+                ax, ay, bx, by = float(start[0]), float(start[1]), float(end[0]), float(end[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            length = math.hypot(bx - ax, by - ay)
+            n = max(2, int(length / 3.0) + 1)
+            for t in np.linspace(0.0, 1.0, n):
+                x = min(width - 1, max(0, int(round(ax + (bx - ax) * t))))
+                y = min(height - 1, max(0, int(round(ay + (by - ay) * t))))
+                samples.append((x, y))
+        if not samples:
+            edge["inkColor"] = "unknown"
+            edge["inkColorConfidence"] = 0.0
+            edge["inkColorEvidence"] = {"blueCoverage": 0.0, "darkCoverage": 0.0, "samples": 0}
+            counts["unknown"] += 1
+            continue
+        blue_coverage = sum(bool(blue[y, x]) for x, y in samples) / len(samples)
+        dark_coverage = sum(bool(dark[y, x]) for x, y in samples) / len(samples)
+        if blue_coverage >= 0.40 and blue_coverage >= dark_coverage * 1.25:
+            color = "blue"
+        elif dark_coverage >= 0.40 and dark_coverage >= blue_coverage * 1.25:
+            color = "dark"
+        elif min(blue_coverage, dark_coverage) >= 0.20:
+            color = "mixed"
+        else:
+            color = "unknown"
+        confidence = abs(blue_coverage - dark_coverage) / max(blue_coverage, dark_coverage, 0.01)
+        edge["inkColor"] = color
+        edge["inkColorConfidence"] = round(confidence if color in {"blue", "dark"} else 0.0, 3)
+        edge["inkColorEvidence"] = {"blueCoverage": round(blue_coverage, 3),
+                                    "darkCoverage": round(dark_coverage, 3),
+                                    "samples": len(samples)}
+        counts[{"blue": "classifiedBlue", "dark": "classifiedDark", "mixed": "classifiedMixed"}.get(color, "unknown")] += 1
+    return counts
+
 def _parse_json_object(content: str) -> dict[str, Any]:
     """Parse a JSON object even when a vision model surrounds it with prose."""
     text = re.sub(r'<think>.*?</think>', '', str(content or ''), flags=re.S).strip()
@@ -4445,12 +4498,13 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
         _progress('JOB', f'Analysis incomplete; OCR provider={active_ocr_status.get("provider", "local Qwen")}; OCR={active_ocr_status.get("successful_tiles", 0)}/{active_ocr_status.get("tiles", 0)}; PIPE={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}; checkpoints saved for retry')
     _progress('CAD', 'Graph construction started')
     stage_started = time.perf_counter()
-    # OpenCV detector graph is selected into coherent primary CAD paths. Qwen
-    # traces are retained as independent review suggestions and cannot erase
-    # detector geometry when the vision model returns a sparse/degenerate list.
+    # The selected OpenCV graph remains the detector backbone. Only Qwen routes
+    # that pass source-ink and OCR-mask validation are added as complementary
+    # primary CAD geometry; sparse or invalid model output cannot erase OpenCV.
     segments=extract_segments(gray,ink,annotations)
     text_mask = _text_region_mask(gray.shape[:2], annotations)
     nodes,edges,components=endpoint_clusters(segments, ink=ink, text_mask=text_mask)
+    ink_color_diagnostics = _annotate_edge_ink_color(edges, ink_layers["blue"], ink_layers["dark"])
     cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
     primary_opencv_edges = [edge for edge in edges if edge.get('cad_include')]
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
@@ -4599,7 +4653,8 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
     recognition_channels = split_recognition_channels(w, h, components, edges, annotations)
     document_model = build_document_model(
-        w, h, nodes, edges, annotations, crossings, joins, recognition_channels
+        w, h, nodes, edges, annotations, crossings, joins, recognition_channels,
+        semantic_routes=primary_semantic_routes
     )
     document_model, topology_diagnostics = attach_pipes_to_symbols(document_model)
     document_model, annotation_linking_diagnostics = link_annotations(document_model)
@@ -4631,7 +4686,8 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "timings_ms":timings_ms,
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
-                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_paths":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
+                    "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_and_validated_qwen_routes":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
+                    "ink_colour_is_advisory_only":True,"unknown_symbols_require_confirmation":True,"polyline_merge_preserves_source_geometry":True,"ambiguous_junctions_are_not_merged":True,
                     "join_candidates_include_ambiguous_components_for_manual_review":True,"join_candidates_allow_short_fragments_for_manual_review":True,"join_candidate_gap_px":[4.5,45.0],"join_candidate_lateral_tolerance_px":8.0,"join_candidate_min_edge_length_px":8.0,"join_candidate_min_endpoint_facing":0.82,"join_candidate_min_tangent_alignment":0.85,"join_candidates_auto_applied":False,"topology_network_candidate_min_edges":8,"topology_network_candidate_min_length_px":135,"topology_network_candidate_max_degree":8,"topology_network_candidate_max_edge_density":5.6,"topology_network_candidate_max_turn_density":1.35},
            "summary":{"analysis_complete":processing_complete,"ocr_tiles_complete":qwen_ocr_complete,"ocr_text_available":ocr_complete,"pipe_tiles_complete":pipe_complete,
                       "ocr_tiles_successful":ocr_status.get("qwen", {}).get("successful_tiles", 0),"ocr_tiles_total":ocr_status.get("qwen", {}).get("tiles", 0),
@@ -4648,6 +4704,8 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
                       "qwen_review_routes":len(_semantic_route_chains(semantic_routes)),
                       "cad_primary_chains":len(_cad_edge_chains(edges)),
                       "cad_primary_qwen_routes":len(primary_semantic_routes),
+                      "document_model_qwen_routes":sum(1 for pipe in document_model.get("pipes", []) if pipe.get("source") == "qwen3-vl-validated"),
+                      "ink_color_classification":ink_color_diagnostics,
                       "cad_primary_total_paths":len(_cad_edge_chains(edges)) + len(primary_semantic_routes),
                       "semantic_validation":semantic_validation,
                       "primary_geometry_source":"opencv-selected-graph+ink-validated-local-qwen",
