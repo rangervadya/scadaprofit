@@ -1,0 +1,244 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="297mm" height="420mm" viewBox="0 0 297 420">
+<title>Контрольный лист — Юлиуса Фучика, 105</title>
+<rect width="100%" height="100%" fill="#fff"/>
+<g id="HEADER" fill="#111" font-family="Arial,sans-serif">
+<text x="148.5" y="5" text-anchor="middle" font-size="2.6">Заключение по результатам технического диагностирования внутридомового газового оборудования</text>
+<text x="292" y="12" text-anchor="end" font-size="4.2" font-weight="700">ПРОДОЛЖЕНИЕ ПРИЛОЖЕНИЯ</text>
+<text x="148.5" y="23" text-anchor="middle" font-size="3.6" font-style="italic">Схема</text>
+<text x="148.5" y="28" text-anchor="middle" font-size="3.0" font-style="italic">неразрушающего контроля внутридомового газового оборудования</text>
+<text x="148.5" y="34" text-anchor="middle" font-size="2.7" font-style="italic">по адресу: Республика Татарстан, г. Казань, ул. Юлиуса Фучика, д. 105, подъезд 2</text>
+</g>
+<rect x="10" y="38" width="277" height="261" fill="none" stroke="#c7c7c7" stroke-width="0.12"/>
+<g id="PIPE_MAIN" fill="none" stroke="#111" stroke-width="0.52" stroke-linecap="round" stroke-linejoin="round">
+<polyline id="reference-route-0" points="30.529,202.518 30.529,179.411 39.001,164.264 20.259,166.574 27.961,144.752 33.61,144.752 42.082,126.78 70.323,126.78 70.323,131.658 147.345,128.064 173.018,124.469 152.479,156.305 138.359,171.196"/>
+<polyline id="reference-route-1" points="147.345,128.064 146.574,116.254 123.468,117.537 145.034,94.688 159.925,94.688 176.613,78.257 176.613,65.933"/>
+<polyline id="reference-route-2" points="176.613,78.257 179.437,85.702 179.437,94.174"/>
+<polyline id="reference-route-3" points="138.359,171.196 138.359,157.075 192.531,152.711 192.787,168.115"/>
+<polyline id="reference-route-4" points="145.804,268.756 154.02,259.514 154.02,230.502 167.37,214.585 184.828,178.898 199.719,159.899 235.406,121.132 198.692,122.672 221.285,98.796 207.165,98.025 224.109,78.513 224.109,68.244"/>
+<polyline id="reference-route-5" points="224.109,78.513 226.934,85.445 226.934,94.431"/>
+<polyline id="reference-route-6" points="199.719,159.899 200.746,168.885 271.863,157.589 257.742,177.357 276.741,176.844 263.134,197.383 263.134,208.423"/>
+</g>
+<g id="BRANCH" fill="none" stroke="#111" stroke-width="0.48" stroke-linecap="round" stroke-linejoin="round">
+</g>
+<g id="RISERS" fill="none" stroke="#111" stroke-width="0.62" stroke-linecap="round" stroke-linejoin="round">
+</g>
+<g id="JUNCTIONS" fill="#111" stroke="#111" stroke-width="0.2">
+</g><g id="SYMBOLS">
+<g id="reference-mark-1" data-symbol-type="callout" transform="translate(49.271 121.902) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">1</text></g>
+<g id="reference-mark-2" data-symbol-type="callout" transform="translate(67.756 138.59) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">2</text></g>
+<g id="reference-mark-3" data-symbol-type="callout" transform="translate(93.43 123.956) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">3</text></g>
+<g id="reference-mark-4" data-symbol-type="callout" transform="translate(120.387 119.078) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">4</text></g>
+<g id="reference-mark-5" data-symbol-type="callout" transform="translate(164.289 118.051) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">5</text></g>
+<g id="reference-mark-6" data-symbol-type="callout" transform="translate(167.884 141.157) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">6</text></g>
+<g id="reference-mark-7" data-symbol-type="callout" transform="translate(217.948 115.997) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">7</text></g>
+<g id="reference-mark-8" data-symbol-type="callout" transform="translate(224.88 158.102) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">8</text></g>
+<g id="reference-mark-9" data-symbol-type="callout" transform="translate(250.04 167.088) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">9</text></g>
+<g id="reference-mark-10" data-symbol-type="callout" transform="translate(136.818 260.541) rotate(0)"><rect x="-2.61" y="-1.8" width="5.22" height="3.6" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><text y="0.774" text-anchor="middle" font-size="1.8900000000000001" font-weight="700" fill="#111" stroke="none">10</text></g>
+<g id="valve-sketch-0" data-symbol-type="valve" transform="translate(57.486 126.78) rotate(0)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-1" data-symbol-type="valve" transform="translate(91.376 130.374) rotate(357)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-2" data-symbol-type="valve" transform="translate(140.926 99.052) rotate(312)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-3" data-symbol-type="valve" transform="translate(218.975 122.415) rotate(0)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-4" data-symbol-type="valve" transform="translate(217.948 167.858) rotate(0)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-5" data-symbol-type="valve" transform="translate(224.366 167.858) rotate(0)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+<g id="valve-sketch-6" data-symbol-type="valve" transform="translate(153.763 244.109) rotate(90)"><path d="M -1.8 -1.8 L 0 0 L -1.8 1.8 Z M 1.8 -1.8 L 0 0 L 1.8 1.8 Z" fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"/><path d="M 0 -1.8 V -2.9699999999999998" stroke="#111" stroke-width="0.35"/></g>
+</g><g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.25">
+<path d="M 45.933 119.591 L 67.242 119.591 M 44.933 118.591 l 2 2 M 66.242 118.591 l 2 2"/>
+<text x="56.588" y="118.391" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1150</text>
+<path d="M 73.918 138.59 L 101.902 136.279 M 72.918 137.59 l 2 2 M 100.902 135.279 l 2 2"/>
+<text x="87.91" y="136.235" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1300</text>
+<path d="M 145.291 89.04 L 159.411 89.04 M 144.291 88.04 l 2 2 M 158.411 88.04 l 2 2"/>
+<text x="152.351" y="87.84" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1800</text>
+<path d="M 161.465 89.296 L 174.816 76.203 M 160.465 88.296 l 2 2 M 173.816 75.203 l 2 2"/>
+<text x="168.14" y="81.549" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">2550</text>
+<path d="M 203.314 94.431 L 219.231 75.689 M 202.314 93.431 l 2 2 M 218.231 74.689 l 2 2"/>
+<text x="211.272" y="83.86" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">2500</text>
+<path d="M 209.989 115.227 L 234.892 115.227 M 208.989 114.227 l 2 2 M 233.892 114.227 l 2 2"/>
+<text x="222.441" y="114.027" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1250</text>
+<path d="M 205.624 174.79 L 241.054 170.169 M 204.624 173.79 l 2 2 M 240.054 169.169 l 2 2"/>
+<text x="223.339" y="171.279" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1800</text>
+<path d="M 259.026 183.262 L 276.227 183.262 M 258.026 182.262 l 2 2 M 275.227 182.262 l 2 2"/>
+<text x="267.627" y="182.062" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">2400</text>
+<path d="M 20.773 160.926 L 37.974 158.872 M 19.773 159.926 l 2 2 M 36.974 157.872 l 2 2"/>
+<text x="29.373" y="158.699" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">1900</text>
+<path d="M 127.062 111.376 L 144.777 110.349 M 126.062 110.376 l 2 2 M 143.777 109.349 l 2 2"/>
+<text x="135.92" y="109.662" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">550</text>
+</g><g id="TEXT" fill="#111" font-family="Arial,sans-serif">
+<text x="155.047" y="271.067" font-size="3.338" text-anchor="start" transform="rotate(0 155.047 271.067)">Ввод газопровода — уточнить</text>
+<text x="190.99" y="233.326" font-size="3.594" text-anchor="middle" transform="rotate(0 190.99 233.326)">Методы контроля и оборудование — уточнить</text>
+</g>
+<g id="RISER_GROUPS" font-family="Arial,sans-serif" fill="#111" stroke="#111" stroke-width="0.35">
+<rect x="10" y="307" width="160.38" height="96" fill="none" stroke="#777" stroke-width="0.2"/>
+<text x="12" y="311" font-size="2.2" font-weight="700" stroke="none">ГРУППЫ СТОЯКОВ · НОМЕРА КВАРТИР ПО ДАННЫМ ОПЕРАТОРА</text>
+<text x="30.048" y="315" text-anchor="middle" font-size="2.1" font-weight="700" stroke="none">Группа 1</text>
+<path d="M 30.048 317 V 400" fill="none" stroke-width="0.48"/>
+<path d="M 30.048 321.611 H 28.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="321.611" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="15.048" y="319.911" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="21.548" y="322.251" text-anchor="middle" font-size="2" stroke="none">9 эт. / кв. 33</text>
+<path d="M 30.048 330.833 H 32.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="330.833" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="32.048" y="329.133" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="38.548" y="331.473" text-anchor="middle" font-size="2" stroke="none">8 эт. / уточнить</text>
+<path d="M 30.048 340.056 H 28.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="340.056" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="15.048" y="338.356" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="21.548" y="340.696" text-anchor="middle" font-size="2" stroke="none">7 эт. / уточнить</text>
+<path d="M 30.048 349.278 H 32.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="349.278" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="32.048" y="347.578" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="38.548" y="349.918" text-anchor="middle" font-size="2" stroke="none">6 эт. / уточнить</text>
+<path d="M 30.048 358.5 H 28.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="358.5" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="15.048" y="356.8" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="21.548" y="359.14" text-anchor="middle" font-size="2" stroke="none">5 эт. / уточнить</text>
+<path d="M 30.048 367.722 H 32.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="367.722" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="32.048" y="366.022" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="38.548" y="368.362" text-anchor="middle" font-size="2" stroke="none">4 эт. / уточнить</text>
+<path d="M 30.048 376.944 H 28.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="376.944" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="15.048" y="375.244" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="21.548" y="377.584" text-anchor="middle" font-size="2" stroke="none">3 эт. / уточнить</text>
+<path d="M 30.048 386.167 H 32.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="386.167" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="32.048" y="384.467" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="38.548" y="386.807" text-anchor="middle" font-size="2" stroke="none">2 эт. / кв. 5</text>
+<path d="M 30.048 395.389 H 28.048" fill="none" stroke-width="0.3"/>
+<circle cx="30.048" cy="395.389" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="15.048" y="393.689" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="21.548" y="396.029" text-anchor="middle" font-size="2" stroke="none">1 эт. / кв. 1</text>
+<text x="70.143" y="315" text-anchor="middle" font-size="2.1" font-weight="700" stroke="none">Группа 2</text>
+<path d="M 70.143 317 V 400" fill="none" stroke-width="0.48"/>
+<path d="M 50.095 313 V 400" fill="none" stroke="#bbb" stroke-width="0.12"/>
+<path d="M 70.143 321.611 H 68.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="321.611" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="55.143" y="319.911" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="61.643" y="322.251" text-anchor="middle" font-size="2" stroke="none">9 эт. / кв. 34</text>
+<path d="M 70.143 330.833 H 72.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="330.833" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="72.143" y="329.133" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="78.643" y="331.473" text-anchor="middle" font-size="2" stroke="none">8 эт. / уточнить</text>
+<path d="M 70.143 340.056 H 68.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="340.056" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="55.143" y="338.356" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="61.643" y="340.696" text-anchor="middle" font-size="2" stroke="none">7 эт. / уточнить</text>
+<path d="M 70.143 349.278 H 72.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="349.278" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="72.143" y="347.578" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="78.643" y="349.918" text-anchor="middle" font-size="2" stroke="none">6 эт. / уточнить</text>
+<path d="M 70.143 358.5 H 68.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="358.5" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="55.143" y="356.8" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="61.643" y="359.14" text-anchor="middle" font-size="2" stroke="none">5 эт. / уточнить</text>
+<path d="M 70.143 367.722 H 72.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="367.722" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="72.143" y="366.022" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="78.643" y="368.362" text-anchor="middle" font-size="2" stroke="none">4 эт. / уточнить</text>
+<path d="M 70.143 376.944 H 68.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="376.944" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="55.143" y="375.244" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="61.643" y="377.584" text-anchor="middle" font-size="2" stroke="none">3 эт. / уточнить</text>
+<path d="M 70.143 386.167 H 72.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="386.167" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="72.143" y="384.467" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="78.643" y="386.807" text-anchor="middle" font-size="2" stroke="none">2 эт. / кв. 6</text>
+<path d="M 70.143 395.389 H 68.143" fill="none" stroke-width="0.3"/>
+<circle cx="70.143" cy="395.389" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="55.143" y="393.689" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="61.643" y="396.029" text-anchor="middle" font-size="2" stroke="none">1 эт. / кв. 2</text>
+<text x="110.238" y="315" text-anchor="middle" font-size="2.1" font-weight="700" stroke="none">Группа 3</text>
+<path d="M 110.238 317 V 400" fill="none" stroke-width="0.48"/>
+<path d="M 90.19 313 V 400" fill="none" stroke="#bbb" stroke-width="0.12"/>
+<path d="M 110.238 321.611 H 108.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="321.611" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="95.238" y="319.911" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="101.738" y="322.251" text-anchor="middle" font-size="2" stroke="none">9 эт. / кв. 35</text>
+<path d="M 110.238 330.833 H 112.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="330.833" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="112.238" y="329.133" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="118.738" y="331.473" text-anchor="middle" font-size="2" stroke="none">8 эт. / уточнить</text>
+<path d="M 110.238 340.056 H 108.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="340.056" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="95.238" y="338.356" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="101.738" y="340.696" text-anchor="middle" font-size="2" stroke="none">7 эт. / уточнить</text>
+<path d="M 110.238 349.278 H 112.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="349.278" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="112.238" y="347.578" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="118.738" y="349.918" text-anchor="middle" font-size="2" stroke="none">6 эт. / уточнить</text>
+<path d="M 110.238 358.5 H 108.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="358.5" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="95.238" y="356.8" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="101.738" y="359.14" text-anchor="middle" font-size="2" stroke="none">5 эт. / уточнить</text>
+<path d="M 110.238 367.722 H 112.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="367.722" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="112.238" y="366.022" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="118.738" y="368.362" text-anchor="middle" font-size="2" stroke="none">4 эт. / уточнить</text>
+<path d="M 110.238 376.944 H 108.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="376.944" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="95.238" y="375.244" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="101.738" y="377.584" text-anchor="middle" font-size="2" stroke="none">3 эт. / уточнить</text>
+<path d="M 110.238 386.167 H 112.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="386.167" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="112.238" y="384.467" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="118.738" y="386.807" text-anchor="middle" font-size="2" stroke="none">2 эт. / кв. 7</text>
+<path d="M 110.238 395.389 H 108.238" fill="none" stroke-width="0.3"/>
+<circle cx="110.238" cy="395.389" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="95.238" y="393.689" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="101.738" y="396.029" text-anchor="middle" font-size="2" stroke="none">1 эт. / кв. 3</text>
+<text x="150.333" y="315" text-anchor="middle" font-size="2.1" font-weight="700" stroke="none">Группа 4</text>
+<path d="M 150.333 317 V 400" fill="none" stroke-width="0.48"/>
+<path d="M 130.285 313 V 400" fill="none" stroke="#bbb" stroke-width="0.12"/>
+<path d="M 150.333 321.611 H 148.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="321.611" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="135.333" y="319.911" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="141.833" y="322.251" text-anchor="middle" font-size="2" stroke="none">9 эт. / кв. 36</text>
+<path d="M 150.333 330.833 H 152.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="330.833" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="152.333" y="329.133" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="158.833" y="331.473" text-anchor="middle" font-size="2" stroke="none">8 эт. / уточнить</text>
+<path d="M 150.333 340.056 H 148.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="340.056" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="135.333" y="338.356" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="141.833" y="340.696" text-anchor="middle" font-size="2" stroke="none">7 эт. / уточнить</text>
+<path d="M 150.333 349.278 H 152.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="349.278" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="152.333" y="347.578" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="158.833" y="349.918" text-anchor="middle" font-size="2" stroke="none">6 эт. / уточнить</text>
+<path d="M 150.333 358.5 H 148.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="358.5" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="135.333" y="356.8" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="141.833" y="359.14" text-anchor="middle" font-size="2" stroke="none">5 эт. / уточнить</text>
+<path d="M 150.333 367.722 H 152.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="367.722" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="152.333" y="366.022" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="158.833" y="368.362" text-anchor="middle" font-size="2" stroke="none">4 эт. / уточнить</text>
+<path d="M 150.333 376.944 H 148.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="376.944" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="135.333" y="375.244" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="141.833" y="377.584" text-anchor="middle" font-size="2" stroke="none">3 эт. / уточнить</text>
+<path d="M 150.333 386.167 H 152.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="386.167" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="152.333" y="384.467" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="158.833" y="386.807" text-anchor="middle" font-size="2" stroke="none">2 эт. / кв. 8</text>
+<path d="M 150.333 395.389 H 148.333" fill="none" stroke-width="0.3"/>
+<circle cx="150.333" cy="395.389" r="0.62" fill="#fff" stroke-width="0.35"/>
+<rect x="135.333" y="393.689" width="13" height="3.4" fill="#fff" stroke-width="0.25"/>
+<text x="141.833" y="396.029" text-anchor="middle" font-size="2" stroke="none">1 эт. / кв. 4</text>
+</g>
+<g id="LEGEND" font-family="Arial,sans-serif" fill="#111" stroke="#111" stroke-width="0.2"><rect x="215" y="362" width="76" height="31" fill="none"/>
+<text x="217" y="366" font-size="2.1" font-weight="700" stroke="none">УСЛОВНЫЕ ОБОЗНАЧЕНИЯ</text>
+<path d="M 217 370 h 7"/>
+<text x="226" y="370.6" font-size="1.85" stroke="none">расположение контролируемого участка</text>
+<rect x="218" y="373.1" width="5" height="3.5" fill="#fff"/><text x="220.5" y="375.6" text-anchor="middle" font-size="2" stroke="none">1</text>
+<text x="226" y="375.7" font-size="1.85" stroke="none">номер контролируемого участка</text>
+<circle cx="220.5" cy="379.9" r="1"/>
+<text x="226" y="380.8" font-size="1.85" stroke="none">узел соединения трубопровода</text>
+<circle cx="220.5" cy="385" r="1.7" fill="none"/><circle cx="220.5" cy="385" r="0.8" fill="none"/>
+<text x="226" y="385.9" font-size="1.85" stroke="none">определение наличия на контакте «труба-футляр»</text>
+</g>
+<text x="10" y="305" font-family="Arial,sans-serif" font-size="1.7" fill="#333">Примечание: Контрольный образец. Трассы восстановлены вручную. Привязка групп к стоякам, методы и номера участков контроля — уточнить.</text>
+<g id="SIGNATURES" font-family="Arial,sans-serif" fill="#111" font-size="2.3">
+<text x="215" y="401">Схему составил: уточнить</text>
+<text x="215" y="406">Схему начертил: уточнить</text>
+<text x="291" y="410" text-anchor="end">Лист 1 / 1</text>
+</g></svg>

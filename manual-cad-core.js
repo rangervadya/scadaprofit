@@ -73,7 +73,12 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   const width = Math.round(Math.max(100, Math.min(30000, num(sourceSize.width, 1600))));
   const height = Math.round(Math.max(100, Math.min(30000, num(sourceSize.height, 1000))));
   const base = createManualCadProject({ id, title });
-  const rawEdges = Array.isArray(graph?.edges) ? graph.edges : [];
+  const modelPipes = new Map((documentModel.pipes || []).map(pipe => [String(pipe.id), pipe]));
+  const rawEdges = (Array.isArray(graph?.edges) ? graph.edges : []).map(edge => {
+    const pipe = modelPipes.get(String(edge?.id));
+    if (!pipe || !Array.isArray(pipe.geometry) || pipe.geometry.length < 2) return edge;
+    return { ...edge, geometry: pipe.geometry, from: pipe.fromNode, to: pipe.toNode };
+  });
   const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const nodeById = new Map(rawNodes.filter(node => node?.id != null).map(node => [String(node.id), node]));
   // Sketch-assist mode keeps high-recall, component-classified route candidates
@@ -98,6 +103,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     if (!edge) return false;
     if (edge.source === 'manual' && edge.detector === 'MANUAL') return true;
     if (edge.cad_include !== true) return false;
+    if (modelPipes.get(String(edge.id))?.state === 'primary') return true;
     if (hasComponentModel) return candidateComponentIds.has(String(edge.component_id ?? ''));
     return edge.component_role !== 'ambiguous' && (!hasTopologyHints || edge.topology_network_candidate === true);
   });
@@ -232,7 +238,8 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const containsAmbiguousComponent = routeComponentIds.some(componentId => componentById.get(componentId)?.role === 'ambiguous');
     const unverifiedSketchRoute = hasComponentModel && !routeHasManualEdge && routeEdges.some(edge => edge.topology_network_candidate !== true);
     const topologyNeedsReview = hasTopologyHints && !routeHasTopologySupport && !routeHasManualEdge;
-    const reviewOnly = shortIsolated || topologyNeedsReview || unverifiedSketchRoute || containsAmbiguousComponent;
+    const modelPrimary = routeEdges.every(edge => modelPipes.get(String(edge.id))?.state === 'primary');
+    const reviewOnly = shortIsolated || (!modelPrimary && (topologyNeedsReview || unverifiedSketchRoute || containsAmbiguousComponent));
     const reviewReason = shortIsolated
       ? 'Короткий изолированный штрих: подтвердите, что это участок газопровода.'
       : reviewOnly ? 'Кандидат маршрута из эскиза слесаря. Проверьте повороты, ответвления, разрывы и назначение перед включением в чистовой лист.' : '';
@@ -367,7 +374,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const labelId = String(raw?.id || fallbackId || `ocr_${labels.length + 1}`);
     if (seenLabelIds.has(labelId)) return;
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: height, rotation: 0, anchor: 'middle' });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: raw.state === 'review' || raw.verified === false || raw.include === false });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));
@@ -532,6 +539,7 @@ export function normalizeManualCadProject(input, existing = null) {
     if (!p || !value) continue;
     result.labels.push({
       id: safeId(raw.id, 'label'), text: value, x: p[0], y: p[1],
+      reviewOnly: raw.reviewOnly === true,
       size: Math.max(8, Math.min(64, num(raw.size, 18))),
       rotation: ((num(raw.rotation) % 360) + 360) % 360,
       anchor: raw.anchor === 'middle' ? 'middle' : 'start'
@@ -670,7 +678,7 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   }
   parts.push('</g>');
   parts.push('<g id="TEXT" fill="#111" font-family="Arial,sans-serif">');
-  for (const label of project.labels) {
+  for (const label of project.labels.filter(label => !label.reviewOnly)) {
     const [x, y] = map([label.x, label.y]);
     parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(label.size * scale)}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
   }
@@ -736,7 +744,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
     parts.push(`<text x="${fmt((a[0] + b[0]) / 2)}" y="${fmt((a[1] + b[1]) / 2 - 1.2)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(dim.text)}</text>`);
   }
   parts.push('</g><g id="TEXT" fill="#111" font-family="Arial,sans-serif">');
-  for (const label of project.labels) {
+  for (const label of project.labels.filter(label => !label.reviewOnly)) {
     const [x, y] = map([label.x, label.y]);
     parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(label.size * scale)}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
   }
@@ -876,7 +884,7 @@ export function renderManualCadDxf(rawProject) {
     }
     if (symbol.label && symbol.type !== 'callout') addDxfText(out, 'TEXT', symbol.label, [p[0] + s * 1.6, p[1] + s * 1.6], 2);
   }
-  for (const label of project.labels) {
+  for (const label of project.labels.filter(label => !label.reviewOnly)) {
     const p = dxfPoint([label.x, label.y]);
     addDxfText(out, 'TEXT', label.text, p, label.size * scale, label.anchor, label.rotation);
   }
@@ -973,7 +981,7 @@ function renderLpgCadR1Dxf(project) {
     }
     if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [p[0]+s*1.5,p[1]+s*1.5], 1.8);
   }
-  for (const label of project.labels) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation);
+  for (const label of project.labels.filter(label => !label.reviewOnly)) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation);
   for (const dim of project.dimensions) {
     const a=toDxf(dim.a), b=toDxf(dim.b); addDxfLine(out,'DIMENSIONS',a,b);
     addDxfText(out,'DIMENSIONS',dim.text,[(a[0]+b[0])/2,(a[1]+b[1])/2+1],2);

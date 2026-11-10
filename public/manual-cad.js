@@ -572,7 +572,7 @@ function renderCanvas() {
   }).join('');
   const junctions=state.layers.junctions ? p.junctions.map(j=>`<circle class="mc-junction" cx="${j.x}" cy="${j.y}" r="5"><title>Соединение: ${j.pipeIds.length} участка</title></circle>`).join('') : '';
   const symbols=state.layers.symbols ? p.symbols.map(symbolSvg).join('') : '';
-  const labels=state.layers.labels ? p.labels.map(item=>`<text class="mc-cad-label ${state.selected?.type==='label'&&state.selected.id===item.id?'is-selected':''}" data-element-type="label" data-element-id="${esc(item.id)}" x="${item.x}" y="${item.y}" font-size="${item.size}" text-anchor="${item.anchor||'start'}" transform="rotate(${item.rotation||0} ${item.x} ${item.y})">${esc(item.text)}</text>`).join('') : '';
+  const labels=state.layers.labels ? p.labels.filter(item => !item.reviewOnly || state.highlightReview).map(item=>`<text class="mc-cad-label ${state.selected?.type==='label'&&state.selected.id===item.id?'is-selected':''}" data-element-type="label" data-element-id="${esc(item.id)}" x="${item.x}" y="${item.y}" font-size="${item.size}" text-anchor="${item.anchor||'start'}" transform="rotate(${item.rotation||0} ${item.x} ${item.y})">${esc(item.text)}</text>`).join('') : '';
   const dimensions=state.layers.dimensions ? p.dimensions.map(item=>`<g data-element-type="dimension" data-element-id="${esc(item.id)}"><path class="mc-dimension" d="M ${item.a[0]} ${item.a[1]} L ${item.b[0]} ${item.b[1]} M ${item.a[0]-5} ${item.a[1]-5} l 10 10 M ${item.b[0]-5} ${item.b[1]-5} l 10 10"/><text class="mc-dimension-text" x="${(item.a[0]+item.b[0])/2}" y="${(item.a[1]+item.b[1])/2-8}" text-anchor="middle">${esc(item.text)}</text></g>`).join('') : '';
   let draft='';
   if(state.draft.length){const points=state.draft.map(pt=>`${pt.x},${pt.y}`).join(' ');const traceClass=state.tool==='trace'?'mc-draft-trace':'';draft=`<polyline class="mc-draft ${traceClass}" points="${points}"/>${state.draft.map((pt,index)=>`<circle class="mc-snap-ring ${state.tool==='trace'?'mc-trace-waypoint':''}" cx="${pt.x}" cy="${pt.y}" r="${index===0||index===state.draft.length-1?8:5}"/>`).join('')}`;}
@@ -616,7 +616,8 @@ function renderProperties() {
   if (state.selected.type==='symbol') $('selectedScale').value=safeNum(item.scale,1);
   if (state.selected.type==='label') $('selectedFontSize').value=safeNum(item.size,18);
   $('selectedHelp').textContent=state.selected.type==='pipe'?(item.reviewOnly ? (item.reviewReason || 'Кандидат не включён в чистовой экспорт. Сверь его с исходной фотографией.') : 'Перетаскивай круглые маркеры для правки вершин; «Узел» вставляет новую вершину; перетаскивание линии двигает всю ветку с сохранением стыков.') : state.selected.type==='symbol' && item.reviewOnly ? (item.reviewReason || 'Знак распознан, но не классифицирован. Выбери его точный тип по исходному эскизу.') : 'Перетаскивай элемент на листе или измени координаты, поворот и масштаб в свойствах.';
-  $('acceptReviewPipeBtn').hidden=!(state.selected.type==='pipe' && item.reviewOnly===true);
+  $('acceptReviewPipeBtn').textContent = state.selected.type === 'label' ? 'Подтвердить подпись' : 'Подтвердить линию';
+  $('acceptReviewPipeBtn').hidden=!(['pipe','label'].includes(state.selected.type) && item.reviewOnly===true);
   updateDeleteButton();
 }
 function renderAll(){syncControls();renderCanvas();renderProjectList();renderObjectManager();}
@@ -879,10 +880,10 @@ $('showReviewCandidates').addEventListener('change',event=>{state.showReviewCand
 $('mcShowSketchCandidatesBtn')?.addEventListener('click',()=>{state.showReviewCandidates=!state.showReviewCandidates;$('showReviewCandidates').checked=state.showReviewCandidates;renderCanvas();const b=$('mcShowSketchCandidatesBtn');if(b)b.textContent=state.showReviewCandidates?'Скрыть кандидаты':'Показать кандидаты';});
 $('acceptReviewPipeBtn').addEventListener('click',()=>{
   const item=selectedItem();
-  if(!item||state.selected?.type!=='pipe'||item.reviewOnly!==true)return;
+  if(!item||!['pipe','label'].includes(state.selected?.type)||item.reviewOnly!==true)return;
   pushUndo();item.reviewOnly=false;item.reviewReason='';
   state.showReviewCandidates=true;renderAll();scheduleSave();
-  toast('Линия подтверждена и включена в чистовой чертёж. Проверь её соединения и назначение.');
+  toast('Объект подтверждён и включён в чистовой чертёж.');
 });
 
 window.addEventListener('beforeunload',event=>{
