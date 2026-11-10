@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { analyzeManualCadQuality, suggestManualCadLabelPlacements, compareManualCadProjects } from '../public/manual-cad-quality.js';
 import {
   createManualCadProject,
   createManualCadProjectFromGraph,
   normalizeManualCadProject,
+  parseDimensionMeasurement,
+  linkManualCadDimension,
+  polylineLength,
   renderManualCadSvg,
+  renderManualCadComparisonSvg,
   renderManualCadDxf,
   isManualCadId
 } from '../manual-cad-core.js';
@@ -15,6 +20,105 @@ test('creates isolated manual CAD project defaults', () => {
   assert.equal(project.title, 'Подъезд 2');
   assert.deepEqual(project.pipes, []);
   assert.equal(isManualCadId(project.id), true);
+});
+
+test('physical dimension parsing accepts explicit metric units only', () => {
+  assert.equal(parseDimensionMeasurement('1,5 м').valueMm, 1500);
+  assert.equal(parseDimensionMeasurement('125 см').valueMm, 1250);
+  assert.equal(parseDimensionMeasurement('1500 мм').valueMm, 1500);
+  assert.equal(parseDimensionMeasurement('DN 25'), null);
+  assert.equal(parseDimensionMeasurement('1500'), null);
+});
+
+test('manual dimensions are linked conservatively and establish a physical scale', () => {
+  const base = createManualCadProject();
+  const project = normalizeManualCadProject({
+    ...base, width: 500, height: 300,
+    pipes: [{ id: 'main', points: [[20, 100], [480, 100]] }],
+    dimensions: [{ id: 'd1', a: [100, 112], b: [200, 112], text: '1 м' }]
+  }, base);
+  assert.equal(project.dimensions[0].targetPipeId, 'main');
+  assert.equal(project.dimensions[0].linkStatus, 'auto');
+  assert.equal(project.dimensions[0].valueMm, 1000);
+  assert.equal(project.calibration.sourceDimensionId, 'd1');
+  assert.equal(project.calibration.mmPerPixel, 10);
+  assert.equal(polylineLength(project.pipes[0].points), 460);
+});
+
+test('manual dimension targets can be explicitly left unassigned', () => {
+  const base = createManualCadProject();
+  const project = normalizeManualCadProject({
+    ...base, width: 500, height: 300,
+    pipes: [{ id: 'main', points: [[20, 100], [480, 100]] }],
+    dimensions: [{ id: 'd1', a: [100, 112], b: [200, 112], text: '1 м', linkStatus: 'operator-unassigned' }]
+  }, base);
+  assert.equal(project.dimensions[0].targetPipeId, null);
+  assert.equal(project.dimensions[0].linkStatus, 'operator-unassigned');
+});
+
+test('symbol port model records only close, unambiguous pipe associations', () => {
+  const base = createManualCadProject();
+  const project = normalizeManualCadProject({
+    ...base,
+    pipes: [{ id: 'main', points: [[10, 100], [300, 100]] }],
+    symbols: [{ id: 'valve1', type: 'valve', x: 150, y: 100, rotation: 0 }]
+  }, base);
+  const ports = project.symbols[0].connections;
+  assert.equal(ports.length, 2);
+  assert.deepEqual(ports.map(port => port.pipeId), ['main', 'main']);
+  assert.ok(ports.every(port => port.state === 'connected'));
+});
+
+test('engineering quality checker identifies unresolved crossings and unconnected symbols', () => {
+  const project = {
+    width: 400, height: 300,
+    pipes: [
+      { id: 'h', points: [[20, 150], [380, 150]] },
+      { id: 'v', points: [[200, 20], [200, 280]] }
+    ],
+    junctions: [],
+    symbols: [{ id: 's1', type: 'valve', x: 90, y: 80, connections: [{ portId: 'in', state: 'unconnected' }] }],
+    labels: [], dimensions: []
+  };
+  const report = analyzeManualCadQuality(project);
+  assert.ok(report.findings.some(item => item.code === 'unresolved_crossing'));
+  assert.ok(report.findings.some(item => item.code === 'symbol_ports_unconnected'));
+});
+
+test('label collision analyzer proposes alternatives without mutating source geometry', () => {
+  const label = { id: 'l1', text: 'Газопровод DN 25', x: 100, y: 100, size: 18, anchor: 'start' };
+  const project = { width: 400, height: 300, pipes: [{ id: 'p1', points: [[90, 92], [320, 92]] }], symbols: [], labels: [label], dimensions: [] };
+  const before = JSON.stringify(project);
+  const report = analyzeManualCadQuality(project);
+  assert.ok(report.findings.some(item => item.code === 'label_over_pipe'));
+  const suggestions = suggestManualCadLabelPlacements(project, label);
+  assert.equal(suggestions.length, 3);
+  assert.equal(JSON.stringify(project), before);
+});
+
+test('revision comparison reports object additions and new quality findings', () => {
+  const before = { manualEditRevision: 1, width: 400, height: 300, pipes: [], symbols: [], labels: [], dimensions: [], junctions: [] };
+  const after = { ...before, manualEditRevision: 2, pipes: [{ id: 'p1', points: [[10, 100], [300, 100]] }], symbols: [], labels: [], dimensions: [], junctions: [{ id: 'j1', x: 100, y: 100, pipeIds: ['p1'] }] };
+  const comparison = compareManualCadProjects(before, after);
+  assert.deepEqual(comparison.changes.pipes.added, ['p1']);
+  assert.deepEqual(comparison.changes.junctions.added, ['j1']);
+  assert.equal(comparison.hasChanges, true);
+});
+
+test('photo comparison SVG embeds the source and keeps review routes visually distinct', () => {
+  const base = createManualCadProject();
+  const project = normalizeManualCadProject({
+    ...base, width: 300, height: 200,
+    pipes: [
+      { id: 'main', points: [[10, 50], [280, 50]] },
+      { id: 'review', points: [[10, 90], [280, 90]], reviewOnly: true }
+    ]
+  }, base);
+  const svg = renderManualCadComparisonSvg(project, 'data:image/png;base64,ZmFrZQ==');
+  assert.match(svg, /data:image\/png;base64,ZmFrZQ==/);
+  assert.match(svg, /stroke="#00a85a"/);
+  assert.match(svg, /stroke="#d97706"/);
+  assert.match(svg, /stroke-dasharray="9 6"/);
 });
 
 test('normalizes pipe geometry and explicit junctions without implicit crossing joins', () => {

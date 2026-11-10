@@ -8,7 +8,7 @@ ENV NODE_ENV=production \
     OPENBLAS_NUM_THREADS=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus tesseract-ocr-osd \
+    && apt-get install -y --no-install-recommends python3 python3-venv libcairo2 fonts-dejavu-core tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus tesseract-ocr-osd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
