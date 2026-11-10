@@ -361,12 +361,13 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const bbox = raw?.bbox && typeof raw.bbox === 'object' ? raw.bbox : {};
     const textValue = String(raw?.text ?? raw?.rawText ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
     const x = num(raw?.x, num(bbox.x, NaN) + num(bbox.w, 0) / 2);
-    const y = num(raw?.y, num(bbox.y, NaN) + num(bbox.h, 0) / 2);
+    const height = Math.max(6, Math.min(120, num(bbox.h, 16)));
+    const y = num(raw?.y, num(bbox.y, NaN) + height * 0.8);
     if (!textValue || textValue.length > 180 || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const labelId = String(raw?.id || fallbackId || `ocr_${labels.length + 1}`);
     if (seenLabelIds.has(labelId)) return;
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: 16, rotation: 0, anchor: 'middle' });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: height, rotation: 0, anchor: 'middle' });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));
@@ -644,7 +645,7 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   }
   parts.push('</g>');
   if (includeReview) {
-    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#d97706" stroke-width="0.52" stroke-dasharray="2.2 1.5" stroke-linecap="round" stroke-linejoin="round">');
+    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#111" stroke-width="0.52" stroke-linecap="round" stroke-linejoin="round">');
     for (const pipe of project.pipes) {
       if (pipe.visible === false || !pipe.reviewOnly) continue;
       const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
@@ -713,7 +714,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
     parts.push('</g>');
   }
   if (includeReview) {
-    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#d97706" stroke-width="0.42" stroke-dasharray="1.7 1.25" stroke-linecap="round" stroke-linejoin="round">');
+    parts.push('<g id="PIPE_REVIEW" fill="none" stroke="#111" stroke-width="0.42" stroke-linecap="round" stroke-linejoin="round">');
     for (const pipe of project.pipes) {
       if (pipe.visible === false || !pipe.reviewOnly) continue;
       const points = pipe.points.map(p => map(p).map(fmt).join(',')).join(' ');
