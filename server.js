@@ -5,13 +5,21 @@ import multer from 'multer';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Fingerprint the actual loaded sources, not a manually maintained release label.
+const BUILD_INFO = {
+  version: JSON.parse(await readFile(path.join(__dirname, 'package.json'), 'utf8')).version,
+  pipelineSha256: createHash('sha256').update(Buffer.concat(await Promise.all(
+    ['processor.py', 'clean_layout.py', 'drawing_template.py', 'manual-cad-core.js', 'server.js']
+      .map(name => readFile(path.join(__dirname, name)))
+  ))).digest('hex')
+};
 const app = express();
 if (process.env.TRUST_GATEWAY_PROXY === "1") app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 3000);
@@ -326,7 +334,7 @@ function manualProjectResponse(project) {
   return {
     ...project,
     sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null,
-    previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg?draft=1`,
+    previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg`,
     editUrl: `/manual-cad.html?project=${encodeURIComponent(project.id)}`,
     returnUrl: project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
   };
@@ -1211,7 +1219,8 @@ app.get('/api/health', async (_req, res) => {
   const tesseract = await checkTesseract();
   res.json({
     ok: true,
-    version: '4.3.45',
+    version: BUILD_INFO.version,
+    build: BUILD_INFO,
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
