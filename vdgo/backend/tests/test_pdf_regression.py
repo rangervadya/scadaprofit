@@ -592,6 +592,121 @@ class PdfRegressionTests(unittest.TestCase):
             word_path.unlink(missing_ok=True)
 
 
+def self_form_fixture():
+    return {
+        "report_number": "FIELD-7", "report_date": "11.11.2026", "report_year": "2026",
+        "address": "г. Тестовый, ул. Тестовая, д. 15", "executor": "ООО Профит",
+        "executor_legal_name": "Общество с ограниченной ответственностью Профит",
+        "customer": "ООО Заказчик", "customer_legal_name": "ООО Заказчик",
+        "customer_address": "г. Тестовый", "customer_phone": "+7 900 000-00-00",
+        "customer_director": "И.И. Иванов", "executor_address": "г. Тестовый",
+        "executor_phone": "+7 900 000-00-01", "general_director": "П.П. Петров",
+        "general_director_full": "Петров Пётр Петрович", "specialist": "И.И. Иванов",
+        "specialist_full": "Иванов Иван Иванович", "technician": "П.П. Петров",
+        "technician_full": "Петров Пётр Петрович", "technician_certificate": "Удостоверение",
+        "specialist_certificate": "Удостоверение", "specialist_additional_certificate": "Не относится",
+        "work_group_order_number": "1", "work_group_order_date": "11.11.2026",
+        "pipe_length": "10", "pressure": "0.003", "min_thickness": "2.0", "max_thickness": "3.0",
+        "next_diagnostic": "ноября 2029 года", "remaining_life_years": "3 года",
+        "test_result": "Проверка проведена.", "test_pressure": "500 мм вод.ст.",
+        "conclusion_text": "Проверка выполнена.", "resource_working_pressure": "1",
+        "resource_calculated_by": "Иванов Иван Иванович", "gas_status": "not_detected",
+        "leak_status": "not_detected", "measurement_year": "2026",
+        "uk_device_model": "А1211", "uk_device_serial": "123", "uk_calibration_date": "11.11.2026",
+        "uk_joint_number": "1", "uk_material_description": "Сталь", "uk_sensitivity": "1",
+        "uk_defect_description": "Нет", "uk_result": "Годен", "uk_accessibility_percent": "100",
+    }
+
+
+class WorkforceSchemeSection7Tests(unittest.TestCase):
+    def test_selected_workforce_scheme_is_embedded_in_pdf_and_editable_word(self):
+        from unittest.mock import patch
+        from docx import Document
+        with TemporaryDirectory() as temporary:
+            temp = Path(temporary)
+            scheme_path = temp / "field-scheme.png"
+            image = Image.new("RGB", (900, 620), "white")
+            # Draw a visible, unique schematic mark to ensure it is embedded as an image.
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(image)
+            draw.line((60, 80, 840, 80), fill="black", width=5)
+            draw.line((450, 80, 450, 540), fill="black", width=5)
+            draw.rectangle((220, 220, 680, 420), outline="black", width=4)
+            image.save(scheme_path, format="PNG")
+            scheme = {
+                "path": str(scheme_path),
+                "street": "улица Тестовая",
+                "address": "15",
+                "userName": "Иванов Иван Иванович",
+                "submittedAt": "11.11.2026 10:20",
+                "reportId": "test-report-7",
+                "status": "accepted",
+            }
+            with patch("app.OUTPUT", temp):
+                pdf_path = build_pdf(self_form_fixture(), {}, workforce_schemes=[scheme])
+                with fitz.open(pdf_path) as pdf:
+                    matches = [i for i, page in enumerate(pdf)
+                               if "7. Актуальные схемы, удостоверения и акты" in page.get_text()]
+                    self.assertEqual(len(matches), 1)
+                    page = pdf[matches[0]]
+                    text = page.get_text()
+                    self.assertIn("улица Тестовая, дом 15", text)
+                    self.assertIn("Иванов Иван Иванович", text)
+                    self.assertIn("принята приёмщиком", text)
+                    self.assertEqual(len(page.get_images(full=True)), 1)
+                    self.assertLess(matches[0], next(i for i, p in enumerate(pdf) if "Приложение 6" in p.get_text()))
+                # Export just the inserted PDF page through the same DOCX converter.
+                # The main suite already exercises complete-document Word conversion;
+                # this focused page-level check proves the new image survives conversion
+                # without repeating a costly 40+ page conversion in the regression run.
+                section_pdf = temp / "section-7-only.pdf"
+                with fitz.open(pdf_path) as full_pdf:
+                    section_doc = fitz.open()
+                    section_doc.insert_pdf(full_pdf, from_page=matches[0], to_page=matches[0])
+                    section_doc.save(section_pdf)
+                    section_doc.close()
+                docx_path = temp / "report-with-field-scheme.docx"
+                page_count = pdf_to_docx_editable(section_pdf, docx_path)
+                word = Document(docx_path)
+                word_text = "\n".join(p.text for p in word.paragraphs)
+                self.assertIn("7. Актуальные схемы, удостоверения и акты", word_text)
+                self.assertIn("улица Тестовая, дом 15", word_text)
+                self.assertIn("Иванов Иван Иванович", word_text)
+                self.assertGreaterEqual(len(word.inline_shapes), 1)
+                self.assertEqual(page_count, 1)
+
+    def test_workforce_payload_is_validated_and_written_as_png(self):
+        import base64
+        import json
+        from app import prepare_workforce_schemes
+        with TemporaryDirectory() as temporary:
+            from unittest.mock import patch
+            with patch("app.UPLOADS", Path(temporary)):
+                image_path = Path(temporary) / "source.png"
+                Image.new("RGB", (300, 300), "white").save(image_path)
+                encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+                form = {"workforce_schemes_json": json.dumps([{
+                    "id": "report-123", "street": "Тестовая", "address": "15",
+                    "userName": "Иванов Иван", "submittedAt": "11.11.2026", "status": "accepted",
+                    "pngBase64": encoded,
+                }])}
+                files = {}
+                prepared = prepare_workforce_schemes(form, files)
+                self.assertEqual(len(prepared), 1)
+                self.assertEqual(prepared[0]["street"], "Тестовая")
+                self.assertIn("workforce_scheme_1", files)
+                with Image.open(files["workforce_scheme_1"]) as stored:
+                    self.assertEqual(stored.format, "PNG")
+                Path(files["workforce_scheme_1"]).unlink(missing_ok=True)
+
+    def test_conclusion_page_bridges_selected_schemes_into_section_7(self):
+        js = (BACKEND.parent.parent / "public" / "conclusion-workforce.js").read_text(encoding="utf-8")
+        self.assertIn("workforceGeneratedSchemes", js)
+        self.assertIn("data-workforce-include", js)
+        self.assertIn("workforce_schemes_json", js)
+        self.assertIn("Готово: ${selected.length} CAD-схем будут вставлены в пункт 7 PDF и Word.", js)
+
+
 class DockerBuildContractTests(unittest.TestCase):
     def test_editable_word_exporter_is_copied_into_backend_image(self):
         dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")

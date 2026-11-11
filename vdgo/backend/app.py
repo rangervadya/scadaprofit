@@ -4,7 +4,7 @@ from pathlib import Path
 from email.parser import BytesParser
 from email.policy import default
 import pymupdf as fitz
-import os, json, math, re, shutil, threading, webbrowser, html as htmlmod, tempfile, uuid, subprocess, sys
+import os, json, math, re, shutil, threading, webbrowser, html as htmlmod, tempfile, uuid, subprocess, sys, base64
 from datetime import datetime
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
@@ -1396,7 +1396,131 @@ def delete_optional_pages(doc, page_indices):
             doc.delete_page(page_index)
 
 
-def build_pdf(form, photo_paths):
+def prepare_workforce_schemes(form, files):
+    """Decode selected CAD previews passed by the authenticated parent page.
+
+    The browser rasterizes the current SVG preview to PNG. This keeps the VDGO
+    generator independent from the Node workforce storage and ensures that the
+    exact checked CAD version is embedded in both PDF and DOCX exports.
+    """
+    raw = str(form.get('workforce_schemes_json') or '').strip()
+    if not raw:
+        return []
+    if len(raw) > 180 * 1024 * 1024:
+        raise ValueError('Общий размер выбранных CAD-схем превышает 180 МБ. Уменьшите количество схем и повторите экспорт.')
+    try:
+        entries = json.loads(raw)
+    except Exception as exc:
+        raise ValueError('Не удалось прочитать список CAD-схем для пункта 7. Обновите страницу заключения и повторите экспорт.') from exc
+    if not isinstance(entries, list):
+        raise ValueError('Список CAD-схем пункта 7 имеет неверный формат.')
+    if len(entries) > 40:
+        raise ValueError('За один раз можно включить не более 40 схем в пункт 7.')
+
+    prepared = []
+    total_bytes = 0
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ValueError(f'Схема № {index}: неверная запись вложения.')
+        encoded = str(entry.get('pngBase64') or '')
+        if not encoded or len(encoded) > 16 * 1024 * 1024:
+            raise ValueError(f'Схема № {index}: PNG пустой или превышает 12 МБ.')
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise ValueError(f'Схема № {index}: повреждённые данные изображения.') from exc
+        total_bytes += len(payload)
+        if len(payload) > 12 * 1024 * 1024 or total_bytes > 128 * 1024 * 1024:
+            raise ValueError('Общий размер CAD-вложений пункта 7 превышает допустимый лимит.')
+        target = UPLOADS / f'workforce_scheme_{uuid.uuid4().hex}.png'
+        try:
+            target.write_bytes(payload)
+            with Image.open(target) as image:
+                if image.format != 'PNG' or image.width < 150 or image.height < 150:
+                    raise ValueError(f'Схема № {index}: изображение должно быть PNG не менее 150×150 пикселей.')
+                if image.width > 12000 or image.height > 12000:
+                    raise ValueError(f'Схема № {index}: слишком большое разрешение изображения.')
+                image.verify()
+        except ValueError:
+            target.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            raise ValueError(f'Схема № {index}: не удалось проверить PNG-вложение.') from exc
+
+        def safe_meta(key, limit=180):
+            value = str(entry.get(key) or '').replace('\x00', ' ')
+            return re.sub(r'\s+', ' ', value).strip()[:limit]
+
+        name = f'workforce_scheme_{index}'
+        files[name] = str(target)
+        prepared.append({
+            'path': str(target),
+            'street': safe_meta('street', 160),
+            'address': safe_meta('address', 80),
+            'userName': safe_meta('userName', 120),
+            'submittedAt': safe_meta('submittedAt', 40),
+            'reportId': safe_meta('id', 80),
+            'status': safe_meta('status', 32),
+        })
+    return prepared
+
+
+def append_workforce_scheme_pages(doc, schemes, form):
+    """Insert every selected field scheme into section 7 of the final document."""
+    if not schemes:
+        return
+    # Page 31 is the first attachment sheet (Appendix 6) in the source template.
+    # Insert the field-generated schemes immediately before that block so they
+    # physically belong to Section 7, not as unrelated pages after signatures.
+    insertion_index = next(
+        (index for index, page in enumerate(doc) if 'Приложение 6' in page.get_text()),
+        min(30, len(doc))
+    )
+    report_number = val(form, 'report_number')
+    report_address = val(form, 'address')
+    page_width, page_height = 595.32, 841.92
+    for offset, scheme in enumerate(schemes):
+        page = doc.new_page(pno=insertion_index + offset, width=page_width, height=page_height)
+        page.draw_rect(page.rect, color=None, fill=(1, 1, 1), overlay=True)
+        put(page, (42, 18, 553, 32),
+            f'Заключение № {report_number} по результатам технического диагностирования внутридомового газового оборудования.',
+            8.0, 1, 1.0)
+        put(page, (42, 34, 553, 48), 'Адрес объекта: ' + report_address, 8.0, 1, 1.0)
+        heading = '7. Актуальные схемы, удостоверения и акты' if offset == 0 else '7. Актуальные схемы, удостоверения и акты (продолжение)'
+        put(page, (42, 61, 553, 84), heading, 14.0, 1, 1.0, True)
+        street = scheme.get('street') or 'Улица не указана'
+        house = scheme.get('address') or '—'
+        put(page, (42, 91, 553, 112), f'Схема по адресу: {street}, дом {house}', 12.0, 1, 1.0, True)
+        details = []
+        if scheme.get('userName'):
+            details.append('Слесарь: ' + scheme['userName'])
+        if scheme.get('submittedAt'):
+            details.append('Отчёт отправлен: ' + scheme['submittedAt'])
+        if scheme.get('status') == 'accepted':
+            details.append('Статус: принята приёмщиком')
+        if details:
+            put(page, (42, 116, 553, 134), ' · '.join(details), 8.5, 0, 1.0)
+        image_path = Path(scheme['path'])
+        try:
+            with Image.open(image_path) as image:
+                image_width, image_height = image.size
+        except Exception as exc:
+            raise ValueError(f'Не удалось прочитать CAD-схему {street}, дом {house}: {exc}') from exc
+        image_bounds = fitz.Rect(44, 145, 551, 770)
+        scale = min(image_bounds.width / image_width, image_bounds.height / image_height)
+        draw_width, draw_height = image_width * scale, image_height * scale
+        image_rect = fitz.Rect(
+            image_bounds.x0 + (image_bounds.width - draw_width) / 2,
+            image_bounds.y0 + (image_bounds.height - draw_height) / 2,
+            image_bounds.x0 + (image_bounds.width + draw_width) / 2,
+            image_bounds.y0 + (image_bounds.height + draw_height) / 2,
+        )
+        page.draw_rect(image_bounds, color=(0.72, 0.77, 0.83), width=0.7, overlay=True)
+        page.insert_image(image_rect, filename=str(image_path), keep_proportion=False, overlay=True)
+
+
+def build_pdf(form, photo_paths, workforce_schemes=None):
     # Text is written directly as embedded PDF text objects; no raster text queues exist.
     _FITZ_FONT_CACHE.clear()
     work=OUTPUT/'_work.pdf'; shutil.copy2(TEMPLATE,work); doc=fitz.open(work)
@@ -1540,6 +1664,7 @@ def build_pdf(form, photo_paths):
     rebuild_toc_protocol_rows(doc,form)
     update_optional_appendix_contents(doc,has_scheme,has_photos)
     delete_optional_pages(doc,photo_pages_to_remove + material_pages_to_remove)
+    append_workforce_scheme_pages(doc, workforce_schemes or [], form)
     renumber_document_pages(doc)
     add_searchable_text_layer(doc)
     out=OUTPUT/'generated.pdf'
@@ -2014,9 +2139,10 @@ class Handler(BaseHTTPRequestHandler):
         files={}
         try:
             form,files=self.parse_form()
+            workforce_schemes=prepare_workforce_schemes(form,files)
             validate_form(form,files)
             if self.path == '/generate_docx':
-                pdf_path=build_pdf(form,files)
+                pdf_path=build_pdf(form,files,workforce_schemes=workforce_schemes)
                 # DOCX export uses normal editable Word paragraphs and tables. Photographs,
                 # schematics and authentic scans remain separate image objects in Word.
                 out=OUTPUT/'Заключение_редактируемый_текст.docx'
@@ -2026,7 +2152,7 @@ class Handler(BaseHTTPRequestHandler):
                 content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                 disposition=_download_disposition(form, 'docx')
             else:
-                out=build_pdf(form,files); payload=out.read_bytes()
+                out=build_pdf(form,files,workforce_schemes=workforce_schemes); payload=out.read_bytes()
                 with fitz.open(out) as generated_doc:
                     page_count=len(generated_doc)
                 content_type='application/pdf'
