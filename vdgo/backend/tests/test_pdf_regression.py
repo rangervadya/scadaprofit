@@ -706,6 +706,30 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
         self.assertIn("workforce_schemes_json", js)
         self.assertIn("Готово: ${selected.length} CAD-схем будут вставлены в пункт 7 PDF и Word.", js)
 
+    def test_long_workforce_json_is_not_treated_as_free_text(self):
+        from app import form_field_length_issues, validate_form
+        # A modest PNG/base64 payload is already far longer than 500 characters.
+        payload = '{"pngBase64":"' + ('A' * 12000) + '"}'
+        issues = form_field_length_issues({
+            "workforce_schemes_json": payload,
+            "conclusion_text": "В" * 701,
+        })
+        self.assertFalse(any("workforce_schemes_json" in issue for issue in issues))
+        self.assertTrue(any("conclusion_text" in issue and "700" in issue for issue in issues))
+        # Exercise the actual conclusion validator: it may reject unrelated missing
+        # report data, but must not reject this structured attachment field.
+        with self.assertRaises(ValueError) as caught:
+            validate_form({**self_form_fixture(), "workforce_schemes_json": payload}, {})
+        self.assertNotIn("workforce_schemes_json", str(caught.exception))
+        self.assertNotIn("слишком длинное (максимум 500 символов)", str(caught.exception))
+
+    def test_workforce_json_still_has_its_own_payload_size_limit(self):
+        from unittest.mock import patch
+        from app import prepare_workforce_schemes
+        with patch("app.MAX_WORKFORCE_SCHEMES_JSON_BYTES", 100):
+            with self.assertRaisesRegex(ValueError, "превышает 180 МБ"):
+                prepare_workforce_schemes({"workforce_schemes_json": "x" * 101}, {})
+
 
 class DockerBuildContractTests(unittest.TestCase):
     def test_editable_word_exporter_is_copied_into_backend_image(self):

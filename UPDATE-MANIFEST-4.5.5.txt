@@ -1,0 +1,14 @@
+ScadaProfit 4.5.5 — исправлен лимит длины служебного JSON схем в пункте 7
+
+Изменения:
+- workforce_schemes_json больше не проверяется как обычное текстовое поле с лимитом 500 символов.
+- Для JSON-вложений CAD-схем используется отдельное ограничение размера 180 МБ и существующая проверка PNG/base64.
+- Ограничения обычных текстовых полей заключения сохранены.
+- Формирование PDF и редактируемого Word с выбранными схемами пункта 7 не изменено.
+
+Обновление:
+  docker compose build vdgo-backend app vdgo-frontend
+  docker compose up -d --no-deps vdgo-backend app vdgo-frontend
+  docker compose restart gateway
+
+Постоянные тома cad_jobs и vdgo_postgres_data не удалять.

@@ -1406,7 +1406,7 @@ def prepare_workforce_schemes(form, files):
     raw = str(form.get('workforce_schemes_json') or '').strip()
     if not raw:
         return []
-    if len(raw) > 180 * 1024 * 1024:
+    if len(raw.encode('utf-8')) > MAX_WORKFORCE_SCHEMES_JSON_BYTES:
         raise ValueError('Общий размер выбранных CAD-схем превышает 180 МБ. Уменьшите количество схем и повторите экспорт.')
     try:
         entries = json.loads(raw)
@@ -1677,6 +1677,27 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
     except: pass
     return out
 
+# These fields carry structured attachment data, not user-entered prose. They have
+# their own strict schema, image-size, and total-request limits in
+# prepare_workforce_schemes()/parse_form(); the ordinary 500-character text-field
+# limit must never be applied to their JSON/base64 payload.
+STRUCTURED_PAYLOAD_FIELDS = frozenset({'workforce_schemes_json'})
+MAX_WORKFORCE_SCHEMES_JSON_BYTES = 180 * 1024 * 1024
+
+
+def form_field_length_issues(form):
+    """Return excessive free-text fields while ignoring bounded structured payloads."""
+    issues = []
+    for key, value in form.items():
+        if key in STRUCTURED_PAYLOAD_FIELDS:
+            continue
+        text = str(value or '').strip()
+        limit = 700 if key == 'conclusion_text' else (450 if key == 'test_result' else (900 if '_text' in key or '_recommendation' in key else 500))
+        if len(text) > limit:
+            issues.append(f'Поле «{key}» слишком длинное (максимум {limit} символов)')
+    return issues
+
+
 def validate_form(form, files):
     corrupted=[key for key,value in form.items() if isinstance(value,str) and '\ufffd' in value]
     if corrupted:
@@ -1744,11 +1765,8 @@ def validate_form(form, files):
         if val(form,key) and val(form,key) not in allowed:
             missing.append(f'Недопустимое значение в поле «{labels.get(key,key)}»')
     # Reject oversized free text: PDF fields have fixed geometry and must remain readable.
-    for key,value in form.items():
-        text=str(value or '').strip()
-        limit=700 if key == 'conclusion_text' else (450 if key == 'test_result' else (900 if '_text' in key or '_recommendation' in key else 500))
-        if len(text)>limit:
-            missing.append(f'Поле «{key}» слишком длинное (максимум {limit} символов)')
+    # Binary/structured attachment JSON is validated separately by prepare_workforce_schemes.
+    missing.extend(form_field_length_issues(form))
     if not val(form,'finding_status'):
         missing.append('Вывод по результатам обследования (выберите явно)')
     # Narrative and credential fields must contain real-world data, not one-word test strings.
