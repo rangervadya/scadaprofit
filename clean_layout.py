@@ -116,16 +116,14 @@ def _merge_pipe_network(pipes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 visited.add(current_index)
                 break
+            # Reject inconsistent shared-node coordinates before consuming the
+            # next edge. It must remain available as an independent route.
+            if geometry and math.dist(geometry[-1], ordered[0]) > 1e-6:
+                break
             visited.add(current_index)
             if not geometry:
                 geometry.extend(ordered)
             else:
-                gap = math.dist(geometry[-1], ordered[0])
-                if gap > 5.0:
-                    break
-                if gap > 1e-6:
-                    geometry.append([(geometry[-1][0] + ordered[0][0]) / 2.0,
-                                     (geometry[-1][1] + ordered[0][1]) / 2.0])
                 geometry.extend(ordered[1:])
             source_ids.extend(str(item) for item in (pipe.get("sourceEdgeIds") or [pipe.get("id", "")]) if item)
             confidence_values.append(float(pipe.get("confidence", 0.0) or 0.0))
@@ -572,7 +570,7 @@ def build_clean_layout(
     # routes. They are explicitly marked as suggestions and never written back
     # into the engineering/source model.
     section_tags = []
-    if layout_options.get("autoNumberSections", True) and layout_options.get("showGeneratedSectionNumbers", True):
+    if layout_options.get("autoNumberSections", False) and layout_options.get("showGeneratedSectionNumbers", True):
         ordered_pipes = sorted(layout_pipes, key=lambda pipe: (
             sum(float(point[1]) for point in pipe.get("geometry", [])) / max(1, len(pipe.get("geometry", []))),
             sum(float(point[0]) for point in pipe.get("geometry", [])) / max(1, len(pipe.get("geometry", []))),
@@ -612,7 +610,9 @@ def build_clean_layout(
                     best, best_score = (candidate, box), score
                 if score <= 0:
                     break
-            if best is None:
+            if best is None or best_score > 0:
+                # Never cover existing annotations or leave the drawing area
+                # just to propose a number for a fragmented detector route.
                 continue
             section_tags.append({
                 "id": f"AUTO-{number:03d}", "number": tag_text,

@@ -52,7 +52,7 @@ REFERENCE_GAS_TEMPLATE: dict[str, Any] = {
     "layout": {
         "fitToContent": True,
         "contentPaddingRatio": 0.055,
-        "autoNumberSections": True,
+        "autoNumberSections": False,
         "autoPlaceAnnotations": True,
         "showGeneratedSectionNumbers": True,
         "preserveSourceTopology": True,
@@ -72,7 +72,7 @@ REFERENCE_GAS_TEMPLATE: dict[str, Any] = {
     },
     "legend": [
         {"code": "━", "label": "расположение контролируемого участка", "kind": "pipe"},
-        {"code": "01", "label": "номер участка (автоматическую нумерацию проверить)", "kind": "section"},
+        {"code": "01", "label": "номер участка по исходным данным", "kind": "section"},
         {"code": "◯", "label": "условное обозначение оборудования", "kind": "symbol"},
         {"code": "↔", "label": "размер участка; значение требует проверки", "kind": "dimension"},
         {"code": "- -", "label": "неподтверждённая геометрия — только проверка", "kind": "review"},

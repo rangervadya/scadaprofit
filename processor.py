@@ -233,7 +233,7 @@ def _estimate_document_skew(bgr: np.ndarray) -> dict[str, Any]:
     horizontal: list[tuple[float, float]] = []
     vertical: list[tuple[float, float]] = []
     if lines is not None:
-        for raw in lines[:, 0, :]:
+        for raw in np.asarray(lines).reshape(-1, 4):
             x1, y1, x2, y2 = map(float, raw)
             dx, dy = x2 - x1, y2 - y1
             length = math.hypot(dx, dy)
@@ -3391,7 +3391,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
     return nodes, edges, component_summaries
 
 def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
-                             min_dimension: int) -> dict[str, int]:
+                             min_dimension: int, image_size: tuple[int, int] | None = None) -> dict[str, int]:
     """Select coherent route paths for the clean CAD sheet.
 
     The detector graph deliberately keeps every reviewable segment.  The clean
@@ -3609,6 +3609,70 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
         for index in path_edges:
             edges[index]['cad_include'] = bool(keep)
             edges[index]['cad_reason'] = reason
+
+    # A long isolated detection can be a real trunk split at fittings/OCR
+    # masks. Recover only ink-backed strokes with nearby primary geometry at
+    # BOTH ends and a straight continuation at at least one end. This changes
+    # selection only: gaps and node identities remain untouched for review.
+    selected_edges = [edge for edge in edges if edge.get('cad_include')]
+    gap_limit = max(4.0, min(12.0, float(min_dimension) * 0.014))
+    for edge in edges:
+        if edge.get('cad_reason') != 'isolated-stroke-review':
+            continue
+        geometry = edge.get('geometry') or []
+        if len(geometry) < 2 or float(edge.get('ink_support', 0)) < 0.90:
+            continue
+        if float(edge.get('ocr_overlap', 0)) >= 0.20:
+            continue
+        first, last = geometry[0], geometry[-1]
+        length = math.dist(first, last)
+        if length < max(80.0, float(min_dimension) * 0.12):
+            continue
+        supported_ends = 0
+        aligned = False
+        for point, inside in ((first, geometry[1]), (last, geometry[-2])):
+            dx, dy = inside[0] - point[0], inside[1] - point[1]
+            norm = math.hypot(dx, dy)
+            neighbors = []
+            for candidate in selected_edges:
+                route = candidate.get('geometry') or []
+                if len(route) < 2:
+                    continue
+                for tip, next_point in ((route[0], route[1]), (route[-1], route[-2])):
+                    if math.dist(point, tip) > gap_limit:
+                        continue
+                    neighbors.append(candidate)
+                    vx, vy = next_point[0] - tip[0], next_point[1] - tip[1]
+                    other_norm = math.hypot(vx, vy)
+                    if norm > 0 and other_norm > 0 and (dx * vx + dy * vy) / (norm * other_norm) <= -0.94:
+                        aligned = True
+            supported_ends += bool(neighbors)
+        if supported_ends == 2 and aligned:
+            edge['cad_include'] = True
+            edge['cad_reason'] = 'supported-trunk-fragment'
+
+    # Scanner/photo borders are not gas pipes. Keep them reviewable, but do
+    # not let even a connected long border become primary network geometry.
+    if image_size is not None:
+        image_width, image_height = image_size
+        margin = max(2.0, min(image_width, image_height) * 0.004)
+        for edge in edges:
+            points = edge.get('geometry') or []
+            if len(points) < 2:
+                continue
+            xs = [float(point[0]) for point in points]
+            ys = [float(point[1]) for point in points]
+            along_vertical_border = (
+                (max(xs) <= margin or min(xs) >= image_width - 1 - margin)
+                and max(ys) - min(ys) >= max(20.0, image_height * 0.03)
+            )
+            along_horizontal_border = (
+                (max(ys) <= margin or min(ys) >= image_height - 1 - margin)
+                and max(xs) - min(xs) >= max(20.0, image_width * 0.03)
+            )
+            if along_vertical_border or along_horizontal_border:
+                edge['cad_include'] = False
+                edge['cad_reason'] = 'image-border-review'
 
     # Defensive default for malformed/disconnected records.
     for edge in edges:
@@ -4621,7 +4685,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     )
     nodes,edges,components=endpoint_clusters(segments, ink=ink, text_mask=text_mask)
     ink_color_diagnostics = _annotate_edge_ink_color(edges, ink_layers["blue"], ink_layers["dark"])
-    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h))
+    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h), image_size=(w, h))
     primary_opencv_edges = [edge for edge in edges if edge.get('cad_include')]
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
