@@ -723,6 +723,24 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
         self.assertNotIn("workforce_schemes_json", str(caught.exception))
         self.assertNotIn("слишком длинное (максимум 500 символов)", str(caught.exception))
 
+    def test_workforce_payload_field_name_variants_are_not_free_text(self):
+        from app import form_field_length_issues, is_structured_payload_field, normalize_structured_form_field_names
+        payload = '{"pngBase64":"' + ('A' * 12000) + '"}'
+        for name in (
+            "workforce_schemes_json",
+            " WORKFORCE_SCHEMES_JSON ",
+            "workforce_schemes_json[]",
+            "form[workforce_schemes_json]",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(is_structured_payload_field(name))
+                self.assertFalse(any(name in issue for issue in form_field_length_issues({name: payload})))
+        self.assertFalse(is_structured_payload_field('workforce_schemes_json_notes'))
+        self.assertTrue(any('workforce_schemes_json_notes' in issue for issue in form_field_length_issues({'workforce_schemes_json_notes': payload})))
+        aliased = {' WORKFORCE_SCHEMES_JSON[] ': payload}
+        normalize_structured_form_field_names(aliased)
+        self.assertEqual(aliased, {'workforce_schemes_json': payload})
+
     def test_workforce_json_still_has_its_own_payload_size_limit(self):
         from unittest.mock import patch
         from app import prepare_workforce_schemes

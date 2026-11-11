@@ -1,0 +1,7 @@
+ScadaProfit 4.5.6
+- Robust recognition of workforce_schemes_json field name variants.
+- Canonical multipart field normalization before validation.
+- Backend health/build fingerprint 4.5.6 / 5.3.8.
+- Backend Docker image tag bumped to vdgo-backend:5.3.8.
+- Corrected unified Compose update instructions; force recreate backend and app.
+- Preserves Section 7 PDF/DOCX scheme embedding and other workflow functions.

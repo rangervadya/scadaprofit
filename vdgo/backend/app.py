@@ -11,6 +11,8 @@ from PIL import Image, ImageOps
 from database import init_database, database_status, recent_reports, record_generation
 from io import BytesIO
 
+APP_RELEASE = '4.5.6'
+BACKEND_IMAGE_VERSION = '5.3.8'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'
 TEMPLATE = TEMPLATE_DIR / '905_З(2).pdf'
@@ -1685,11 +1687,34 @@ STRUCTURED_PAYLOAD_FIELDS = frozenset({'workforce_schemes_json'})
 MAX_WORKFORCE_SCHEMES_JSON_BYTES = 180 * 1024 * 1024
 
 
+def is_structured_payload_field(key):
+    """Recognize the CAD JSON field despite harmless multipart naming variations."""
+    normalized = str(key or '').strip().casefold()
+    # Some form serializers append [] to array-like hidden inputs. Remove only
+    # that conventional suffix; do not broadly exempt similarly named fields.
+    while normalized.endswith('[]'):
+        normalized = normalized[:-2].rstrip()
+    # Accept a wrapper prefix such as form[workforce_schemes_json], while still
+    # requiring the exact field token at the end of the name.
+    normalized = re.sub(r'^.*\[([^\[\]]+)\]$', r'\1', normalized)
+    return normalized in STRUCTURED_PAYLOAD_FIELDS
+
+
+def normalize_structured_form_field_names(form):
+    """Canonicalize recognized structured field aliases before all downstream handling."""
+    aliases = [key for key in list(form) if is_structured_payload_field(key) and key != 'workforce_schemes_json']
+    for key in aliases:
+        if 'workforce_schemes_json' not in form:
+            form['workforce_schemes_json'] = form[key]
+        del form[key]
+    return form
+
+
 def form_field_length_issues(form):
     """Return excessive free-text fields while ignoring bounded structured payloads."""
     issues = []
     for key, value in form.items():
-        if key in STRUCTURED_PAYLOAD_FIELDS:
+        if is_structured_payload_field(key):
             continue
         text = str(value or '').strip()
         limit = 700 if key == 'conclusion_text' else (450 if key == 'test_result' else (900 if '_text' in key or '_recommendation' in key else 500))
@@ -2110,9 +2135,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
-            data=b'{"ok":true}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data=b'{"ok":true,"release":"4.5.6","backendVersion":"5.3.8"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/api/health':
-            self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':'5.3.7'})
+            self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
         if self.path=='/api/reports':
             try:
@@ -2132,6 +2157,8 @@ class Handler(BaseHTTPRequestHandler):
             for part in msg.iter_parts():
                 name=part.get_param('name',header='content-disposition')
                 if not name: continue
+                if is_structured_payload_field(name):
+                    name = 'workforce_schemes_json'
                 filename=part.get_filename()
                 if filename:
                     data=part.get_payload(decode=True) or b''
@@ -2149,6 +2176,7 @@ class Handler(BaseHTTPRequestHandler):
                         form[name]=payload.decode('utf-8',errors='replace')
         else:
             form={k:v[0] for k,v in parse_qs(raw.decode('utf-8'),keep_blank_values=True).items()}
+        normalize_structured_form_field_names(form)
         normalize_form_dates(form)
         return form,files
     def do_POST(self):

@@ -1,14 +1,24 @@
-# ScadaProfit 4.5.5 — обновление, аккаунты и рабочий процесс
+# ScadaProfit 4.5.6 — обновление, аккаунты и рабочий процесс
 
 ## 1. Обновление
 
 В каталоге проекта:
 
 ```bash
-docker compose build app
-docker compose up -d --no-deps app
+docker compose build --no-cache vdgo-backend app vdgo-frontend
+docker compose up -d --no-deps --force-recreate vdgo-backend app vdgo-frontend
 docker compose restart gateway
 ```
+
+Команды выполняются **из корневой папки проекта**, где лежит основной `compose.yaml`. Недостаточно пересобрать только `app`: генератор PDF/Word и проверка поля пункта 7 находятся в контейнере `vdgo-backend`.
+
+После обновления проверь версию backend:
+
+```bash
+docker compose exec vdgo-backend python -c "import app; print(app.APP_RELEASE, app.BACKEND_IMAGE_VERSION)"
+```
+
+Ожидаемый ответ: `4.5.6 5.3.8`. Если видишь другую версию, значит запущен старый контейнер или используется другой compose-файл.
 
 При первом развёртывании:
 
@@ -102,3 +112,10 @@ docker compose build vdgo-backend app vdgo-frontend
 docker compose up -d --no-deps vdgo-backend app vdgo-frontend
 docker compose restart gateway
 ```
+
+
+## Исправление 4.5.6: проверка служебного поля пункта 7 и версия backend
+
+В 4.5.5 исключение для точного имени `workforce_schemes_json` уже было в исходнике, но ошибка указывала, что на сервере продолжает отвечать старая проверка. В 4.5.6 поле определяется с нормализацией регистра, крайних пробелов, суффикса `[]` и HTML-обёртки вида `form[...]`. После распознавания имя приводится к каноническому `workforce_schemes_json`.
+
+В health endpoint добавлены `release=4.5.6` и `backendVersion=5.3.8`, а Docker-образ backend получил новый тег, чтобы можно было проверить фактически работающий контейнер.

@@ -50,12 +50,13 @@ The machine-readable diagnostics now include `cadReadiness` with `ready`, `autom
 
 Local Qwen-VL via Ollama and Tesseract (`rus+eng`) remain unchanged. This release does not stop or reconfigure Ollama, other Python/GPU processes, other applications, VDGO, PostgreSQL, Nginx/gateway, Docker volumes, Compose configuration or the user's `.env`.
 
-Deploy through GitHub and rebuild only ScadaProfit's `app` service:
+Deploy through GitHub from the project root (this release also updates the VDGO conclusion backend and frontend):
 
 ```bash
 git pull --ff-only
-docker compose build app
-docker compose up -d --no-deps app
+docker compose build --no-cache vdgo-backend app vdgo-frontend
+docker compose up -d --no-deps --force-recreate vdgo-backend app vdgo-frontend
+docker compose restart gateway
 ```
 
 Run checks with `npm run check`.

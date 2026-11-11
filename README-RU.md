@@ -59,12 +59,13 @@ Qwen PIPE теперь проверяет каждую точку относит
 
 Локальный Qwen через Ollama и Tesseract (`rus+eng`) остаются прежними. Не останавливаем и не перенастраиваем Ollama, Python/GPU-процесс другого приложения, VDGO, PostgreSQL, Nginx/gateway, Docker volumes, Compose и настоящий `.env`.
 
-Обновление через GitHub:
+Обновление через GitHub (из корневой папки рядом с `compose.yaml`; для этого выпуска важно пересобрать также backend заключений):
 
 ```bash
 git pull --ff-only
-docker compose build app
-docker compose up -d --no-deps app
+docker compose build --no-cache vdgo-backend app vdgo-frontend
+docker compose up -d --no-deps --force-recreate vdgo-backend app vdgo-frontend
+docker compose restart gateway
 ```
 
 Проверки:
