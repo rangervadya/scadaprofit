@@ -1,6 +1,6 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.5.1",
+  "version": "4.5.3",
   "private": true,
   "description": "Local hand-drawn fitter sketch to structured, editable VDGO engineering schematic and print-ready CAD sheet",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node --import ./moss-env-boot.js server.js",
-    "check": "node --check moss-env-boot.js && node --check server.js && node --check workforce-system.js && node --test tests/workforce-auth.test.js tests/workforce-contract.test.js && node --check manual-cad-core.js && node --check public/login.js && node --check public/workforce.js && node --check public/app.js && node --check public/manual-cad.js && node --check public/manual-cad-ink-trace.js && node --test tests/manual-cad.test.js tests/manual-cad-ink-trace.test.js && PYTHON_BIN=\"$(command -v python || command -v python3)\" && \"$PYTHON_BIN\" -m py_compile processor.py && \"$PYTHON_BIN\" -m unittest discover -s tests -p 'test_*.py'"
+    "check": "node --check moss-env-boot.js && node --check server.js && node --check workforce-system.js && node --test tests/workforce-auth.test.js tests/workforce-contract.test.js tests/workforce-upload.test.js && node --check manual-cad-core.js && node --check public/login.js && node --check public/workforce.js && node --check public/app.js && node --check public/manual-cad.js && node --check public/manual-cad-ink-trace.js && node --test tests/manual-cad.test.js tests/manual-cad-ink-trace.test.js && PYTHON_BIN=\"$(command -v python || command -v python3)\" && \"$PYTHON_BIN\" -m py_compile processor.py && \"$PYTHON_BIN\" -m unittest discover -s tests -p 'test_*.py'"
   },
   "dependencies": {
     "express": "^5.1.0",

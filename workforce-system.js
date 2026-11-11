@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
@@ -72,6 +72,35 @@ export async function verifyPassword(password, stored) {
   const actual = Buffer.from(await scrypt(String(password), salt, 64));
   const expected = Buffer.from(expectedHex, 'hex');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/**
+ * Persist a Multer temporary upload in the private data directory. Multer's
+ * default temp directory may be mounted on a different filesystem from the
+ * persistent /data volume, so renaming the upload directly can fail with
+ * EXDEV. Copy to a unique staging file beside the destination, then rename
+ * within that filesystem (atomic there). The source is removed only after
+ * the destination has been committed.
+ */
+export async function persistUploadedFile(sourcePath, destinationPath) {
+  const destinationDir = path.dirname(destinationPath);
+  const stagingPath = path.join(
+    destinationDir,
+    `.${path.basename(destinationPath)}.${randomUUID()}.uploading`
+  );
+  await mkdir(destinationDir, { recursive: true, mode: 0o700 });
+  try {
+    await copyFile(sourcePath, stagingPath);
+    await chmod(stagingPath, 0o600);
+    // Both paths are on the destination filesystem, avoiding cross-device rename.
+    await rename(stagingPath, destinationPath);
+  } catch (error) {
+    await rm(stagingPath, { force: true }).catch(() => {});
+    throw error;
+  }
+  // A cleanup failure must not turn a successfully saved report into an error.
+  await rm(sourcePath, { force: true }).catch(() => {});
+  return destinationPath;
 }
 
 // The same credential check is used by the login endpoint and tested directly.
@@ -381,7 +410,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       const id = randomUUID();
       const ext = path.extname(path.basename(file.originalname || '')).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 12) || (file.mimetype === 'application/pdf' ? '.pdf' : '.jpg');
       const fileName = `${id}${ext}`;
-      await rename(file.path, path.join(reportDir, fileName));
+      await persistUploadedFile(file.path, path.join(reportDir, fileName));
       return { id, fileName, originalName: cleanText(path.basename(file.originalname || 'Файл'), 180), size: file.size, mimeType: file.mimetype, kind, uploadedAt: new Date().toISOString() };
     }
     try {
