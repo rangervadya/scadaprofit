@@ -448,6 +448,7 @@ export function normalizeManualCadProject(input, existing = null) {
     sourceJobId: text(input?.sourceJobId ?? base.sourceJobId, 64) || null,
     sourceStreetId: text(input?.sourceStreetId ?? base.sourceStreetId, 64) || null,
     sourceBuildingId: text(input?.sourceBuildingId ?? base.sourceBuildingId, 64) || null,
+    sourceReportId: text(input?.sourceReportId ?? base.sourceReportId, 64) || null,
     analysisComplete: input?.analysisComplete === false ? false : input?.analysisComplete === true ? true : (base.analysisComplete !== false),
     manualEditRevision: Math.max(0, Math.floor(num(input?.manualEditRevision, num(base.manualEditRevision, 0)))),
     width,

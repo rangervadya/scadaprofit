@@ -39,6 +39,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       TRUST_GATEWAY_PROXY: "1"
+      COOKIE_SECURE: "${COOKIE_SECURE:-0}"
       HOST: "0.0.0.0"
       MASK_PYTHON: "/opt/venv/bin/python"
       PYTHON_JOB_TIMEOUT_MS: "5400000"

@@ -80,6 +80,7 @@ async function createProject(showToast=true) {
   try {
     const data = await api('/api/manual-cad/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: 'Новая схема' }) });
     state.project = ensureProjectDefaults(data.project);
+    state.sourceVisible = Boolean(state.project.sourceUrl);
     state.traceRaster = null;
     state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.showReviewCandidates = false; $('sourceOpacity').value = '58';
     await refreshProjectList();
@@ -97,7 +98,7 @@ async function openProject(id) {
   try {
     const data = await api(`/api/manual-cad/projects/${encodeURIComponent(id)}`);
     state.project = ensureProjectDefaults(data.project);
-    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = false; state.highlightReview = false; state.showReviewCandidates = state.project.pipes.some(pipe => pipe.reviewOnly);
+    state.undo = []; state.redo = []; state.selected = null; state.activeVertex = null; clearDraft(); state.sourceVisible = Boolean(state.project.sourceUrl); state.highlightReview = false; state.showReviewCandidates = state.project.pipes.some(pipe => pipe.reviewOnly);
     state.layers = { pipes: true, candidates: true, symbols: true, labels: true, dimensions: true, junctions: true };
     state.objectFilter = ''; $('objectSearch').value = '';
     $('sourceOpacity').value = state.project.sketchAssist?.enabled ? '28' : '58';
@@ -258,6 +259,7 @@ async function saveProject() {
     });
     if (state.project?.id === snapshot.id) {
       state.project.updatedAt = data.project.updatedAt;
+      state.project.manualEditRevision = data.project.manualEditRevision;
       const latestTitle = state.project.title;
       if (latestTitle === snapshot.title) setSaveState('Сохранено', 'saved');
       else setSaveState('Есть новые изменения…', 'dirty');
@@ -273,9 +275,11 @@ function syncControls() {
   $('projectTitle').value = p.title || '';
   const backToScheme = $('mcBackToSchemeLink');
   if (backToScheme) {
-    backToScheme.href = p.sourceJobId ? `/?job=${encodeURIComponent(p.sourceJobId)}` : '/';
-    backToScheme.textContent = p.sourceJobId ? '← Вернуться к схеме дома' : '← Схемы домов';
+    backToScheme.href = p.sourceReportId ? `/workforce.html?report=${encodeURIComponent(p.sourceReportId)}` : p.sourceJobId ? `/?job=${encodeURIComponent(p.sourceJobId)}` : '/';
+    backToScheme.textContent = p.sourceReportId ? '← К уведомлению приёмщика' : p.sourceJobId ? '← Вернуться к схеме дома' : '← Схемы домов';
   }
+  const addToConclusion = $('addToConclusionBtn');
+  if (addToConclusion) addToConclusion.hidden = !p.sourceReportId;
   $('pageOrientation').value = p.page || 'portrait';
   $('paperSize').value = p.paperSize || 'A4';
   $('drawingStyle').value = p.drawingStyle || 'standard';
@@ -295,7 +299,7 @@ function syncControls() {
   $('sourceVisible').disabled = !hasSource;
   $('sourceOpacity').disabled = !hasSource;
   $('sourceVisible').checked = state.sourceVisible;
-  $('toggleSourceBtn').textContent = state.sourceVisible ? 'Скрыть подложку' : 'Показать подложку';
+  $('toggleSourceBtn').textContent = state.sourceVisible ? 'Скрыть оригинал схемы' : 'Показать оригинал схемы';
   const reviewCount = p.pipes.filter(pipe => pipe.reviewOnly === true).length;
   $('reviewCandidatesLabel').hidden = reviewCount === 0;
   $('showReviewCandidates').checked = state.showReviewCandidates;
@@ -793,8 +797,8 @@ async function uploadSource(file) {
     const form=new FormData();form.append('source',file);form.append('width',String(image.naturalWidth));form.append('height',String(image.naturalHeight));
     setSaveState('Загружаю подложку…','busy');
     const data=await api(`/api/manual-cad/projects/${state.project.id}/source`,{method:'POST',body:form});
-    state.project=ensureProjectDefaults(data.project);state.sourceVisible=true;clearDraft();await loadTraceRaster(state.project);syncControls();renderCanvas();await refreshProjectList();setSaveState('Подложка загружена','saved');
-    toast(`Подложка загружена: ${image.naturalWidth} × ${image.naturalHeight}. Автотрасса готова: укажи начало и конец участка.`);
+    state.project=ensureProjectDefaults(data.project);state.sourceVisible=true;clearDraft();await loadTraceRaster(state.project);syncControls();renderCanvas();await refreshProjectList();setSaveState('Оригинал схемы загружен','saved');
+    toast(`Оригинал схемы загружен: ${image.naturalWidth} × ${image.naturalHeight}. Автотрасса готова: укажи начало и конец участка.`);
   }catch(error){setSaveState('Ошибка загрузки','error');toast(error.message);}finally{URL.revokeObjectURL(objectUrl);$('sourceFile').value='';}
 }
 
@@ -804,9 +808,21 @@ document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener
 $('finishRouteBtn').addEventListener('click',finishRoute);
 $('undoBtn').addEventListener('click',undo);$('redoBtn').addEventListener('click',redo);$('duplicateBtn').addEventListener('click',duplicateSelected);$('deleteBtn').addEventListener('click',deleteSelected);
 $('sourceFile').addEventListener('change',event=>uploadSource(event.target.files?.[0]));
-$('toggleSourceBtn').addEventListener('click',()=>{state.sourceVisible=!state.sourceVisible;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
-$('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('layerSource').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
-$('layerSource').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть подложку':'Показать подложку';renderCanvas();});
+$('addToConclusionBtn')?.addEventListener('click', async event => {
+  const button = event.currentTarget;
+  const reportId = state.project?.sourceReportId;
+  if (!reportId) return;
+  button.disabled = true; button.textContent = 'Сохраняю и переношу…';
+  try {
+    await saveProject();
+    if ($('saveState')?.dataset.kind === 'error') throw new Error('CAD-правки не удалось сохранить. Проверь соединение и повтори попытку.');
+    const data = await api(`/api/workforce/reports/${encodeURIComponent(reportId)}/conclusion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    window.location.href = data.conclusionUrl || `/conclusion.html?report=${encodeURIComponent(reportId)}`;
+  } catch (error) { button.disabled = false; button.textContent = 'Повторить перенос в заключение'; toast(error.message); }
+});
+$('toggleSourceBtn').addEventListener('click',()=>{state.sourceVisible=!state.sourceVisible;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть оригинал схемы':'Показать оригинал схемы';renderCanvas();});
+$('sourceVisible').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('layerSource').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть оригинал схемы':'Показать оригинал схемы';renderCanvas();});
+$('layerSource').addEventListener('change',event=>{state.sourceVisible=event.target.checked;$('sourceVisible').checked=state.sourceVisible;$('toggleSourceBtn').textContent=state.sourceVisible?'Скрыть оригинал схемы':'Показать оригинал схемы';renderCanvas();});
 document.querySelectorAll('[data-layer]').forEach(input=>input.addEventListener('change',event=>{state.layers[event.target.dataset.layer]=event.target.checked;renderCanvas();}));
 $('sourceOpacity').addEventListener('input',renderCanvas);
 $('projectTitle').addEventListener('input',event=>{if(!state.project)return;state.project.title=event.target.value;scheduleSave();});

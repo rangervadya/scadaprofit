@@ -10,13 +10,14 @@ import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
+import { createWorkforceSystem } from './workforce-system.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
 const BUILD_INFO = {
   version: JSON.parse(await readFile(path.join(__dirname, 'package.json'), 'utf8')).version,
   pipelineSha256: createHash('sha256').update(Buffer.concat(await Promise.all(
-    ['processor.py', 'clean_layout.py', 'drawing_template.py', 'manual-cad-core.js', 'server.js']
+    ['processor.py', 'clean_layout.py', 'drawing_template.py', 'manual-cad-core.js', 'workforce-system.js', 'server.js']
       .map(name => readFile(path.join(__dirname, name)))
   ))).digest('hex')
 };
@@ -61,6 +62,13 @@ await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
+const workforceSystem = await createWorkforceSystem({
+  dataDir: LIBRARY_DIR,
+  uploadDir: UPLOAD_DIR,
+  secureCookies: process.env.COOKIE_SECURE === '1',
+  onSketchSubmitted: createWorkforceSchemeJob,
+  getSketchStatus: getWorkforceSchemeStatus
+});
 
 function localRecognitionPythonEnvironment() {
   return {
@@ -277,6 +285,11 @@ app.use(helmet({
 }));
 
 app.use(express.json({ limit: '15mb' }));
+// Session and role checks run before static pages, uploaded job files and API routes.
+app.use(workforceSystem.authMiddleware);
+const authRateLimit = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Слишком много попыток входа. Повторите позже.' } });
+app.use('/api/auth/login', authRateLimit);
+app.use('/api/auth/setup', authRateLimit);
 const limitHeavyRequests = rateLimit({
   windowMs: 60_000,
   limit: 30,
@@ -327,6 +340,62 @@ const manualSourceUpload = multer({
   }
 });
 
+function rasterDimensions(buffer, extension = '') {
+  try {
+    if (buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+      return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+    }
+    if (buffer.length > 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < buffer.length) {
+        if (buffer[offset] !== 0xff) { offset += 1; continue; }
+        const marker = buffer[offset + 1];
+        offset += 2;
+        if (marker === 0xd9 || marker === 0xda) break;
+        if (offset + 2 > buffer.length) break;
+        const length = buffer.readUInt16BE(offset);
+        if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker) && offset + 7 < buffer.length) {
+          return { height: buffer.readUInt16BE(offset + 3), width: buffer.readUInt16BE(offset + 5) };
+        }
+        if (length < 2) break;
+        offset += length;
+      }
+    }
+    if (buffer.length >= 30 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+      const type = buffer.toString('ascii', 12, 16);
+      if (type === 'VP8X') return { width: 1 + buffer.readUIntLE(24, 3), height: 1 + buffer.readUIntLE(27, 3) };
+      if (type === 'VP8 ') return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff };
+      if (type === 'VP8L' && buffer[20] === 0x2f) {
+        const bits = buffer.readUInt32LE(21);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+      }
+    }
+    if (buffer.length >= 16 && ['II', 'MM'].includes(buffer.toString('ascii', 0, 2))) {
+      const little = buffer.toString('ascii', 0, 2) === 'II';
+      const read16 = off => little ? buffer.readUInt16LE(off) : buffer.readUInt16BE(off);
+      const read32 = off => little ? buffer.readUInt32LE(off) : buffer.readUInt32BE(off);
+      if (read16(2) === 42) {
+        const ifd = read32(4);
+        const count = Math.min(512, read16(ifd));
+        let width = 0, height = 0;
+        for (let i = 0; i < count; i += 1) {
+          const entry = ifd + 2 + i * 12;
+          if (entry + 12 > buffer.length) break;
+          const tag = read16(entry), type = read16(entry + 2), items = read32(entry + 4);
+          if (![256,257].includes(tag) || items < 1) continue;
+          let value = 0;
+          if (type === 3) value = read16(entry + 8);
+          else if (type === 4) value = read32(entry + 8);
+          if (tag === 256) width = value;
+          if (tag === 257) height = value;
+        }
+        if (width > 0 && height > 0) return { width, height };
+      }
+    }
+  } catch { /* malformed image: use a neutral canvas size */ }
+  return { width: 1600, height: 1000 };
+}
+
 function manualProjectPath(id) {
   return path.join(MANUAL_CAD_DIR, id, 'project.json');
 }
@@ -336,7 +405,7 @@ function manualProjectResponse(project) {
     sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null,
     previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg`,
     editUrl: `/manual-cad.html?project=${encodeURIComponent(project.id)}`,
-    returnUrl: project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
+    returnUrl: project.sourceReportId ? `/workforce.html?report=${encodeURIComponent(project.sourceReportId)}` : project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
   };
 }
 
@@ -678,6 +747,69 @@ async function resumeStoredAnalysisQueue() {
   } catch (error) {
     console.error('[QUEUE] Could not restore interrupted house-scheme jobs:', error);
   }
+}
+
+// Workforce hand sketches enter the same queued reconstruction pipeline as schemes
+// uploaded through the house library. The report remains the source-of-truth for
+// the notification/inbox workflow; this job provides the clean SVG, DXF and graph.
+async function createWorkforceSchemeJob({ report, sourcePath }) {
+  if (!report?.id || !sourcePath) throw new Error('Не хватает данных отчёта для создания CAD-задания.');
+  const ext = path.extname(String(report.sketch?.originalName || sourcePath)).toLowerCase();
+  if (!/^\.(?:jpe?g|png|webp|tiff?)$/.test(ext)) throw new Error('Для автоматического преобразования нужен JPG, PNG, WEBP или TIFF.');
+
+  const jobId = randomUUID();
+  const jobDir = path.join(DATA, jobId);
+  const sourceName = `source${ext}`;
+  const streetName = cleanLabel(report.street || 'Улица не указана', 100);
+  const buildingName = cleanLabel(report.address || 'Без номера', 80);
+  let addressIds = null;
+  try {
+    await mkdir(jobDir, { recursive: true });
+    await copyFile(sourcePath, path.join(jobDir, sourceName));
+    addressIds = await updateAddressLibrary(library => {
+      let street = library.streets.find(item => String(item.name || '').toLocaleLowerCase('ru') === streetName.toLocaleLowerCase('ru'));
+      if (!street) {
+        street = { id: randomUUID(), name: streetName, createdAt: new Date().toISOString(), buildings: [] };
+        library.streets.push(street);
+      }
+      street.buildings = Array.isArray(street.buildings) ? street.buildings : [];
+      let building = street.buildings.find(item => String(item.name || '').toLocaleLowerCase('ru') === buildingName.toLocaleLowerCase('ru'));
+      if (!building) {
+        building = { id: randomUUID(), name: buildingName, createdAt: new Date().toISOString(), schemes: [] };
+        street.buildings.push(building);
+      }
+      building.schemes = Array.isArray(building.schemes) ? building.schemes : [];
+      const meta = {
+        jobId, title: cleanLabel(`${streetName}, дом ${buildingName} — ручная схема`, 140),
+        originalName: cleanLabel(report.sketch?.originalName || 'Эскиз слесаря', 180), sourceName,
+        uploadedBy: cleanLabel(report.userName || 'Слесарь', 80), rotationDegrees: null,
+        streetId: street.id, streetName: street.name, buildingId: building.id, buildingName: building.name,
+        workforceReportId: report.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        status: 'pending', error: ''
+      };
+      addSchemeToBuilding(library, street, building, {
+        jobId, title: meta.title, originalName: meta.originalName, createdAt: meta.createdAt,
+        uploadedBy: meta.uploadedBy, sourceName, status: 'pending', error: '', workforceReportId: report.id
+      });
+      return { streetId: street.id, streetName: street.name, buildingId: building.id, buildingName: building.name, meta };
+    });
+    await writeSchemeMeta(jobId, addressIds.meta);
+    const status = await enqueueStoredSchemeAnalysis(jobId);
+    return { jobId, status, streetId: addressIds.streetId, buildingId: addressIds.buildingId };
+  } catch (error) {
+    await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function getWorkforceSchemeStatus(jobId) {
+  if (!JOB_ID_PATTERN.test(String(jobId || ''))) return { status: 'failed', error: 'Некорректный ID CAD-задания.' };
+  const meta = await readSchemeMeta(jobId);
+  if (!meta) return { status: 'failed', error: 'Задание автоматической обработки не найдено.' };
+  return {
+    status: meta.status || 'queued', error: meta.error || '', completedAt: meta.completedAt || null,
+    partialGraphReady: Boolean(meta.partialGraphReady)
+  };
 }
 
 function nextManualEdgeId(edges) {
@@ -1419,12 +1551,18 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
     const schemeMeta = await readSchemeMeta(jobId);
     const title = cleanLabel(req.body?.title || schemeMeta?.title || address.scheme.title || 'Чертёж дома', 140);
     const siteAddress = `${address.street.name}, дом ${address.building.name}`;
+    const workforceReportId = schemeMeta?.workforceReportId || null;
     const existing = await findManualCadProjectForJob(jobId);
 
     // Re-open the same CAD project for this house scheme. If nobody has edited
     // it yet, a retry of an incomplete Qwen job may refresh the imported draft.
     // Once a user edits the CAD project, never overwrite those manual changes.
     if (existing) {
+      if (workforceReportId && existing.sourceReportId !== workforceReportId) {
+        existing.sourceReportId = workforceReportId;
+        await writeFile(manualProjectPath(existing.id), JSON.stringify(existing, null, 2), 'utf8');
+      }
+      if (existing.sourceReportId) await workforceSystem.linkManualCadProject(existing.sourceReportId, existing.id);
       if (Number(existing.manualEditRevision || 0) === 0) {
         const refreshed = createManualCadProjectFromGraph(graph, {
           id: existing.id, title, siteAddress,
@@ -1437,9 +1575,11 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
           size: preparedImage.length, uploadedAt: new Date().toISOString()
         };
         refreshed.manualEditRevision = 0;
+        refreshed.sourceReportId = workforceReportId || existing.sourceReportId || null;
         projectDir = path.join(MANUAL_CAD_DIR, existing.id);
         await writeFile(path.join(projectDir, 'source.png'), preparedImage);
         await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(refreshed, null, 2), 'utf8');
+        if (refreshed.sourceReportId) await workforceSystem.linkManualCadProject(refreshed.sourceReportId, refreshed.id);
         console.log(`[CAD] Refreshed unedited house project ${existing.id.slice(0, 8)} from job ${jobId.slice(0, 8)}`);
         return res.json({ ok: true, reused: true, refreshed: true, project: manualProjectResponse(refreshed) });
       }
@@ -1453,6 +1593,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
       sourceJobId: jobId, sourceStreetId: address.street.id,
       sourceBuildingId: address.building.id
     });
+    project.sourceReportId = workforceReportId;
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, 'source.png'), preparedImage);
     project.source = {
@@ -1460,6 +1601,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
       size: preparedImage.length, uploadedAt: new Date().toISOString()
     };
     await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
+    if (project.sourceReportId) await workforceSystem.linkManualCadProject(project.sourceReportId, project.id);
     console.log(`[CAD] Created house project ${projectId.slice(0, 8)} for job ${jobId.slice(0, 8)}: pipes=${project.pipes.length}, labels=${project.labels.length}, symbols=${project.symbols.length}`);
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
@@ -1534,6 +1676,56 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
     }
     const status = error?.code === 'ENOENT' ? 404 : 400;
     return res.status(status).json({ error: status === 404 ? 'Исходная фотография не найдена. Повтори загрузку схемы.' : (error.message || 'Не удалось создать CAD-проект по исходной фотографии.') });
+  }
+});
+
+app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) => {
+  if (!['receiver', 'supervisor', 'developer'].includes(req.user?.role)) {
+    return res.status(403).json({ error: 'Открывать отчёты в CAD может приёмщик, руководитель или разработчик.' });
+  }
+  const report = workforceSystem.getReport(req.params.reportId);
+  if (!report?.sketch) return res.status(404).json({ error: 'В отчёте не найдена ручная схема.' });
+  const ext = path.extname(String(report.sketch.originalName || '')).toLowerCase();
+  const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
+  if (!allowed.has(ext) || !String(report.sketch.mimeType || '').startsWith('image/')) {
+    return res.status(415).json({ error: 'Для прямого открытия в CAD загрузи ручную схему как JPG, PNG, WEBP или TIFF. PDF можно открыть отдельно.' });
+  }
+  let projectDir = null;
+  try {
+    const existingEntries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+    for (const entry of existingEntries) {
+      if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+      try {
+        const existing = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
+        if (existing.sourceReportId === report.id && existing.id === entry.name) {
+          return res.json({ ok: true, reused: true, project: manualProjectResponse(existing) });
+        }
+      } catch { /* incomplete project */ }
+    }
+    const sourcePath = workforceSystem.getReportFilePath(report.id, report.sketch.id);
+    if (!sourcePath) return res.status(404).json({ error: 'Файл ручной схемы не найден в хранилище отчётов.' });
+    const sourceBytes = await readFile(sourcePath);
+    const id = randomUUID();
+    projectDir = path.join(MANUAL_CAD_DIR, id);
+    const project = createManualCadProject({ id, title: cleanLabel(`${report.street}, дом ${report.address} — ${report.taskTitle}`, 140) });
+    const dimensions = rasterDimensions(sourceBytes, ext);
+    project.width = Math.max(100, Math.min(30000, dimensions.width));
+    project.height = Math.max(100, Math.min(30000, dimensions.height));
+    project.siteAddress = `${report.street}, дом ${report.address}`;
+    project.preparedBy = cleanLabel(report.userName || '', 100);
+    project.notes = `Исходный ручной эскиз из отчёта ${report.id}. Перед чистовым выпуском проверь фактические трассы, соединения, размеры и оборудование.`;
+    project.sourceReportId = report.id;
+    project.source = {
+      fileName: `source${ext}`, originalName: cleanLabel(report.sketch.originalName, 180),
+      size: sourceBytes.length, uploadedAt: report.sketch.uploadedAt || report.submittedAt || new Date().toISOString()
+    };
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
+    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+    return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
+  } catch (error) {
+    if (projectDir) await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    return res.status(500).json({ error: error.message || 'Не удалось открыть ручной эскиз в CAD.' });
   }
 });
 
@@ -1693,24 +1885,28 @@ app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
   });
 });
 
+app.use(workforceSystem.router);
+
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API-маршрут не найден.' }));
 
 app.use((err, req, res, _next) => {
   console.error(err);
   const isTemplateUpload = req.path === '/api/template';
+  const isWorkforceReport = req.path.startsWith('/api/workforce/tasks/') && req.path.endsWith('/report');
   const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
   const message = err?.code === 'LIMIT_FILE_SIZE'
-    ? (isTemplateUpload ? 'Файл шаблона больше 30 МБ.' : 'Файл больше 18 МБ.')
+    ? (isTemplateUpload ? 'Файл шаблона больше 30 МБ.' : isWorkforceReport ? 'Одно вложение отчёта больше 24 МБ.' : 'Файл больше 18 МБ.')
     : err?.code === 'LIMIT_UNEXPECTED_FILE'
-      ? 'Можно загрузить только один файл за раз.'
+      ? (isWorkforceReport ? 'Прикладывай до 8 фотографий и один файл ручной схемы.' : 'Можно загрузить только один файл за раз.')
       : 'Ошибка запроса.';
   res.status(status).json({ error: message, details: err.message });
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`CAD Reconstruction Engine 4.3.27: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
+  console.log(`CAD Reconstruction Engine 4.4.0: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
   console.log('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
   console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
   console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
+  console.log('Workforce: password-authenticated accounts, manual visit/office check-ins, sketch-only reports and automatic CAD processing enabled; GPS tracking disabled.');
   void resumeStoredAnalysisQueue();
 });

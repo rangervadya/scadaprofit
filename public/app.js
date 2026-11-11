@@ -446,8 +446,8 @@ function renderHouseSchemeCadPreview(project) {
   button.hidden = false;
   button.disabled = false;
   button.dataset.projectId = project.id;
-  button.innerHTML = '<b>CAD</b><span>Редактировать</span>';
-  button.title = 'Открыть этот чертёж в ручном CAD; изменения сохраняются в проекте дома';
+  button.innerHTML = '<b>CAD</b><span>Открыть CAD</span>';
+  button.title = 'Открыть редактируемую CAD-схему. В редакторе можно показать или скрыть оригинальный эскиз, по которому она начерчена.';
   const previewUrl = `${graph.manualCadPreviewUrl}${graph.manualCadPreviewUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(project.updatedAt || Date.now())}`;
   const pipes = Array.isArray(project.pipes) ? project.pipes : [];
   const pipeCount = pipes.filter(pipe => pipe.reviewOnly !== true).length;

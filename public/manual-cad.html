@@ -8,7 +8,7 @@
   <title>CAD-редактор · ПРОФИТ</title>
   <link rel="stylesheet" href="/manual-cad.css?v=4.3.46">
   <link rel="stylesheet" href="/profit-ui.css?v=8">
-  <script type="module" src="/manual-cad.js?v=4.3.52-professional-sheet"></script>
+  <script type="module" src="/manual-cad.js?v=4.5.1-workforce"></script>
 </head>
 <body class="manual-cad-page">
   <nav class="profit-rail" aria-label="Модули ПРОФИТ">
@@ -19,6 +19,7 @@
       <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l5-4 4 4 5-7 4 4M4 12v8h16V9M9 20v-5h5v5"/></svg><span>Схемы домов</span></a>
       <a href="/archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg><span>Архив</span></a>
       <a href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg><span>Настройки</span></a>
+      <a href="/workforce.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7-5h4m-2-2v4"/></svg><span>Команда</span></a>
     </div>
     <span class="profit-rail-caption">CAD-редактор</span>
   </nav>
@@ -58,7 +59,7 @@
           <label><input type="checkbox" data-layer="labels" checked><span class="mc-layer-swatch mc-layer-labels"></span><span>Надписи</span><b id="layerLabelsCount">0</b></label>
           <label><input type="checkbox" data-layer="dimensions" checked><span class="mc-layer-swatch mc-layer-dimensions"></span><span>Размеры</span><b id="layerDimensionsCount">0</b></label>
           <label><input type="checkbox" data-layer="junctions" checked><span class="mc-layer-swatch mc-layer-junctions"></span><span>Узлы</span><b id="layerJunctionsCount">0</b></label>
-          <label><input type="checkbox" id="layerSource" checked><span class="mc-layer-swatch mc-layer-source"></span><span>Исходная фотография</span></label>
+          <label><input type="checkbox" id="layerSource" checked><span class="mc-layer-swatch mc-layer-source"></span><span>Оригинал схемы</span></label>
         </div>
         <div class="mc-object-list-head"><b>Список объектов</b><small>Найди объект по типу или обозначению, затем выбери его для редактирования</small></div>
         <div class="mc-object-search"><input id="objectSearch" type="search" placeholder="Поиск: труба, DN, кран, номер…" autocomplete="off"><span id="objectListMeta">0 объектов</span></div>
@@ -72,7 +73,8 @@
         <div class="mc-document-actions">
           <label class="mc-button mc-button-light mc-file-button" for="sourceFile">Загрузить эскиз</label>
           <input id="sourceFile" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff" hidden>
-          <button class="mc-button mc-button-light" id="toggleSourceBtn" type="button" disabled>Скрыть подложку</button>
+          <button class="mc-button mc-button-light" id="toggleSourceBtn" type="button" disabled>Показать оригинал схемы</button>
+          <button class="mc-button mc-button-primary" id="addToConclusionBtn" type="button" hidden>Добавить в заключение</button>
           <a class="mc-button mc-button-export" id="exportSvgBtn" href="#" aria-disabled="true">Экспорт SVG</a>
           <a class="mc-button mc-button-export" id="exportDxfBtn" href="#" aria-disabled="true">Экспорт DXF</a>
         </div>
@@ -125,8 +127,8 @@
         <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выкл.</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
         <label class="mc-check mc-ortho-check" title="Фиксировать горизонтальные и вертикальные сегменты"><input id="orthoMode" type="checkbox"><span>Ортогонально</span></label>
         <label class="mc-check" id="reviewCandidatesLabel" hidden title="Показывает линии, которые не включены в чистовой экспорт"><input id="showReviewCandidates" type="checkbox"><span>Кандидаты на проверку: <b id="reviewCandidatesCount">0</b></span></label>
-        <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Подложка</span></label>
-        <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
+        <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Оригинал схемы</span></label>
+        <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность оригинала</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
       </div>
 
       <div class="mc-canvas-wrap">

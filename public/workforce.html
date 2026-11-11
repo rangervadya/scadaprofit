@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#edf2fa">
+  <meta name="description" content="Личный кабинет сотрудников ПРОФИТ: график выездов, отчёты, приёмка и контроль работ">
+  <title>Команда и задания · ПРОФИТ</title>
+  <link rel="stylesheet" href="/workforce.css?v=4.5.1">
+  <script src="/workforce.js?v=4.5.1" defer></script>
+</head>
+<body class="wf-page">
+  <header class="wf-topbar">
+    <a class="wf-brand" href="/workforce.html"><span class="wf-brand-mark">П</span><span>ПРОФИТ</span></a>
+    <div class="wf-user-block">
+      <div class="wf-user-meta"><b id="currentUserName">Загружаю…</b><span id="currentUserRole">Рабочая система</span></div>
+      <button class="wf-button wf-button-quiet" id="logoutBtn" type="button">Выйти</button>
+    </div>
+  </header>
+  <main class="wf-main">
+    <section class="wf-heading">
+      <div><p class="wf-eyebrow">РАБОЧАЯ СИСТЕМА / ПРОФИТ</p><h1 id="pageHeading">Рабочая панель</h1><p id="pageSubheading">Задания, отчёты и состояние команды.</p></div>
+      <div class="wf-date-chip" id="todayLabel">—</div>
+    </section>
+
+    <nav class="wf-nav" id="workspaceNav" aria-label="Разделы рабочей панели"></nav>
+    <div id="globalMessage" class="wf-message" role="status" hidden></div>
+
+    <section class="wf-section" id="myTasksSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ЛИЧНЫЙ ГРАФИК</p><h2>Мои задания</h2><p>Здесь отображаются только работы, назначенные на твой аккаунт.</p></div><button class="wf-button wf-button-outline" id="refreshTasksBtn" type="button">Обновить</button></div>
+      <div class="wf-layout-two">
+        <div class="wf-card"><div class="wf-card-head"><h3>План выездов</h3><span class="wf-counter" id="myTaskCount">0</span></div><div id="myTasksList" class="wf-task-list"><div class="wf-empty">Загружаю назначения…</div></div></div>
+        <div class="wf-card wf-location-card"><div class="wf-card-head"><h3>Отметки по дому</h3><span class="wf-tag">Без GPS</span></div><ol class="wf-checklist" id="taskProgressList"><li>Открой назначенный дом</li><li>Отметь, что обход завершён</li><li>Отметь возвращение в офис</li><li>Отправь ручную схему</li></ol><p class="wf-footnote">Трекер состоит только из кнопок этапов работы. Координаты, GPS и скрытое отслеживание не используются.</p></div>
+      </div>
+      <div class="wf-card wf-task-detail" id="taskDetail" hidden></div>
+    </section>
+
+    <section class="wf-section" id="scheduleSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ПЛАНИРОВАНИЕ ВЫЕЗДОВ</p><h2>План работы слесарей</h2><p>Назначай исполнителям адрес и дату. Здесь видны отметки «обошёл дом» и «пришёл в офис».</p></div><button class="wf-button wf-button-outline" id="refreshOverviewBtn" type="button">Обновить данные</button></div>
+      <div class="wf-layout-two wf-manager-layout">
+        <form class="wf-card wf-form" id="createTaskForm">
+          <div class="wf-card-head"><h3>Новое задание</h3><span class="wf-tag">Для слесаря</span></div>
+          <label>Название работы<input name="title" required maxlength="160" placeholder="Например, обследование газопровода"></label>
+          <div class="wf-form-row"><label>Улица<input name="street" required maxlength="180" placeholder="Улица"></label><label>Дом<input name="address" required maxlength="120" placeholder="12А"></label></div>
+          <div class="wf-form-row"><label>Дата выезда<input name="scheduledDate" id="taskDate" type="date" required></label><label>Слесарь<select name="assignedTo" id="fitterSelect" required><option value="">Загрузка списка…</option></select></label></div>
+          <label>Инструкции<textarea name="instructions" rows="3" maxlength="1200" placeholder="Подъезд, участок, что проверить и какие элементы показать на ручной схеме…"></textarea></label>
+          <button class="wf-button wf-button-primary" type="submit">Назначить работу</button>
+          <div class="wf-form-status" id="taskFormStatus"></div>
+        </form>
+        <div class="wf-card"><div class="wf-card-head"><h3>Расписание назначений</h3><span class="wf-counter" id="scheduleCount">0</span></div><div id="scheduleList" class="wf-task-list"><div class="wf-empty">Загрузка графика…</div></div></div>
+      </div>
+    </section>
+
+    <section class="wf-section" id="overviewSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ДИСПЕТЧЕРСКИЙ КОНТРОЛЬ</p><h2>Ход выполнения работ</h2><p>Руководитель видит отметки кнопок по каждому дому, без GPS и координат сотрудников.</p></div><span class="wf-tag wf-tag-blue">Панель руководителя</span></div>
+      <div class="wf-stats" id="overviewStats"></div>
+      <div class="wf-card"><div class="wf-card-head"><h3>Отметки слесарей</h3><span class="wf-muted" id="locationUpdatedLabel">Обновляется автоматически</span></div><div class="wf-worker-grid" id="workerLocations"><div class="wf-empty">Загрузка отметок…</div></div><p class="wf-footnote">Система хранит только нажатые сотрудником кнопки и время отметок. Геолокация не запрашивается и не сохраняется.</p></div>
+    </section>
+
+    <section class="wf-section" id="inboxSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ПРИЁМКА РАБОТ</p><h2>Уведомления о новых схемах</h2><p>Приходит уведомление с адресом, когда слесарь отправил ручной эскиз. Система автоматически преобразует его в CAD.</p></div><button class="wf-button wf-button-outline" id="refreshReportsBtn" type="button">Обновить отчёты</button></div>
+      <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Новые схемы</h3><span class="wf-counter" id="reportCount">0</span></div><div class="wf-report-list" id="reportList"><div class="wf-empty">Загрузка уведомлений…</div></div></div><div class="wf-card wf-report-detail" id="reportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы посмотреть ручной эскиз и автоматически построенную CAD-схему.</div></div></div>
+    </section>
+
+    <section class="wf-section" id="usersSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">АДМИНИСТРИРОВАНИЕ</p><h2>Создание аккаунтов</h2><p>Руководители создают учётные записи слесарей и приёмщиков. Логин и временный пароль система выдаёт автоматически.</p></div><span class="wf-tag wf-tag-violet" id="accountAccessTag">Управление аккаунтами</span></div>
+      <div class="wf-layout-two">
+        <form class="wf-card wf-form" id="createUserForm">
+          <div class="wf-card-head"><h3>Создать аккаунт</h3></div>
+          <label>Имя и фамилия<input name="displayName" required maxlength="100" placeholder="Иван Петров"></label>
+          <label>Роль<select name="role" id="newUserRole"><option value="fitter">Слесарь</option><option value="receiver">Приёмщик</option></select></label>
+          <p class="wf-footnote">После создания покажем логин и временный пароль. Сохрани их и передай сотруднику — пароль не отображается повторно.</p>
+          <button class="wf-button wf-button-primary" type="submit">Создать аккаунт и выдать данные</button>
+          <div class="wf-form-status" id="userFormStatus"></div>
+          <div class="wf-credentials" id="createdCredentials" hidden></div>
+        </form>
+        <div class="wf-card"><div class="wf-card-head"><h3>Созданные аккаунты</h3><span class="wf-counter" id="userCount">0</span></div><div class="wf-user-list" id="userList"><div class="wf-empty">Загрузка аккаунтов…</div></div></div>
+      </div>
+      <div class="wf-card wf-dev-tools"><div class="wf-card-head"><h3>Диагностика системы</h3><button class="wf-button wf-button-quiet" id="runDiagnosticsBtn" type="button">Проверить</button></div><pre id="diagnosticsOutput">Нажми «Проверить», чтобы увидеть состояние рабочего контура.</pre></div>
+    </section>
+
+    <section class="wf-section" id="credentialsSection" hidden>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">УЧЁТНЫЕ ЗАПИСИ</p><h2>База логинов и паролей</h2><p>Список слесарей и приёмщиков с ФИО и логинами. Старые пароли защищены хешированием; при необходимости выдай сотруднику новый пароль.</p></div><button class="wf-button wf-button-outline" id="refreshCredentialsBtn" type="button">Обновить базу</button></div>
+      <div class="wf-card"><div class="wf-card-head"><h3>Учётные записи сотрудников</h3><span class="wf-counter" id="credentialCount">0</span></div><div id="credentialDatabase" class="wf-credential-database"><div class="wf-empty">Загрузка базы аккаунтов…</div></div><p class="wf-footnote">Новый пароль сразу заменяет старый и показывается после выдачи. Передай его сотруднику безопасным способом; действующие сессии сотрудника будут завершены.</p></div>
+    </section>
+
+    <footer class="wf-footer"><span>ПРОФИТ · Командная работа</span><a href="/dashboard.html">Основные модули →</a></footer>
+  </main>
+</body>
+</html>
