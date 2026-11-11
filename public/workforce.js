@@ -64,6 +64,14 @@ function configurePanels() {
   $('currentUserName').textContent = currentUser.displayName;
   $('currentUserRole').textContent = `${roleLabels[role] || role} · ${currentUser.username}`;
   $('todayLabel').textContent = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+  document.querySelectorAll('[data-global-role]').forEach(link => {
+    const access = link.dataset.globalRole;
+    const visible = access === 'manager' ? role !== 'fitter'
+      : access === 'office' ? role !== 'fitter'
+        : access === 'developer' ? roleIsDeveloper()
+          : true;
+    link.hidden = !visible;
+  });
   $('pageHeading').textContent = role === 'fitter' ? 'Мой рабочий день' : role === 'receiver' ? 'Уведомления о схемах' : role === 'supervisor' ? 'Управление бригадой' : 'Панель разработчика';
   $('pageSubheading').textContent = role === 'fitter'
     ? 'План выездов, кнопки отметок по дому и отправка ручных эскизов.'
@@ -75,7 +83,7 @@ function configurePanels() {
   if (roleCanManage()) tabs.push(['scheduleSection', 'План работ'], ['overviewSection', 'Контроль команды']);
   if (roleCanReview()) tabs.push(['inboxSection', 'Уведомления']);
   if (roleCanCreateUsers()) tabs.push(['usersSection', roleIsDeveloper() ? 'Аккаунты и тесты' : 'Создать аккаунты'], ['credentialsSection', 'База аккаунтов']);
-  $('workspaceNav').innerHTML = tabs.map(([id, label], index) => `<button type="button" data-target="${id}" class="${index === 0 ? 'active' : ''}">${label}${id === 'inboxSection' && unreadNotifications ? ` <span class="wf-nav-count">${unreadNotifications}</span>` : ''}</button>`).join('');
+  $('workspaceNav').innerHTML = tabs.map(([id, label], index) => `<button type="button" data-target="${id}" class="${index === 0 ? 'active' : ''}"><span>${label}</span>${id === 'inboxSection' && unreadNotifications ? ` <span class="wf-nav-count">${unreadNotifications}</span>` : ''}</button>`).join('');
   document.querySelectorAll('.wf-section').forEach(section => { section.hidden = true; });
   if (tabs.length) $(tabs[0][0]).hidden = false;
   $('workspaceNav').querySelectorAll('[data-target]').forEach(button => button.addEventListener('click', () => {

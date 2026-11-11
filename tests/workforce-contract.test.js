@@ -111,3 +111,18 @@ test('manual conclusion form remains available and generated schemes have an exp
   assert.match(js, /report\.schemeStatus === 'completed' \|\| partialCadReady/);
   assert.ok(js.indexOf('const partialCadReady') < js.indexOf('const cadAction'));
 });
+
+test('team workspace uses the familiar left PROFIT sidebar with role-specific section links', async () => {
+  const html = await read('public/workforce.html');
+  const css = await read('public/workforce.css');
+  const js = await read('public/workforce.js');
+  assert.match(html, /class="profit-rail wf-rail"/);
+  assert.match(html, /class="profit-links wf-global-links"/);
+  assert.match(html, /id="workspaceNav"/);
+  assert.doesNotMatch(html, /<nav class="wf-nav" id="workspaceNav"/);
+  assert.match(css, /\.wf-page\{padding-left:var\(--profit-rail-width,176px\);/);
+  assert.match(css, /\.wf-nav\{display:grid/);
+  assert.match(css, /@media\(max-width:900px\)/);
+  assert.match(js, /data-global-role/);
+  assert.match(js, /roleCanManage\(\)/);
+});
