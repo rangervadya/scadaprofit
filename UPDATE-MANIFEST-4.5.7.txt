@@ -1,8 +1,0 @@
-ScadaProfit 4.5.7
-- Separate defect-photo upload queue for fitter field tasks.
-- Upload up to 10 JPEG/PNG/WEBP/HEIC/HEIF photos (16 MB each) after office-arrival tracker step.
-- Defect reports are stored separately from hand sketches and do not start CAD reconstruction or enter Section 7.
-- Receiver inbox has dedicated defect tab with image gallery and approval checkbox (“Да, фотографии подходят”).
-- Receiver can return a defect report for re-shooting with a comment.
-- Private file access is scoped to report owner for fitters and authenticated office roles.
-- Preserves GPS-free button tracker, hand-sketch CAD flow, editable CAD, and manual conclusion form.

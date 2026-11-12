@@ -30,7 +30,7 @@ services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: infra/docker/app.Dockerfile
     restart: unless-stopped
     init: true
     expose:
@@ -74,21 +74,9 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  vdgo-frontend:
-    build:
-      context: ./vdgo/frontend
-      dockerfile: Dockerfile
-    image: vdgo-frontend:5.3.7
-    expose:
-      - "4173"
-    restart: unless-stopped
-    depends_on:
-      vdgo-backend:
-        condition: service_healthy
-
   vdgo-backend:
     build:
-      context: ./vdgo/backend
+      context: ./services/vdgo/backend
       dockerfile: Dockerfile
     image: vdgo-backend:5.3.9
     environment:
@@ -135,13 +123,11 @@ services:
     ports:
       - "${WEB_PORT:-3001}:80"
     volumes:
-      - ./nginx-unified.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/nginx-unified.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
     depends_on:
       app:
         condition: service_healthy
-      vdgo-frontend:
-        condition: service_started
       vdgo-backend:
         condition: service_healthy
 

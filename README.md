@@ -1,70 +1,59 @@
-# ScadaProfit 4.3.52 — professional engineering CAD sheet layout
+# ScadaProfit 4.5.13
 
-Version 4.3.52 improves content-fitted CAD sheet composition, keeps engineering topology intact, adds editable dimension graphics, provisional section tags, a broader symbol catalog, post-layout quality checks, and a source-photo/CAD alignment overlay. See `CHANGELOG-4.3.52-RU.md` and `INSTALL-4.3.52-RU.md` for scope and deployment notes.
+Docker-based system for processing hand-drawn building-service sketches, editing CAD drawings, managing fitter assignments and preparing technical conclusions.
 
----
+## Repository layout
 
-# ScadaProfit 4.3.46 — guided fitter-sketch tracing and unified PROFIT menu
+```text
+backend/api/             Node.js API and workforce module
+backend/engine/          Python drawing-recognition and CAD engine
+frontend/public/         Main ScadaProfit static web interface
+frontend/vdgo/           React UI for technical conclusions in the same frontend workspace
+services/vdgo/backend/   VDGO API, PDF/Word generator and database integration
+infra/                   Dockerfiles, Nginx and deployment scripts
+tests/                   Node.js, Python and VDGO regression tests
+docs/                    Guides, architecture notes and release history
+compose.yaml              Unified Docker Compose entry point
+.env.example              Environment variable template
+```
 
+## Start
 
-## 4.3.45 — guided ink tracing
+1. Copy `.env.example` to `.env` and set a unique PostgreSQL password. Set `COOKIE_SECURE=1` when serving through HTTPS.
+2. Run from the repository root:
 
-The manual CAD editor now includes **Автотрасса** (guided ink tracing). The operator clicks the start, end of each straight section, and intermediate bend points. A* searches actual dark/blue pen pixels inside a bounded corridor. The dashed preview is a candidate; only **Применить маршрут** adds it as an editable pipe. Snapped starts, ends, and intermediate waypoints can create explicit junctions with already confirmed routes. Review-only candidates are not snap targets and are excluded from clean exports until accepted.
+   ```bash
+   docker compose config --quiet
+   docker compose up -d --build
+   ```
 
-This is operator-assisted line tracing, not semantic recognition of a pipe from an arbitrary mark. The engineer must verify the selected stroke, branches, symbols, and dimensions. See `MANUAL-CAD-USER-GUIDE-RU.md`.
+3. Open `http://SERVER:3001` (or the port configured by `WEB_PORT`). On first login, create the developer account, then create supervisors, receivers and fitters.
 
-
-## Unified application menu
-
-A shared responsive burger menu is available in the sketch-recognition workspace, manual CAD editor and VDGO frontend. It switches between the existing same-origin routes: `/` (sketch recognition), `/manual-cad.html` (CAD editor), and `/vdgo/` (VDGO technical reports). The modules remain separate services and keep their own APIs and data stores.
-
-See `CHANGELOG-4.3.43-RU.md` for this release and the previous 4.3.42 notes below.
-
-
-## Исправление 4.3.42: недопустимые координаты Qwen
-
-Qwen PIPE теперь проверяет каждую точку относительно точной ширины и высоты изображения, отправленного в Ollama. Маршрут с координатами за пределами фрагмента отклоняется целиком; точки больше не обрезаются до границы исходной страницы. Это устраняет ложные граничные линии от ответов вроде `y=4800` для фрагмента высотой 480 px.
-
-Подпись checkpoint изменена, поэтому старые сохранённые Qwen PIPE-ответы с прежней логикой проверки не переиспользуются. Диагностика показывает размеры фрагмента, диапазон неправильных координат и количество отклонённых маршрутов.
-
-Дополнительно усилена защита ориентации: один лишь небольшой перевес OCR-оценки не может автоматически перевернуть технический чертёж на 180 градусов. По умолчанию для такого поворота требуется относительный перевес 35% (`OSD_FALLBACK_180_MIN_MARGIN`).
-
-
-This release corrects the misleading default preview introduced by the raw centreline trace mode. Source-ink skeletonization includes every dark stroke on the page: pipe lines, letters, dimensions, leaders, symbols and scanning noise. It is an inspection/vector-trace artifact, not a semantically classified pipe network.
-
-## Result viewer changes
-
-- The result panel now opens on **Исходник** (the exact uploaded image) by default.
-- The automatic CAD preview is selected only when topology, symbol classification and dimension attachment pass conservative readiness checks.
-- When checks fail, the page shows the original without distortion and lists the measured reasons. The CAD draft remains manually inspectable, but clean SVG/DXF/PDF export from the failed CAD draft is disabled.
-- Raw linework modes are explicitly named **Все штрихи** and **Контуры штрихов** and remain available for technical inspection; they are not described as a clean pipe drawing.
-- PDF printing from the original view prints the source image; SVG/DXF are disabled in that mode because an image is not a vector CAD result.
-
-## CAD readiness checks
-
-The readiness assessment flags excessive open endpoints, high crossing density, insufficient symbol classification and insufficient dimension-to-object attachment. For the user's current diagnostic these values fail: 384 open endpoints / 367 segments, 145 ambiguous crossings / 367 segments, 0/8 classified symbols and 2/8 attached dimensions. Therefore ScadaProfit should not present the generated CAD draft as a finished drawing.
-
-The machine-readable diagnostics now include `cadReadiness` with `ready`, `automaticCadExportAllowed`, `failedChecks` and metrics. Existing source-trace artifacts remain exportable for review. The diagnostic job status continues to distinguish processing completion from engineering readiness.
-
-## Recognition stack and other applications
-
-Local Qwen-VL via Ollama and Tesseract (`rus+eng`) remain unchanged. This release does not stop or reconfigure Ollama, other Python/GPU processes, other applications, VDGO, PostgreSQL, Nginx/gateway, Docker volumes, Compose configuration or the user's `.env`.
-
-Deploy through GitHub from the project root (this release also updates the VDGO conclusion backend and frontend):
+## Update
 
 ```bash
 git pull --ff-only
-docker compose build --no-cache vdgo-backend app vdgo-frontend
-docker compose up -d --no-deps --force-recreate vdgo-backend app vdgo-frontend
+docker compose build --no-cache app vdgo-backend
+docker compose up -d --remove-orphans --no-deps --force-recreate app vdgo-backend
 docker compose restart gateway
+docker compose ps
 ```
 
-Run checks with `npm run check`.
+Do not run `docker compose down -v` and do not remove named volumes. They store uploaded jobs, user work, documents and PostgreSQL records.
 
-## Important limitation
+Both browser interfaces share one `frontend/` directory and one delivery path: the legacy ScadaProfit pages are in `frontend/public/`, while the VDGO React sources are in `frontend/vdgo/`. Docker builds the React assets into `frontend/public/vdgo/`; the main app serves them at `/vdgo/`. The VDGO API, document generator and PostgreSQL integration remain a separate backend service.
 
-This release prevents raw pixel skeletons from being presented as a clean engineering drawing. It does not itself solve semantic recognition of all pipes, valves, meters, dimensions and connections. The current source photo still requires improved symbol classification, geometry grouping and engineer review before a true clean CAD reconstruction can be claimed.
+## Tests
 
-## ScadaProfit 4.3.46 — автоматический редактируемый черновик
+```bash
+npm --prefix backend run check
+PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
+```
 
-После распознавания автоматически создаётся CAD-проект с основными маршрутами и отдельным слоем непроверенных кандидатов. В редакторе доступны переключение слоёв, поиск и список объектов, переход к выбранному объекту, автоматическое вписывание листа и редактирование свойств/вершин. Непроверенные объекты не попадают в чистовой экспорт автоматически; черновик требует инженерной проверки.
+## Documentation
+
+- [Руководство на русском](docs/user-guides/README-RU.md)
+- [Развёртывание Docker](docs/deployment/DOCKER.md)
+- [Рабочие роли и выезды](docs/user-guides/WORKFORCE-QUICKSTART-RU.md)
+- [Руководство CAD](docs/user-guides/MANUAL-CAD-USER-GUIDE-RU.md)
+- [История изменений](docs/releases/CHANGELOG-RU.md)
