@@ -7,8 +7,8 @@
   <meta name="description" content="Личный кабинет сотрудников ПРОФИТ: график выездов, отчёты, приёмка и контроль работ">
   <title>Команда и задания · ПРОФИТ</title>
   <link rel="stylesheet" href="/profit-ui.css?v=8">
-  <link rel="stylesheet" href="/workforce.css?v=4.5.2">
-  <script src="/workforce.js?v=4.5.2" defer></script>
+  <link rel="stylesheet" href="/workforce.css?v=4.5.9">
+  <script src="/workforce.js?v=4.5.9" defer></script>
 </head>
 <body class="wf-page">
   <nav class="profit-rail wf-rail" aria-label="Основное меню ПРОФИТ">
@@ -45,21 +45,24 @@
       <div class="wf-section-head"><div><p class="wf-eyebrow">ЛИЧНЫЙ ГРАФИК</p><h2>Мои задания</h2><p>Здесь отображаются только работы, назначенные на твой аккаунт.</p></div><button class="wf-button wf-button-outline" id="refreshTasksBtn" type="button">Обновить</button></div>
       <div class="wf-layout-two">
         <div class="wf-card"><div class="wf-card-head"><h3>План выездов</h3><span class="wf-counter" id="myTaskCount">0</span></div><div id="myTasksList" class="wf-task-list"><div class="wf-empty">Загружаю назначения…</div></div></div>
-        <div class="wf-card wf-location-card"><div class="wf-card-head"><h3>Отметки по дому</h3><span class="wf-tag">Без GPS</span></div><ol class="wf-checklist" id="taskProgressList"><li>Открой назначенный дом</li><li>Отметь, что обход завершён</li><li>Отметь возвращение в офис</li><li>Отправь ручную схему</li></ol><p class="wf-footnote">Трекер состоит только из кнопок этапов работы. Координаты, GPS и скрытое отслеживание не используются.</p></div>
+        <div class="wf-card wf-location-card"><div class="wf-card-head"><h3>Отметки по дому</h3><span class="wf-tag">Без GPS</span></div><ol class="wf-checklist" id="taskProgressList"><li>Открой назначенный дом</li><li>Отметь, что обход завершён</li><li>Отметь возвращение в офис</li><li>Отправь ручную схему и фотографии дефектов</li></ol><p class="wf-footnote">Трекер состоит только из кнопок этапов работы. Координаты, GPS и скрытое отслеживание не используются. Ручные эскизы и фотографии дефектов отправляются приёмщику раздельно.</p></div>
       </div>
       <div class="wf-card wf-task-detail" id="taskDetail" hidden></div>
     </section>
 
     <section class="wf-section" id="scheduleSection" hidden>
-      <div class="wf-section-head"><div><p class="wf-eyebrow">ПЛАНИРОВАНИЕ ВЫЕЗДОВ</p><h2>План работы слесарей</h2><p>Назначай исполнителям адрес и дату. Здесь видны отметки «обошёл дом» и «пришёл в офис».</p></div><button class="wf-button wf-button-outline" id="refreshOverviewBtn" type="button">Обновить данные</button></div>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ПЛАНИРОВАНИЕ ВЫЕЗДОВ</p><h2>План работы слесарей</h2><p>Выбери слесаря, дату и улицу, затем перечисли дома — каждому дому создастся отдельное задание. Сюда могут назначать работы приёмщики и руководители.</p></div><button class="wf-button wf-button-outline" id="refreshOverviewBtn" type="button">Обновить данные</button></div>
       <div class="wf-layout-two wf-manager-layout">
         <form class="wf-card wf-form" id="createTaskForm">
           <div class="wf-card-head"><h3>Новое задание</h3><span class="wf-tag">Для слесаря</span></div>
           <label>Название работы<input name="title" required maxlength="160" placeholder="Например, обследование газопровода"></label>
-          <div class="wf-form-row"><label>Улица<input name="street" required maxlength="180" placeholder="Улица"></label><label>Дом<input name="address" required maxlength="120" placeholder="12А"></label></div>
+          <div class="wf-form-row"><label>Улица<input name="street" required maxlength="180" placeholder="Например, улица Ленина"></label><label>Дома на этой улице<textarea name="addresses" id="taskAddresses" rows="4" maxlength="4000" required placeholder="12
+12А
+14
+16/2"></textarea><small class="wf-field-hint">Каждый дом с новой строки. Можно указать до 100 домов за одно назначение.</small></label></div>
           <div class="wf-form-row"><label>Дата выезда<input name="scheduledDate" id="taskDate" type="date" required></label><label>Слесарь<select name="assignedTo" id="fitterSelect" required><option value="">Загрузка списка…</option></select></label></div>
           <label>Инструкции<textarea name="instructions" rows="3" maxlength="1200" placeholder="Подъезд, участок, что проверить и какие элементы показать на ручной схеме…"></textarea></label>
-          <button class="wf-button wf-button-primary" type="submit">Назначить работу</button>
+          <button class="wf-button wf-button-primary" type="submit">Назначить дома слесарю</button>
           <div class="wf-form-status" id="taskFormStatus"></div>
         </form>
         <div class="wf-card"><div class="wf-card-head"><h3>Расписание назначений</h3><span class="wf-counter" id="scheduleCount">0</span></div><div id="scheduleList" class="wf-task-list"><div class="wf-empty">Загрузка графика…</div></div></div>
@@ -73,8 +76,17 @@
     </section>
 
     <section class="wf-section" id="inboxSection" hidden>
-      <div class="wf-section-head"><div><p class="wf-eyebrow">ПРИЁМКА РАБОТ</p><h2>Уведомления о новых схемах</h2><p>Приходит уведомление с адресом, когда слесарь отправил ручной эскиз. Система автоматически преобразует его в CAD.</p></div><button class="wf-button wf-button-outline" id="refreshReportsBtn" type="button">Обновить отчёты</button></div>
-      <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Новые схемы</h3><span class="wf-counter" id="reportCount">0</span></div><div class="wf-report-list" id="reportList"><div class="wf-empty">Загрузка уведомлений…</div></div></div><div class="wf-card wf-report-detail" id="reportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы посмотреть ручной эскиз и автоматически построенную CAD-схему.</div></div></div>
+      <div class="wf-section-head"><div><p class="wf-eyebrow">ПРИЁМКА РАБОТ</p><h2>Уведомления от слесарей</h2><p>Схемы автоматически преобразуются в CAD, а фотографии дефектов подъездов поступают отдельной очередью для проверки.</p></div><button class="wf-button wf-button-outline" id="refreshReportsBtn" type="button">Обновить отчёты</button></div>
+      <div class="wf-inbox-switch" role="tablist" aria-label="Тип входящих уведомлений">
+        <button class="active" type="button" id="showSchemeInboxBtn" role="tab" aria-selected="true">Ручные схемы <span class="wf-counter" id="reportCount">0</span></button>
+        <button type="button" id="showDefectInboxBtn" role="tab" aria-selected="false">Дефекты подъездов <span class="wf-counter" id="defectReportCount">0</span></button>
+      </div>
+      <div id="schemeInboxPanel" class="wf-inbox-panel">
+        <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Новые схемы</h3><span class="wf-counter" id="schemeListCount">—</span></div><div class="wf-report-list" id="reportList"><div class="wf-empty">Загрузка уведомлений…</div></div></div><div class="wf-card wf-report-detail" id="reportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы посмотреть ручной эскиз и автоматически построенную CAD-схему.</div></div></div>
+      </div>
+      <div id="defectInboxPanel" class="wf-inbox-panel" hidden>
+        <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Фотографии дефектов</h3><span class="wf-counter" id="defectListCount">—</span></div><div class="wf-report-list" id="defectReportList"><div class="wf-empty">Загрузка фотографий…</div></div></div><div class="wf-card wf-report-detail" id="defectReportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы просмотреть снимки дефектов и подтвердить их.</div></div></div>
+      </div>
     </section>
 
     <section class="wf-section" id="usersSection" hidden>

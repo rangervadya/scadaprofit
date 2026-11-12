@@ -1,0 +1,11 @@
+ScadaProfit 4.5.9
+
+Multi-house dispatch and receiver permissions
+- Receiver can create fitter assignments.
+- One batch supports a street, date, fitter, title/instructions, and up to 100 house numbers.
+- Server creates one independent task per house under a shared assignmentGroupId.
+- Fitter dashboard groups assigned houses by day and prioritizes Today.
+- Legacy single-address task creation remains supported.
+- Existing GPS-free tracker, CAD sketch flow, and separate defect-photo flow retained.
+
+Update app container only; do not delete persistent data volumes.

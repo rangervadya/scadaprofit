@@ -43,6 +43,27 @@ function validIsoDate(value) {
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+export function parseHouseAddresses(value, fallbackAddress = '') {
+  let candidates = Array.isArray(value)
+    ? value
+    : value === undefined || value === null
+      ? []
+      : String(value).split(/[\r\n;]+/);
+  if (!candidates.some(item => String(item ?? '').trim()) && fallbackAddress) candidates = [fallbackAddress];
+
+  const unique = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const address = cleanText(candidate, 120);
+    if (!address) continue;
+    const key = address.toLocaleLowerCase('ru-RU');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(address);
+    if (unique.length > 100) throw new RangeError('За одно назначение можно добавить не более 100 домов.');
+  }
+  return unique;
+}
 function cookieValue(header, name) {
   const prefix = `${name}=`;
   for (const part of String(header || '').split(';')) {
@@ -140,6 +161,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   if (!workspace || typeof workspace !== 'object') workspace = { tasks: [], reports: [] };
   workspace.tasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
   workspace.reports = Array.isArray(workspace.reports) ? workspace.reports : [];
+  workspace.defectReports = Array.isArray(workspace.defectReports) ? workspace.defectReports : [];
   // GPS tracking was intentionally removed. Purge legacy coordinate histories from older 4.4 workspaces.
   const hadLegacyLocations = Object.prototype.hasOwnProperty.call(workspace, 'locations');
   delete workspace.locations;
@@ -158,13 +180,26 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return pending;
   };
 
-  const upload = (await import('multer')).default({
+  const multer = (await import('multer')).default;
+  const isAllowedImage = file => {
+    const ext = path.extname(String(file.originalname || '')).toLowerCase();
+    const mime = String(file.mimetype || '').toLowerCase();
+    return /^\.(jpe?g|png|webp|tiff?|heic|heif)$/.test(ext)
+      || /^image\/(jpeg|png|webp|tiff|x-tiff|heic|heif)$/.test(mime);
+  };
+  const upload = multer({
     dest: uploadDir,
     limits: { fileSize: 24 * 1024 * 1024, files: 1 },
     fileFilter(_req, file, cb) {
-      const ext = path.extname(String(file.originalname || '')).toLowerCase();
-      const isImage = /^\.(jpe?g|png|webp|tiff?)$/.test(ext) || /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
-      if (file.fieldname === 'sketch') return cb(null, isImage);
+      if (file.fieldname === 'sketch') return cb(null, isAllowedImage(file));
+      return cb(null, false);
+    }
+  });
+  const defectUpload = multer({
+    dest: uploadDir,
+    limits: { fileSize: 16 * 1024 * 1024, files: 10 },
+    fileFilter(_req, file, cb) {
+      if (file.fieldname === 'defectPhotos') return cb(null, isAllowedImage(file));
       return cb(null, false);
     }
   });
@@ -192,9 +227,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   function taskForClient(task) {
     const assignee = users.find(user => user.id === task.assignedTo);
     const taskReports = workspace.reports.filter(report => report.taskId === task.id);
-    const latestReport = taskReports.sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
+    const latestReport = [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
+    const taskDefectReports = workspace.defectReports.filter(report => report.taskId === task.id);
     return {
       ...task, assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
+      defectReportsCount: taskDefectReports.length,
+      defectReports: taskDefectReports.map(defectReportForClient),
       events: Array.isArray(task.events) ? task.events : [],
       lastReviewComment: latestReport?.reviewComment || '', lastReportStatus: latestReport?.status || null,
       lastReviewedAt: latestReport?.reviewedAt || null
@@ -216,6 +254,28 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       conclusionAddedAt: report.conclusionAddedAt || null,
       photos: (report.photos || []).map(file => ({ id: file.id, originalName: file.originalName, size: file.size, url: `/api/workforce/reports/${report.id}/files/${file.id}`, kind: file.kind })),
       sketch: report.sketch ? { id: report.sketch.id, originalName: report.sketch.originalName, size: report.sketch.size, url: `/api/workforce/reports/${report.id}/files/${report.sketch.id}`, kind: report.sketch.kind } : null
+    };
+  }
+
+  function defectReportForClient(report) {
+    const task = workspace.tasks.find(item => item.id === report.taskId);
+    const author = users.find(user => user.id === report.userId);
+    return {
+      id: report.id, taskId: report.taskId,
+      taskTitle: task?.title || report.taskTitle || 'Задание',
+      street: task?.street || report.street || '',
+      address: task?.address || report.address || '',
+      userId: report.userId,
+      userName: author?.displayName || report.userName || 'Сотрудник',
+      note: report.note || '', status: report.status || 'pending_review',
+      reviewComment: report.reviewComment || '', submittedAt: report.submittedAt,
+      reviewedAt: report.reviewedAt || null,
+      reviewedByName: users.find(user => user.id === report.reviewedBy)?.displayName || null,
+      seen: false,
+      photos: (report.photos || []).map(file => ({
+        id: file.id, originalName: file.originalName, size: file.size, mimeType: file.mimeType,
+        url: `/api/workforce/defects/${encodeURIComponent(report.id)}/files/${encodeURIComponent(file.id)}`
+      }))
     };
   }
 
@@ -311,24 +371,40 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
 
   routes.post('/api/workforce/tasks', async (req, res) => {
-    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    // Dispatchers (receivers), supervisors and developers can assign jobs to fitters.
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
     const assignedTo = cleanText(req.body?.assignedTo, 80);
     const fitter = users.find(user => user.id === assignedTo && user.role === 'fitter' && user.active !== false);
     const title = cleanText(req.body?.title, 160);
     const street = cleanText(req.body?.street, 180);
-    const address = cleanText(req.body?.address, 120);
     const scheduledDate = cleanText(req.body?.scheduledDate, 10);
+    let addresses = [];
+    try {
+      // New UI submits one house per line; legacy clients can still submit `address`.
+      addresses = parseHouseAddresses(req.body?.addresses, req.body?.address);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Проверь список домов.' });
+    }
     if (!fitter) return res.status(400).json({ error: 'Выбери действующий аккаунт слесаря.' });
-    if (!title || !street || !address || !validIsoDate(scheduledDate)) return res.status(400).json({ error: 'Заполни название работы, улицу, дом и дату.' });
-    const task = {
-      id: randomUUID(), title, street, address, instructions: cleanText(req.body?.instructions, 1200),
+    if (!title || !street || !addresses.length || !validIsoDate(scheduledDate)) {
+      return res.status(400).json({ error: 'Заполни работу, улицу, хотя бы один дом, дату и слесаря.' });
+    }
+    const nowIso = new Date().toISOString();
+    const assignmentGroupId = randomUUID();
+    const instructions = cleanText(req.body?.instructions, 1200);
+    const createdTasks = addresses.map(address => ({
+      id: randomUUID(), assignmentGroupId, title, street, address, instructions,
       scheduledDate, assignedTo: fitter.id, assignedName: fitter.displayName, status: 'assigned',
-      createdBy: req.user.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      createdBy: req.user.id, createdAt: nowIso, updatedAt: nowIso,
       startedAt: null, visitedAt: null, officeAt: null, completedAt: null, events: []
-    };
-    workspace.tasks.unshift(task);
+    }));
+    workspace.tasks.unshift(...createdTasks);
     await saveWorkspace();
-    return res.status(201).json({ ok: true, task: taskForClient(task) });
+    const clientTasks = createdTasks.map(taskForClient);
+    return res.status(201).json({
+      ok: true, assignmentGroupId, createdCount: clientTasks.length,
+      tasks: clientTasks, task: clientTasks[0]
+    });
   });
 
   routes.post('/api/workforce/tasks/:id/start', async (req, res) => {
@@ -401,7 +477,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const sketchFiles = req.files?.sketch || [];
     if (!sketchFiles.length) {
       for (const file of sketchFiles) await rm(file.path, { force: true }).catch(() => {});
-      return res.status(400).json({ error: 'Прикрепи изображение ручного эскиза (JPG, PNG, WEBP или TIFF). Фотографии объекта не принимаются.' });
+      return res.status(400).json({ error: 'Прикрепи изображение ручного эскиза (JPG, PNG, WEBP или TIFF). Фотографии дефектов отправляются отдельно.' });
     }
     const reportId = randomUUID();
     const reportDir = path.join(reportFilesDir, reportId);
@@ -447,6 +523,126 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       for (const file of sketchFiles) await rm(file.path, { force: true }).catch(() => {});
       return res.status(500).json({ error: `Не удалось сохранить отчёт: ${error.message}` });
     }
+  });
+
+  // Defect photos are a separate review queue. They do not enter CAD processing or Section 7.
+  routes.post('/api/workforce/tasks/:id/defects', (req, res, next) => {
+    if (!req.user || !['fitter', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Отправлять фотографии дефектов может слесарь.' });
+    defectUpload.array('defectPhotos', 10)(req, res, error => error ? next(error) : next());
+  }, async (req, res) => {
+    const uploaded = Array.isArray(req.files) ? req.files : [];
+    const cleanupUploads = async () => Promise.all(uploaded.map(file => rm(file.path, { force: true }).catch(() => {})));
+    const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (!task) { await cleanupUploads(); return res.status(404).json({ error: 'Задание не найдено.' }); }
+    if (req.user.role === 'fitter' && task.assignedTo !== req.user.id) {
+      await cleanupUploads();
+      return res.status(403).json({ error: 'Нельзя отправить фотографии по чужому заданию.' });
+    }
+    if (!task.visitedAt || !task.officeAt) {
+      await cleanupUploads();
+      return res.status(409).json({ error: 'Сначала отметь, что дом пройден и ты пришёл в офис.' });
+    }
+    if (!uploaded.length) return res.status(400).json({ error: 'Добавь хотя бы одну фотографию дефекта (JPG, PNG, WEBP, TIFF или HEIC).' });
+
+    const reportId = randomUUID();
+    const reportDir = path.join(reportFilesDir, reportId);
+    let createdReport = null;
+    let createdEventAt = null;
+    const previousTaskUpdatedAt = task.updatedAt;
+    try {
+      await mkdir(reportDir, { recursive: true, mode: 0o700 });
+      const photos = [];
+      for (const file of uploaded) {
+        const id = randomUUID();
+        const ext = path.extname(path.basename(file.originalname || '')).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 12)
+          || ({ 'image/png': '.png', 'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heif', 'image/tiff': '.tiff', 'image/x-tiff': '.tiff' }[file.mimetype] || '.jpg');
+        const fileName = `${id}${ext}`;
+        await persistUploadedFile(file.path, path.join(reportDir, fileName));
+        photos.push({ id, fileName, originalName: cleanText(path.basename(file.originalname || 'Фото дефекта'), 180), size: file.size, mimeType: file.mimetype, uploadedAt: new Date().toISOString() });
+      }
+      const author = users.find(user => user.id === req.user.id);
+      const report = {
+        id: reportId, taskId: task.id, taskTitle: task.title, street: task.street, address: task.address,
+        userId: req.user.id, userName: author?.displayName || req.user.displayName,
+        note: cleanText(req.body?.note, 1200), photos,
+        status: 'pending_review', submittedAt: new Date().toISOString(),
+        seenBy: [], reviewComment: '', reviewedAt: null, reviewedBy: null
+      };
+      createdReport = report;
+      workspace.defectReports.unshift(report);
+      task.events = Array.isArray(task.events) ? task.events : [];
+      createdEventAt = report.submittedAt;
+      task.events.push({ type: 'defects_submitted', label: `Отправлены фотографии дефектов: ${photos.length} шт.`, at: createdEventAt, userId: req.user.id, userName: req.user.displayName });
+      task.updatedAt = report.submittedAt;
+      await saveWorkspace();
+      return res.status(201).json({ ok: true, report: defectReportForClient(report) });
+    } catch (error) {
+      if (createdReport) workspace.defectReports = workspace.defectReports.filter(item => item.id !== createdReport.id);
+      if (createdEventAt && Array.isArray(task.events)) {
+        task.events = task.events.filter(event => !(event.type === 'defects_submitted' && event.at === createdEventAt && event.userId === req.user.id));
+      }
+      task.updatedAt = previousTaskUpdatedAt;
+      await rm(reportDir, { recursive: true, force: true }).catch(() => {});
+      await cleanupUploads();
+      return res.status(500).json({ error: `Не удалось сохранить фотографии дефектов: ${error.message}` });
+    }
+  });
+
+  routes.get('/api/workforce/defects', (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const list = workspace.defectReports.map(report => ({
+      ...defectReportForClient(report),
+      seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id)
+    }));
+    return res.json({
+      ok: true,
+      reports: list,
+      unreadCount: list.filter(report => !report.seen && report.status === 'pending_review').length,
+      pendingCount: list.filter(report => report.status === 'pending_review').length
+    });
+  });
+
+  routes.post('/api/workforce/defects/:id/seen', async (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const report = workspace.defectReports.find(item => item.id === req.params.id);
+    if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    report.seenBy = Array.isArray(report.seenBy) ? report.seenBy : [];
+    if (!report.seenBy.includes(req.user.id)) report.seenBy.push(req.user.id);
+    report.lastSeenAt = new Date().toISOString();
+    await saveWorkspace();
+    return res.json({ ok: true, seen: true });
+  });
+
+  routes.post('/api/workforce/defects/:id/review', async (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const report = workspace.defectReports.find(item => item.id === req.params.id);
+    if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    if (req.user.role === 'receiver' && !(Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id))) {
+      return res.status(409).json({ error: 'Сначала открой фотографии дефектов.' });
+    }
+    const status = String(req.body?.status || '');
+    if (!['accepted', 'revision_requested'].includes(status)) return res.status(400).json({ error: 'Подтверди, что фотографии подходят, или верни отчёт.' });
+    report.status = status;
+    report.reviewComment = cleanText(req.body?.comment, 1200);
+    report.reviewedAt = new Date().toISOString();
+    report.reviewedBy = req.user.id;
+    await saveWorkspace();
+    return res.json({ ok: true, report: defectReportForClient(report) });
+  });
+
+  routes.get('/api/workforce/defects/:reportId/files/:fileId', (req, res) => {
+    if (!req.user || !['fitter', 'receiver', 'supervisor', 'developer'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Нет доступа к фотографиям дефектов.' });
+    }
+    const report = workspace.defectReports.find(item => item.id === req.params.reportId);
+    if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этой фотографии.' });
+    const file = (report.photos || []).find(item => item.id === req.params.fileId);
+    if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]{1,12}$/i.test(file.fileName || '')) return res.status(404).json({ error: 'Фотография не найдена.' });
+    const fullPath = path.join(reportFilesDir, report.id, file.fileName);
+    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.originalName || 'defect-photo')}`);
+    return res.sendFile(fullPath, error => { if (error && !res.headersSent) res.status(404).json({ error: 'Фотография дефекта недоступна.' }); });
   });
 
   async function refreshSchemeState(report) {
@@ -567,11 +763,13 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       users: userList,
       tasks: workspace.tasks.map(taskForClient),
       reports: workspace.reports.map(reportForClient),
+      defectReports: workspace.defectReports.map(defectReportForClient),
       summary: {
         activeFitters: users.filter(user => user.active !== false && user.role === 'fitter').length,
         assigned: workspace.tasks.filter(task => ['assigned', 'in_progress'].includes(task.status)).length,
         submitted: workspace.tasks.filter(task => task.status === 'submitted').length,
-        pendingReports: workspace.reports.filter(report => report.status === 'pending_review').length
+        pendingReports: workspace.reports.filter(report => report.status === 'pending_review').length,
+        pendingDefects: workspace.defectReports.filter(report => report.status === 'pending_review').length
       }
     });
   });
@@ -669,7 +867,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {
     if (!requireRoles(req, res, ['developer'])) return;
-    return res.json({ ok: true, version: '4.5.1', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, sessions: sessions.length, gpsTracking: false, manualSketchOnly: true, dataStore: 'persistent-json' });
+    return res.json({ ok: true, version: '4.5.9', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, separateDefectReviewQueue: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
   });
 
   async function linkManualCadProject(reportId, projectId) {

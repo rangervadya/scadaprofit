@@ -5,12 +5,16 @@ const statusLabels = { assigned: 'Назначено', in_progress: 'Обход 
 let currentUser = null;
 let tasks = [];
 let reports = [];
+let defectReports = [];
 let users = [];
 let fitters = [];
 let overview = null;
 let selectedTaskId = null;
 let selectedReportId = new URLSearchParams(window.location.search).get('report') || null;
 let unreadNotifications = 0;
+let unreadDefectNotifications = 0;
+let selectedDefectId = null;
+let activeInboxKind = 'schemes';
 const issuedPasswords = Object.create(null);
 
 function escapeHtml(value) {
@@ -36,6 +40,15 @@ function formatDateTime(value) {
 function statusBadge(status) {
   return `<span class="wf-status ${escapeHtml(status)}">${escapeHtml(statusLabels[status] || status || '—')}</span>`;
 }
+function formatHouseCount(count) {
+  const n = Math.abs(Number(count) || 0);
+  const lastTwo = n % 100;
+  const last = n % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${n} домов`;
+  if (last === 1) return `${n} дом`;
+  if (last >= 2 && last <= 4) return `${n} дома`;
+  return `${n} домов`;
+}
 function message(text, isError = false) {
   const el = $('globalMessage');
   el.textContent = text;
@@ -55,6 +68,7 @@ async function api(url, options = {}) {
   return data;
 }
 function roleCanManage() { return ['supervisor', 'developer'].includes(currentUser?.role); }
+function roleCanAssignTasks() { return ['receiver', 'supervisor', 'developer'].includes(currentUser?.role); }
 function roleCanReview() { return ['receiver', 'supervisor', 'developer'].includes(currentUser?.role); }
 function roleIsDeveloper() { return currentUser?.role === 'developer'; }
 function roleCanCreateUsers() { return ['supervisor', 'developer'].includes(currentUser?.role); }
@@ -72,15 +86,16 @@ function configurePanels() {
           : true;
     link.hidden = !visible;
   });
-  $('pageHeading').textContent = role === 'fitter' ? 'Мой рабочий день' : role === 'receiver' ? 'Уведомления о схемах' : role === 'supervisor' ? 'Управление бригадой' : 'Панель разработчика';
+  $('pageHeading').textContent = role === 'fitter' ? 'Мой рабочий день' : role === 'receiver' ? 'Приёмка и планирование' : role === 'supervisor' ? 'Управление бригадой' : 'Панель разработчика';
   $('pageSubheading').textContent = role === 'fitter'
-    ? 'План выездов, кнопки отметок по дому и отправка ручных эскизов.'
-    : role === 'receiver' ? 'Смотри уведомления, проверяй автоматически построенные CAD-схемы и переноси их в заключение.'
-      : role === 'supervisor' ? 'Назначай выезды, отслеживай отметки по этапам и создавай аккаунты слесарей и приёмщиков.'
+    ? 'План выездов, отметки по дому, ручные эскизы и фотографии дефектов.'
+    : role === 'receiver' ? 'Распределяй дома между слесарями, проверяй схемы CAD и фотографии дефектов подъездов.'
+      : role === 'supervisor' ? 'Распределяй улицы и дома между слесарями, контролируй отметки по этапам и создавай аккаунты.'
         : 'Полный доступ к ролям, заданиям, отчётам, тестированию и настройкам.';
   const tabs = [];
   if (role === 'fitter') tabs.push(['myTasksSection', 'Мои задания']);
-  if (roleCanManage()) tabs.push(['scheduleSection', 'План работ'], ['overviewSection', 'Контроль команды']);
+  if (roleCanAssignTasks()) tabs.push(['scheduleSection', 'План работ']);
+  if (roleCanManage()) tabs.push(['overviewSection', 'Контроль команды']);
   if (roleCanReview()) tabs.push(['inboxSection', 'Уведомления']);
   if (roleCanCreateUsers()) tabs.push(['usersSection', roleIsDeveloper() ? 'Аккаунты и тесты' : 'Создать аккаунты'], ['credentialsSection', 'База аккаунтов']);
   $('workspaceNav').innerHTML = tabs.map(([id, label], index) => `<button type="button" data-target="${id}" class="${index === 0 ? 'active' : ''}"><span>${label}</span>${id === 'inboxSection' && unreadNotifications ? ` <span class="wf-nav-count">${unreadNotifications}</span>` : ''}</button>`).join('');
@@ -109,16 +124,35 @@ function renderMyTasks() {
   if (!root) return;
   $('myTaskCount').textContent = String(tasks.length);
   if (!tasks.length) {
-    root.innerHTML = '<div class="wf-empty">Пока нет назначенных работ. Когда руководитель добавит выезд, здесь появятся дата и адрес.</div>';
+    root.innerHTML = '<div class="wf-empty">Пока нет назначенных работ. Когда приёмщик или руководитель распределит улицу и дома, здесь появится твой план на каждый день.</div>';
     $('taskDetail').hidden = true;
     return;
   }
-  if (!selectedTaskId || !tasks.some(task => task.id === selectedTaskId)) selectedTaskId = tasks[0].id;
-  root.innerHTML = tasks.map(task => `
-    <button type="button" class="wf-task-item ${task.id === selectedTaskId ? 'selected' : ''}" data-task-id="${escapeHtml(task.id)}">
-      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(task.title)}</b>${statusBadge(task.status)}</span>
-      <span class="wf-item-meta">${escapeHtml(formatDate(task.scheduledDate))}<br>${escapeHtml(task.street)}, дом ${escapeHtml(task.address)}<br>${escapeHtml(task.reportsCount || 0)} отчётов</span>
-    </button>`).join('');
+  const today = localDateValue();
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowValue = localDateValue(tomorrow);
+  const sorted = [...tasks].sort((a, b) => String(a.scheduledDate).localeCompare(String(b.scheduledDate)) || String(a.street).localeCompare(String(b.street), 'ru') || String(a.address).localeCompare(String(b.address), 'ru', { numeric: true }));
+  if (!selectedTaskId || !tasks.some(task => task.id === selectedTaskId)) {
+    selectedTaskId = sorted.find(task => task.scheduledDate === today)?.id || sorted.find(task => String(task.scheduledDate) > today)?.id || sorted[0].id;
+  }
+  const groups = new Map();
+  for (const task of sorted) {
+    const key = task.scheduledDate || 'undated';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
+  const dateRank = date => date === today ? 0 : date === tomorrowValue ? 1 : date === 'undated' ? 4 : date > today ? 2 : 3;
+  const orderedGroups = [...groups.entries()].sort((a, b) => dateRank(a[0]) - dateRank(b[0]) || String(a[0]).localeCompare(String(b[0])));
+  root.innerHTML = `${groups.has(today) ? '' : `<div class="wf-day-heading"><b>Сегодня</b><span>На сегодня назначений нет</span></div>`}${orderedGroups.map(([date, dayTasks]) => {
+    const heading = date === today ? 'Сегодня' : date === tomorrowValue ? 'Завтра' : date === 'undated' ? 'Дата не указана' : date < today ? `Просрочено · ${formatDate(date)}` : formatDate(date);
+    const houses = dayTasks.length === 1 ? '1 дом' : `${dayTasks.length} домов`;
+    const items = dayTasks.map(task => `
+      <button type="button" class="wf-task-item ${task.id === selectedTaskId ? 'selected' : ''}" data-task-id="${escapeHtml(task.id)}">
+        <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(task.title)}</b>${statusBadge(task.status)}</span>
+        <span class="wf-item-meta">${escapeHtml(task.street)}, дом ${escapeHtml(task.address)}<br>Схем: ${escapeHtml(task.reportsCount || 0)} · отчётов о дефектах: ${escapeHtml(task.defectReportsCount || 0)}</span>
+      </button>`).join('');
+    return `<div class="wf-day-group"><div class="wf-day-heading"><b>${escapeHtml(heading)}</b><span>${escapeHtml(houses)}</span></div>${items}</div>`;
+  }).join('')}`;
   root.querySelectorAll('[data-task-id]').forEach(button => button.addEventListener('click', () => {
     selectedTaskId = button.dataset.taskId;
     renderMyTasks();
@@ -137,13 +171,23 @@ function renderTaskDetail() {
   else if (task.status === 'house_visited') action = '<button class="wf-button wf-button-primary" id="officeTaskBtn" type="button">Отметить: пришёл в офис</button>';
   else if (task.status === 'at_office') action = `
     <form class="wf-form" id="fieldReportForm">
-      <div class="wf-card-head"><h3>Отправка ручной схемы</h3><span class="wf-tag">Только эскиз</span></div>
-      <label>Ручной эскиз, нарисованный на бумаге<input type="file" name="sketch" accept="image/jpeg,image/png,image/webp,image/tiff" required></label>
+      <div class="wf-card-head"><h3>Отправка ручной схемы</h3><span class="wf-tag">Для CAD</span></div>
+      <label>Ручной эскиз, нарисованный на бумаге<input type="file" name="sketch" accept="image/jpeg,image/png,image/webp,image/tiff,image/heic,image/heif" required></label>
       <label>Комментарий (необязательно)<textarea name="note" rows="2" maxlength="1800" placeholder="Короткое пояснение к схеме…"></textarea></label>
-      <div class="wf-footnote">Фотографии объекта и GPS не нужны. После отправки схема автоматически попадёт в систему распознавания и будет преобразована в CAD.</div>
+      <div class="wf-footnote">Ручной эскиз автоматически преобразуется в CAD. Фотографии дефектов отправляются отдельно и не запускают CAD.</div>
       <button class="wf-button wf-button-primary" type="submit">Отправить ручной эскиз</button>
       <div class="wf-form-status" id="reportFormStatus"></div>
     </form>`;
+  const defectForm = task.officeAt ? `
+    <form class="wf-form wf-defect-upload" id="fieldDefectForm">
+      <div class="wf-card-head"><h3>Фотографии дефектов в подъезде</h3><span class="wf-tag wf-tag-blue">Отдельно от CAD</span></div>
+      <label>Фотографии найденных дефектов<input type="file" name="defectPhotos" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple required></label>
+      <label>Описание дефектов (необязательно)<textarea name="note" rows="2" maxlength="1200" placeholder="Подъезд, этаж, место и что именно повреждено…"></textarea></label>
+      <div class="wf-footnote">Можно прикрепить до 10 фотографий. Они поступят приёмщику отдельным уведомлением и не преобразуются в CAD.</div>
+      <button class="wf-button wf-button-primary" type="submit">Отправить фотографии дефектов приёмщику</button>
+      <div class="wf-form-status" id="defectFormStatus"></div>
+    </form>` : '';
+  const previousDefects = (task.defectReports || []).map(report => `<div class="wf-defect-history-item"><span>${escapeHtml(formatDateTime(report.submittedAt))} · ${Number(report.photos?.length || 0)} фото</span>${statusBadge(report.status)}${report.reviewComment ? `<small>${escapeHtml(report.reviewComment)}</small>` : ''}</div>`).join('');
   root.innerHTML = `
     <div class="wf-card-head"><h3>${escapeHtml(task.title)}</h3>${statusBadge(task.status)}</div>
     <p><b>${escapeHtml(formatDate(task.scheduledDate))}</b> · ${escapeHtml(task.street)}, дом ${escapeHtml(task.address)}</p>
@@ -153,13 +197,15 @@ function renderTaskDetail() {
     ${task.status === 'pending_review' ? '<div class="wf-message">CAD-схема готова и появилась в уведомлениях приёмщика.</div>' : ''}
     ${task.status === 'accepted' ? '<div class="wf-message">Схема принята приёмщиком.</div>' : ''}
     ${task.status === 'revision_requested' ? `<div class="wf-message error">Схему вернули на исправление. ${task.lastReviewComment ? `<br><b>Комментарий:</b> ${escapeHtml(task.lastReviewComment)}` : 'Выполни обход повторно и отправь исправленный эскиз.'}</div>` : ''}
-    ${action}`;
+    ${action}
+    ${defectForm}
+    ${previousDefects ? `<div class="wf-defect-history"><h4>Отправленные фотографии дефектов</h4>${previousDefects}</div>` : ''}`;
   const runTaskAction = async (button, endpoint, label) => {
     button.disabled = true; button.textContent = 'Сохраняю отметку…';
     try {
       await api(`/api/workforce/tasks/${encodeURIComponent(task.id)}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       message(label);
-      await Promise.all([loadTasks(), roleCanManage() ? loadOverview() : Promise.resolve()]);
+      await Promise.all([loadTasks(), roleCanAssignTasks() ? loadOverview() : Promise.resolve()]);
     } catch (error) { message(error.message, true); button.disabled = false; }
   };
   $('startTaskBtn')?.addEventListener('click', event => runTaskAction(event.currentTarget, 'start', 'Отметка «Начал обход дома» сохранена.'));
@@ -181,30 +227,55 @@ function renderTaskDetail() {
     } catch (error) { status.textContent = error.message; }
     finally { submit.disabled = false; }
   });
+  const defectFormElement = $('fieldDefectForm');
+  if (defectFormElement) defectFormElement.addEventListener('submit', async event => {
+    event.preventDefault();
+    const status = $('defectFormStatus');
+    const submit = defectFormElement.querySelector('button[type="submit"]');
+    const files = defectFormElement.elements.defectPhotos.files;
+    if (!files.length) { status.textContent = 'Добавь хотя бы одну фотографию дефекта.'; return; }
+    if (files.length > 10) { status.textContent = 'Можно отправить не более 10 фотографий за один раз.'; return; }
+    const data = new FormData(defectFormElement);
+    submit.disabled = true; status.textContent = 'Отправляю фотографии приёмщику…';
+    try {
+      const result = await api(`/api/workforce/tasks/${encodeURIComponent(task.id)}/defects`, { method: 'POST', body: data });
+      status.textContent = `Отправлено фотографий: ${result.report?.photos?.length || files.length}. Ожидает проверки приёмщиком.`;
+      message('Фотографии дефектов отправлены приёмщику отдельным уведомлением.');
+      await loadTasks();
+    } catch (error) { status.textContent = error.message; }
+    finally { submit.disabled = false; }
+  });
 }
 
 function renderSchedule() {
   const root = $('scheduleList');
   if (!root) return;
   $('scheduleCount').textContent = String(tasks.length);
-  const sorted = [...tasks].sort((a, b) => String(a.scheduledDate).localeCompare(String(b.scheduledDate)));
-  root.innerHTML = sorted.length ? sorted.map(task => `
-    <div class="wf-task-item">
-      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(task.title)}</b>${statusBadge(task.status)}</span>
-      <span class="wf-item-meta">${escapeHtml(formatDate(task.scheduledDate))}<br>${escapeHtml(task.street)}, дом ${escapeHtml(task.address)}<br>Слесарь: ${escapeHtml(task.assignedName || '—')} · Отчётов: ${task.reportsCount || 0}</span>
-    </div>`).join('') : '<div class="wf-empty">Назначений ещё нет. Создай первое задание в форме слева.</div>';
+  const sorted = [...tasks].sort((a, b) => String(a.scheduledDate).localeCompare(String(b.scheduledDate)) || String(a.assignedName).localeCompare(String(b.assignedName), 'ru') || String(a.street).localeCompare(String(b.street), 'ru') || String(a.address).localeCompare(String(b.address), 'ru', { numeric: true }));
+  const groups = new Map();
+  for (const task of sorted) {
+    const key = task.assignmentGroupId || task.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
+  root.innerHTML = groups.size ? [...groups.values()].map(group => {
+    const first = group[0];
+    const houses = group.map(task => `<li><span>Дом ${escapeHtml(task.address)}</span>${statusBadge(task.status)}</li>`).join('');
+    const countLabel = formatHouseCount(group.length);
+    return `<article class="wf-dispatch-group"><div class="wf-item-top"><b class="wf-item-title">${escapeHtml(first.title)}</b><span class="wf-tag">${countLabel}</span></div><div class="wf-item-meta">${escapeHtml(formatDate(first.scheduledDate))} · ${escapeHtml(first.street)}<br>Слесарь: ${escapeHtml(first.assignedName || '—')}</div><ul class="wf-house-list">${houses}</ul></article>`;
+  }).join('') : '<div class="wf-empty">Назначений ещё нет. Добавь улицу и перечисли дома в форме слева.</div>';
 }
 
 async function loadOverview() {
   const data = await api('/api/workforce/overview');
   overview = data;
-  if (roleCanManage()) {
+  if (roleCanAssignTasks()) {
     fitters = (data.users || []).filter(user => user.role === 'fitter');
     const select = $('fitterSelect');
     if (select) select.innerHTML = fitters.length
-      ? fitters.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)} · ${escapeHtml(user.username)}</option>`).join('')
+      ? `<option value="">Выбери слесаря</option>${fitters.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)} · ${escapeHtml(user.username)}</option>`).join('')}`
       : '<option value="">Сначала создай аккаунт слесаря</option>';
-    renderOverview(data);
+    if (roleCanManage()) renderOverview(data);
   }
   return data;
 }
@@ -215,7 +286,8 @@ function renderOverview(data) {
     ['Активных слесарей', summary.activeFitters || 0],
     ['Назначено / обход', summary.assigned || 0],
     ['Эскизов отправлено', summary.submitted || 0],
-    ['Ожидают приёмки', summary.pendingReports || 0]
+    ['Ожидают приёмки схем', summary.pendingReports || 0],
+    ['Дефектов на проверке', summary.pendingDefects || 0]
   ].map(([label, value]) => `<div class="wf-stat"><span>${escapeHtml(label)}</span><b>${Number(value)}</b></div>`).join('');
   const fitters = (data.users || []).filter(user => user.role === 'fitter');
   $('workerLocations').innerHTML = fitters.length ? fitters.map(user => {
@@ -232,8 +304,10 @@ function renderOverview(data) {
 
 function updateNotificationBadge() {
   const button = $('workspaceNav')?.querySelector('[data-target="inboxSection"]');
-  if (button) button.innerHTML = `Уведомления${unreadNotifications ? ` <span class="wf-nav-count">${unreadNotifications}</span>` : ''}`;
+  const totalUnread = unreadNotifications + unreadDefectNotifications;
+  if (button) button.innerHTML = `Уведомления${totalUnread ? ` <span class="wf-nav-count">${totalUnread}</span>` : ''}`;
   if ($('reportCount')) $('reportCount').textContent = String(reports.filter(report => !report.seen).length);
+  if ($('defectReportCount')) $('defectReportCount').textContent = String(defectReports.filter(report => report.status === 'pending_review').length);
 }
 async function loadReports() {
   if (!roleCanReview()) return;
@@ -244,10 +318,120 @@ async function loadReports() {
   updateNotificationBadge();
   return reports;
 }
+async function loadDefectReports() {
+  if (!roleCanReview()) return;
+  const data = await api('/api/workforce/defects');
+  defectReports = data.reports || [];
+  unreadDefectNotifications = Number(data.unreadCount ?? defectReports.filter(report => !report.seen).length);
+  renderDefectReports();
+  updateNotificationBadge();
+  return defectReports;
+}
+function setInboxKind(kind) {
+  activeInboxKind = kind === 'defects' ? 'defects' : 'schemes';
+  $('schemeInboxPanel').hidden = activeInboxKind !== 'schemes';
+  $('defectInboxPanel').hidden = activeInboxKind !== 'defects';
+  $('showSchemeInboxBtn')?.classList.toggle('active', activeInboxKind === 'schemes');
+  $('showDefectInboxBtn')?.classList.toggle('active', activeInboxKind === 'defects');
+  $('showSchemeInboxBtn')?.setAttribute('aria-selected', String(activeInboxKind === 'schemes'));
+  $('showDefectInboxBtn')?.setAttribute('aria-selected', String(activeInboxKind === 'defects'));
+}
+function renderDefectReports() {
+  const root = $('defectReportList');
+  if (!root) return;
+  $('defectReportCount').textContent = String(defectReports.filter(report => report.status === 'pending_review').length);
+  if ($('defectListCount')) $('defectListCount').textContent = String(defectReports.length);
+  if (!defectReports.length) {
+    root.innerHTML = '<div class="wf-empty">Фотографий дефектов пока нет. Когда слесарь отправит снимки, они появятся здесь отдельным уведомлением.</div>';
+    $('defectReportDetail').innerHTML = '<div class="wf-empty">Выбери уведомление слева, чтобы посмотреть фотографии дефектов.</div>';
+    return;
+  }
+  if (!selectedDefectId || !defectReports.some(report => report.id === selectedDefectId)) selectedDefectId = defectReports[0].id;
+  root.innerHTML = defectReports.map(report => `
+    <button class="wf-report-item ${report.id === selectedDefectId ? 'selected' : ''}" type="button" data-defect-id="${escapeHtml(report.id)}">
+      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b>${statusBadge(report.status)}</span>
+      <span class="wf-item-meta">Добавил: ${escapeHtml(report.userName)}<br>${Number(report.photos?.length || 0)} фото · ${escapeHtml(formatDateTime(report.submittedAt))}${report.seen ? '' : '<br><b>Новое уведомление</b>'}</span>
+    </button>`).join('');
+  root.querySelectorAll('[data-defect-id]').forEach(button => button.addEventListener('click', () => {
+    selectedDefectId = button.dataset.defectId;
+    renderDefectReports();
+  }));
+  renderDefectDetail();
+}
+function renderDefectDetail() {
+  const report = defectReports.find(item => item.id === selectedDefectId);
+  const root = $('defectReportDetail');
+  if (!report || !root) return;
+  const needsSeenConfirmation = !report.seen;
+  if (needsSeenConfirmation) {
+    report.seen = true;
+    unreadDefectNotifications = Math.max(0, unreadDefectNotifications - 1);
+    updateNotificationBadge();
+    api(`/api/workforce/defects/${encodeURIComponent(report.id)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(() => {
+        const checkbox = $('approveDefectCheckbox');
+        const returnButton = $('returnDefectBtn');
+        if (checkbox) checkbox.disabled = false;
+        if (returnButton) returnButton.disabled = false;
+      })
+      .catch(() => {
+        report.seen = false; unreadDefectNotifications += 1; updateNotificationBadge();
+        const checkbox = $('approveDefectCheckbox');
+        const returnButton = $('returnDefectBtn');
+        if (checkbox) checkbox.disabled = true;
+        if (returnButton) returnButton.disabled = true;
+        message('Не удалось отметить уведомление просмотренным. Обнови список и повтори.', true);
+      });
+  }
+  const photos = (report.photos || []).map(photo => {
+    const browserPreview = /^image\/(?:jpeg|png|webp|gif|avif)$/i.test(photo.mimeType || '');
+    const preview = browserPreview
+      ? `<img src="${escapeHtml(photo.url)}" alt="Дефект: ${escapeHtml(photo.originalName)}" loading="lazy">`
+      : `<div class="wf-attachment-file"><b>ФОТОФАЙЛ</b><small>${escapeHtml((photo.mimeType || 'исходный формат').replace(/^image\//i, '').toUpperCase())}</small><span>Открыть оригинал →</span></div>`;
+    return `<a class="wf-attachment" href="${escapeHtml(photo.url)}" target="_blank" rel="noopener">${preview}<span>${escapeHtml(photo.originalName)}</span></a>`;
+  }).join('');
+  const accepted = report.status === 'accepted';
+  const approval = accepted
+    ? '<div class="wf-defect-approved"><span aria-hidden="true">✓</span> Да, фотографии подходят</div>'
+    : report.status === 'pending_review' || report.status === 'revision_requested'
+      ? `<label class="wf-defect-approve"><input type="checkbox" id="approveDefectCheckbox" ${needsSeenConfirmation ? 'disabled' : ''}><span>Да, фотографии подходят</span></label>`
+      : '';
+  const returnAction = report.status === 'pending_review'
+    ? `<label class="wf-file-label" for="defectReviewComment">Комментарий (необязательно)</label><textarea class="wf-review-comment" id="defectReviewComment" rows="2" maxlength="1200" placeholder="Что нужно переснять или уточнить…"></textarea><button class="wf-button wf-button-outline" id="returnDefectBtn" type="button" ${needsSeenConfirmation ? 'disabled' : ''}>Вернуть на исправление</button>`
+    : '';
+  root.innerHTML = `
+    <div class="wf-card-head"><h3>Фотографии дефектов подъезда</h3>${statusBadge(report.status)}</div>
+    <p class="wf-item-meta"><b>${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b><br>Слесарь: ${escapeHtml(report.userName)}<br>Отправлено: ${escapeHtml(formatDateTime(report.submittedAt))}</p>
+    ${report.note ? `<div class="wf-report-note">${escapeHtml(report.note)}</div>` : ''}
+    <div class="wf-attachment-grid wf-defect-photo-grid">${photos || '<span class="wf-muted">Фотографии не найдены.</span>'}</div>
+    ${approval}
+    ${report.status === 'accepted' ? `<p class="wf-footnote">Подтверждено: ${escapeHtml(formatDateTime(report.reviewedAt))}${report.reviewedByName ? ` · ${escapeHtml(report.reviewedByName)}` : ''}</p>` : ''}
+    ${report.status === 'revision_requested' ? `<p class="wf-message error">Возвращено на исправление. ${escapeHtml(report.reviewComment || '')}</p>` : ''}
+    ${returnAction}`;
+  $('approveDefectCheckbox')?.addEventListener('change', async event => {
+    const checkbox = event.currentTarget;
+    if (!checkbox.checked) return;
+    checkbox.disabled = true;
+    try {
+      await api(`/api/workforce/defects/${encodeURIComponent(report.id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'accepted' }) });
+      message('Фотографии дефектов подтверждены: подходят.');
+      await loadDefectReports();
+    } catch (error) { checkbox.checked = false; checkbox.disabled = false; message(error.message, true); }
+  });
+  $('returnDefectBtn')?.addEventListener('click', async event => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      await api(`/api/workforce/defects/${encodeURIComponent(report.id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'revision_requested', comment: $('defectReviewComment')?.value || '' }) });
+      message('Фотографии возвращены слесарю на исправление.');
+      await loadDefectReports();
+    } catch (error) { message(error.message, true); button.disabled = false; }
+  });
+}
 function renderReports() {
   const root = $('reportList');
   if (!root) return;
   $('reportCount').textContent = String(reports.filter(report => !report.seen).length);
+  if ($('schemeListCount')) $('schemeListCount').textContent = String(reports.length);
   if (!reports.length) {
     root.innerHTML = '<div class="wf-empty">Новых схем пока нет. Когда слесарь вернётся в офис и отправит эскиз, здесь появится уведомление с адресом.</div>';
     $('reportDetail').innerHTML = '<div class="wf-empty">Выбери уведомление слева, чтобы открыть схему и посмотреть результат CAD-обработки.</div>';
@@ -427,10 +611,11 @@ async function initialise() {
     const data = await api('/api/auth/me');
     currentUser = data.user;
     configurePanels();
+    setInboxKind('schemes');
     if ($('taskDate')) $('taskDate').value = localDateValue();
     const promises = [loadTasks()];
-    if (roleCanReview()) promises.push(loadReports());
-    if (roleCanManage()) promises.push(loadOverview());
+    if (roleCanReview()) promises.push(loadReports(), loadDefectReports());
+    if (roleCanAssignTasks()) promises.push(loadOverview());
     if (roleCanCreateUsers()) promises.push(loadUsers());
     await Promise.all(promises);
   } catch (error) {
@@ -446,21 +631,27 @@ $('refreshOverviewBtn')?.addEventListener('click', async () => {
   try { await Promise.all([loadTasks(), loadOverview()]); message('Данные обновлены.'); }
   catch (error) { message(error.message, true); }
 });
-$('refreshReportsBtn')?.addEventListener('click', () => loadReports().catch(error => message(error.message, true)));
+$('refreshReportsBtn')?.addEventListener('click', () => Promise.all([loadReports(), loadDefectReports()]).then(() => message('Уведомления обновлены.')).catch(error => message(error.message, true)));
+$('showSchemeInboxBtn')?.addEventListener('click', () => setInboxKind('schemes'));
+$('showDefectInboxBtn')?.addEventListener('click', () => setInboxKind('defects'));
 $('refreshCredentialsBtn')?.addEventListener('click', () => loadUsers().then(() => message('База сотрудников обновлена.')).catch(error => message(error.message, true)));
 $('createTaskForm')?.addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
   const status = $('taskFormStatus');
   const button = form.querySelector('button[type="submit"]');
-  button.disabled = true; status.textContent = 'Сохраняю назначение…';
   const fields = new FormData(form);
+  const houseCount = String(fields.get('addresses') || '').split(/[\r\n;]+/).map(value => value.trim()).filter(Boolean).length;
+  if (!houseCount) { status.textContent = 'Укажи хотя бы один дом, каждый с новой строки.'; return; }
+  if (houseCount > 100) { status.textContent = 'За одно назначение можно добавить не более 100 домов.'; return; }
+  button.disabled = true; status.textContent = 'Сохраняю список домов и распределяю задания…';
   const body = Object.fromEntries(fields.entries());
   try {
-    await api('/api/workforce/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const result = await api('/api/workforce/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     form.reset(); $('taskDate').value = localDateValue();
-    status.textContent = 'Задание назначено слесарю.';
-    message('Новое задание добавлено в план работ.');
+    const createdCount = Number(result.createdCount || result.tasks?.length || 1);
+    status.textContent = `Назначено домов: ${createdCount}. Все адреса добавлены в план слесаря.`;
+    message(`Слесарю назначено ${formatHouseCount(createdCount)} на выбранную дату.`);
     await Promise.all([loadTasks(), loadOverview()]);
   } catch (error) { status.textContent = error.message; }
   finally { button.disabled = false; }
@@ -503,8 +694,8 @@ $('runDiagnosticsBtn')?.addEventListener('click', async () => {
 window.setInterval(() => {
   if (!currentUser || document.hidden) return;
   const refresh = [loadTasks()];
-  if (roleCanManage()) refresh.push(loadOverview());
-  if (roleCanReview()) refresh.push(loadReports());
+  if (roleCanAssignTasks()) refresh.push(loadOverview());
+  if (roleCanReview()) refresh.push(loadReports(), loadDefectReports());
   Promise.all(refresh).catch(() => {});
 }, 30000);
 initialise();

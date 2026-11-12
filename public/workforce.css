@@ -65,3 +65,26 @@
 }
 
 .wf-global-links a[hidden]{display:none}
+
+/* Separate receiver queue for building defects; keeps the established PROFIT shell intact. */
+.wf-inbox-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+.wf-inbox-switch button{display:inline-flex;align-items:center;gap:9px;border:1px solid #dce5ef;border-radius:10px;background:#fff;color:#60748b;padding:10px 13px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.wf-inbox-switch button.active{border-color:#6eadd9;background:#edf6fd;color:#176da9;box-shadow:0 3px 10px #1e75b315}
+.wf-inbox-panel[hidden]{display:none}
+.wf-defect-upload{margin-top:16px;padding:16px;border:1px solid #dce8f2;border-radius:13px;background:#fafdff}
+.wf-defect-photo-grid .wf-attachment img{height:170px;object-fit:contain;background:#f1f4f8}
+.wf-defect-approve{display:flex;align-items:center;gap:11px;margin:14px 0;padding:14px 15px;border:1px solid #b9dfc9;border-radius:11px;background:#f1faf5;color:#236c46;font-weight:750;font-size:13px;cursor:pointer}
+.wf-defect-approve input{width:19px;height:19px;accent-color:#2b9963}
+.wf-defect-approved{display:flex;align-items:center;gap:10px;margin:14px 0;padding:13px 15px;border-radius:11px;background:#e9f7ef;color:#247849;font-size:13px;font-weight:800}
+.wf-defect-approved span{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#2d9860;color:#fff;font-size:15px}
+.wf-defect-history{display:grid;gap:8px;margin-top:15px}
+.wf-defect-history h4{margin:0 0 3px;color:#344e68;font-size:12px}
+.wf-defect-history-item{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:9px 11px;border:1px solid #e3eaf1;border-radius:9px;color:#78899c;font-size:11px}
+.wf-defect-history-item small{flex-basis:100%;color:#a45c4c}
+@media(max-width:620px){.wf-defect-photo-grid .wf-attachment img{height:130px}.wf-inbox-switch{width:100%}.wf-inbox-switch button{flex:1;justify-content:center}}
+
+.wf-attachment-file{min-height:110px;padding:16px 10px;display:grid;place-content:center;justify-items:center;gap:7px;background:#f1f5f9;color:#58718a;text-align:center}.wf-attachment-file b{font-size:11px;letter-spacing:.08em}.wf-attachment-file small{font-size:10px;color:#8091a4}.wf-attachment-file span{font-size:10px;color:#246fa8}
+.wf-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media(max-width:900px){.wf-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.wf-day-group{display:grid;gap:8px}.wf-day-heading{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 2px;color:#536b84}.wf-day-heading b{font-size:12px}.wf-day-heading span{font-size:10px;color:#8a99aa}.wf-field-hint{font-size:10px;font-weight:500;color:#8998a9;line-height:1.45}.wf-dispatch-group{border:1px solid #e3eaf2;border-radius:12px;padding:13px;display:grid;gap:8px}.wf-house-list{list-style:none;padding:0;margin:0;display:grid;gap:5px}.wf-house-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;border-top:1px solid #edf1f5;padding:7px 2px 0;font-size:11px;color:#62758a}

@@ -1,0 +1,9 @@
+ScadaProfit 4.5.8
+
+- Separate fitter defect photo reports (up to 10 images, 16 MB each).
+- Receiver review queue with explicit approval checkbox and return-for-correction action.
+- Defect photos never enter CAD processing or conclusion Section 7.
+- Private file route role allowlist and fitter ownership enforcement.
+- Robust rollback on failed report persistence.
+- HEIC/HEIF/TIFF fallback to original-file link when browser preview is unsupported.
+- No GPS tracking; existing left navigation and CAD/conclusion workflows retained.

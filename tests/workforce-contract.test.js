@@ -15,7 +15,7 @@ test('login screen requires credentials and does not offer role/account selectio
   assert.match(js, /\/api\/auth\/login/);
 });
 
-test('fitter workflow is manual-button tracking and accepts only a hand sketch', async () => {
+test('fitter workflow keeps button-only tracking and sends sketches separately from defect photos', async () => {
   const html = await read('public/workforce.html');
   const js = await read('public/workforce.js');
   const backend = await read('workforce-system.js');
@@ -24,10 +24,37 @@ test('fitter workflow is manual-button tracking and accepts only a hand sketch',
   assert.match(js, /Отметить: прошёл этот дом/);
   assert.match(js, /Отметить: пришёл в офис/);
   assert.match(js, /name="sketch"/);
+  assert.match(js, /name="defectPhotos"/);
+  assert.match(js, /Отправить фотографии дефектов приёмщику/);
   assert.doesNotMatch(js, /navigator\.geolocation|\/api\/workforce\/location/);
   assert.doesNotMatch(backend, /routes\.post\('\/api\/workforce\/location/);
   assert.match(backend, /upload\.fields\(\[\{ name: 'sketch', maxCount: 1 \}\]\)/);
-  assert.match(backend, /Фотографии объекта не принимаются/);
+  assert.match(backend, /defectUpload\.array\('defectPhotos', 10\)/);
+  assert.match(backend, /workspace\.defectReports\.unshift\(report\)/);
+  assert.match(backend, /onSketchSubmitted\(\{ report, sourcePath:/);
+  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:id/defects'"), backend.indexOf("routes.get('/api/workforce/defects'"));
+  assert.doesNotMatch(defectRoute, /onSketchSubmitted|schemeJobId/);
+  assert.match(defectRoute, /persistUploadedFile/);
+  assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/review'/);
+  assert.match(backend, /routes\.get\('\/api\/workforce\/defects\/:reportId\/files\/:fileId'/);
+});
+
+test('receiver has a separate defects inbox and confirms photos with an approval checkbox', async () => {
+  const html = await read('public/workforce.html');
+  const js = await read('public/workforce.js');
+  const backend = await read('workforce-system.js');
+  assert.match(html, /id="showDefectInboxBtn"/);
+  assert.match(html, /id="defectReportList"/);
+  assert.match(html, /id="defectReportDetail"/);
+  assert.match(js, /loadDefectReports\(\)/);
+  assert.match(js, /id="approveDefectCheckbox"/);
+  assert.match(js, /Да, фотографии подходят/);
+  assert.match(js, /\/api\/workforce\/defects\/\$\{encodeURIComponent\(report\.id\)\}\/review/);
+  assert.match(backend, /routes\.get\('\/api\/workforce\/defects'/);
+  assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/seen'/);
+  assert.match(backend, /!\['accepted', 'revision_requested'\]\.includes\(status\)/);
+  assert.match(backend, /report\.status = status/);
+  assert.match(backend, /separateDefectReviewQueue: true/);
 });
 
 test('supervisors can create fitter and receiver accounts with generated credentials', async () => {
@@ -125,4 +152,25 @@ test('team workspace uses the familiar left PROFIT sidebar with role-specific se
   assert.match(css, /@media\(max-width:900px\)/);
   assert.match(js, /data-global-role/);
   assert.match(js, /roleCanManage\(\)/);
+});
+
+test('defect photo intake is limited, private, rollback-safe, and separate from conclusion documents', async () => {
+  const backend = await read('workforce-system.js');
+  const html = await read('public/workforce.html');
+  const js = await read('public/workforce.js');
+  const uploadConfig = backend.slice(backend.indexOf('const defectUpload = multer('), backend.indexOf('function getCurrentUser'));
+  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:id/defects'"), backend.indexOf("routes.get('/api/workforce/defects'"));
+  const fileRoute = backend.slice(backend.indexOf("routes.get('/api/workforce/defects/:reportId/files/:fileId'"), backend.indexOf('async function refreshSchemeState'));
+  assert.match(uploadConfig, /fileSize:\s*16\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(uploadConfig, /files:\s*10/);
+  assert.match(js, /name="defectPhotos"[^>]*multiple required/);
+  assert.match(js, /image\/tiff/);
+  assert.match(defectRoute, /if \(!task\.visitedAt \|\| !task\.officeAt\)/);
+  assert.match(defectRoute, /createdReport/);
+  assert.match(defectRoute, /workspace\.defectReports = workspace\.defectReports\.filter/);
+  assert.doesNotMatch(defectRoute, /onSketchSubmitted|schemeJobId|conclusionAddedAt|workforceConclusion/);
+  assert.match(fileRoute, /\['fitter', 'receiver', 'supervisor', 'developer'\]\.includes\(req\.user\.role\)/);
+  assert.match(fileRoute, /report\.userId !== req\.user\.id/);
+  assert.match(js, /browserPreview/);
+  assert.match(js, /Да, фотографии подходят/);
 });
