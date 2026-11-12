@@ -7,8 +7,8 @@
   <meta name="description" content="Личный кабинет сотрудников ПРОФИТ: график выездов, отчёты, приёмка и контроль работ">
   <title>Команда и задания · ПРОФИТ</title>
   <link rel="stylesheet" href="/profit-ui.css?v=8">
-  <link rel="stylesheet" href="/workforce.css?v=4.5.9">
-  <script src="/workforce.js?v=4.5.9" defer></script>
+  <link rel="stylesheet" href="/workforce.css?v=4.5.10">
+  <script src="/workforce.js?v=4.5.10" defer></script>
 </head>
 <body class="wf-page">
   <nav class="profit-rail wf-rail" aria-label="Основное меню ПРОФИТ">
@@ -77,16 +77,11 @@
 
     <section class="wf-section" id="inboxSection" hidden>
       <div class="wf-section-head"><div><p class="wf-eyebrow">ПРИЁМКА РАБОТ</p><h2>Уведомления от слесарей</h2><p>Схемы автоматически преобразуются в CAD, а фотографии дефектов подъездов поступают отдельной очередью для проверки.</p></div><button class="wf-button wf-button-outline" id="refreshReportsBtn" type="button">Обновить отчёты</button></div>
-      <div class="wf-inbox-switch" role="tablist" aria-label="Тип входящих уведомлений">
-        <button class="active" type="button" id="showSchemeInboxBtn" role="tab" aria-selected="true">Ручные схемы <span class="wf-counter" id="reportCount">0</span></button>
-        <button type="button" id="showDefectInboxBtn" role="tab" aria-selected="false">Дефекты подъездов <span class="wf-counter" id="defectReportCount">0</span></button>
+      <div class="wf-inbox-toolbar">
+        <label class="wf-inbox-filter">Фильтр по улице или дому<input id="inboxStreetFilter" type="search" placeholder="Начни вводить адрес…" autocomplete="off"></label>
+        <span class="wf-counter" id="inboxItemCount">0 уведомлений</span>
       </div>
-      <div id="schemeInboxPanel" class="wf-inbox-panel">
-        <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Новые схемы</h3><span class="wf-counter" id="schemeListCount">—</span></div><div class="wf-report-list" id="reportList"><div class="wf-empty">Загрузка уведомлений…</div></div></div><div class="wf-card wf-report-detail" id="reportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы посмотреть ручной эскиз и автоматически построенную CAD-схему.</div></div></div>
-      </div>
-      <div id="defectInboxPanel" class="wf-inbox-panel" hidden>
-        <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Фотографии дефектов</h3><span class="wf-counter" id="defectListCount">—</span></div><div class="wf-report-list" id="defectReportList"><div class="wf-empty">Загрузка фотографий…</div></div></div><div class="wf-card wf-report-detail" id="defectReportDetail"><div class="wf-empty">Выбери уведомление слева, чтобы просмотреть снимки дефектов и подтвердить их.</div></div></div>
-      </div>
+      <div class="wf-inbox-layout"><div class="wf-card"><div class="wf-card-head"><h3>Все входящие материалы</h3><span class="wf-counter" id="inboxListCount">—</span></div><div class="wf-report-list" id="reportList"><div class="wf-empty">Загрузка уведомлений…</div></div></div><div class="wf-card wf-report-detail" id="reportDetail"><div class="wf-empty">Выбери уведомление слева. Здесь можно проверить CAD-схему или фотографии дефектов, принять материал и при необходимости добавить его в заключение.</div></div></div>
     </section>
 
     <section class="wf-section" id="usersSection" hidden>

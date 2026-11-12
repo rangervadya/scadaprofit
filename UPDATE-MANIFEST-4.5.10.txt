@@ -1,0 +1,7 @@
+ScadaProfit 4.5.10
+
+Updated: main workforce inbox, task-scoped conclusion bridge, VDGO template notices, Appendix 3 photo pages, release metadata and root/secondary compose backend tag.
+
+Build services: app, vdgo-backend.
+Backend image: vdgo-backend:5.3.9.
+Persistent volumes: do not remove.

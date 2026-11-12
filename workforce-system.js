@@ -271,6 +271,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       reviewComment: report.reviewComment || '', submittedAt: report.submittedAt,
       reviewedAt: report.reviewedAt || null,
       reviewedByName: users.find(user => user.id === report.reviewedBy)?.displayName || null,
+      conclusionAddedAt: report.conclusionAddedAt || null,
       seen: false,
       photos: (report.photos || []).map(file => ({
         id: file.id, originalName: file.originalName, size: file.size, mimeType: file.mimeType,
@@ -655,7 +656,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       if (state?.partialGraphReady) report.schemePartialGraphReady = true;
       const hasReviewableResult = report.schemeStatus === 'completed' || (report.schemeStatus === 'failed' && report.schemePartialGraphReady);
       if (hasReviewableResult) {
-        report.status = report.status === 'revision_requested' ? 'revision_requested' : 'pending_review';
+        if (!['accepted', 'revision_requested'].includes(report.status)) report.status = 'pending_review';
         const task = workspace.tasks.find(item => item.id === report.taskId);
         if (task && task.status === 'submitted') task.status = 'pending_review';
       } else if (report.schemeStatus === 'failed') {
@@ -694,20 +695,56 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (req.user.role === 'receiver' && !(Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id))) {
       return res.status(409).json({ error: 'Сначала открой уведомление и просмотри добавленную схему.' });
     }
+    if (report.status !== 'accepted') return res.status(409).json({ error: 'Сначала проверь CAD-схему и нажми «Принять схему». Только принятая схема может попасть в заключение.' });
     await refreshSchemeState(report);
+    if (report.status !== 'accepted') {
+      await saveWorkspace();
+      return res.status(409).json({ error: 'Статус приёмки схемы изменился. Проверь уведомление ещё раз.' });
+    }
     if (!report.schemeJobId || !['completed', 'failed'].includes(report.schemeStatus) || report.schemeStatus === 'failed' && !report.schemePartialGraphReady) {
       await saveWorkspace();
       return res.status(409).json({ error: 'CAD-схема ещё обрабатывается. Перенести её в заключение можно после завершения автоматического преобразования.' });
     }
+    const task = workspace.tasks.find(item => item.id === report.taskId);
+    if (!task) return res.status(409).json({ error: 'Не найдено исходное задание дома для этой схемы.' });
     report.conclusionAddedAt ||= new Date().toISOString();
     report.conclusionAddedBy = req.user.id;
     await saveWorkspace();
-    return res.json({ ok: true, report: reportForClient(report), conclusionUrl: `/conclusion.html?report=${encodeURIComponent(report.id)}` });
+    return res.json({ ok: true, report: reportForClient(report), conclusionUrl: `/conclusion.html?task=${encodeURIComponent(task.id)}` });
+  });
+
+  routes.post('/api/workforce/defects/:id/conclusion', async (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const report = workspace.defectReports.find(item => item.id === req.params.id);
+    if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    if (req.user.role === 'receiver' && !(Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id))) {
+      return res.status(409).json({ error: 'Сначала открой фотографии дефектов и просмотри их.' });
+    }
+    if (report.status !== 'accepted') return res.status(409).json({ error: 'Сначала подтверди, что фотографии дефектов подходят.' });
+    const task = workspace.tasks.find(item => item.id === report.taskId);
+    if (!task) return res.status(409).json({ error: 'Не найдено исходное задание дома для фотографий дефектов.' });
+    if (!Array.isArray(report.photos) || !report.photos.length) return res.status(409).json({ error: 'В отчёте нет фотографий для приложения 3.' });
+    report.conclusionAddedAt ||= new Date().toISOString();
+    report.conclusionAddedBy = req.user.id;
+    await saveWorkspace();
+    return res.json({ ok: true, report: defectReportForClient(report), conclusionUrl: `/conclusion.html?task=${encodeURIComponent(task.id)}` });
   });
 
   routes.get('/api/workforce/conclusion', (req, res) => {
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
-    const reports = workspace.reports.filter(report => Boolean(report.conclusionAddedAt)).map(report => {
+    let taskId = cleanText(req.query.task, 120);
+    if (!taskId && req.query.report) {
+      const target = workspace.reports.find(item => item.id === String(req.query.report));
+      if (target?.conclusionAddedAt && target.status === 'accepted') taskId = target.taskId;
+    }
+    if (!taskId && req.query.defectReport) {
+      const target = workspace.defectReports.find(item => item.id === String(req.query.defectReport));
+      if (target?.conclusionAddedAt && target.status === 'accepted') taskId = target.taskId;
+    }
+    if (!taskId) return res.json({ ok: true, task: null, reports: [], defectReports: [] });
+    const task = workspace.tasks.find(item => item.id === taskId);
+    if (!task) return res.status(404).json({ error: 'Задание или адрес для заключения не найден.' });
+    const reports = workspace.reports.filter(report => report.taskId === taskId && Boolean(report.conclusionAddedAt) && report.status === 'accepted').map(report => {
       const manualCadBase = report.manualCadProjectId ? `/api/manual-cad/projects/${encodeURIComponent(report.manualCadProjectId)}` : null;
       return {
         ...reportForClient(report),
@@ -716,7 +753,15 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         schemeOriginalUrl: report.sketch ? `/api/workforce/reports/${encodeURIComponent(report.id)}/files/${encodeURIComponent(report.sketch.id)}` : null
       };
     });
-    return res.json({ ok: true, reports });
+    const defectReports = workspace.defectReports
+      .filter(report => report.taskId === taskId && Boolean(report.conclusionAddedAt) && report.status === 'accepted')
+      .map(defectReportForClient);
+    return res.json({
+      ok: true,
+      task: { id: task.id, title: task.title, street: task.street, address: task.address, scheduledDate: task.scheduledDate },
+      reports,
+      defectReports
+    });
   });
 
   routes.post('/api/workforce/reports/:id/review', async (req, res) => {
@@ -867,7 +912,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {
     if (!requireRoles(req, res, ['developer'])) return;
-    return res.json({ ok: true, version: '4.5.9', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, separateDefectReviewQueue: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
+    return res.json({ ok: true, version: '4.5.10', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, unifiedInbox: true, taskScopedConclusionTransfer: true, appendix3DefectPhotos: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
   });
 
   async function linkManualCadProject(reportId, projectId) {

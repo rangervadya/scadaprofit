@@ -14,7 +14,7 @@ let selectedReportId = new URLSearchParams(window.location.search).get('report')
 let unreadNotifications = 0;
 let unreadDefectNotifications = 0;
 let selectedDefectId = null;
-let activeInboxKind = 'schemes';
+let selectedInboxType = 'scheme';
 const issuedPasswords = Object.create(null);
 
 function escapeHtml(value) {
@@ -306,15 +306,15 @@ function updateNotificationBadge() {
   const button = $('workspaceNav')?.querySelector('[data-target="inboxSection"]');
   const totalUnread = unreadNotifications + unreadDefectNotifications;
   if (button) button.innerHTML = `Уведомления${totalUnread ? ` <span class="wf-nav-count">${totalUnread}</span>` : ''}`;
-  if ($('reportCount')) $('reportCount').textContent = String(reports.filter(report => !report.seen).length);
-  if ($('defectReportCount')) $('defectReportCount').textContent = String(defectReports.filter(report => report.status === 'pending_review').length);
+  if ($('inboxItemCount')) $('inboxItemCount').textContent = `${reports.length + defectReports.length} уведомлений`;
+  if ($('inboxListCount')) $('inboxListCount').textContent = String(reports.length + defectReports.length);
 }
 async function loadReports() {
   if (!roleCanReview()) return;
   const data = await api('/api/workforce/reports');
   reports = data.reports || [];
   unreadNotifications = Number(data.unreadCount ?? reports.filter(report => !report.seen).length);
-  renderReports();
+  renderUnifiedInbox();
   updateNotificationBadge();
   return reports;
 }
@@ -323,44 +323,57 @@ async function loadDefectReports() {
   const data = await api('/api/workforce/defects');
   defectReports = data.reports || [];
   unreadDefectNotifications = Number(data.unreadCount ?? defectReports.filter(report => !report.seen).length);
-  renderDefectReports();
+  renderUnifiedInbox();
   updateNotificationBadge();
   return defectReports;
 }
-function setInboxKind(kind) {
-  activeInboxKind = kind === 'defects' ? 'defects' : 'schemes';
-  $('schemeInboxPanel').hidden = activeInboxKind !== 'schemes';
-  $('defectInboxPanel').hidden = activeInboxKind !== 'defects';
-  $('showSchemeInboxBtn')?.classList.toggle('active', activeInboxKind === 'schemes');
-  $('showDefectInboxBtn')?.classList.toggle('active', activeInboxKind === 'defects');
-  $('showSchemeInboxBtn')?.setAttribute('aria-selected', String(activeInboxKind === 'schemes'));
-  $('showDefectInboxBtn')?.setAttribute('aria-selected', String(activeInboxKind === 'defects'));
-}
-function renderDefectReports() {
-  const root = $('defectReportList');
-  if (!root) return;
-  $('defectReportCount').textContent = String(defectReports.filter(report => report.status === 'pending_review').length);
-  if ($('defectListCount')) $('defectListCount').textContent = String(defectReports.length);
-  if (!defectReports.length) {
-    root.innerHTML = '<div class="wf-empty">Фотографий дефектов пока нет. Когда слесарь отправит снимки, они появятся здесь отдельным уведомлением.</div>';
-    $('defectReportDetail').innerHTML = '<div class="wf-empty">Выбери уведомление слева, чтобы посмотреть фотографии дефектов.</div>';
+function renderReports() { renderUnifiedInbox(); }
+function renderDefectReports() { renderUnifiedInbox(); }
+function renderUnifiedInbox() {
+  const listRoot = $('reportList');
+  const detailRoot = $('reportDetail');
+  if (!listRoot || !detailRoot) return;
+  const entries = [
+    ...reports.map(report => ({ type: 'scheme', report, at: report.submittedAt })),
+    ...defectReports.map(report => ({ type: 'defect', report, at: report.submittedAt }))
+  ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  const filter = String($('inboxStreetFilter')?.value || '').trim().toLocaleLowerCase('ru-RU');
+  const visible = entries.filter(({ report }) => !filter || `${report.street || ''} ${report.address || ''} ${report.userName || ''} ${report.note || ''}`.toLocaleLowerCase('ru-RU').includes(filter));
+  if ($('inboxItemCount')) $('inboxItemCount').textContent = `${entries.length} уведомлений`;
+  if ($('inboxListCount')) $('inboxListCount').textContent = String(visible.length);
+  let selected = visible.find(entry => entry.type === selectedInboxType && entry.report.id === (entry.type === 'scheme' ? selectedReportId : selectedDefectId));
+  if (!selected && visible.length) {
+    selected = visible[0];
+    selectedInboxType = selected.type;
+    if (selected.type === 'scheme') selectedReportId = selected.report.id;
+    else selectedDefectId = selected.report.id;
+  }
+  listRoot.innerHTML = visible.length ? visible.map(({ type, report }) => {
+    const selectedNow = type === selectedInboxType && report.id === (type === 'scheme' ? selectedReportId : selectedDefectId);
+    const kind = type === 'scheme' ? 'РУЧНАЯ СХЕМА · CAD' : `ДЕФЕКТЫ · ${Number(report.photos?.length || 0)} ФОТО`;
+    const state = type === 'scheme' && !['completed', 'failed'].includes(report.schemeStatus) ? 'processing' : report.status;
+    const added = report.conclusionAddedAt ? '<br><b>Добавлено в заключение</b>' : '';
+    return `<button class="wf-report-item ${selectedNow ? 'selected' : ''}" type="button" data-inbox-type="${type}" data-inbox-id="${escapeHtml(report.id)}">
+      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b>${statusBadge(state)}</span>
+      <span class="wf-item-meta"><b>${kind}</b><br>Добавил: ${escapeHtml(report.userName)}<br>${escapeHtml(formatDateTime(report.submittedAt))}${report.seen ? '' : '<br><b>Новое уведомление</b>'}${added}</span>
+    </button>`;
+  }).join('') : `<div class="wf-empty">${entries.length ? 'По этому фильтру уведомлений нет.' : 'Входящих схем и фотографий дефектов пока нет.'}</div>`;
+  listRoot.querySelectorAll('[data-inbox-type][data-inbox-id]').forEach(button => button.addEventListener('click', () => {
+    selectedInboxType = button.dataset.inboxType;
+    if (selectedInboxType === 'scheme') selectedReportId = button.dataset.inboxId;
+    else selectedDefectId = button.dataset.inboxId;
+    renderUnifiedInbox();
+  }));
+  if (!selected) {
+    detailRoot.innerHTML = '<div class="wf-empty">Выбери уведомление слева, чтобы проверить материал.</div>';
     return;
   }
-  if (!selectedDefectId || !defectReports.some(report => report.id === selectedDefectId)) selectedDefectId = defectReports[0].id;
-  root.innerHTML = defectReports.map(report => `
-    <button class="wf-report-item ${report.id === selectedDefectId ? 'selected' : ''}" type="button" data-defect-id="${escapeHtml(report.id)}">
-      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b>${statusBadge(report.status)}</span>
-      <span class="wf-item-meta">Добавил: ${escapeHtml(report.userName)}<br>${Number(report.photos?.length || 0)} фото · ${escapeHtml(formatDateTime(report.submittedAt))}${report.seen ? '' : '<br><b>Новое уведомление</b>'}</span>
-    </button>`).join('');
-  root.querySelectorAll('[data-defect-id]').forEach(button => button.addEventListener('click', () => {
-    selectedDefectId = button.dataset.defectId;
-    renderDefectReports();
-  }));
-  renderDefectDetail();
+  if (selected.type === 'scheme') renderReportDetail();
+  else renderDefectDetail();
 }
 function renderDefectDetail() {
   const report = defectReports.find(item => item.id === selectedDefectId);
-  const root = $('defectReportDetail');
+  const root = $('reportDetail');
   if (!report || !root) return;
   const needsSeenConfirmation = !report.seen;
   if (needsSeenConfirmation) {
@@ -369,6 +382,7 @@ function renderDefectDetail() {
     updateNotificationBadge();
     api(`/api/workforce/defects/${encodeURIComponent(report.id)}/seen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then(() => {
+        if (selectedInboxType !== 'defect' || selectedDefectId !== report.id) return;
         const checkbox = $('approveDefectCheckbox');
         const returnButton = $('returnDefectBtn');
         if (checkbox) checkbox.disabled = false;
@@ -399,6 +413,11 @@ function renderDefectDetail() {
   const returnAction = report.status === 'pending_review'
     ? `<label class="wf-file-label" for="defectReviewComment">Комментарий (необязательно)</label><textarea class="wf-review-comment" id="defectReviewComment" rows="2" maxlength="1200" placeholder="Что нужно переснять или уточнить…"></textarea><button class="wf-button wf-button-outline" id="returnDefectBtn" type="button" ${needsSeenConfirmation ? 'disabled' : ''}>Вернуть на исправление</button>`
     : '';
+  const conclusionAction = accepted
+    ? report.conclusionAddedAt
+      ? `<p class="wf-message">Фото дефектов уже добавлены в заключение.</p><a class="wf-button wf-button-outline" href="/conclusion.html?task=${encodeURIComponent(report.taskId)}">Открыть заключение по этому дому →</a>`
+      : '<button class="wf-button wf-button-primary" id="addDefectsToConclusionBtn" type="button">Добавить фото дефектов в заключение →</button>'
+    : '';
   root.innerHTML = `
     <div class="wf-card-head"><h3>Фотографии дефектов подъезда</h3>${statusBadge(report.status)}</div>
     <p class="wf-item-meta"><b>${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b><br>Слесарь: ${escapeHtml(report.userName)}<br>Отправлено: ${escapeHtml(formatDateTime(report.submittedAt))}</p>
@@ -407,7 +426,7 @@ function renderDefectDetail() {
     ${approval}
     ${report.status === 'accepted' ? `<p class="wf-footnote">Подтверждено: ${escapeHtml(formatDateTime(report.reviewedAt))}${report.reviewedByName ? ` · ${escapeHtml(report.reviewedByName)}` : ''}</p>` : ''}
     ${report.status === 'revision_requested' ? `<p class="wf-message error">Возвращено на исправление. ${escapeHtml(report.reviewComment || '')}</p>` : ''}
-    ${returnAction}`;
+    ${returnAction}${conclusionAction}`;
   $('approveDefectCheckbox')?.addEventListener('change', async event => {
     const checkbox = event.currentTarget;
     if (!checkbox.checked) return;
@@ -418,6 +437,13 @@ function renderDefectDetail() {
       await loadDefectReports();
     } catch (error) { checkbox.checked = false; checkbox.disabled = false; message(error.message, true); }
   });
+  $('addDefectsToConclusionBtn')?.addEventListener('click', async event => {
+    const button = event.currentTarget; button.disabled = true; button.textContent = 'Добавляю фотографии…';
+    try {
+      const data = await api(`/api/workforce/defects/${encodeURIComponent(report.id)}/conclusion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      window.location.href = data.conclusionUrl || `/conclusion.html?task=${encodeURIComponent(report.taskId)}`;
+    } catch (error) { message(error.message, true); button.disabled = false; button.textContent = 'Добавить фото дефектов в заключение →'; }
+  });
   $('returnDefectBtn')?.addEventListener('click', async event => {
     const button = event.currentTarget; button.disabled = true;
     try {
@@ -426,28 +452,6 @@ function renderDefectDetail() {
       await loadDefectReports();
     } catch (error) { message(error.message, true); button.disabled = false; }
   });
-}
-function renderReports() {
-  const root = $('reportList');
-  if (!root) return;
-  $('reportCount').textContent = String(reports.filter(report => !report.seen).length);
-  if ($('schemeListCount')) $('schemeListCount').textContent = String(reports.length);
-  if (!reports.length) {
-    root.innerHTML = '<div class="wf-empty">Новых схем пока нет. Когда слесарь вернётся в офис и отправит эскиз, здесь появится уведомление с адресом.</div>';
-    $('reportDetail').innerHTML = '<div class="wf-empty">Выбери уведомление слева, чтобы открыть схему и посмотреть результат CAD-обработки.</div>';
-    return;
-  }
-  if (!selectedReportId || !reports.some(report => report.id === selectedReportId)) selectedReportId = reports[0].id;
-  root.innerHTML = reports.map(report => `
-    <button class="wf-report-item ${report.id === selectedReportId ? 'selected' : ''}" type="button" data-report-id="${escapeHtml(report.id)}">
-      <span class="wf-item-top"><b class="wf-item-title">${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}</b>${statusBadge(['completed', 'failed'].includes(report.schemeStatus) ? report.status : 'processing')}</span>
-      <span class="wf-item-meta">Добавил: ${escapeHtml(report.userName)}<br>${escapeHtml(formatDateTime(report.submittedAt))}${report.seen ? '' : '<br><b>Новое уведомление</b>'}</span>
-    </button>`).join('');
-  root.querySelectorAll('[data-report-id]').forEach(button => button.addEventListener('click', () => {
-    selectedReportId = button.dataset.reportId;
-    renderReports();
-  }));
-  renderReportDetail();
 }
 function renderReportDetail() {
   const report = reports.find(item => item.id === selectedReportId);
@@ -470,8 +474,8 @@ function renderReportDetail() {
     ? `<div class="wf-cad-preview"><div class="wf-file-label">${partialCadReady ? 'Частичный CAD-результат — требуется ручная проверка' : 'Результат автоматического преобразования в CAD'}</div><img src="/jobs/${encodeURIComponent(report.schemeJobId)}/clean.svg" alt="CAD-схема: ${escapeHtml(report.street)}, дом ${escapeHtml(report.address)}" loading="lazy"><small>Перед переносом в заключение открой и проверь схему в CAD-редакторе.</small></div>`
     : '';
   const conclusionAction = report.conclusionAddedAt
-    ? `<p class="wf-message">Схема уже перенесена в заключение · ${escapeHtml(formatDateTime(report.conclusionAddedAt))}</p><a class="wf-button wf-button-outline" href="/conclusion.html?report=${encodeURIComponent(report.id)}">Открыть заключение →</a>`
-    : (report.schemeStatus === 'completed' || partialCadReady) && report.seen
+    ? `<p class="wf-message">Схема уже добавлена в заключение.</p><a class="wf-button wf-button-outline" href="/conclusion.html?task=${encodeURIComponent(report.taskId)}">Открыть заключение по этому дому →</a>`
+    : report.status === 'accepted' && (report.schemeStatus === 'completed' || partialCadReady) && report.seen
       ? '<button class="wf-button wf-button-primary" id="addToConclusionBtn" type="button">Добавить схему в заключение →</button>' : '';
   const reviewBlock = report.status === 'pending_review' ? `
     <label class="wf-file-label" for="reviewComment">Комментарий приёмщика (необязательно)</label><textarea class="wf-review-comment" id="reviewComment" rows="2" maxlength="1200" placeholder="Замечания к результату CAD…"></textarea>
@@ -499,7 +503,7 @@ function renderReportDetail() {
         await api(`/api/manual-cad/import-job/${encodeURIComponent(report.schemeJobId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: `${report.street}, дом ${report.address}` }) });
       }
       const data = await api(`/api/workforce/reports/${encodeURIComponent(report.id)}/conclusion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      window.location.href = data.conclusionUrl || `/conclusion.html?report=${encodeURIComponent(report.id)}`;
+      window.location.href = data.conclusionUrl || `/conclusion.html?task=${encodeURIComponent(report.taskId)}`;
     } catch (error) { message(error.message, true); button.disabled = false; button.textContent = 'Добавить схему в заключение →'; }
   });
   const review = async status => {
@@ -611,7 +615,6 @@ async function initialise() {
     const data = await api('/api/auth/me');
     currentUser = data.user;
     configurePanels();
-    setInboxKind('schemes');
     if ($('taskDate')) $('taskDate').value = localDateValue();
     const promises = [loadTasks()];
     if (roleCanReview()) promises.push(loadReports(), loadDefectReports());
@@ -632,8 +635,7 @@ $('refreshOverviewBtn')?.addEventListener('click', async () => {
   catch (error) { message(error.message, true); }
 });
 $('refreshReportsBtn')?.addEventListener('click', () => Promise.all([loadReports(), loadDefectReports()]).then(() => message('Уведомления обновлены.')).catch(error => message(error.message, true)));
-$('showSchemeInboxBtn')?.addEventListener('click', () => setInboxKind('schemes'));
-$('showDefectInboxBtn')?.addEventListener('click', () => setInboxKind('defects'));
+$('inboxStreetFilter')?.addEventListener('input', () => renderUnifiedInbox());
 $('refreshCredentialsBtn')?.addEventListener('click', () => loadUsers().then(() => message('База сотрудников обновлена.')).catch(error => message(error.message, true)));
 $('createTaskForm')?.addEventListener('submit', async event => {
   event.preventDefault();

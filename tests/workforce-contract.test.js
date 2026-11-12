@@ -4,6 +4,19 @@ import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
+test('Team link is permanently visible in the left navigation on every core module', async () => {
+  for (const path of ['public/index.html', 'public/dashboard.html', 'public/manual-cad.html', 'public/conclusion.html']) {
+    const html = await read(path);
+    const team = html.indexOf('class="profit-team-link" href="/workforce.html"');
+    const settings = html.indexOf('href="/settings"');
+    assert.notEqual(team, -1, `${path} must contain the Team link`);
+    assert.ok(settings === -1 || team < settings, `${path} must show Team before Settings`);
+    const link = html.slice(team, html.indexOf('</a>', team));
+    assert.doesNotMatch(link, /\shidden(?:\s|=|>)|data-global-role/);
+    assert.match(link, /<span>Команда<\/span>/);
+  }
+});
+
 test('login screen requires credentials and does not offer role/account selection', async () => {
   const html = await read('public/login.html');
   const js = await read('public/login.js');
@@ -39,14 +52,18 @@ test('fitter workflow keeps button-only tracking and sends sketches separately f
   assert.match(backend, /routes\.get\('\/api\/workforce\/defects\/:reportId\/files\/:fileId'/);
 });
 
-test('receiver has a separate defects inbox and confirms photos with an approval checkbox', async () => {
+test('receiver sees schemes and defect photos in one inbox and confirms photos with an approval checkbox', async () => {
   const html = await read('public/workforce.html');
   const js = await read('public/workforce.js');
   const backend = await read('workforce-system.js');
-  assert.match(html, /id="showDefectInboxBtn"/);
-  assert.match(html, /id="defectReportList"/);
-  assert.match(html, /id="defectReportDetail"/);
+  assert.match(html, /id="inboxStreetFilter"/);
+  assert.match(html, /Все входящие материалы/);
+  assert.match(html, /id="reportList"/);
+  assert.match(html, /id="reportDetail"/);
+  assert.doesNotMatch(html, /showDefectInboxBtn|defectInboxPanel|schemeInboxPanel/);
   assert.match(js, /loadDefectReports\(\)/);
+  assert.match(js, /function renderUnifiedInbox\(\)/);
+  assert.match(js, /data-inbox-type=\"\$\{type\}\"/);
   assert.match(js, /id="approveDefectCheckbox"/);
   assert.match(js, /Да, фотографии подходят/);
   assert.match(js, /\/api\/workforce\/defects\/\$\{encodeURIComponent\(report\.id\)\}\/review/);
@@ -54,7 +71,8 @@ test('receiver has a separate defects inbox and confirms photos with an approval
   assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/seen'/);
   assert.match(backend, /!\['accepted', 'revision_requested'\]\.includes\(status\)/);
   assert.match(backend, /report\.status = status/);
-  assert.match(backend, /separateDefectReviewQueue: true/);
+  assert.match(js, /addDefectsToConclusionBtn/);
+  assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/conclusion'/);
 });
 
 test('supervisors can create fitter and receiver accounts with generated credentials', async () => {
@@ -88,10 +106,49 @@ test('receiver can view generated CAD preview and transfer it into the conclusio
   assert.match(js, /\/api\/workforce\/reports\/\$\{encodeURIComponent\(report\.id\)\}\/conclusion/);
   assert.match(conclusion, /\/api\/workforce\/conclusion/);
   assert.match(conclusion, /schemeSvgUrl/);
+  assert.match(conclusion, /for \(const key of \['task', 'report', 'defectReport'\]\)/);
+  assert.match(conclusion, /workforce_schemes_json/);
+  assert.match(conclusion, /photo-grid/);
+  assert.match(conclusion, /Приложении 3/);
   assert.match(backend, /clean\.svg/);
-  assert.match(html, /workforceConclusionSection/);
+  assert.doesNotMatch(html, /workforceConclusionSection|workforceConclusionList/);
+  assert.match(html, /href="\/workforce\.html"[^>]*>[\s\S]*?<span>Команда<\/span>/);
+  assert.match(html, /href="\/manual-cad\.html"/);
   assert.match(backend, /routes\.post\('\/api\/workforce\/reports\/:id\/conclusion'/);
   assert.match(backend, /routes\.get\('\/api\/workforce\/conclusion'/);
+});
+
+test('PDF and Word generation wait until both selected CAD schemes and defect photos are attached', async () => {
+  const conclusionJs = await read('public/conclusion-workforce.js');
+  assert.match(conclusionJs, /const hasSelectedMaterials = Boolean\(\(conclusionContext\?\.reports \|\| \[\]\)\.length \|\| \(conclusionContext\?\.defectReports \|\| \[\]\)\.length\)/);
+  assert.match(conclusionJs, /Promise\.all\(materialJobs\)/);
+  assert.match(conclusionJs, /button\.disabled = !ready/);
+  assert.match(conclusionJs, /Формирование заблокировано, чтобы не выпустить документ без вложений/);
+});
+
+test('only individually accepted schemes and defect reports transfer into a task-scoped conclusion and Appendix 3', async () => {
+  const backend = await read('workforce-system.js');
+  const conclusionJs = await read('public/conclusion-workforce.js');
+  const template = await read('vdgo/backend/templates/index.html');
+  const pdfBackend = await read('vdgo/backend/app.py');
+  const schemeRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/reports/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"));
+  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"), backend.indexOf("routes.get('/api/workforce/conclusion'"));
+  const scopedGet = backend.slice(backend.indexOf("routes.get('/api/workforce/conclusion'"), backend.indexOf("routes.post('/api/workforce/reports/:id/review'"));
+  assert.match(schemeRoute, /report\.status !== 'accepted'/);
+  assert.ok(schemeRoute.includes('conclusionUrl: `/conclusion.html?task='));
+  assert.match(defectRoute, /report\.status !== 'accepted'/);
+  assert.match(defectRoute, /report\.conclusionAddedAt/);
+  assert.ok(defectRoute.includes('conclusionUrl: `/conclusion.html?task='));
+  assert.match(scopedGet, /report\.taskId === taskId/);
+  assert.match(scopedGet, /Boolean\(report\.conclusionAddedAt\)/);
+  assert.match(scopedGet, /defectReports/);
+  assert.match(conclusionJs, /photo_content_confirm/);
+  assert.match(conclusionJs, /input\.files = transfer\.files/);
+  assert.match(conclusionJs, /workforce_schemes_json/);
+  assert.match(template, /id="photos"/);
+  assert.match(template, /Приложении 3 «Фото дефектного участка»/);
+  assert.match(pdfBackend, /PHOTO_SLOTS/);
+  assert.match(pdfBackend, /defectReport|Фото дефектного участка/);
 });
 
 test('supervisors have an employee credential directory with names and one-time password reset', async () => {
@@ -136,6 +193,7 @@ test('manual conclusion form remains available and generated schemes have an exp
   assert.match(js, /Добавить схему в заключение/);
   assert.match(js, /id="addToConclusionBtn"/);
   assert.match(js, /report\.schemeStatus === 'completed' \|\| partialCadReady/);
+  assert.match(js, /report\.status === 'accepted'/);
   assert.ok(js.indexOf('const partialCadReady') < js.indexOf('const cadAction'));
 });
 

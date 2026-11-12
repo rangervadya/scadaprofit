@@ -11,8 +11,8 @@ from PIL import Image, ImageOps
 from database import init_database, database_status, recent_reports, record_generation
 from io import BytesIO
 
-APP_RELEASE = '4.5.6'
-BACKEND_IMAGE_VERSION = '5.3.8'
+APP_RELEASE = '4.5.10'
+BACKEND_IMAGE_VERSION = '5.3.9'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'
 TEMPLATE = TEMPLATE_DIR / '905_З(2).pdf'
@@ -601,7 +601,7 @@ def append_extra_photo_pages(doc, extra_photo_paths, form):
                 break
             header_size-=0.25
         sheet_number = 1 + offset // 2
-        put(page,(45,47,550,64),f'Приложение 3. Фотоматериалы (продолжение, лист {sheet_number})',11.5,1,1.0,True)
+        put(page,(45,47,550,64),f'Приложение 3. Фото дефектного участка (продолжение, лист {sheet_number})',11.5,1,1.0,True)
         layouts=[(145,81,450,386),(145,420,450,725)]
         for sub,rect in enumerate(layouts):
             idx=offset+sub
@@ -2135,7 +2135,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
-            data=b'{"ok":true,"release":"4.5.6","backendVersion":"5.3.8"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data=b'{"ok":true,"release":"4.5.10","backendVersion":"5.3.9"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
