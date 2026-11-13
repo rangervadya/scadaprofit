@@ -1,6 +1,6 @@
 # VDGO conclusion backend
 
-This directory contains the separate VDGO API, PDF/Word generator, templates and PostgreSQL integration. The React browser interface is part of the unified `frontend/` workspace under `frontend/vdgo/`; it is built into `frontend/public/vdgo/` and served by the main ScadaProfit app.
+This directory contains the separate VDGO API, PDF/Word generator, templates and PostgreSQL integration. The React browser interface is the unified ScadaProfit SPA in the root `frontend/src/` workspace; it is built into `frontend/public/vdgo/` and served by the main ScadaProfit app. No separate VDGO frontend source or container is used.
 
 - `backend/` — Python API, PDF/Word generation, templates and PostgreSQL integration.
 

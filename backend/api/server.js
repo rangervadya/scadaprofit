@@ -1879,20 +1879,18 @@ app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
   }
 });
 
-// VDGO React routes are compiled into the unified frontend public tree.
-// Static assets are served by express.static above; this fallback supports
-// direct navigation to client-side VDGO routes without returning the main UI.
+// The replacement React application is the only active frontend and is built
+// into frontend/public/vdgo/. Direct SPA routes share this same entry document.
+app.get('/vdgo', (_req, res) => res.redirect(308, '/vdgo/'));
 app.get(/^\/vdgo(?:\/.*)?$/, (_req, res) => {
   res.sendFile(path.join(__dirname, '../../frontend/public/vdgo', 'index.html'), {
     headers: { 'Cache-Control': 'no-store, max-age=0' }
   });
 });
 
-app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
-  res.sendFile(path.join(__dirname, '../../frontend/public', 'index.html'), {
-    headers: { 'Cache-Control': 'no-store, max-age=0' }
-  });
-});
+// Unknown browser routes are sent to the unified SPA; API and file routes keep
+// their own handlers and never receive an HTML fallback.
+app.get(/^(?!\/api(?:\/|$)|\/jobs(?:\/|$))/, (_req, res) => res.redirect(308, '/vdgo/'));
 
 app.use(workforceSystem.router);
 

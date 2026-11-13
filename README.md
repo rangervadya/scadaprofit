@@ -1,59 +1,83 @@
-# ScadaProfit 4.5.13
+# ScadaProfit 4.5.15
 
-Docker-based system for processing hand-drawn building-service sketches, editing CAD drawings, managing fitter assignments and preparing technical conclusions.
+Комплекс для обработки ручных схем, редактирования CAD, распределения выездов слесарям, приёмки схем и дефектных фотографий и подготовки технических заключений.
 
-## Repository layout
+## Структура проекта
 
 ```text
-backend/api/             Node.js API and workforce module
-backend/engine/          Python drawing-recognition and CAD engine
-frontend/public/         Main ScadaProfit static web interface
-frontend/vdgo/           React UI for technical conclusions in the same frontend workspace
-services/vdgo/backend/   VDGO API, PDF/Word generator and database integration
-infra/                   Dockerfiles, Nginx and deployment scripts
-tests/                   Node.js, Python and VDGO regression tests
-docs/                    Guides, architecture notes and release history
-compose.yaml              Unified Docker Compose entry point
-.env.example              Environment variable template
+frontend/                 Единое React-приложение для всех ролей
+  src/                    Страницы, компоненты, API-клиент и стили
+  index.html              Vite entry point
+  vite.config.ts           Сборка в frontend/public/vdgo
+  public/                  Публичные статические файлы
+backend/                  Основной Node.js API и Python CAD/recognition engine
+  api/                    Авторизация, workforce API, обработка заданий
+  engine/                 Распознавание ручных схем и CAD-реконструкция
+services/vdgo/backend/    API технических заключений, PDF/Word и PostgreSQL
+infra/                    Dockerfile, Nginx, compose overrides и scripts
+tests/                    Node.js, Python и VDGO regression tests
+docs/                     Руководства, deployment, architecture и changelog
+compose.yaml              Единая точка запуска Docker Compose
+.env.example              Шаблон локальных настроек
 ```
 
-## Start
+## Интерфейс
 
-1. Copy `.env.example` to `.env` and set a unique PostgreSQL password. Set `COOKIE_SECURE=1` when serving through HTTPS.
-2. Run from the repository root:
+Оба рабочих интерфейса объединены в один React SPA и один frontend workspace:
+
+- `http://SERVER:3001/` перенаправляет на `/vdgo/`.
+- `/vdgo/` — единое приложение с маршрутизацией по ролям.
+- Слесарю доступны рабочий стол и раздел «Команда»; приёмщику, руководителям и разработчику — остальные разрешённые разделы.
+- API заключений остаётся отдельным сервисом `vdgo-backend`; его маршруты защищены проверкой общей сессии и роли.
+- В SPA нет второго frontend-контейнера и отдельной копии зависимостей.
+
+## Первый запуск
+
+1. Скопируйте `.env.example` в `.env`, задайте уникальный `POSTGRES_PASSWORD`; для HTTPS установите `COOKIE_SECURE=1`.
+2. Из корня репозитория выполните:
 
    ```bash
    docker compose config --quiet
    docker compose up -d --build
    ```
 
-3. Open `http://SERVER:3001` (or the port configured by `WEB_PORT`). On first login, create the developer account, then create supervisors, receivers and fitters.
+3. Откройте `http://SERVER:3001/`. При первом входе создайте аккаунт разработчика, затем создайте аккаунты руководителей, приёмщиков и слесарей.
 
-## Update
+## Обновление
 
 ```bash
 git pull --ff-only
+docker compose config --quiet
 docker compose build --no-cache app vdgo-backend
 docker compose up -d --remove-orphans --no-deps --force-recreate app vdgo-backend
 docker compose restart gateway
 docker compose ps
 ```
 
-Do not run `docker compose down -v` and do not remove named volumes. They store uploaded jobs, user work, documents and PostgreSQL records.
+Не запускайте `docker compose down -v` и не удаляйте именованные тома: в них хранятся задания, CAD-проекты, аккаунты, фотографии, документы, модели Ollama и PostgreSQL.
 
-Both browser interfaces share one `frontend/` directory and one delivery path: the legacy ScadaProfit pages are in `frontend/public/`, while the VDGO React sources are in `frontend/vdgo/`. Docker builds the React assets into `frontend/public/vdgo/`; the main app serves them at `/vdgo/`. The VDGO API, document generator and PostgreSQL integration remain a separate backend service.
+## Локальная разработка frontend
 
-## Tests
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксируя `/api` к основному backend и `/vdgo/api`, `/vdgo/generate*` к backend заключений. Для полной разработки запустите также основной API и `services/vdgo/backend` согласно `docs/deployment/DOCKER.md` и frontend README.
+
+## Проверки
 
 ```bash
 npm --prefix backend run check
 PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
+cd frontend && npm ci && npm run build
 ```
 
-## Documentation
+## Документация
 
-- [Руководство на русском](docs/user-guides/README-RU.md)
+- [Документация проекта на русском](docs/user-guides/README-RU.md)
 - [Развёртывание Docker](docs/deployment/DOCKER.md)
-- [Рабочие роли и выезды](docs/user-guides/WORKFORCE-QUICKSTART-RU.md)
+- [Быстрый старт ролей и выездов](docs/user-guides/WORKFORCE-QUICKSTART-RU.md)
 - [Руководство CAD](docs/user-guides/MANUAL-CAD-USER-GUIDE-RU.md)
 - [История изменений](docs/releases/CHANGELOG-RU.md)

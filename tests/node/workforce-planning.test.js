@@ -26,8 +26,8 @@ test('house list is capped at 100 distinct addresses', () => {
 
 test('receivers can dispatch multiple house tasks to selected fitters', async () => {
   const backend = await read('backend/api/workforce-system.js');
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
+  const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
   const route = backend.slice(
     backend.indexOf("routes.post('/api/workforce/tasks'"),
     backend.indexOf("routes.post('/api/workforce/tasks/:id/start'")

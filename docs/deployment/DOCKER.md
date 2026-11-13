@@ -1,6 +1,6 @@
-# Docker deployment · ScadaProfit 4.5.13
+# Docker deployment · ScadaProfit 4.5.15
 
-The unified Compose stack includes the ScadaProfit application (which serves both browser interfaces from one frontend workspace), Ollama, the separate VDGO PDF/Word backend, PostgreSQL and the Nginx gateway.
+The unified Compose stack includes the ScadaProfit application (which serves the single React SPA from one frontend workspace), Ollama, the separate VDGO PDF/Word backend, PostgreSQL and the Nginx gateway.
 
 ## First deployment
 
@@ -26,7 +26,7 @@ docker compose ps
 docker compose exec vdgo-backend python -c "import app; print(app.APP_RELEASE, app.BACKEND_IMAGE_VERSION)"
 ```
 
-The VDGO API/document generator remains a separate backend service (release `5.3.9`). Its React interface is built into the `app` image and served from `/vdgo/`; there is no separate frontend container. The main ScadaProfit service version is `4.5.13`.
+The VDGO API/document generator remains a separate backend service (release `5.3.9`). All user-facing pages are now in the single React SPA, built into the `app` image and served from `/vdgo/`; there is no second frontend or separate frontend container. The main ScadaProfit service version is `4.5.15`.
 
 ## Persistent data — do not delete
 

@@ -1,11 +1,44 @@
-# Unified frontend
+# Единый frontend ScadaProfit
 
-This is the single frontend workspace for all ScadaProfit browser interfaces.
+В этой папке находится единственное React SPA приложения. Оно используется всеми ролями и объединяет рабочие экраны: рабочий стол, заключения, схемы, CAD, архив, команду и настройки. Доступные страницы определяются по роли пользователя как в интерфейсе, так и сервером.
 
-- `public/` — the main ScadaProfit interface, served by `backend/api/server.js`.
-- `vdgo/` — the React/TypeScript technical-conclusion module. It is built into `public/vdgo/` and is served by the same application server at `/vdgo/`.
-- `package.json` — the shared frontend workspace and Vite/TypeScript toolchain.
+## Разработка
 
-Build the VDGO UI from the repository root with `npm --prefix frontend ci` and `npm --prefix frontend run build`. Docker performs this build automatically as part of the `app` image; there is no separate `vdgo-frontend` container anymore.
+```bash
+npm ci
+npm run dev
+```
 
-The VDGO API, document generator and PostgreSQL integration remain separate under `services/vdgo/backend/`.
+Откройте `http://127.0.0.1:5173/vdgo/`. Vite проксирует основной API (`/api`, `/jobs`) и сервис заключений (`/vdgo/api`, `/vdgo/generate`, `/vdgo/generate_docx`, `/vdgo/preview`). Основной backend и backend заключений должны быть запущены отдельно.
+
+## Сборка
+
+```bash
+npm run build
+```
+
+Vite собирает SPA в `frontend/public/vdgo/`. Dockerfile `infra/docker/app.Dockerfile` выполняет эту сборку в build stage; основной Node.js сервер обслуживает статику через `/vdgo/`. Отдельный frontend-контейнер не используется.
+
+## Маршруты SPA
+
+| Путь | Раздел |
+| --- | --- |
+| `/login` | Вход и первоначальная настройка |
+| `/` | Рабочий стол |
+| `/conclusion` | Техническое заключение |
+| `/schemes` | Схемы домов |
+| `/schemes/:jobId` | Проверка результата распознавания |
+| `/archive` | Архив |
+| `/team` | Задания, адресные папки, приёмка и аккаунты |
+| `/cad` | CAD-проекты |
+| `/cad/:id` | CAD-редактор |
+| `/settings` | Настройки и диагностика |
+
+Все перечисленные пути расположены под базовым префиксом `/vdgo/` в браузере. Слесарь видит только рабочий стол и «Команду»; остальные роли получают страницы в пределах своих полномочий.
+
+## Проверки
+
+```bash
+npm run build
+npm --prefix ../backend run check
+```

@@ -305,10 +305,21 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   async function authMiddleware(req, res, next) {
     const pathname = req.path;
     const authPublic = ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/api/auth/logout'];
-    if (authPublic.includes(pathname) || pathname === '/api/health' || pathname === '/login.html' || pathname === '/login.js' || pathname.startsWith('/login-assets/')) return next();
+    if (authPublic.includes(pathname) || pathname === '/api/health') return next();
 
     req.user = publicUser(getCurrentUser(req));
-    if (pathname === '/login.html' && req.user) return res.redirect('/workforce.html');
+
+    // Compatibility redirects for bookmarks to the previous multi-page UI.
+    const legacyDestinations = {
+      '/index.html': '/vdgo/',
+      '/login.html': '/vdgo/login',
+      '/dashboard.html': '/vdgo/',
+      '/workforce.html': '/vdgo/team',
+      '/conclusion.html': '/vdgo/conclusion',
+      '/manual-cad.html': '/vdgo/cad'
+    };
+    if (legacyDestinations[pathname]) return res.redirect(308, legacyDestinations[pathname]);
+    if (pathname === '/') return res.redirect(308, '/vdgo/');
 
     if (pathname.startsWith('/api/')) {
       if (!req.user) return res.status(401).json({ error: 'Сессия не найдена. Войди в аккаунт.', loginRequired: true });
@@ -324,19 +335,14 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       return next();
     }
 
-    const isAsset = /\.(?:css|js|png|jpe?g|webp|svg|ico|woff2?|map)$/i.test(pathname);
-    if (!req.user && req.method === 'GET' && !isAsset && pathname !== '/login.html' && !pathname.startsWith('/vdgo/')) return res.redirect('/login.html');
+    const isAsset = /\.(?:css|js|mjs|png|jpe?g|webp|svg|ico|woff2?|ttf|otf|map|txt)$/i.test(pathname);
+    const isSpaPath = pathname === '/vdgo' || pathname.startsWith('/vdgo/');
+    if (!req.user && req.method === 'GET' && !isAsset && !isSpaPath) return res.redirect('/vdgo/login');
 
-    if (pathname === '/' || pathname === '/index.html') {
-      if (!req.user) return res.redirect('/login.html');
-      if (req.user.role === 'fitter') return res.redirect('/workforce.html');
-    }
-    if (pathname === '/manual-cad.html' && req.user?.role === 'fitter') return res.redirect('/workforce.html');
-    if (pathname === '/workforce.html' || pathname === '/dashboard.html' || pathname === '/conclusion.html' || pathname === '/manual-cad.html' || pathname === '/login.html') {
-      if (!req.user) return res.redirect('/login.html');
-    }
-    if (req.user?.role === 'fitter' && req.method === 'GET' && !/\.(?:css|js|png|jpe?g|webp|svg|ico|woff2?)$/i.test(pathname) && pathname !== '/workforce.html') {
-      return res.redirect('/workforce.html');
+    // The replacement React SPA owns all user-facing pages under /vdgo/.
+    // Route-level role checks live in the frontend; API permissions remain enforced above.
+    if (req.user?.role === 'fitter' && req.method === 'GET' && !isAsset && !isSpaPath) {
+      return res.redirect('/vdgo/team');
     }
     return next();
   }
@@ -979,7 +985,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {
     if (!requireRoles(req, res, ['developer'])) return;
-    return res.json({ ok: true, version: '4.5.11', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, unifiedInbox: true, taskScopedConclusionTransfer: true, addressFolderInbox: true, atomicFolderConclusionTransfer: true, appendix3DefectPhotos: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
+    return res.json({ ok: true, version: '4.5.15', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, unifiedInbox: true, taskScopedConclusionTransfer: true, addressFolderInbox: true, atomicFolderConclusionTransfer: true, appendix3DefectPhotos: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
   });
 
   async function linkManualCadProject(reportId, projectId) {

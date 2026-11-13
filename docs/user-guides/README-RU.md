@@ -1,4 +1,4 @@
-# ScadaProfit 4.5.13 — схемы, выезды, CAD и технические заключения
+# ScadaProfit 4.5.15 — схемы, выезды, CAD и технические заключения
 
 ScadaProfit объединяет распознавание ручных схем, редактируемый CAD, планирование выездов, приёмку отчётов и подготовку технических заключений.
 
@@ -14,7 +14,7 @@ ScadaProfit объединяет распознавание ручных схе�
 
 ## Структура репозитория
 
-- `frontend/` — единое пространство обоих интерфейсов: `public/` для основного UI и `vdgo/` для React-модуля заключений.
+- `frontend/` — единственное React SPA для всех ролей и рабочих разделов; отдельной папки/контейнера frontend ВДГО нет.
 - `backend/api/` — Node.js API и workforce-модуль.
 - `backend/engine/` — Python-движок распознавания и CAD.
 - `services/vdgo/backend/` — отдельный API и генератор PDF/Word технических заключений.
@@ -51,7 +51,7 @@ docker compose ps
 
 ## Единый frontend
 
-Основной интерфейс ScadaProfit находится в `frontend/public/`, а React-интерфейс заключений ВДГО — в `frontend/vdgo/`. Это один frontend workspace и один Docker-контейнер `app`: React-модуль собирается в `frontend/public/vdgo/` и открывается по адресу `/vdgo/`. Отдельный контейнер `vdgo-frontend` больше не используется; генератор PDF/Word и API остаются в `vdgo-backend`.
+Весь пользовательский интерфейс ScadaProfit теперь находится в одном React-приложении `frontend/src/` и собирается в `frontend/public/vdgo/`. Адрес `/` перенаправляет на `/vdgo/`. Отдельный frontend ВДГО и второй frontend-контейнер отсутствуют; API и генератор PDF/Word остаются в отдельном `vdgo-backend`.
 
 Для локальной сборки интерфейса: `npm --prefix frontend ci && npm --prefix frontend run build`.
 
