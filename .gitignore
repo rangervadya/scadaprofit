@@ -4,3 +4,6 @@ node_modules/
 __pycache__/
 *.pyc
 *.log
+
+# SPA build output (served from frontend/public/vdgo)
+frontend/public/vdgo/

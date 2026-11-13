@@ -4,9 +4,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
-const backend = process.env.VDGO_BACKEND_URL ?? 'http://127.0.0.1:8765';
-const backendProxy = {
-  target: backend,
+const mainBackend = process.env.MAIN_BACKEND_URL ?? 'http://127.0.0.1:3000';
+const vdgoBackend = process.env.VDGO_BACKEND_URL ?? 'http://127.0.0.1:8765';
+const vdgoProxy = {
+  target: vdgoBackend,
   changeOrigin: true,
   rewrite: (requestPath: string) => requestPath.replace(/^\/vdgo/, ''),
 };
@@ -14,24 +15,27 @@ const backendProxy = {
 export default defineConfig({
   root: appRoot,
   base: '/vdgo/',
+  publicDir: false,
   plugins: [react()],
   server: {
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
     proxy: {
-      '/vdgo/api': backendProxy,
-      '/vdgo/legacy': backendProxy,
-      '/vdgo/health': backendProxy,
-      '/vdgo/generate': backendProxy,
-      '/vdgo/generate_docx': backendProxy,
-      '/vdgo/preview': backendProxy,
+      '/vdgo/api': vdgoProxy,
+      '/vdgo/health': vdgoProxy,
+      '/vdgo/generate_docx': vdgoProxy,
+      '/vdgo/generate': vdgoProxy,
+      '/vdgo/preview': vdgoProxy,
+      '/vdgo/reports': vdgoProxy,
+      '/api': { target: mainBackend, changeOrigin: true },
+      '/jobs': { target: mainBackend, changeOrigin: true },
     },
   },
   build: {
-    outDir: path.join(appRoot, 'build'),
+    outDir: path.join(appRoot, 'public/vdgo'),
     emptyOutDir: true,
     sourcemap: false,
     target: 'es2022',
   },
-})
+});

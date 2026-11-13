@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareInkTrace, traceInkRoute } from '../../frontend/public/manual-cad-ink-trace.js';
+import { prepareInkTrace, traceInkRoute } from '../../legacy/manual-cad-ink-trace.js';
 
 function image(width, height) {
   const data = new Uint8ClampedArray(width * height * 4);

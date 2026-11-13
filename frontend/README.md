@@ -1,11 +1,49 @@
-# Unified frontend
+# Unified VDGO SPA
 
-This is the single frontend workspace for all ScadaProfit browser interfaces.
+Одностраничное React-приложение ПРОФИТ. Роутинг выполняется на клиенте через
+`react-router-dom`, без перезагрузок и без отдельных HTML-страниц.
 
-- `public/` — the main ScadaProfit interface, served by `backend/api/server.js`.
-- `vdgo/` — the React/TypeScript technical-conclusion module. It is built into `public/vdgo/` and is served by the same application server at `/vdgo/`.
-- `package.json` — the shared frontend workspace and Vite/TypeScript toolchain.
+## Запуск в dev
 
-Build the VDGO UI from the repository root with `npm --prefix frontend ci` and `npm --prefix frontend run build`. Docker performs this build automatically as part of the `app` image; there is no separate `vdgo-frontend` container anymore.
+```bash
+# 1. Основной API (порт 3000)
+cd backend
+npm install
+PORT=3000 DATA_DIR=/tmp/scadaprofit-data node api/server.js
 
-The VDGO API, document generator and PostgreSQL integration remain separate under `services/vdgo/backend/`.
+# 2. Сервис заключений (порт 8765)
+cd services/vdgo/backend
+VDGO_HOST=127.0.0.1 VDGO_PORT=8765 VDGO_NO_BROWSER=1 python3 app.py
+
+# 3. SPA (порт 5173)
+cd frontend
+npm install
+npm run dev
+```
+
+Откройте `http://127.0.0.1:5173/vdgo/`. Vite проксирует `/api` на порт 3000 и
+`/vdgo/api`, `/vdgo/generate*`, `/vdgo/preview` на порт 8765.
+
+## Маршруты
+
+| Путь | Страница |
+| --- | --- |
+| `/login` | Вход и первичная настройка |
+| `/` | Рабочий стол |
+| `/conclusion` | Техническое заключение |
+| `/schemes` | Схемы домов |
+| `/schemes/:jobId` | Проверка схемы |
+| `/archive` | Архив |
+| `/team` | Команда и приёмка |
+| `/cad` | Список чертежей |
+| `/cad/:id` | CAD-редактор |
+| `/settings` | Настройки |
+
+## Сборка
+
+```bash
+npm run build
+```
+
+Артефакты складываются в `frontend/public/vdgo/` и раздаются основным backend
+по префиксу `/vdgo/`.

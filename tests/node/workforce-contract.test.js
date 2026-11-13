@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 
 test('Team link is permanently visible in the left navigation on every core module', async () => {
-  for (const path of ['frontend/public/index.html', 'frontend/public/dashboard.html', 'frontend/public/manual-cad.html', 'frontend/public/conclusion.html']) {
+  for (const path of ['legacy/index.html', 'legacy/dashboard.html', 'legacy/manual-cad.html', 'legacy/conclusion.html']) {
     const html = await read(path);
     const team = html.indexOf('class="profit-team-link" href="/workforce.html"');
     const settings = html.indexOf('href="/settings"');
@@ -18,8 +18,8 @@ test('Team link is permanently visible in the left navigation on every core modu
 });
 
 test('login screen requires credentials and does not offer role/account selection', async () => {
-  const html = await read('frontend/public/login.html');
-  const js = await read('frontend/public/login.js');
+  const html = await read('legacy/login.html');
+  const js = await read('legacy/login.js');
   assert.match(html, /name="username"[^>]*required/);
   assert.match(html, /name="password"[^>]*type="password"[^>]*required/);
   assert.doesNotMatch(html, /<select[^>]*(?:role|account|user)/i);
@@ -29,8 +29,8 @@ test('login screen requires credentials and does not offer role/account selectio
 });
 
 test('fitter workflow keeps button-only tracking and sends sketches separately from defect photos', async () => {
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const js = await read('legacy/workforce.js');
   const backend = await read('backend/api/workforce-system.js');
   assert.match(html, /Трекер состоит только из кнопок этапов работы/);
   assert.match(js, /Начать обход дома/);
@@ -53,8 +53,8 @@ test('fitter workflow keeps button-only tracking and sends sketches separately f
 });
 
 test('receiver sees schemes and defect photos in one inbox and confirms photos with an approval checkbox', async () => {
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const js = await read('legacy/workforce.js');
   const backend = await read('backend/api/workforce-system.js');
   assert.match(html, /id="inboxStreetFilter"/);
   assert.match(html, /Папки по адресам/);
@@ -78,8 +78,8 @@ test('receiver sees schemes and defect photos in one inbox and confirms photos w
 });
 
 test('supervisors can create fitter and receiver accounts with generated credentials', async () => {
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const js = await read('legacy/workforce.js');
   const backend = await read('backend/api/workforce-system.js');
   assert.match(html, /Создать аккаунт и выдать данные/);
   assert.match(js, /autoGenerate: true/);
@@ -90,12 +90,12 @@ test('supervisors can create fitter and receiver accounts with generated credent
 });
 
 test('receiver can view generated CAD preview and transfer it into the conclusion section', async () => {
-  const js = await read('frontend/public/workforce.js');
-  const conclusion = await read('frontend/public/conclusion-workforce.js');
-  const html = await read('frontend/public/conclusion.html');
+  const js = await read('legacy/workforce.js');
+  const conclusion = await read('legacy/conclusion-workforce.js');
+  const html = await read('legacy/conclusion.html');
   const backend = await read('backend/api/workforce-system.js');
-  const cadHtml = await read('frontend/public/manual-cad.html');
-  const cadJs = await read('frontend/public/manual-cad.js');
+  const cadHtml = await read('legacy/manual-cad.html');
+  const cadJs = await read('legacy/manual-cad.js');
   const server = await read('backend/api/server.js');
   assert.match(cadHtml, /id="returnToAddressFolderBtn"/);
   assert.ok(cadJs.includes('window.location.href = `/workforce.html?report=${encodeURIComponent(reportId)}`'));
@@ -123,7 +123,7 @@ test('receiver can view generated CAD preview and transfer it into the conclusio
 });
 
 test('PDF and Word generation wait until both selected CAD schemes and defect photos are attached', async () => {
-  const conclusionJs = await read('frontend/public/conclusion-workforce.js');
+  const conclusionJs = await read('legacy/conclusion-workforce.js');
   assert.match(conclusionJs, /const hasSelectedMaterials = Boolean\(\(conclusionContext\?\.reports \|\| \[\]\)\.length \|\| \(conclusionContext\?\.defectReports \|\| \[\]\)\.length\)/);
   assert.match(conclusionJs, /Promise\.all\(materialJobs\)/);
   assert.match(conclusionJs, /button\.disabled = !ready/);
@@ -132,7 +132,7 @@ test('PDF and Word generation wait until both selected CAD schemes and defect ph
 
 test('all accepted materials transfer together from one address folder into the task-scoped conclusion and Appendix 3', async () => {
   const backend = await read('backend/api/workforce-system.js');
-  const conclusionJs = await read('frontend/public/conclusion-workforce.js');
+  const conclusionJs = await read('legacy/conclusion-workforce.js');
   const template = await read('services/vdgo/backend/templates/index.html');
   const pdfBackend = await read('services/vdgo/backend/app.py');
   const schemeRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/reports/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"));
@@ -162,8 +162,8 @@ test('all accepted materials transfer together from one address folder into the 
 });
 
 test('supervisors have an employee credential directory with names and one-time password reset', async () => {
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const js = await read('legacy/workforce.js');
   const backend = await read('backend/api/workforce-system.js');
   assert.match(html, /id="credentialsSection"/);
   assert.match(html, /База логинов и паролей/);
@@ -194,36 +194,36 @@ test('receiver keeps access to the editable CAD editor and save API', async () =
 });
 
 test('manual conclusion form remains available and address folders have a single transfer button', async () => {
-  const html = await read('frontend/public/conclusion.html');
-  const js = await read('frontend/public/workforce.js');
-  const index = await read('frontend/public/index.html');
+  const html = await read('legacy/conclusion.html');
+  const js = await read('legacy/workforce.js');
+  const index = await read('legacy/index.html');
   assert.match(index, /href="\/conclusion\.html"[^>]*>[\s\S]*?<span>Заключение<\/span>/);
   assert.match(html, /iframe class="conclusion-frame" src="\/vdgo\/legacy"/);
   assert.match(html, /href="\/conclusion\.html"/);
   assert.match(js, /Добавить всю папку в заключение/);
-  assert.match(await read('frontend/public/manual-cad.html'), /Сохранить и вернуться в папку/);
+  assert.match(await read('legacy/manual-cad.html'), /Сохранить и вернуться в папку/);
   assert.doesNotMatch(js, /Добавить схему в заключение/);
 });
 
 test('team workspace uses the familiar left PROFIT sidebar with role-specific section links', async () => {
-  const html = await read('frontend/public/workforce.html');
-  const css = await read('frontend/public/workforce.css');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const css = await read('legacy/workforce.css');
+  const js = await read('legacy/workforce.js');
   assert.match(html, /class="profit-rail wf-rail"/);
   assert.match(html, /class="profit-links wf-global-links"/);
   assert.match(html, /id="workspaceNav"/);
   assert.doesNotMatch(html, /<nav class="wf-nav" id="workspaceNav"/);
-  assert.match(css, /\.wf-page\{padding-left:var\(--profit-rail-width,176px\);/);
-  assert.match(css, /\.wf-nav\{display:grid/);
-  assert.match(css, /@media\(max-width:900px\)/);
+  assert.match(css, /\.wf-page\s*\{[\s\S]*?padding-left:\s*var\(--profit-rail-width,\s*176px\);/);
+  assert.match(css, /\.wf-nav\s*\{\s*display:\s*grid/);
+  assert.match(css, /@media\s*\(max-width:\s*900px\)/);
   assert.match(js, /data-global-role/);
   assert.match(js, /roleCanManage\(\)/);
 });
 
 test('defect photo intake is limited, private, rollback-safe, and separate from conclusion documents', async () => {
   const backend = await read('backend/api/workforce-system.js');
-  const html = await read('frontend/public/workforce.html');
-  const js = await read('frontend/public/workforce.js');
+  const html = await read('legacy/workforce.html');
+  const js = await read('legacy/workforce.js');
   const uploadConfig = backend.slice(backend.indexOf('const defectUpload = multer('), backend.indexOf('function getCurrentUser'));
   const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:id/defects'"), backend.indexOf("routes.get('/api/workforce/defects'"));
   const fileRoute = backend.slice(backend.indexOf("routes.get('/api/workforce/defects/:reportId/files/:fileId'"), backend.indexOf('async function refreshSchemeState'));

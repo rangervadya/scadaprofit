@@ -1889,7 +1889,7 @@ app.get(/^\/vdgo(?:\/.*)?$/, (_req, res) => {
 });
 
 app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
-  res.sendFile(path.join(__dirname, '../../frontend/public', 'index.html'), {
+  res.sendFile(path.join(__dirname, '../../frontend/public/vdgo', 'index.html'), {
     headers: { 'Cache-Control': 'no-store, max-age=0' }
   });
 });

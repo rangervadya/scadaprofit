@@ -4,7 +4,7 @@ FROM node:22-bookworm-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY frontend/vdgo ./vdgo
+COPY frontend/ ./
 RUN npm run build
 
 FROM node:22-bookworm-slim AS app
@@ -34,8 +34,8 @@ RUN npm install --omit=dev --no-audit --no-fund
 COPY backend/ ./
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json
-COPY frontend/vdgo/ /app/frontend/vdgo/
 COPY frontend/public/ /app/frontend/public/
+COPY legacy/ /app/legacy/
 COPY --from=frontend-build /frontend/public/vdgo/ /app/frontend/public/vdgo/
 COPY services/vdgo/backend/app.py /app/services/vdgo/backend/app.py
 COPY services/vdgo/backend/templates/index.html /app/services/vdgo/backend/templates/index.html

@@ -305,10 +305,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   async function authMiddleware(req, res, next) {
     const pathname = req.path;
     const authPublic = ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/api/auth/logout'];
-    if (authPublic.includes(pathname) || pathname === '/api/health' || pathname === '/login.html' || pathname === '/login.js' || pathname.startsWith('/login-assets/')) return next();
+    if (authPublic.includes(pathname) || pathname === '/api/health' || pathname === '/login' || pathname === '/login.html' || pathname === '/login.js' || pathname.startsWith('/login-assets/')) return next();
 
     req.user = publicUser(getCurrentUser(req));
-    if (pathname === '/login.html' && req.user) return res.redirect('/workforce.html');
+    if ((pathname === '/login' || pathname === '/login.html') && req.user) return res.redirect('/');
 
     if (pathname.startsWith('/api/')) {
       if (!req.user) return res.status(401).json({ error: 'Сессия не найдена. Войди в аккаунт.', loginRequired: true });
@@ -325,18 +325,18 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     }
 
     const isAsset = /\.(?:css|js|png|jpe?g|webp|svg|ico|woff2?|map)$/i.test(pathname);
-    if (!req.user && req.method === 'GET' && !isAsset && pathname !== '/login.html' && !pathname.startsWith('/vdgo/')) return res.redirect('/login.html');
+    if (!req.user && req.method === 'GET' && !isAsset && pathname !== '/login' && pathname !== '/login.html' && !pathname.startsWith('/vdgo/')) return res.redirect('/login');
 
     if (pathname === '/' || pathname === '/index.html') {
-      if (!req.user) return res.redirect('/login.html');
-      if (req.user.role === 'fitter') return res.redirect('/workforce.html');
+      if (!req.user) return res.redirect('/login');
+      if (req.user.role === 'fitter') return res.redirect('/team');
     }
-    if (pathname === '/manual-cad.html' && req.user?.role === 'fitter') return res.redirect('/workforce.html');
+    if (pathname === '/manual-cad.html' && req.user?.role === 'fitter') return res.redirect('/team');
     if (pathname === '/workforce.html' || pathname === '/dashboard.html' || pathname === '/conclusion.html' || pathname === '/manual-cad.html' || pathname === '/login.html') {
-      if (!req.user) return res.redirect('/login.html');
+      if (!req.user) return res.redirect('/login');
     }
-    if (req.user?.role === 'fitter' && req.method === 'GET' && !/\.(?:css|js|png|jpe?g|webp|svg|ico|woff2?)$/i.test(pathname) && pathname !== '/workforce.html') {
-      return res.redirect('/workforce.html');
+    if (req.user?.role === 'fitter' && req.method === 'GET' && !/\.(?:css|js|png|jpe?g|webp|svg|ico|woff2?)$/i.test(pathname) && pathname !== '/team') {
+      return res.redirect('/team');
     }
     return next();
   }
