@@ -21,7 +21,7 @@ export function LoginPage() {
       .then(status => {
         if (status.setupRequired) setMode('setup');
       })
-      .catch(() => setSetupRequired(false));
+      .catch(() => setMode('login'));
   }, []);
 
   if (loading) {

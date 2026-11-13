@@ -15,7 +15,7 @@ import { createWorkforceSystem } from './workforce-system.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
 const BUILD_INFO = {
-  version: JSON.parse(await readFile(path.join(__dirname, '../package.json'), 'utf8')).version,
+  version: (await readFile(path.join(__dirname, '../../VERSION'), 'utf8')).trim(),
   pipelineSha256: createHash('sha256').update(Buffer.concat(await Promise.all(
     ['../engine/processor.py', '../engine/clean_layout.py', '../engine/drawing_template.py', 'manual-cad-core.js', 'workforce-system.js', 'server.js']
       .map(name => readFile(path.join(__dirname, name)))

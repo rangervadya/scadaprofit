@@ -32,6 +32,7 @@ COPY backend/package.json ./backend/package.json
 WORKDIR /app/backend
 RUN npm install --omit=dev --no-audit --no-fund
 COPY backend/ ./
+COPY VERSION /app/VERSION
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json
 COPY frontend/public/ /app/frontend/public/

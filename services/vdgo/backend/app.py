@@ -11,7 +11,7 @@ from PIL import Image, ImageOps
 from database import init_database, database_status, recent_reports, record_generation
 from io import BytesIO
 
-APP_RELEASE = '4.5.15'
+APP_RELEASE = '4.5.16'
 BACKEND_IMAGE_VERSION = '5.3.9'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'
@@ -2136,7 +2136,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
-            data=b'{"ok":true,"release":"4.5.15","backendVersion":"5.3.9"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data=b'{"ok":true,"release":"4.5.16","backendVersion":"5.3.9"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
