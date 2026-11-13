@@ -35,6 +35,11 @@ COPY backend/ ./
 COPY VERSION /app/VERSION
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json
+# Keep the frontend source tree available to the repository-layout regression tests
+# executed in the runtime image. The built SPA remains the only served UI artifact.
+COPY --from=frontend-build /frontend/index.html /app/frontend/index.html
+COPY --from=frontend-build /frontend/vite.config.ts /app/frontend/vite.config.ts
+COPY --from=frontend-build /frontend/src/ /app/frontend/src/
 COPY frontend/public/ /app/frontend/public/
 COPY --from=frontend-build /frontend/public/vdgo/ /app/frontend/public/vdgo/
 COPY services/vdgo/backend/app.py /app/services/vdgo/backend/app.py
