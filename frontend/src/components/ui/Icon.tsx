@@ -16,6 +16,7 @@ const paths: Record<string, string> = {
   download: 'M12 4v12m0 0 5-5m-5 5-5-5M4 18v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1',
   refresh: 'M20 11A8 8 0 0 0 6.3 6.3L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0 0 13.7 4.7L20 15.5M20 20v-4.5h-4.5',
   chevronRight: 'm9 5 7 7-7 7',
+  chevronLeft: 'm15 5-7 7 7 7',
   chevronDown: 'm5 9 7 7 7-7',
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
   layers: 'm12 3 9 5-9 5-9-5 9-5ZM3 13l9 5 9-5M3 17l9 5 9-5',

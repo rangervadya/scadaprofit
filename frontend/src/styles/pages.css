@@ -49,38 +49,27 @@
 .auth {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  background: var(--bg);
+  place-items: center;
+  padding: 24px;
+  background: #fff;
 }
-.auth__aside {
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 28px;
-  padding: clamp(28px, 4vw, 56px);
-  color: #e8efff;
-  background:
-    radial-gradient(100% 90% at 85% 10%, rgba(96, 165, 250, 0.45) 0%, rgba(29, 78, 216, 0) 60%),
-    linear-gradient(160deg, #0e1a2e 0%, #14284a 55%, #1b3a70 100%);
+.auth__main { display: grid; place-items: center; width: 100%; }
+.auth__card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 16px;
 }
-.auth__brand { display: flex; align-items: center; gap: 11px; color: #fff; font-size: 17px; font-weight: 750; }
-.auth__brand:hover { text-decoration: none; }
-.auth__headline { font-size: clamp(25px, 3vw, 36px); line-height: 1.18; letter-spacing: -0.03em; color: #fff; font-weight: 700; }
-.auth__text { margin-top: 12px; max-width: 460px; color: #bcd0ee; font-size: 14px; line-height: 1.65; }
-.auth__points { display: grid; gap: 10px; margin-top: 22px; }
-.auth__point { display: flex; align-items: flex-start; gap: 10px; color: #d5e3fa; font-size: 13px; }
-.auth__point svg { width: 17px; height: 17px; flex: none; margin-top: 2px; color: #7fb2ff; }
-.auth__main { display: grid; place-items: center; padding: clamp(24px, 4vw, 48px); }
-.auth__card { width: min(420px, 100%); padding: 26px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-md); display: grid; gap: 16px; }
 .auth__card h1 { font-size: 21px; }
 .auth__card p { color: var(--muted); font-size: 13px; }
 .auth__error { color: var(--danger); font-size: 12.5px; background: var(--danger-soft); border: 1px solid #f4c7c2; border-radius: 9px; padding: 9px 11px; }
-@media (max-width: 900px) {
-  .auth { grid-template-columns: minmax(0, 1fr); }
-  .auth__aside { display: none; }
-  .hero { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 480px) {
+  .auth { padding: 16px; }
+  .auth__card { padding: 22px; }
 }
 
 /* Conclusion form */

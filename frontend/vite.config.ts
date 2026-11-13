@@ -37,5 +37,17 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     target: 'es2022',
+    cssCodeSplit: true,
+    chunkSizeWarningLimit: 500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('react-router')) return 'router';
+          if (id.includes('react')) return 'react-vendor';
+          return 'vendor';
+        },
+      },
+    },
   },
 });

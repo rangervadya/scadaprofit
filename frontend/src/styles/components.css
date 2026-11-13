@@ -59,6 +59,8 @@
 .grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .grid--sidebar { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.split--equal { align-items: stretch; }
+.split--equal > .card { height: 100%; }
 
 @media (max-width: 1080px) {
   .grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

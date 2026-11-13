@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Icon } from '../ui/Icon';
+import { BrandMark, Icon } from '../ui/Icon';
 import { useAuth } from '../../lib/auth';
 import type { SessionUser } from '../../lib/types';
 
@@ -35,24 +36,52 @@ export function useActiveNav(): NavItem | undefined {
   return NAV_ITEMS.find(item => (item.end ? location.pathname === item.to : location.pathname.startsWith(item.to)));
 }
 
+const COLLAPSED_KEY = 'profit.sidebar.collapsed';
+
 export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }) {
   const { user, logout } = useAuth();
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === '1');
+
+  useEffect(() => {
+    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+    document.documentElement.style.setProperty('--sidebar-width', collapsed ? '76px' : '248px');
+    return () => {
+      document.documentElement.style.removeProperty('--sidebar-width');
+    };
+  }, [collapsed]);
+
+  const toggle = () => setCollapsed(value => !value);
+
   return (
-    <aside className="sidebar">
-      <NavLink to="/" className="sidebar__brand">
-        <span className="sidebar__mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M4 20V6M4 20h16M8 20v-6h4v6M8 10h4M16 20v-9" />
-          </svg>
-        </span>
-        <span>ПРОФИТ</span>
-      </NavLink>
+    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
+      <div className="sidebar__head">
+        <NavLink to="/" className="sidebar__brand" title="ПРОФИТ — на главную">
+          <span className="sidebar__mark"><BrandMark size={20} /></span>
+          <span className="sidebar__brand-name">ПРОФИТ</span>
+        </NavLink>
+        <button
+          type="button"
+          className="sidebar__toggle"
+          onClick={toggle}
+          aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+        >
+          <Icon name={collapsed ? 'chevronRight' : 'chevronLeft'} size={16} />
+        </button>
+      </div>
       <p className="sidebar__caption">Инженерные сервисы</p>
       <nav className="sidebar__nav" aria-label="Модули ПРОФИТ">
         {NAV_ITEMS.filter(item => !item.roles || (user && item.roles.includes(user.role))).map(item => {
           const count = badges?.[item.to];
           return (
-            <NavLink key={item.to} to={item.to} end={item.end} className="sidebar__link">
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className="sidebar__link"
+              title={collapsed ? item.label : undefined}
+            >
               <Icon name={item.icon} />
               <span>{item.label}</span>
               {count ? <span className="sidebar__badge">{count > 99 ? '99+' : count}</span> : null}
@@ -63,14 +92,21 @@ export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }
       <div className="sidebar__footer">
         {user ? (
           <>
-            <div className="sidebar__user">
+            <div className="sidebar__user" title={collapsed ? `${user.displayName || user.username} · ${user.roleName}` : undefined}>
               <span className="sidebar__avatar">{initials(user.displayName || user.username)}</span>
               <span className="sidebar__user-copy">
                 <span className="sidebar__user-name">{user.displayName || user.username}</span>
                 <span className="sidebar__user-role">{user.roleName}</span>
               </span>
             </div>
-            <button type="button" className="sidebar__logout" onClick={() => void logout()}>
+            <button
+              type="button"
+              className="sidebar__logout"
+              onClick={() => void logout()}
+              title="Выйти из аккаунта"
+              aria-label="Выйти из аккаунта"
+            >
+              <Icon name="logout" size={17} />
               <span>Выйти из аккаунта</span>
             </button>
           </>

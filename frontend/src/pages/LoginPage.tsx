@@ -57,31 +57,14 @@ export function LoginPage() {
 
   return (
     <div className="auth">
-      <aside className="auth__aside">
-        <div>
-          <div className="auth__brand">
-            <BrandMark size={32} />
-            <span>ПРОФИТ</span>
-          </div>
-          <div style={{ marginTop: 'clamp(32px, 8vh, 80px)' }}>
-            <h1 className="auth__headline">Единая среда инженера ВДГО</h1>
-            <p className="auth__text">
-              Заключения, ручные схемы, CAD-редактор, архив и приёмка работ слесарей — в одном приложении без
-              перезагрузок страниц.
-            </p>
-            <div className="auth__points">
-              <span className="auth__point"><Icon name="check" /> Полная форма технического заключения</span>
-              <span className="auth__point"><Icon name="check" /> Импорт эскизов и проверка CAD-схем</span>
-              <span className="auth__point"><Icon name="check" /> Задания, отчёты и дефекты в одном контуре</span>
-            </div>
-          </div>
-        </div>
-        <p style={{ color: '#8fa9ce', fontSize: 12 }}>Локальный контур · данные остаются на вашем сервере</p>
-      </aside>
-
       <main className="auth__main">
         <form className="auth__card" onSubmit={submit}>
-          <div>
+          <div className="row" style={{ gap: 10, alignItems: 'center', justifyContent: 'center' }}>
+            <BrandMark size={30} />
+            <span style={{ fontSize: 17, fontWeight: 750, letterSpacing: '-0.01em' }}>ПРОФИТ</span>
+          </div>
+
+          <div style={{ textAlign: 'center' }}>
             <h1>{mode === 'setup' ? 'Первичная настройка' : 'Вход в систему'}</h1>
             <p style={{ marginTop: 6 }}>
               {mode === 'setup'

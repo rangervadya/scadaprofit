@@ -1,20 +1,33 @@
-import { StrictMode } from 'react';
+import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { Spinner, ToastProvider } from './components/ui';
 import { AuthProvider, useAuth } from './lib/auth';
-import { ArchivePage } from './pages/ArchivePage';
-import { CadEditorPage } from './pages/CadEditorPage';
-import { CadPage } from './pages/CadPage';
-import { ConclusionPage } from './pages/ConclusionPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { LoginPage } from './pages/LoginPage';
-import { SchemeDetailPage } from './pages/SchemeDetailPage';
-import { SchemesPage } from './pages/SchemesPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { TeamPage } from './pages/TeamPage';
 import './styles/index.css';
+
+const lazyPage = (loader: () => Promise<Record<string, unknown>>, name: string) =>
+  lazy(async () => ({ default: (await loader())[name] as React.ComponentType }));
+
+const LoginPage = lazyPage(() => import('./pages/LoginPage'), 'LoginPage');
+const DashboardPage = lazyPage(() => import('./pages/DashboardPage'), 'DashboardPage');
+const ConclusionPage = lazyPage(() => import('./pages/ConclusionPage'), 'ConclusionPage');
+const SchemesPage = lazyPage(() => import('./pages/SchemesPage'), 'SchemesPage');
+const SchemeDetailPage = lazyPage(() => import('./pages/SchemeDetailPage'), 'SchemeDetailPage');
+const ArchivePage = lazyPage(() => import('./pages/ArchivePage'), 'ArchivePage');
+const TeamPage = lazyPage(() => import('./pages/TeamPage'), 'TeamPage');
+const CadPage = lazyPage(() => import('./pages/CadPage'), 'CadPage');
+const CadEditorPage = lazyPage(() => import('./pages/CadEditorPage'), 'CadEditorPage');
+const SettingsPage = lazyPage(() => import('./pages/SettingsPage'), 'SettingsPage');
+
+function PageFallback() {
+  return (
+    <div className="loading" style={{ minHeight: '40vh' }}>
+      <Spinner />
+      <span>Загружаем раздел…</span>
+    </div>
+  );
+}
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -45,6 +58,7 @@ export function App() {
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
         <ToastProvider>
+          <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
@@ -66,6 +80,7 @@ export function App() {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
+          </Suspense>
         </ToastProvider>
       </AuthProvider>
     </BrowserRouter>

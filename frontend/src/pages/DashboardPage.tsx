@@ -88,7 +88,7 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <div className="split">
+      <div className="split split--equal">
         <Card
           title={user?.role === 'fitter' ? 'Мои задания' : 'Ближайшие задания'}
           actions={<Link to="/team" className="btn btn--ghost btn--sm">Все задания <Icon name="chevronRight" /></Link>}
