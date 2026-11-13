@@ -107,16 +107,19 @@ export function TeamPage() {
       const taskData = await workforceApi.tasks();
       setTasks(taskData.tasks || []);
       if (!isFitter) {
-        const [reportData, defectData, overviewData, userData] = await Promise.all([
+        const [reportData, defectData, overviewData] = await Promise.all([
           workforceApi.reports(),
           workforceApi.defects(),
           workforceApi.overview(),
-          workforceApi.users(),
         ]);
         setReports(reportData.reports || []);
         setDefects(defectData.reports || []);
         setOverview(overviewData);
-        setUsers(userData.users || []);
+        setUsers(overviewData.users || []);
+        if (canManage) {
+          const userData = await workforceApi.users();
+          setUsers(userData.users || []);
+        }
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось загрузить данные команды');
@@ -896,6 +899,7 @@ function OverviewTab({
   defects: WorkforceDefectReport[];
 }) {
   const summary = overview?.summary;
+  const activeTasks = tasks.filter(task => ACTIVE_STATUSES.includes(task.status)).length;
   const pendingReports = reports.filter(report => report.status === 'pending_review').length;
   const pendingDefects = defects.filter(report => report.status === 'pending_review').length;
 
@@ -908,11 +912,11 @@ function OverviewTab({
         </div>
         <div className="stat">
           <span className="stat__label"><span className="stat__icon"><Icon name="team" /></span> Активные задания</span>
-          <span className="stat__value">{summary?.assigned ?? tasks.filter(task => ACTIVE_STATUSES.includes(task.status)).length}</span>
+          <span className="stat__value">{activeTasks}</span>
         </div>
         <div className="stat">
           <span className="stat__label"><span className="stat__icon"><Icon name="scheme" /></span> Отправлено схем</span>
-          <span className="stat__value">{summary?.submitted ?? reports.length}</span>
+          <span className="stat__value">{reports.length}</span>
         </div>
         <div className="stat">
           <span className="stat__label"><span className="stat__icon"><Icon name="clock" /></span> Ждут проверки</span>

@@ -24,7 +24,9 @@ if not TEMPLATE.is_file():
         TEMPLATE = _template_candidates[0]
 OUTPUT = BASE / 'output'
 UPLOADS = BASE / 'uploads'
-FONT_DIR = Path('/usr/share/fonts/truetype/crosextra')
+FONT_DIR = Path(os.environ.get('VDGO_FONT_DIR', '/usr/share/fonts/truetype/crosextra'))
+if not (FONT_DIR / 'Carlito-Regular.ttf').exists() and Path('/usr/share/fonts/google-carlito-fonts/Carlito-Regular.ttf').exists():
+    FONT_DIR = Path('/usr/share/fonts/google-carlito-fonts')
 FONT = FONT_DIR / 'Carlito-Regular.ttf'
 FONT_BOLD = FONT_DIR / 'Carlito-Bold.ttf'
 FONT_ITALIC = FONT_DIR / 'Carlito-Italic.ttf'
