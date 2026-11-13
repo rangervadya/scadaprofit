@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config vdgo/vite.config.ts",
-    "build": "tsc -p vdgo/tsconfig.app.json && tsc -p vdgo/tsconfig.node.json && vite build --config vdgo/vite.config.ts",
-    "preview": "vite preview --config vdgo/vite.config.ts --host 0.0.0.0 --port 4173"
+    "dev": "vite",
+    "build": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
     "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react-dom": "19.1.1",
+    "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@types/node": "24.3.0",
