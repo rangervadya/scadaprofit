@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1: данные в PostgreSQL, осталось P1-4/5/10/12 и cleanup**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1: данные в PostgreSQL, осталось P1-4/5/12 и cleanup**. Обновляется по мере выполнения пунктов.
 
 ## 0. Как читать
 
@@ -200,9 +200,12 @@
   - **Сделано**: `VDGO_MAX_REQUEST_BYTES` (256 МБ) + проверка `Content-Length`.
   - **Осталось**: streaming multipart, лимит на отдельный файл.
 - [~] **P1-9** DB pool + timeouts + migrations.
-  - **Сделано**: `statement_timeout=5000`, `lock_timeout=3000`, `application_name=vdgo`.
-  - **Осталось**: pool, migration tool.
-- [ ] **P1-10** OpenAPI + `/api/v1` + единый error envelope + contract tests.
+  - **Сделано**: `statement_timeout=5000`, `lock_timeout=3000`, `application_name=vdgo`; пул соединений `psycopg_pool` в `services/vdgo/database.py` (`VDGO_DB_POOL_MIN/MAX/TIMEOUT/IDLE`), `close_pool()` при shutdown.
+  - **Осталось**: pool для Node (Prisma уже пулится), migration tool в CI.
+- [x] **P1-10** OpenAPI + единый error envelope + contract tests (без `/api/v1`).
+  - **Сделано**: `docs/openapi.yaml` описывает все `/api/*` и `/vdgo/*` маршруты; error envelope `{ error, code?, details? }` задокументирован; `tests/node/openapi.test.js` статически проверяет, что каждый путь из спеки существует как express-маршрут (`server.js` + `workforce-system.js`) или nginx-route (vdgo).
+  - **Проверено**: 75 node-тестов зелёные.
+  - **Осталось**: error envelope применить в коде (сейчас `{ error }` уже везде, `code`/`details` — опционально).
 - [~] **P1-11** Gateway rate limit + shared store.
   - **Сделано**: nginx `limit_req` на `/api/auth/login` (20 r/m, burst 10).
   - **Осталось**: общий store, per-user quota.

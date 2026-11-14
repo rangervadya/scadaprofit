@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import archive
 import pymupdf as fitz
-from database import database_status, init_database, recent_reports, record_generation
+from database import close_pool, database_status, init_database, recent_reports, record_generation
 from logging_setup import configure_logging, format_query_path, get_logger
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
@@ -2434,3 +2434,7 @@ if __name__=='__main__':
         log.info('VDGO backend stopping')
     finally:
         server.server_close()
+        try:
+            close_pool()
+        except Exception as pool_exc:  # pragma: no cover - shutdown best effort
+            log.debug('PostgreSQL pool close failed', extra={'err': str(pool_exc)})

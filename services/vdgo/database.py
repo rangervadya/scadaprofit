@@ -7,31 +7,68 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from logging_setup import get_logger
 
 log = get_logger('vdgo.database')
 
+_pool = None
+
 
 def _dsn() -> str:
     return os.environ.get("DATABASE_URL", "").strip()
 
 
-def _connect():
+def _get_pool():
+    """Lazy singleton connection pool.
+
+    VDGO runs a ThreadingHTTPServer, so each request is a thread. A shared
+    pool avoids opening a fresh psycopg connection per query while keeping
+    per-thread checkout semantics.
+    """
+    global _pool
+    if _pool is not None:
+        return _pool
     dsn = _dsn()
     if not dsn:
         raise RuntimeError("DATABASE_URL is not configured")
     try:
-        import psycopg
+        from psycopg_pool import ConnectionPool
     except ImportError as exc:  # pragma: no cover - environment-specific
-        raise RuntimeError("The psycopg database driver is not installed") from exc
-    return psycopg.connect(
+        raise RuntimeError("psycopg_pool is not installed") from exc
+    min_size = int(os.environ.get("VDGO_DB_POOL_MIN", "1"))
+    max_size = int(os.environ.get("VDGO_DB_POOL_MAX", "10"))
+    _pool = ConnectionPool(
         dsn,
-        connect_timeout=4,
-        application_name='vdgo',
-        options='-c statement_timeout=5000 -c lock_timeout=3000',
+        min_size=min_size,
+        max_size=max_size,
+        timeout=float(os.environ.get("VDGO_DB_POOL_TIMEOUT", "10")),
+        max_idle=float(os.environ.get("VDGO_DB_POOL_IDLE", "300")),
+        name="vdgo",
+        kwargs={
+            "connect_timeout": 4,
+            "application_name": "vdgo",
+            "options": "-c statement_timeout=5000 -c lock_timeout=3000",
+        },
+        open=True,
     )
+    return _pool
+
+
+@contextmanager
+def _connect():
+    pool = _get_pool()
+    with pool.connection() as conn:
+        yield conn
+
+
+def close_pool() -> None:
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
 
 
 def init_database(wait_seconds: int = 45) -> None:

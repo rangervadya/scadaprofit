@@ -108,6 +108,10 @@ services:
       LOG_LEVEL: "${VDGO_LOG_LEVEL:-info}"
       APP_RELEASE: "${APP_RELEASE:-4.5.17}"
       DATABASE_URL: postgresql://${POSTGRES_USER:-vdgo_app}:${POSTGRES_PASSWORD:-change_me_vdgo_2026}@vdgo-db:5432/${POSTGRES_DB:-vdgo}
+      VDGO_DB_POOL_MIN: "${VDGO_DB_POOL_MIN:-1}"
+      VDGO_DB_POOL_MAX: "${VDGO_DB_POOL_MAX:-10}"
+      VDGO_DB_POOL_TIMEOUT: "${VDGO_DB_POOL_TIMEOUT:-10}"
+      VDGO_DB_POOL_IDLE: "${VDGO_DB_POOL_IDLE:-300}"
     expose:
       - "8765"
     volumes:
