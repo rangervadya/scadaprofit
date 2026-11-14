@@ -49,6 +49,7 @@ import {
   saveAddressLibrary as saveAddressLibraryPg,
 } from './address-library-repo.js';
 import { fetchSchemeMeta as fetchSchemeMetaPg, saveSchemeMeta as saveSchemeMetaPg } from './scheme-meta-repo.js';
+import { findIdempotency, saveIdempotency } from './postgres-repo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -1921,6 +1922,21 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
 
   const streetId = String(req.body?.streetId || '');
   const buildingId = String(req.body?.buildingId || '');
+
+  // Idempotency: a retry with the same image + address must not re-run the GPU
+  // pipeline. The key is derived from the uploaded file bytes, so it is stable
+  // across requests. Only successful 200 responses are cached.
+  const idempotencyKey = req.get('Idempotency-Key') || '';
+  const analyzeEndpoint = 'POST /api/analyze';
+  if (idempotencyKey) {
+    const cached = await findIdempotency(analyzeEndpoint, idempotencyKey);
+    if (cached) {
+      const fs = await import('node:fs/promises');
+      await fs.rm(req.file.path, { force: true }).catch(() => {});
+      req.log.info({ jobId: shortJobId(idempotencyKey) }, 'Analyze replay from idempotency key');
+      return res.status(cached.status).json(cached.response);
+    }
+  }
   let selectedAddress = null;
   if (streetId || buildingId) {
     try {
@@ -2071,6 +2087,15 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
     );
 
     // Возвращаем граф целиком: все показатели также доступны в response.summary.
+    if (idempotencyKey) {
+      await saveIdempotency({
+        endpoint: analyzeEndpoint,
+        key: idempotencyKey,
+        userId: req.user?.id || null,
+        status: 200,
+        response: graph,
+      });
+    }
     return res.json(graph);
   } catch (error) {
     req.log.error({ err: error, jobId: shortJobId(id), progressUrl: `/jobs/${id}/progress.log` }, 'Analyze failed');

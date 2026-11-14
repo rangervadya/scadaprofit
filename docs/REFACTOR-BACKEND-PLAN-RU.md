@@ -187,9 +187,8 @@
   - **Готово**: таблица `sessions`, cleanup, удаление при logout/reset/deactivate.
   - **Осталось**: CSRF, idle timeout, revoke-all, multi-instance cache.
 - [~] **P1-3** Idempotency keys.
-  - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`, заголовок `Idempotency-Key` на `POST /api/workforce/tasks`; повтор возвращает исходный ответ без создания дубля.
-  - **Проверено**: два одинаковых запроса с одним ключом → один `assignmentGroupId`, одна задача, одна строка в БД.
-  - **Осталось**: `/vdgo/generate`, `/analyze`, in-memory fallback.
+  - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`; `Idempotency-Key` на `POST /api/workforce/tasks` и `POST /api/analyze` (повтор с тем же ключом не запускает GPU-пайплайн повторно); регресс-тест `tests/node/idempotency.test.js`.
+  - **Осталось**: `/vdgo/generate` (бинарный ответ), in-memory fallback.
 - [ ] **P1-4** Retention + backup + restore drill.
 - [ ] **P1-5** OTel/metrics/tracing/dashboards/alerts.
 - [x] **P1-6** Health semantics + `/api/readyz`.
