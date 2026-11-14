@@ -6,6 +6,9 @@ import math
 from typing import Any
 
 from cad_symbols import symbol_port_positions
+from logging_setup import get_logger
+
+log = get_logger('topology')
 
 
 def attach_pipes_to_symbols(model: dict[str, Any], tolerance_px: float | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -120,7 +123,10 @@ def split_segments_at_endpoint_junctions(
         text_array = np.asarray(text_mask) if text_mask is not None else None
         if text_array is not None and text_array.shape != ink_array.shape:
             text_array = None
-    except Exception:
+    except Exception as exc:
+        # Without a usable ink mask junction reconstruction cannot run; the
+        # graph keeps its raw segments and the review workflow still applies.
+        log.warning('Junction reconstruction skipped: unusable ink mask', extra={'err': str(exc)})
         return [dict(item) for item in segments], {"tJunctionsAdded": 0, "segmentsCreated": 0, "ambiguousCandidates": 0}
 
     h, w = ink_array.shape[:2]

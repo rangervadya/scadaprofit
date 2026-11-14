@@ -236,6 +236,32 @@
 
 .loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 40px 20px; color: var(--muted); font-size: 13px; }
 
+/* Fatal render fallback (see components/ErrorBoundary.tsx) */
+.error-screen {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 64px 24px;
+}
+.error-screen h1 { font-size: 20px; font-weight: 700; }
+.error-screen p { max-width: 52ch; font-size: 13.5px; line-height: 1.6; }
+.error-screen__detail {
+  width: 100%;
+  max-height: 160px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg-inset);
+  color: var(--ink-soft);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Progress */
 .progress { height: 6px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; }
 .progress__bar { height: 100%; background: var(--brand); border-radius: 3px; transition: width 0.3s ease; }
@@ -348,6 +374,25 @@
 .toast--success { border-color: #c7ecd6; background: var(--success-soft); color: #05603a; }
 .toast--error { border-color: #f4c7c2; background: var(--danger-soft); color: #93231a; }
 .toast svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.toast__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.toast__close:hover { opacity: 1; background: rgb(0 0 0 / 6%); }
+.toast__close:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; opacity: 1; }
+.toast__close svg { width: 13px; height: 13px; margin: 0; }
 
 /* Misc */
 .row { display: flex; align-items: center; gap: 10px; }

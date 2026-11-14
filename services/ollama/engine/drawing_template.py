@@ -10,6 +10,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from logging_setup import get_logger
+
+log = get_logger('drawing_template')
+
 
 def _portrait_zones() -> dict[str, dict[str, float]]:
     return {
@@ -105,7 +109,10 @@ def _reference_page_profile(reference_path: str | Path | None) -> dict[str, Any]
             "appliedAs": "page-profile-only",
             "rasterUnderlay": False,
         }
-    except Exception:
+    except Exception as exc:
+        # A reference file we cannot read only means the sheet keeps the
+        # default portrait profile; it must not abort the whole export.
+        log.warning('Reference sheet profile unreadable; using default portrait', extra={'err': str(exc), 'file': path.name[:180]})
         return None
 
 

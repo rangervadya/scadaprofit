@@ -56,6 +56,16 @@ const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UUID_PATTERN = JOB_ID_PATTERN;
 
+// Last-resort handlers. Without them a crash or a rejected promise leaves no
+// structured record, and `docker compose ps` only shows "exited with code 1".
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason instanceof Error ? reason : new Error(String(reason)) }, 'Unhandled promise rejection');
+});
+process.on('uncaughtException', (error) => {
+  logger.fatal({ err: error }, 'Uncaught exception; shutting down');
+  process.exit(1);
+});
+
 await mkdir(DATA, { recursive: true });
 await mkdir(LIBRARY_DIR, { recursive: true, mode: 0o700 });
 await chmod(LIBRARY_DIR, 0o700).catch(() => {});
@@ -1057,6 +1067,7 @@ app.get('/api/library/schemes/:jobId', async (req, res) => {
     };
     return res.json({ ok: true, scheme });
   } catch (error) {
+    req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot open stored scheme');
     return res.status(500).json({ error: error.message || 'Не удалось открыть схему.' });
   }
 });
@@ -1080,6 +1091,7 @@ app.get('/api/library/schemes/:jobId/status', async (req, res) => {
       graphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false)
     });
   } catch (error) {
+    req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot read scheme status');
     return res.status(500).json({ error: error.message || 'Не удалось проверить состояние схемы.' });
   }
 });
@@ -1097,6 +1109,7 @@ app.post('/api/library/schemes/:jobId/analyze', limitHeavyRequests, async (req, 
     const status = await enqueueStoredSchemeAnalysis(jobId);
     return res.status(202).json({ ok: true, status, jobId });
   } catch (error) {
+    req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot enqueue stored scheme analysis');
     return res.status(500).json({ error: error.message || 'Не удалось запустить преобразование схемы.' });
   }
 });
@@ -1433,6 +1446,7 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
     } catch (error) {
       const fs = await import('node:fs/promises');
       await fs.rm(req.file.path, { force: true }).catch(() => {});
+      req.log.error({ err: error, bytes: req.file.size }, 'Cannot resolve the selected house folder');
       return res.status(500).json({ error: 'Не удалось проверить папку выбранного дома.' });
     }
   }
@@ -1752,6 +1766,7 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
     if (projectDir) await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    req.log.error({ err: error, projectId: projectDir ? path.basename(projectDir).slice(0, 8) : null, jobId: shortJobId(jobId) }, 'Cannot create manual project from job');
     return res.status(500).json({ error: error.message || 'Не удалось открыть ручной эскиз в CAD.' });
   }
 });
@@ -1772,6 +1787,7 @@ app.get('/api/manual-cad/projects', async (_req, res) => {
     projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     return res.json({ ok: true, projects });
   } catch (error) {
+    req.log.error({ err: error }, 'Cannot list manual CAD projects');
     return res.status(500).json({ error: error.message || 'Не удалось получить список ручных чертежей.' });
   }
 });
@@ -1786,6 +1802,7 @@ app.post('/api/manual-cad/projects', async (req, res) => {
     return res.status(201).json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    req.log.error({ err: error }, 'Cannot create manual CAD project');
     return res.status(500).json({ error: error.message || 'Не удалось создать ручной чертёж.' });
   }
 });

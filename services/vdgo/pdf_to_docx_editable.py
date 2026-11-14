@@ -18,6 +18,10 @@ from docx import Document
 from docx.shared import Cm, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+
+from logging_setup import get_logger
+
+log = get_logger('vdgo.docx')
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -280,10 +284,15 @@ def _page_tables(page: fitz.Page):
     try:
         found = page.find_tables(strategy='lines')
         return list(found.tables)
-    except Exception:
+    except Exception as exc:
+        # Ruled-line detection is the primary strategy; a page without ruling
+        # falls back to the default detector. Losing every table silently would
+        # silently flatten the report, so the fallback is recorded.
+        log.debug('Ruled-table detection failed; using default detector', extra={'err': str(exc)})
         try:
             return list(page.find_tables().tables)
-        except Exception:
+        except Exception as fallback_exc:
+            log.warning('Table detection failed; page kept as text only', extra={'err': str(fallback_exc)})
             return []
 
 
@@ -367,7 +376,10 @@ def _rebuild_missing_table_cell_text(page: fitz.Page, rect: fitz.Rect) -> str:
 def _table_to_word(doc: Document, page: fitz.Page, table_source, page_width: float, font_size: float):
     try:
         extracted = table_source.extract() or []
-    except Exception:
+    except Exception as exc:
+        # An unreadable table would otherwise become an empty Word table with no
+        # trace: the operator sees missing content and no explanation.
+        log.warning('Table content could not be extracted', extra={'err': str(exc), 'rows': len(getattr(table_source, 'rows', []) or [])})
         extracted = []
     raw_rows = [[str(v or '').replace('\x00', '').strip() for v in row] for row in extracted]
     source_cells = [list(getattr(row, 'cells', []) or []) for row in table_source.rows]
@@ -580,9 +592,9 @@ def _table_to_word(doc: Document, page: fitz.Page, table_source, page_width: flo
                 tbl.cell(0, col).merge(tbl.cell(1, col))
             p = tbl.cell(0, 3).paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        except Exception:
+        except Exception as exc:
             # Keep the editable rectangular table if a Word engine rejects a merge.
-            pass
+            log.debug('Word rejected a header merge; keeping the rectangular grid', extra={'err': str(exc)})
 
     # Keep the detected native grid rectangular. PyMuPDF can return None both for merged
     # source cells and for line-detection gaps; merging every None placeholder can collapse
@@ -630,8 +642,10 @@ def _add_image(doc: Document, image_block: dict, temp_dir: Path, page_num: int, 
     run = p.add_run()
     try:
         run.add_picture(str(path), width=Cm(width_cm))
-    except Exception:
-        # Unsupported/invalid image blocks should not make the entire report fail.
+    except Exception as exc:
+        # Unsupported/invalid image blocks should not make the entire report fail,
+        # but dropping a photo without a trace hides real document loss.
+        log.warning('Image could not be embedded; paragraph removed', extra={'err': str(exc), 'file': Path(str(path)).name[:180]})
         p._element.getparent().remove(p._element)
 
 
@@ -688,7 +702,8 @@ def pdf_to_docx_editable(pdf_path, docx_path):
                         raw_rows = candidate.extract() or []
                         max_cols = max((len(row or []) for row in raw_rows), default=0)
                         nonempty = sum(1 for row in raw_rows for value in (row or []) if str(value or '').strip())
-                    except Exception:
+                    except Exception as exc:
+                        log.debug('Table candidate could not be inspected', extra={'err': str(exc)})
                         max_cols, nonempty = 0, 0
                     # Discard spurious detections that are only a few underline segments.
                     if box.width >= 100 and box.height >= 18 and len(raw_rows) >= 2 and max_cols >= 2 and nonempty >= 4:
@@ -720,7 +735,8 @@ def pdf_to_docx_editable(pdf_path, docx_path):
                                     if sp.get('text'):
                                         text_sizes.append(float(sp.get('size') or 8.0))
                     fsize = sorted(text_sizes)[len(text_sizes)//2] if text_sizes else 8.2
-                except Exception:
+                except Exception as exc:
+                    log.debug('Font size detection failed; using default', extra={'err': str(exc)})
                     fsize = 8.2
                 items.append((bbox.y0, bbox.x0, 'table', table, fsize, ti))
             # Signatures are absolute-positioned two-column blocks in the PDF. Rebuild them

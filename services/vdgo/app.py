@@ -107,8 +107,8 @@ def erase_text(page, rect):
     # Transparent redaction removes the original glyphs without painting a visible white box.
     try:
         page.add_redact_annot(fitz.Rect(rect), fill=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug('Text redaction annotation rejected', extra={'err': str(exc)})
 
 def apply_redactions(doc):
     for p in doc:
@@ -236,7 +236,8 @@ def infer_pdf_style(page, rects, fallback_size=8.5):
     nearby = []
     try:
         blocks = page.get_text('dict').get('blocks', [])
-    except Exception:
+    except Exception as exc:
+        log.debug('Page text extraction failed; treated as empty', extra={'err': str(exc)})
         blocks = []
     for block in blocks:
         for line in block.get('lines', []):
@@ -576,7 +577,7 @@ def place_photos(doc, photo_paths):
                 except Exception as exc:
                     if cropped is not None:
                         try: cropped.unlink(missing_ok=True)
-                        except Exception: pass
+                        except Exception as cleanup_exc: log.debug('Cannot remove cropped photo', extra={'err': str(cleanup_exc)})
                     raise ValueError(f'Не удалось обработать фотографию № {n}: {exc}')
             else:
                 # Remove the label too, so an unused slot never says "Фото N" above
@@ -682,7 +683,7 @@ def place_material_pages(doc, form, files):
                 temp_files.append(rendered_path)
             except Exception as exc:
                 try: rendered_path.unlink(missing_ok=True)
-                except Exception: pass
+                except Exception as cleanup_exc: log.debug('Cannot remove rendered material', extra={'err': str(cleanup_exc)})
                 raise ValueError(f'Не удалось вставить материал для страницы {page_number}: {exc}')
         elif excluded:
             put(page,(65,300,530,385),'МАТЕРИАЛ НЕ ВКЛЮЧЁН',16,1,1.0)

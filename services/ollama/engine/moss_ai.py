@@ -179,8 +179,10 @@ def _delete_image(api_key: str, file_id: str, *, timeout: float) -> None:
             api_key, f"{FILES_URL}/{urllib.parse.quote(file_id, safe='')}",
             method="DELETE", timeout=timeout,
         )
-    except Exception:
-        # Cleanup failure must not discard a successful result.
+    except Exception as exc:
+        # Cleanup failure must not discard a successful result, but it leaks the
+        # uploaded file on the provider side and should be visible.
+        log.debug('Could not delete the temporary provider upload', extra={'err': str(exc)})
         pass
 
 

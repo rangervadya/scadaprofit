@@ -1,6 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { Icon } from './Icon';
+
+/** Toasts beyond this count are dropped instead of stacking off-screen. */
+const MAX_TOASTS = 4;
 
 export function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
@@ -216,23 +219,59 @@ export function useToast(): ToastContextValue {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const timers = useRef(new Map<number, number>());
+
+  const dismiss = useCallback((id: number) => {
+    const timer = timers.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      timers.current.delete(id);
+    }
+    setToasts(current => current.filter(item => item.id !== id));
+  }, []);
+
+  useEffect(() => () => {
+    for (const timer of timers.current.values()) window.clearTimeout(timer);
+    timers.current.clear();
+  }, []);
 
   const notify = useCallback((message: string, tone: ToastTone = 'info') => {
     const id = Date.now() + Math.random();
-    setToasts(current => [...current, { id, tone, message }]);
-    window.setTimeout(() => setToasts(current => current.filter(item => item.id !== id)), 5200);
-  }, []);
+    // Errors carry a request id and are longer to read, so they stay up longer
+    // and are never dropped silently when many arrive at once.
+    const ttl = tone === 'error' ? 9000 : 5200;
+    setToasts(current => {
+      const next = [...current, { id, tone, message }];
+      const overflow = next.slice(0, Math.max(0, next.length - MAX_TOASTS));
+      for (const dropped of overflow) {
+        const timer = timers.current.get(dropped.id);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          timers.current.delete(dropped.id);
+        }
+      }
+      return next.slice(-MAX_TOASTS);
+    });
+    timers.current.set(id, window.setTimeout(() => dismiss(id), ttl));
+  }, [dismiss]);
 
   const value = useMemo(() => ({ notify }), [notify]);
 
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="toasts" aria-live="polite">
+      <div className="toasts">
         {toasts.map(toast => (
-          <div key={toast.id} className={cx('toast', `toast--${toast.tone}`)}>
+          <div
+            key={toast.id}
+            className={cx('toast', `toast--${toast.tone}`)}
+            role={toast.tone === 'error' ? 'alert' : 'status'}
+          >
             <Icon name={toast.tone === 'error' ? 'alert' : toast.tone === 'success' ? 'check' : 'info'} />
-            <span>{toast.message}</span>
+            <span className="toast__text">{toast.message}</span>
+            <button type="button" className="toast__close" aria-label="Закрыть уведомление" onClick={() => dismiss(toast.id)}>
+              <Icon name="x" />
+            </button>
           </div>
         ))}
       </div>
