@@ -183,7 +183,9 @@
   - **Сделано**: nginx `limit_req` на `/api/auth/login` (20 r/m, burst 10).
   - **Осталось**: общий store, per-user quota.
 - [ ] **P1-12** Compose hardening.
-- [ ] **P1-13** CI.
+- [x] **P1-13** CI.
+  - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
+  - **Осталось**: прогнать на GitHub, добавить build/scan.
 - [ ] **P1-14** Prisma cutover: repository для users/sessions, expand-contract, typed client.
 
 ### Фаза 2 — качество и производительность (1–2 месяца)
@@ -272,3 +274,4 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - Локальный Playwright-прогон: setup → login developer → создание слесаря → задания → старт/визит/офис → отправка эскиза → приёмка; archive download 200; CAD-проект создан; Conclusion/Settings загружаются; Ollama отсутствует — `readyz` 503, UI показывает degraded.
 - Исправлен баг `res.sendFile` для report-files: `.private` в пути → 404; добавлен `dotfiles: 'allow'`.
 - P0-7 (TLS/дефолтный пароль) отложен по решению: приложение в разработке.
+- P1-13: добавлен `.github/workflows/ci.yml` (node + python), YAML валидирован локально.
