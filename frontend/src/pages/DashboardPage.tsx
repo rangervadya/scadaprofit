@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
-import { Badge, Card, Empty, Loading } from '../components/ui';
+import { Badge, Card, Empty } from '../components/ui';
 import { healthApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { useHealth } from '../lib/health';
 import { formatDateTime, formatShortDate, taskStatusLabel } from '../lib/format';
 import type { ReportRun, WorkforceTask } from '../lib/types';
 
@@ -21,7 +20,6 @@ const QUICK_LINKS: QuickLink[] = [
 
 export function DashboardPage() {
   const { user } = useAuth();
-  const health = useHealth();
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
