@@ -15,6 +15,7 @@ import {
   findIdempotency,
   saveIdempotency,
 } from './postgres-repo.js';
+import { fetchWorkspace as fetchWorkspacePg, saveWorkspace as saveWorkspacePg } from './workforce-workspace-repo.js';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
@@ -255,7 +256,30 @@ export async function createWorkforceSystem({
     users = await readJson(usersPath, []);
     sessions = await readJson(sessionsPath, []);
   }
-  let workspace = await readJson(workforcePath, { tasks: [], reports: [] });
+  let workspace;
+  if (usePostgres) {
+    workspace = await fetchWorkspacePg();
+    if (!workspace) {
+      workspace = await readJson(workforcePath, { tasks: [], reports: [] });
+      const hasLegacyData =
+        (Array.isArray(workspace.tasks) && workspace.tasks.length) ||
+        (Array.isArray(workspace.reports) && workspace.reports.length) ||
+        (Array.isArray(workspace.defectReports) && workspace.defectReports.length);
+      if (hasLegacyData) {
+        await saveWorkspacePg(workspace);
+        log.info(
+          {
+            tasks: workspace.tasks.length,
+            reports: workspace.reports.length,
+            defects: workspace.defectReports.length,
+          },
+          'Imported legacy workspace.json into PostgreSQL',
+        );
+      }
+    }
+  } else {
+    workspace = await readJson(workforcePath, { tasks: [], reports: [] });
+  }
   if (!Array.isArray(users)) users = [];
   if (!Array.isArray(sessions)) sessions = [];
   if (!workspace || typeof workspace !== 'object') workspace = { tasks: [], reports: [] };
@@ -265,7 +289,10 @@ export async function createWorkforceSystem({
   // GPS tracking was intentionally removed. Purge legacy coordinate histories from older 4.4 workspaces.
   const hadLegacyLocations = Object.prototype.hasOwnProperty.call(workspace, 'locations');
   delete workspace.locations;
-  if (hadLegacyLocations) await atomicJson(workforcePath, workspace);
+  if (hadLegacyLocations) {
+    if (usePostgres) await saveWorkspacePg(workspace);
+    else await atomicJson(workforcePath, workspace);
+  }
   const now = Date.now();
   const expiredAtBoot = sessions.filter(
     (item) => !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
@@ -313,7 +340,13 @@ export async function createWorkforceSystem({
   let setupInProgress = false;
   let accountCreationInProgress = false;
   const saveWorkspace = () => {
-    const pending = workspaceWrite.then(() => atomicJson(workforcePath, workspace));
+    const pending = workspaceWrite.then(async () => {
+      if (usePostgres) {
+        await saveWorkspacePg(workspace);
+        return;
+      }
+      await atomicJson(workforcePath, workspace);
+    });
     workspaceWrite = pending.catch(() => {});
     return pending;
   };

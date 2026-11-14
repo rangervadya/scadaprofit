@@ -90,3 +90,11 @@ model AddressLibrary {
 
   @@map("address_library")
 }
+
+model WorkforceWorkspace {
+  id        Int      @id
+  data      Json
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("workforce_workspace")
+}

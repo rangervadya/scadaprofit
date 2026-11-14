@@ -21,7 +21,7 @@
 | Идемпотентность | — | **PostgreSQL** | `idempotency_keys` |
 | Manual CAD | `manual-cad/<id>/project.json` | **PostgreSQL** | `manual_cad_projects` (`jsonb`) |
 | Адресная библиотека | `address-library.json` | **PostgreSQL (`jsonb`)** | `address_library` (нормализация — позже) |
-| Задания/отчёты/дефекты | `workforce/workspace.json` | JSON | `workforce_tasks/reports/defect_reports` |
+| Задания/отчёты/дефекты | `workforce/workspace.json` | **PostgreSQL (`jsonb`)** | `workforce_workspace` (нормализация — позже) |
 | Метаданные схемы | `schemes/<jobId>.json` | JSON | `address_schemes` / `scheme_meta` |
 | Архив | `output/archive_index.json` | JSON | `archive_entries` |
 | Граф/диагностика | `<jobId>/graph.json`, `diagnostics.json` | файлы | артефакт тома |
@@ -59,12 +59,14 @@
 - [x] Проверка: `/api/library` отдаёт улицы из PG; добавление улицы пишет только в PG, mtime JSON не меняется; Playwright `/schemes` показывает папки.
 - [ ] Нормализация в `address_streets/buildings/schemes` — отдельный этап, если понадобится реляционная отчётность.
 
-### Этап 4 — workforce workspace
+### Этап 4 — workforce workspace (готово, jsonb)
 
-- [ ] `workforce_tasks`, `workforce_reports`, `defect_reports`.
-- [ ] Репозиторий + backfill.
-- [ ] Заменить `workspace.json`.
-- [ ] Проверка: задания, отчёты, дефекты, приёмка.
+- [x] `workforce_workspace` singleton (`data jsonb`).
+- [x] `workforce-workspace-repo.js`: read/save.
+- [x] Backfill существующего `workspace.json`.
+- [x] `saveWorkspace` пишет в PG; файл не обновляется.
+- [x] Проверка: 2 задачи/1 отчёт из JSON, создание задачи → 3 в PG, mtime JSON unchanged; Playwright `/team`.
+- [ ] Нормализация в `workforce_tasks/reports/defect_reports` — отдельный этап.
 
 ### Этап 5 — archive / cleanup
 
