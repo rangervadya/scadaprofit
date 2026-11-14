@@ -700,7 +700,7 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                 Path(files["workforce_scheme_1"]).unlink(missing_ok=True)
 
     def test_address_folder_materials_bridge_into_section_7_and_appendix_3(self):
-        js = (ROOT / "frontend" / "public" / "conclusion-workforce.js").read_text(encoding="utf-8")
+        js = (ROOT / "tests" / "fixtures" / "legacy-frontend" / "public" / "conclusion-workforce.js").read_text(encoding="utf-8")
         # The current workflow transfers one reviewed address folder, not individual
         # schemes from a legacy selection list. Schemes are serialized for section 7,
         # while defect photo uploads are mapped to the template's native photo fields

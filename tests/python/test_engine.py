@@ -1654,7 +1654,7 @@ class SemanticSegmentRecoveryTests(unittest.TestCase):
 
 class BrowserExportRegressionTests(unittest.TestCase):
     def test_browser_main_layer_uses_opencv_selection_even_if_qwen_routes_exist(self):
-        app_js = (ROOT / 'frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
+        app_js = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
         self.assertIn('function isPrimaryCadEdge(edge)', app_js)
         self.assertIn('edge.cad_include === true', app_js)
         self.assertIn('const primaryEdges = graph.edges.filter(isPrimaryCadEdge);', app_js)
@@ -1663,7 +1663,7 @@ class BrowserExportRegressionTests(unittest.TestCase):
         self.assertNotIn('if (Array.isArray(graph?.semanticRoutes)) {', app_js)
 
     def test_fitter_upload_stays_in_house_and_automatically_queues_conversion(self):
-        app_js = (ROOT / 'frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
+        app_js = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
         server_js = (ROOT / 'backend' / 'api' / 'server.js').read_text(encoding='utf-8')
         upload_start = app_js.index("analyzeBtn.addEventListener('click'")
         upload_end = app_js.index("$('processSchemeBtn').addEventListener('click'", upload_start)
@@ -1675,13 +1675,13 @@ class BrowserExportRegressionTests(unittest.TestCase):
         self.assertIn('enqueueStoredSchemeAnalysis(jobId)', server_js)
         self.assertIn('Автоматическое преобразование запущено', upload_handler)
         self.assertIn('streetMatches || buildingMatches', app_js)
-        self.assertIn('Кандидаты на проверку', (ROOT / 'frontend' / 'public' / 'manual-cad.html').read_text(encoding='utf-8'))
-        css = (ROOT / 'frontend' / 'public' / 'styles.css').read_text(encoding='utf-8')
+        self.assertIn('Кандидаты на проверку', (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'manual-cad.html').read_text(encoding='utf-8'))
+        css = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'styles.css').read_text(encoding='utf-8')
         self.assertIn('.library-heading p,', css)
         self.assertIn('.source-title .scheme-status-label', css)
 
     def test_ui_does_not_describe_qwen_as_the_only_main_geometry_source(self):
-        index_html = (ROOT / 'frontend' / 'public' / 'index.html').read_text(encoding='utf-8')
+        index_html = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'index.html').read_text(encoding='utf-8')
         self.assertIn('Основной PIPE_MAIN строится по отобранным CAD-путям OpenCV', index_html)
         self.assertIn('замороженный QWEN_REVIEW', index_html)
         self.assertNotIn('Основной лист строится только из семантических маршрутов Qwen', index_html)
@@ -2106,7 +2106,7 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertNotIn('\n8\nPIPE_MAIN\n', dxf)
 
     def test_primary_semantic_routes_are_used_by_browser_svg_and_dxf(self):
-        app_js = (ROOT / 'frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
+        app_js = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
         self.assertIn('graph.primarySemanticRoutes', app_js)
         self.assertIn('handwrittenTextBlocksUrl', app_js)
         self.assertIn("addText(layer,annotation.text", app_js)

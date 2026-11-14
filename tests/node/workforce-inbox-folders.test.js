@@ -71,8 +71,8 @@ test('a correction-replaced report does not block or enter the address folder', 
 });
 
 test('inbox UI groups materials by assigned house and offers only one folder transfer action', async () => {
-  const js = await read('legacy/workforce.js');
-  const html = await read('legacy/workforce.html');
+  const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
+  const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   assert.match(js, /function buildInboxFolders\(\)/);
   assert.match(js, /map\.get\(item\.taskId\)/);
   assert.match(js, /data-inbox-folder=/);
@@ -85,8 +85,8 @@ test('inbox UI groups materials by assigned house and offers only one folder tra
 });
 
 test('CAD editor saves its edits and returns to the selected address folder without individual transfer', async () => {
-  const js = await read('legacy/manual-cad.js');
-  const html = await read('legacy/manual-cad.html');
+  const js = await read('tests/fixtures/legacy-frontend/public/manual-cad.js');
+  const html = await read('tests/fixtures/legacy-frontend/public/manual-cad.html');
   assert.match(html, /Сохранить и вернуться в папку/);
   assert.match(js, /await saveProject\(\)/);
   assert.ok(js.includes('window.location.href = `/workforce.html?report=${encodeURIComponent(reportId)}`'));
