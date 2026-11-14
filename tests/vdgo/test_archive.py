@@ -19,12 +19,15 @@ class ArchiveTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.old_dir = archive.ARCHIVE_DIR
         self.old_index = archive.ARCHIVE_INDEX
+        self.old_archive_enabled = archive.database.archive_enabled
+        archive.database.archive_enabled = lambda: False
         archive.ARCHIVE_DIR = self.root / "archive"
         archive.ARCHIVE_INDEX = self.root / "archive_index.json"
 
     def tearDown(self):
         archive.ARCHIVE_DIR = self.old_dir
         archive.ARCHIVE_INDEX = self.old_index
+        archive.database.archive_enabled = self.old_archive_enabled
         self.temporary.cleanup()
 
     def test_archive_document_copies_file_and_returns_client_safe_entry(self):

@@ -23,7 +23,7 @@
 | Адресная библиотека | `address-library.json` | **PostgreSQL (`jsonb`)** | `address_library` (нормализация — позже) |
 | Задания/отчёты/дефекты | `workforce/workspace.json` | **PostgreSQL (`jsonb`)** | `workforce_workspace` (нормализация — позже) |
 | Метаданные схемы | `schemes/<jobId>.json` | **PostgreSQL** | `scheme_meta` (`jsonb`) |
-| Архив | `output/archive_index.json` | JSON | `archive_entries` |
+| Архив | `output/archive_index.json` | **PostgreSQL** | `archive_entries` |
 | Граф/диагностика | `<jobId>/graph.json`, `diagnostics.json` | файлы | артефакт тома |
 | Фото/эскизы | `report-files/*` | файлы | том + метаданные в БД |
 | Шаблон | `template/*` | файл | том |
@@ -76,10 +76,13 @@
 - [x] `readSchemeMeta`/`writeSchemeMeta` работают через PG.
 - [x] Проверка: backfill 1 схемы, `POST .../analyze` → status `processing` в PG, mtime JSON unchanged.
 
-### Этап 5 — archive / cleanup
+### Этап 5 — archive / cleanup (archive готов)
 
-- [ ] `archive_entries` или `report_runs` как источник.
-- [ ] Удалить JSON-файлы и legacy-код.
+- [x] `archive_entries` в PostgreSQL (`database.py`).
+- [x] `archive.py`: DB-first read/write, JSON fallback.
+- [x] Backfill существующего `archive_index.json`.
+- [x] Проверка: 1 запись из JSON, `archive_document` пишет в PG, download 200, mtime JSON unchanged.
+- [ ] Удалить legacy JSON-код и файлы после резервной копии.
 - [ ] Retention/backup.
 
 ## 3. Backfill

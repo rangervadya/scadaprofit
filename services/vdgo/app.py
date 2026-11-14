@@ -2395,6 +2395,7 @@ if __name__=='__main__':
     if os.environ.get('DATABASE_URL'):
         try:
             init_database(wait_seconds=int(os.environ.get('DB_WAIT_SECONDS', '45')))
+            archive.backfill_from_json()
         except Exception as exc:
             log.error('Cannot connect to PostgreSQL', extra={'err': str(exc), 'required': os.environ.get('DB_REQUIRED', '0') == '1'}, exc_info=True)
             if os.environ.get('DB_REQUIRED', '0') == '1':

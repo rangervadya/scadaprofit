@@ -8,6 +8,7 @@ server is threaded, and every write is atomic (tmp + ``os.replace``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -15,6 +16,10 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import database
+
+log = logging.getLogger('vdgo.archive')
 
 BASE = Path(__file__).resolve().parent
 OUTPUT = BASE / "output"
@@ -103,6 +108,12 @@ def archive_document(
             "content_type": content_type or "application/octet-stream",
             "file_size": len(data),
         }
+        if database.archive_enabled() and report_id is not None:
+            try:
+                database.insert_archive_entry(entry)
+                return _entry_for_client(entry)
+            except Exception as exc:
+                log.warning('Archive DB insert failed; using JSON fallback', extra={'err': str(exc)})
         entries = _load_unlocked()
         entries.insert(0, entry)
         _save_unlocked(entries)
@@ -111,6 +122,11 @@ def archive_document(
 
 def list_archived(limit: int = 200) -> list[dict[str, Any]]:
     safe_limit = min(max(int(limit or 1), 1), 500)
+    if database.archive_enabled():
+        try:
+            return [_entry_for_client(entry) for entry in database.list_archive_entries(safe_limit)]
+        except Exception as exc:
+            log.warning('Archive DB list failed; using JSON fallback', extra={'err': str(exc)})
     with _LOCK:
         entries = _load_unlocked()
     return [_entry_for_client(entry) for entry in entries[:safe_limit]]
@@ -119,12 +135,37 @@ def list_archived(limit: int = 200) -> list[dict[str, Any]]:
 def find_archived(report_id: object) -> dict[str, Any] | None:
     if report_id is None or str(report_id).strip() == "":
         return None
+    if database.archive_enabled():
+        try:
+            entry = database.get_archive_entry(report_id)
+            if entry:
+                return entry
+        except Exception as exc:
+            log.warning('Archive DB lookup failed; using JSON fallback', extra={'err': str(exc), 'reportId': report_id})
     with _LOCK:
         entries = _load_unlocked()
     for entry in entries:
         if str(entry.get("id") or "") == str(report_id):
             return entry
     return None
+
+
+def backfill_from_json() -> int:
+    if not database.archive_enabled():
+        return 0
+    entries = _load_unlocked()
+    imported = 0
+    for entry in entries:
+        if entry.get("id") is None:
+            continue
+        try:
+            database.insert_archive_entry(entry)
+            imported += 1
+        except Exception as exc:
+            log.warning('Cannot backfill archive entry', extra={'err': str(exc), 'id': entry.get('id')})
+    if imported:
+        log.info('Imported archive index into PostgreSQL', extra={'count': imported})
+    return imported
 
 
 def archived_path(report_id: object) -> Path | None:
