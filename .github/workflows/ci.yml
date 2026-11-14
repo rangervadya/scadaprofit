@@ -35,3 +35,36 @@ jobs:
       - run: ruff check services tests
       - run: npm --prefix services/ollama run test:python
       - run: npm --prefix services/ollama run test:vdgo
+
+  # Prisma schema + migrations must be valid and applicable from scratch (P1-9).
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_DB: vdgo
+          POSTGRES_USER: vdgo_app
+          POSTGRES_PASSWORD: vdgo_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vdgo_app -d vdgo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://vdgo_app:vdgo_ci@localhost:5432/vdgo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/ollama/package-lock.json
+      - run: npm --prefix services/ollama ci
+      - run: npm --prefix services/ollama run db:validate
+      - run: npm --prefix services/ollama run db:generate
+      # A fresh database must reach the latest migration with no drift.
+      - run: npm --prefix services/ollama exec -- prisma migrate deploy --schema prisma/schema.prisma
+      - run: npm --prefix services/ollama exec -- prisma migrate status --schema prisma/schema.prisma
