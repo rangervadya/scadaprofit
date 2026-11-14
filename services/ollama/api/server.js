@@ -37,6 +37,7 @@ import {
   logRequestError,
 } from './logger.js';
 import { requirePostgres } from './db.js';
+import { sendJsonConditional } from './etag.js';
 import {
   fetchManualProject,
   fetchManualProjects,
@@ -1230,7 +1231,7 @@ app.delete('/api/template', async (req, res) => {
 app.get('/api/library', async (req, res) => {
   try {
     const library = await readAddressLibrary();
-    return res.json({ ok: true, library });
+    return sendJsonConditional(req, res, { ok: true, library });
   } catch (error) {
     req.log.error({ err: error }, 'Cannot read address library');
     return res.status(500).json({ error: 'Не удалось прочитать папки объектов.' });
@@ -2295,7 +2296,7 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
   }
 });
 
-app.get('/api/manual-cad/projects', async (_req, res) => {
+app.get('/api/manual-cad/projects', async (req, res) => {
   try {
     const projects = (await listManualProjects())
       .map((project) => ({
@@ -2309,9 +2310,9 @@ app.get('/api/manual-cad/projects', async (_req, res) => {
         pipeCount: Array.isArray(project.pipes) ? project.pipes.filter((pipe) => pipe.reviewOnly !== true).length : 0,
       }))
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-    return res.json({ ok: true, projects });
+    return sendJsonConditional(req, res, { ok: true, projects });
   } catch (error) {
-    _req.log.error({ err: error }, 'Cannot list manual CAD projects');
+    req.log.error({ err: error }, 'Cannot list manual CAD projects');
     return res.status(500).json({ error: error.message || 'Не удалось получить список ручных чертежей.' });
   }
 });

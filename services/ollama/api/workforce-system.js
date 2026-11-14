@@ -5,6 +5,7 @@ import { mkdir, readFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
 import { requirePostgres } from './db.js';
+import { sendJsonConditional } from './etag.js';
 import {
   mirrorUser,
   mirrorSession,
@@ -595,7 +596,7 @@ export async function createWorkforceSystem({
           String(b.createdAt).localeCompare(String(a.createdAt)),
       )
       .map(taskForClient);
-    return res.json({ ok: true, tasks });
+    return sendJsonConditional(req, res, { ok: true, tasks });
   });
 
   routes.post('/api/workforce/tasks', async (req, res) => {
@@ -1003,7 +1004,7 @@ export async function createWorkforceSystem({
         ...defectReportForClient(report),
         seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id),
       }));
-    return res.json({
+    return sendJsonConditional(req, res, {
       ok: true,
       reports: list,
       unreadCount: list.filter((report) => !report.seen && report.status === 'pending_review').length,
@@ -1110,7 +1111,7 @@ export async function createWorkforceSystem({
         ...reportForClient(report),
         seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id),
       }));
-    return res.json({
+    return sendJsonConditional(req, res, {
       ok: true,
       reports,
       unreadCount: workspace.reports.filter(
@@ -1372,7 +1373,7 @@ export async function createWorkforceSystem({
           )
         : null,
     }));
-    return res.json({
+    return sendJsonConditional(req, res, {
       ok: true,
       users: userList,
       tasks: workspace.tasks.map(taskForClient),
@@ -1392,7 +1393,7 @@ export async function createWorkforceSystem({
     if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
     const visible =
       req.user.role === 'supervisor' ? users.filter((user) => ['fitter', 'receiver'].includes(user.role)) : users;
-    return res.json({ ok: true, users: visible.map(publicUser) });
+    return sendJsonConditional(req, res, { ok: true, users: visible.map(publicUser) });
   });
 
   function makeLogin(displayName) {
