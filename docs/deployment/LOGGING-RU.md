@@ -113,6 +113,29 @@ docker compose logs -f --tail=150 app
 docker compose logs --since 30m vdgo-backend
 ```
 
+## 6a. Сквозная корреляция через gateway
+
+`infra/nginx/nginx-unified.conf` генерирует `$request_id` и передаёт его в
+`X-Request-Id` на каждый проксируемый запрос. `logger.js` подхватывает
+входящий `X-Request-Id` вместо создания своего, поэтому один и тот же id
+присутствует:
+
+1. в access-логе gateway (`/var/log/nginx/scadaprofit.log`, поле `req=`);
+2. в JSON-записи Node (`requestId`) и в ответе клиенту (заголовок `X-Request-Id`);
+3. в тексте ошибки, которую видит пользователь (`· запрос 3f2a1b9c`).
+
+Отдельный файл, а не `access.log`, выбран потому, что `access_log` внутри
+`http`-контекста не заменяет унаследованную директиву из образа, а добавляет
+вторую — иначе каждая строка писалась бы дважды.
+
+```bash
+docker compose exec gateway tail -f /var/log/nginx/scadaprofit.log
+```
+
+Таймаут чтения для генерации заключений поднят с 300 с до 900 с
+(`location ~ ^/vdgo/(generate|generate_docx|preview)$`): синхронный ответ с
+фотографиями и DOCX-конвертацией не укладывался в общие 300 с и отдавал 504.
+
 ## 7. Секреты
 
 `logger.js` и `logging_setup.py` не логируют:
