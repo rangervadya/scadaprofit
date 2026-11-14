@@ -44,6 +44,10 @@ import {
   findManualProjectBySourceJob,
   findManualProjectBySourceReport,
 } from './manual-cad-repo.js';
+import {
+  fetchAddressLibrary as fetchAddressLibraryPg,
+  saveAddressLibrary as saveAddressLibraryPg,
+} from './address-library-repo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -766,7 +770,7 @@ function publicTemplate(meta) {
   };
 }
 
-async function readAddressLibrary() {
+async function readAddressLibraryFile() {
   try {
     const parsed = JSON.parse(await readFile(LIBRARY_PATH, 'utf8'));
     return {
@@ -810,10 +814,37 @@ async function readAddressLibrary() {
   }
 }
 
-async function saveAddressLibrary(library) {
+async function saveAddressLibraryFile(library) {
   const tempPath = `${LIBRARY_PATH}.tmp-${randomUUID()}`;
   await writeFile(tempPath, JSON.stringify(library, null, 2), 'utf8');
   await rename(tempPath, LIBRARY_PATH);
+}
+
+async function readAddressLibrary() {
+  if (postgresEnabled()) {
+    const stored = await fetchAddressLibraryPg();
+    if (stored) return stored;
+  }
+  return readAddressLibraryFile();
+}
+
+async function saveAddressLibrary(library) {
+  if (postgresEnabled()) {
+    await saveAddressLibraryPg(library);
+    return;
+  }
+  await saveAddressLibraryFile(library);
+}
+
+async function backfillAddressLibrary() {
+  if (!postgresEnabled()) return;
+  const stored = await fetchAddressLibraryPg();
+  if (stored) return;
+  const legacy = await readAddressLibraryFile();
+  if (Array.isArray(legacy.streets) && legacy.streets.length) {
+    await saveAddressLibraryPg(legacy);
+    logger.info({ streets: legacy.streets.length }, 'Imported legacy address-library.json into PostgreSQL');
+  }
 }
 
 let addressLibraryWriteQueue = Promise.resolve();
@@ -2488,6 +2519,7 @@ app.use((err, req, res, _next) => {
 });
 
 await backfillManualCadProjects();
+await backfillAddressLibrary();
 const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   logger.info(
     {

@@ -81,3 +81,12 @@ model ManualCadProject {
   @@index([updatedAt])
   @@map("manual_cad_projects")
 }
+
+model AddressLibrary {
+  id            Int      @id
+  schemaVersion Int      @map("schema_version")
+  data          Json
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("address_library")
+}

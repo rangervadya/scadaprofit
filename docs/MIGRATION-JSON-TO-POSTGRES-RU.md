@@ -20,7 +20,7 @@
 | Сессии | `workforce/sessions.json` | **PostgreSQL** | `sessions` |
 | Идемпотентность | — | **PostgreSQL** | `idempotency_keys` |
 | Manual CAD | `manual-cad/<id>/project.json` | **PostgreSQL** | `manual_cad_projects` (`jsonb`) |
-| Адресная библиотека | `address-library.json` | JSON | `address_streets/buildings/schemes` |
+| Адресная библиотека | `address-library.json` | **PostgreSQL (`jsonb`)** | `address_library` (нормализация — позже) |
 | Задания/отчёты/дефекты | `workforce/workspace.json` | JSON | `workforce_tasks/reports/defect_reports` |
 | Метаданные схемы | `schemes/<jobId>.json` | JSON | `address_schemes` / `scheme_meta` |
 | Архив | `output/archive_index.json` | JSON | `archive_entries` |
@@ -50,12 +50,14 @@
 - [x] Playwright: CAD-список и редактор.
 - [x] Коммит будет добавлен после этого этапа.
 
-### Этап 3 — address library
+### Этап 3 — address library (готово, jsonb)
 
-- [ ] `address_streets`, `address_buildings`, `address_schemes`.
-- [ ] Репозиторий + backfill.
-- [ ] Заменить `readAddressLibrary`/`updateAddressLibrary`.
-- [ ] Проверка:`/api/library`,`/schemes`,загрузка схемы.
+- [x] `address_library` singleton (`id=1`, `data jsonb`, `schema_version`).
+- [x] `address-library-repo.js`: read/save.
+- [x] Backfill существующего `address-library.json`.
+- [x] `readAddressLibrary`/`saveAddressLibrary` работают через PG.
+- [x] Проверка: `/api/library` отдаёт улицы из PG; добавление улицы пишет только в PG, mtime JSON не меняется; Playwright `/schemes` показывает папки.
+- [ ] Нормализация в `address_streets/buildings/schemes` — отдельный этап, если понадобится реляционная отчётность.
 
 ### Этап 4 — workforce workspace
 
