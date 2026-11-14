@@ -1607,6 +1607,21 @@ export async function createWorkforceSystem({
     return res.json({ ok: true, user: publicUser(user) });
   });
 
+  routes.post('/api/workforce/users/:id/revoke-sessions', async (req, res) => {
+    if (!requireRoles(req, res, ['developer'])) return;
+    const user = users.find((item) => item.id === req.params.id);
+    if (!user) return res.status(404).json({ error: 'Аккаунт не найден.' });
+    const before = sessions.length;
+    sessions = sessions.filter((session) => session.userId !== user.id);
+    await saveSessions();
+    await deleteUserSessions(user.id);
+    req.log.warn(
+      { userId: user.id, revoked: before - sessions.length, by: req.user.id },
+      'All sessions revoked for user',
+    );
+    return res.json({ ok: true, revoked: before - sessions.length });
+  });
+
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {
     if (!requireRoles(req, res, ['developer'])) return;
     return res.json({

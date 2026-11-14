@@ -432,6 +432,28 @@ paths:
       responses:
         "200": { description: Сброшен }
 
+  /api/workforce/users/{id}/revoke-sessions:
+    post:
+      tags: [workforce]
+      summary: Отозвать все сессии пользователя
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Сессии отозваны
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean }
+                  revoked: { type: integer }
+        "404": { description: Не найден }
+
   /api/workforce/admin/diagnostics:
     get:
       tags: [workforce]
