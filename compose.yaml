@@ -1,3 +1,12 @@
+# Every service writes JSON lines to stdout/stderr. These limits keep the
+# default json-file driver from growing without bound: the recognition engine
+# emits one progress event per Qwen tile and jobs can run for 90 minutes.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   # Local vision service for handwriting OCR and semantic pipe centre-line tracing.
   # OpenCV candidates remain available for review if the vision model is unavailable.
@@ -5,6 +14,7 @@ services:
     image: ollama/ollama:latest
     restart: unless-stopped
     init: true
+    logging: *default-logging
     deploy:
       resources:
         reservations:
@@ -33,10 +43,12 @@ services:
       dockerfile: infra/docker/app.Dockerfile
     restart: unless-stopped
     init: true
+    logging: *default-logging
     expose:
       - "3000"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
       PORT: "3000"
       TRUST_GATEWAY_PROXY: "1"
       COOKIE_SECURE: "${COOKIE_SECURE:-0}"
@@ -79,12 +91,15 @@ services:
       context: ./services/vdgo
       dockerfile: Dockerfile
     image: vdgo-backend:5.3.9
+    logging: *default-logging
     environment:
       VDGO_HOST: 0.0.0.0
       VDGO_PORT: "8765"
       VDGO_DOCKER: "1"
       DB_REQUIRED: "1"
       DB_WAIT_SECONDS: "60"
+      LOG_LEVEL: "${VDGO_LOG_LEVEL:-info}"
+      APP_RELEASE: "${APP_RELEASE:-4.5.17}"
       DATABASE_URL: postgresql://${POSTGRES_USER:-vdgo_app}:${POSTGRES_PASSWORD:-change_me_vdgo_2026}@vdgo-db:5432/${POSTGRES_DB:-vdgo}
     expose:
       - "8765"
@@ -104,6 +119,7 @@ services:
 
   vdgo-db:
     image: postgres:17.7-alpine
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vdgo}
       POSTGRES_USER: ${POSTGRES_USER:-vdgo_app}
@@ -120,6 +136,7 @@ services:
 
   gateway:
     image: nginx:1.28.2-alpine
+    logging: *default-logging
     ports:
       - "${WEB_PORT:-3001}:80"
     volumes:

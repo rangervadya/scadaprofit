@@ -11,6 +11,10 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 import { createWorkforceSystem } from './workforce-system.js';
+import {
+  logger, jobLogger, shortJobId, parseProgressLine, renderProgressLine,
+  requestLogger, requestIdHeader, logRequestError,
+} from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -136,18 +140,40 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
     let timeoutHandle;
     let forceKillHandle;
 
+    const jobLog = jobLogger(shortId, { source: 'python' });
+    const LOG_METHODS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
+
     progressFile.on('error', (error) => {
       progressFileFailed = true;
-      console.error(`[JOB ${shortId}] Cannot persist progress.log: ${error.message}`);
+      jobLog.error({ err: error, progressPath }, 'Cannot persist progress.log');
     });
 
+    // Python writes either a structured event or a plain text line. Only events
+    // carrying a `stage` are progress messages: those are rendered into the
+    // historical `[STAGE] message` text of progress.log. Everything else
+    // (engine diagnostics, third-party library records) is logged as JSON on
+    // stdout only, so progress.log stays a clean, user-facing journal.
     const logLine = (line) => {
-      const message = String(line || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 2000);
+      const parsed = parseProgressLine(line);
+      if (parsed.structured) {
+        const record = parsed.record;
+        const { msg, stage, level, ...fields } = record;
+        const method = LOG_METHODS.has(level) ? level : 'info';
+        jobLog[method]({ stage: stage || null, ...fields }, msg);
+        if (typeof stage === 'string' && stage) {
+          const text = renderProgressLine(record);
+          if (!text) return;
+          if (!progressFileFailed && !progressFile.destroyed && progressFile.writable) {
+            progressFile.write(`${new Date().toISOString()} ${text}\n`);
+          }
+        }
+        return;
+      }
+      const message = parsed.message;
       if (!message) return;
-      const entry = `${new Date().toISOString()} ${message}`;
-      console.log(`[JOB ${shortId}] ${message}`);
+      jobLog.info({ stage: 'PYTHON' }, message);
       if (!progressFileFailed && !progressFile.destroyed && progressFile.writable) {
-        progressFile.write(`${entry}\n`);
+        progressFile.write(`${new Date().toISOString()} ${message}\n`);
       }
     };
 
@@ -256,6 +282,11 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
 }
 
 app.disable('x-powered-by');
+
+// Correlation ids and access logging run before every other middleware so each
+// request has a stable id that is also echoed back as X-Request-Id.
+app.use(requestLogger);
+app.use(requestIdHeader);
 
 // This app is commonly opened over plain HTTP on a private LAN (e.g. http://192.168.x.x:3001).
 // Helmet's default CSP includes upgrade-insecure-requests, which makes browsers rewrite
@@ -671,12 +702,12 @@ async function runStoredSchemeAnalysis(jobId) {
 }
 
 async function markStoredAnalysisFailed(jobId, error) {
-  console.error(`[JOB ${jobId.slice(0, 8)}] Stored scheme analysis failed:`, error?.stderr || error);
+  jobLogger(jobId).error({ err: error, stderr: error?.stderr || null }, 'Stored scheme analysis failed');
   await updateSchemeStatus(jobId, 'failed', {
     error: `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(-900),
     partialGraphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false),
     completedAt: null
-  }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
+  }).catch(statusError => logger.error({ err: statusError, jobId: shortJobId(jobId) }, 'Failed to save analysis error'));
 }
 
 async function drainAnalysisQueue() {
@@ -743,9 +774,9 @@ async function resumeStoredAnalysisQueue() {
       }
     }
     for (const jobId of interrupted) await enqueueStoredSchemeAnalysis(jobId);
-    if (interrupted.length) console.log(`[QUEUE] Resumed ${interrupted.length} interrupted house-scheme job(s)`);
+    if (interrupted.length) logger.info({ count: interrupted.length, jobIds: interrupted.map(shortJobId) }, 'Resumed interrupted house-scheme jobs');
   } catch (error) {
-    console.error('[QUEUE] Could not restore interrupted house-scheme jobs:', error);
+    logger.error({ err: error }, 'Could not restore interrupted house-scheme jobs');
   }
 }
 
@@ -822,13 +853,13 @@ function nextManualEdgeId(edges) {
 
 // A single global style reference, separate from house uploads and analysis jobs.
 // Files live under DATA/.private/template inside the persistent cad_jobs volume.
-app.get('/api/template', async (_req, res) => {
+app.get('/api/template', async (req, res) => {
   try {
     const meta = await readTemplateMeta();
     return res.json({ ok: true, template: publicTemplate(meta) });
   } catch (error) {
     if (error?.code === 'ENOENT') return res.json({ ok: true, template: null });
-    console.error('[TEMPLATE] Cannot read template metadata:', error);
+    req.log.error({ err: error }, 'Cannot read template metadata');
     return res.status(500).json({ error: 'Не удалось прочитать эталонный шаблон.' });
   }
 });
@@ -846,7 +877,7 @@ app.get('/api/template/file', async (_req, res) => {
       if (error && !res.headersSent) res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
     });
   } catch (error) {
-    console.error('[TEMPLATE] Cannot download template:', error);
+    req.log.error({ err: error }, 'Cannot download template');
     return res.status(500).json({ error: 'Не удалось скачать эталонный шаблон.' });
   }
 });
@@ -878,31 +909,31 @@ app.post('/api/template', limitHeavyRequests, templateUpload.single('template'),
     return res.status(201).json({ ok: true, template: publicTemplate(meta) });
   } catch (error) {
     await rm(destination, { force: true }).catch(() => {});
-    console.error('[TEMPLATE] Cannot save uploaded template:', error);
+    req.log.error({ err: error, size: req.file?.size || 0 }, 'Cannot save uploaded template');
     return res.status(500).json({ error: 'Не удалось сохранить эталонный шаблон.' });
   } finally {
     await rm(req.file.path, { force: true }).catch(() => {});
   }
 });
 
-app.delete('/api/template', async (_req, res) => {
+app.delete('/api/template', async (req, res) => {
   try {
     const meta = await readTemplateMeta();
     if (meta?.storageName) await rm(path.join(TEMPLATE_DIR, meta.storageName), { force: true });
     await rm(TEMPLATE_META_PATH, { force: true });
     return res.json({ ok: true, template: null });
   } catch (error) {
-    console.error('[TEMPLATE] Cannot delete template:', error);
+    req.log.error({ err: error }, 'Cannot delete template');
     return res.status(500).json({ error: 'Не удалось удалить эталонный шаблон.' });
   }
 });
 
-app.get('/api/library', async (_req, res) => {
+app.get('/api/library', async (req, res) => {
   try {
     const library = await readAddressLibrary();
     return res.json({ ok: true, library });
   } catch (error) {
-    console.error('[LIBRARY] Cannot read address library:', error);
+    req.log.error({ err: error }, 'Cannot read address library');
     return res.status(500).json({ error: 'Не удалось прочитать папки объектов.' });
   }
 });
@@ -1231,11 +1262,11 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
 
     const entries = await readdir(jobDir);
     const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
-    console.log(`[JOB ${jobId.slice(0, 8)}] Confirmed connection ${record.id}: ${from} <-> ${to}; edge=${edgeId}; candidate=${candidate?.id || 'manual'}`);
+    req.log.info({ jobId: shortJobId(jobId), connectionId: record.id, from, to, edgeId, candidateId: candidate?.id || 'manual' }, 'Confirmed graph connection');
     return res.json({ ok: true, connection: record, graph: attachJobUrls(jobId, graph, sourceName) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
-    console.error(`[JOB ${jobId.slice(0, 8)}] Cannot save connection:`, error);
+    req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot save connection');
     return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить соединение.' });
   }
 });
@@ -1304,7 +1335,7 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
     return res.json({ ok: true, graph: attachJobUrls(jobId, graph, sourceName) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
-    console.error(`[JOB ${jobId.slice(0, 8)}] Cannot save review action:`, error);
+    req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot save review action');
     return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить решение проверки.' });
   }
 });
@@ -1449,65 +1480,61 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
       } catch (libraryError) {
         graph.librarySaved = false;
         graph.libraryError = String(libraryError?.message || libraryError).slice(0, 180);
-        console.error(`[JOB ${id.slice(0, 8)}] Processed but failed to add to address library:`, libraryError);
+        req.log.error({ err: libraryError, jobId: shortJobId(id), streetId, buildingId }, 'Processed but failed to add to address library');
       }
     }
 
     // Все показатели берутся из graph.summary, который формирует processor.py.
     // Значение MISSING означает, что поле не было записано Python-процессором.
+    // Одна структурированная запись вместо пяти строк: те же числа остаются
+    // доступны для поиска по полям, а не только для чтения глазами.
     const summary = graph.summary && typeof graph.summary === 'object' ? graph.summary : {};
     const metric = (key) => summary[key] ?? 'MISSING';
-
-    console.log(
-      `[ENGINE ${id.slice(0, 8)}] segments=${metric('segment_candidates')} ` +
-      `nodes=${metric('nodes')} edges=${metric('edges')} ` +
-      `crossings=${metric('crossings_to_review')}`
-    );
 
     const oq = graph.ocr?.qwen || {};
     const ot = graph.ocr?.tesseract || {};
     const st = graph.semanticTrace || {};
-    console.log(
-      `[ENGINE ${id.slice(0, 8)}] OCR Qwen=${oq.annotations || 0} ` +
-      `tiles=${oq.successful_tiles || 0}/${oq.tiles || 0}; ` +
-      `noteBlocks=${oq.block_annotations || 0} (${oq.block_passes || 0} passes); ` +
-      `Tesseract=${ot.annotations || 0}; ` +
-      `verifiedText=${metric('verified_annotations')}; ` +
-      `textReview=${metric('text_review_annotations')}`
-    );
+    const maskBoxes = metric('text_regions_used_for_geometry_mask') !== 'MISSING'
+      ? metric('text_regions_used_for_geometry_mask')
+      : metric('geometry_excluded_text_regions');
 
-    console.log(
-      `[ENGINE ${id.slice(0, 8)}] PIPE Qwen routes=${st.routes || 0} ` +
-      `raw=${st.raw_routes || 0} tiles=${st.successful_tiles || 0}/${st.tiles || 0}; ` +
-      `rejected=${st.rejected_invalid || 0}+${st.rejected_low_confidence || 0}`
-    );
+    jobLogger(id, { source: 'engine' }).info({
+      segments: metric('segment_candidates'),
+      nodes: metric('nodes'),
+      edges: metric('edges'),
+      crossings: metric('crossings_to_review'),
+      ocrQwenAnnotations: oq.annotations || 0,
+      ocrQwenTilesOk: oq.successful_tiles || 0,
+      ocrQwenTilesTotal: oq.tiles || 0,
+      ocrQwenNoteBlocks: oq.block_annotations || 0,
+      ocrQwenNoteBlockPasses: oq.block_passes || 0,
+      ocrTesseractAnnotations: ot.annotations || 0,
+      verifiedText: metric('verified_annotations'),
+      textReview: metric('text_review_annotations'),
+      pipeQwenRoutes: st.routes || 0,
+      pipeRawRoutes: st.raw_routes || 0,
+      pipeTilesOk: st.successful_tiles || 0,
+      pipeTilesTotal: st.tiles || 0,
+      pipeRejectedInvalid: st.rejected_invalid || 0,
+      pipeRejectedLowConfidence: st.rejected_low_confidence || 0,
+      cadPrimaryEdges: metric('cad_primary_edges'),
+      cadReviewEdges: metric('cad_review_edges'),
+      topologyNetworkCandidateComponents: metric('topology_network_candidate_components'),
+      topologyNetworkPrimaryEdges: metric('topology_network_primary_edges'),
+      cadPrimaryQwenRoutes: metric('cad_primary_qwen_routes'),
+      cadPrimaryTotalPaths: metric('cad_primary_total_paths'),
+      isolatedReview: metric('isolated_strokes_kept_for_review'),
+      textRegionMaskBoxes: maskBoxes,
+      inkPixelsMasked: metric('ink_pixels_inside_text_regions'),
+      textComponents: metric('text_or_annotation_components'),
+      ambiguousComponents: metric('review_only_ambiguous_components'),
+      timings: graph.timings_ms || {},
+    }, 'Analysis metrics collected');
 
-    // Основные четыре показателя, которые нужно проверять после нового анализа.
-    console.log(
-      `[ENGINE ${id.slice(0, 8)}] CAD ` +
-      `cad_primary_edges=${metric('cad_primary_edges')}; ` +
-      `cad_review_edges=${metric('cad_review_edges')}; ` +
-      `topology_network_candidate_components=${metric('topology_network_candidate_components')}; ` +
-      `topology_network_primary_edges=${metric('topology_network_primary_edges')}; ` +
-      `cad_primary_qwen_routes=${metric('cad_primary_qwen_routes')}; ` +
-      `cad_primary_total_paths=${metric('cad_primary_total_paths')}; ` +
-      `isolatedReview=${metric('isolated_strokes_kept_for_review')}`
-    );
-
-    console.log(
-      `[ENGINE ${id.slice(0, 8)}] OCR-MASK ` +
-      `boxes=${metric('text_regions_used_for_geometry_mask') !== 'MISSING'
-        ? metric('text_regions_used_for_geometry_mask')
-        : metric('geometry_excluded_text_regions')}; ` +
-      `inkPixelsMasked=${metric('ink_pixels_inside_text_regions')}; ` +
-      `textComponents=${metric('text_or_annotation_components')}; ` +
-      `ambiguous=${metric('review_only_ambiguous_components')}`
-    );
-
-    // Возвращаем граф целиком: все четыре показателя также доступны в response.summary.
+    // Возвращаем граф целиком: все показатели также доступны в response.summary.
     return res.json(graph);
   } catch (error) {
-    console.error(`[JOB ${id.slice(0, 8)}] Analyze failed:`, error?.stderr || error);
+    req.log.error({ err: error, jobId: shortJobId(id), progressUrl: `/jobs/${id}/progress.log` }, 'Analyze failed');
     const progressUrl = `/jobs/${id}/progress.log`;
     const details = [
       String(error?.stderr || '').slice(-900),
@@ -1580,7 +1607,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
         await writeFile(path.join(projectDir, 'source.png'), preparedImage);
         await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(refreshed, null, 2), 'utf8');
         if (refreshed.sourceReportId) await workforceSystem.linkManualCadProject(refreshed.sourceReportId, refreshed.id);
-        console.log(`[CAD] Refreshed unedited house project ${existing.id.slice(0, 8)} from job ${jobId.slice(0, 8)}`);
+        req.log.info({ jobId: shortJobId(jobId), projectId: existing.id.slice(0, 8) }, 'Refreshed unedited house project from job');
         return res.json({ ok: true, reused: true, refreshed: true, project: manualProjectResponse(refreshed) });
       }
       return res.json({ ok: true, reused: true, preservedManualEdits: true, project: manualProjectResponse(existing) });
@@ -1602,7 +1629,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
     };
     await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
     if (project.sourceReportId) await workforceSystem.linkManualCadProject(project.sourceReportId, project.id);
-    console.log(`[CAD] Created house project ${projectId.slice(0, 8)} for job ${jobId.slice(0, 8)}: pipes=${project.pipes.length}, labels=${project.labels.length}, symbols=${project.symbols.length}`);
+    req.log.info({ jobId: shortJobId(jobId), projectId: projectId.slice(0, 8), pipes: project.pipes.length, labels: project.labels.length, symbols: project.symbols.length }, 'Created house project');
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
     if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
@@ -1668,7 +1695,7 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
     await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
-    console.log(`[CAD] Created source-only manual project ${projectId.slice(0, 8)} for failed/unavailable job ${jobId.slice(0, 8)}`);
+    req.log.info({ jobId: shortJobId(jobId), projectId: id.slice(0, 8) }, 'Created source-only manual project for failed or unavailable job');
     return res.status(201).json({ ok: true, reused: false, sourceOnly: true, project: manualProjectResponse(project) });
   } catch (error) {
     if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
@@ -1897,7 +1924,7 @@ app.use(workforceSystem.router);
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API-маршрут не найден.' }));
 
 app.use((err, req, res, _next) => {
-  console.error(err);
+  logRequestError(req, err, 'Unhandled request error');
   const isTemplateUpload = req.path === '/api/template';
   const isWorkforceReport = req.path.startsWith('/api/workforce/tasks/') && req.path.endsWith('/report');
   const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
@@ -1910,10 +1937,15 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`ScadaProfit ${BUILD_INFO.version}: http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
-  console.log('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
-  console.log(`Python timeout: ${PYTHON_TIMEOUT_MS} ms (${Math.round(PYTHON_TIMEOUT_MS / 60_000)} minutes)`);
-  console.log(`Manual CAD projects: ${MANUAL_CAD_DIR} (isolated from VDGO)`);
-  console.log('Workforce: password-authenticated accounts, manual visit/office check-ins, sketch-only reports and automatic CAD processing enabled; GPS tracking disabled.');
+  logger.info({
+    pipelineSha256: BUILD_INFO.pipelineSha256,
+    host: process.env.HOST || '0.0.0.0',
+    port: PORT,
+    pythonTimeoutMs: PYTHON_TIMEOUT_MS,
+    manualCadDir: MANUAL_CAD_DIR,
+    configuredLevel: logger.level,
+  }, 'ScadaProfit API started');
+  logger.info('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
+  logger.info('Workforce: password-authenticated accounts, manual visit/office check-ins, sketch-only reports and automatic CAD processing enabled; GPS tracking disabled.');
   void resumeStoredAnalysisQueue();
 });

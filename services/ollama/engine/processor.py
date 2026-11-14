@@ -48,14 +48,19 @@ from moss_ai import (
     DEFAULT_MODEL as DEFAULT_MOSS_MODEL, test_moss_ai,
     moss_ocr_annotations, moss_semantic_routes,
 )
+from logging_setup import configure_logging, emit_progress, get_logger
+
+configure_logging()
+log = get_logger('processor')
 
 
 def _progress(stage: str, message: str) -> None:
-    """Emit a concise, immediately flushed progress line for the parent process."""
-    safe_stage = re.sub(r'[^A-Z0-9_-]', '', str(stage).upper())[:16] or 'JOB'
-    safe_message = re.sub(r'[\r\n]+', ' ', str(message)).strip()[:500]
-    sys.stderr.write(f'[{safe_stage}] {safe_message}\n')
-    sys.stderr.flush()
+    """Emit one progress event for the parent process and for progress.log.
+
+    The stage is sanitised and the message flattened to a single short line, so
+    the Node parent can render it as `[STAGE] message` exactly as before.
+    """
+    emit_progress(stage, message, logger=log)
 
 
 def load_image(path: str) -> np.ndarray:
@@ -129,6 +134,7 @@ def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float, float]:
         trusted = confidence >= min_orientation and script_confidence >= min_script
         return (rotation if trusted else 0, confidence, script_confidence)
     except Exception:
+        log.debug('Orientation detection failed; falling back to 0 degrees', exc_info=True)
         return 0, 0.0, 0.0
 
 
@@ -691,6 +697,7 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
                          'pitch': round(pitch, 1), 'ink_peak': round(float(np.max(smooth[max(0, int(center)-2):min(height, int(center)+3)])), 2)})
         return rows if len(rows) >= 3 else []
     except Exception:
+        log.debug('Handwritten row detection failed; skipping this pass', exc_info=True)
         return []
 
 
@@ -1165,7 +1172,7 @@ def _candidate_handwritten_text_blocks(items: list[dict[str, Any]], width: int, 
         except Exception:
             # OCR box clustering remains available when the image heuristic
             # cannot process an unusual image encoding.
-            pass
+            log.debug('Handwritten block heuristic failed; keeping box clustering', exc_info=True)
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     selected: list[dict[str, Any]] = []
@@ -4994,6 +5001,16 @@ def main():
     ap.add_argument('--test-openrouter', action='store_true', help='Run an explicit OpenRouter OCR + multimodal vision smoke test on the source image')
     ap.add_argument('--test-moss', action='store_true', help='Run an explicit MOSS OCR + multimodal vision smoke test on the source image')
     args = ap.parse_args()
+    log.info(
+        'Processor started',
+        extra={
+            'input': os.path.basename(args.input),
+            'out': os.path.basename(args.out.rstrip('/')),
+            'hasTemplate': bool(args.template),
+            'rotation': args.rotation,
+            'logLevel': os.getenv('LOG_LEVEL', 'INFO'),
+        },
+    )
     if args.test_moss:
         result = test_moss_ai(args.input, os.getenv('MOSS_API_KEY', '').strip(), os.getenv('MOSS_MODEL', DEFAULT_MOSS_MODEL))
         print(json.dumps(result, ensure_ascii=False))
@@ -5007,6 +5024,17 @@ def main():
         print(json.dumps(result, ensure_ascii=False))
         return
     result = analyze(args.input, args.out, template_path=args.template, rotation_degrees=args.rotation)
+    summary = result.get('summary') if isinstance(result, dict) else None
+    log.info(
+        'Processor finished',
+        extra={
+            'segments': (summary or {}).get('segment_candidates'),
+            'edges': (summary or {}).get('cad_primary_edges'),
+            'reviewEdges': (summary or {}).get('cad_review_edges'),
+            'complete': (result or {}).get('complete') if isinstance(result, dict) else None,
+            'timings': (result or {}).get('timings_ms') if isinstance(result, dict) else None,
+        },
+    )
     print(json.dumps(result, ensure_ascii=False))
 
 if __name__=='__main__': main()

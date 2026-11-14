@@ -4,14 +4,21 @@ from pathlib import Path
 from email.parser import BytesParser
 from email.policy import default
 import pymupdf as fitz
-import os, json, math, re, shutil, threading, webbrowser, html as htmlmod, tempfile, uuid, subprocess, sys, base64
+import os, json, math, re, shutil, threading, time, webbrowser, html as htmlmod, tempfile, uuid, subprocess, sys, base64
 from datetime import datetime
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
 from database import init_database, database_status, recent_reports, record_generation
 from io import BytesIO
 
-APP_RELEASE = '4.5.16'
+from logging_setup import configure_logging, format_query_path, get_logger
+
+configure_logging()
+log = get_logger('vdgo')
+
+# Release label is injected by compose so the image and this process can never
+# disagree; the fallback keeps a bare `python app.py` run working.
+APP_RELEASE = os.environ.get('APP_RELEASE', '4.5.17')
 BACKEND_IMAGE_VERSION = '5.3.9'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'
@@ -1675,9 +1682,9 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
     _FITZ_FONT_CACHE.clear()
     for temp_photo in temp_photos + temp_materials + temp_extra_photos:
         try: temp_photo.unlink(missing_ok=True)
-        except Exception: pass
+        except Exception as exc: log.debug('Cannot remove temporary photo', extra={'err': str(exc)})
     try: work.unlink()
-    except: pass
+    except Exception as exc: log.debug('Cannot remove working PDF copy', extra={'err': str(exc)})
     return out
 
 # These fields carry structured attachment data, not user-entered prose. They have
@@ -2061,7 +2068,7 @@ PAGE=render_page()
 def cleanup_uploaded_files(files):
     for path in files.values():
         try: Path(path).unlink(missing_ok=True)
-        except Exception: pass
+        except Exception as exc: log.debug('Cannot remove upload', extra={'err': str(exc)})
 
 RU_MONTH_GENITIVE = (
     '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -2133,10 +2140,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(data)
 
     def do_GET(self):
+        self._started_at = time.perf_counter()
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
-            data=b'{"ok":true,"release":"4.5.16","backendVersion":"5.3.9"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
+            payload=json.dumps({'ok':True,'release':APP_RELEASE,'backendVersion':BACKEND_IMAGE_VERSION},ensure_ascii=False).encode('utf-8')
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload); return
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
@@ -2144,6 +2153,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send_json(200, {'items':recent_reports(limit=12)})
             except Exception as exc:
+                log.error('Cannot read report journal', extra={'err': str(exc), 'path': format_query_path(self.path)})
                 self._send_json(503, {'error':'Не удалось прочитать журнал формирования документов', 'detail':str(exc)})
             return
         self.send_error(404)
@@ -2181,6 +2191,7 @@ class Handler(BaseHTTPRequestHandler):
         normalize_form_dates(form)
         return form,files
     def do_POST(self):
+        self._started_at = time.perf_counter()
         if self.path not in ('/generate','/generate_docx','/preview'):
             self.send_error(404); return
         files={}
@@ -2208,7 +2219,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
             except Exception as db_exc:
-                print(f'ПРЕДУПРЕЖДЕНИЕ: не удалось записать событие в PostgreSQL: {db_exc}', flush=True)
+                # The document is already generated; a missing audit row must
+                # not fail the request, but it must be visible in the log.
+                log.warning('Generated document was not recorded in PostgreSQL', extra={'err': str(db_exc), 'reportNumber': val(form,'report_number')})
             self.send_response(200)
             self.send_header('Content-Type',content_type)
             self.send_header('Content-Disposition',disposition)
@@ -2216,13 +2229,57 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Content-Type-Options','nosniff')
             self.send_header('Content-Length',str(len(payload)))
             self.end_headers(); self.wfile.write(payload)
+            log.info(
+                'Document generated',
+                extra={
+                    'path': format_query_path(self.path),
+                    'format': output_format,
+                    'pages': page_count,
+                    'bytes': len(payload),
+                    'schemes': len(workforce_schemes or []),
+                    'durationMs': round((time.perf_counter() - self._started_at) * 1000.0, 1),
+                },
+            )
         except Exception as e:
+            status = 400 if isinstance(e, ValueError) else 500
+            if status >= 500:
+                # Unexpected server faults used to be invisible: the client got
+                # a 500 and nothing was written anywhere.
+                log.error(
+                    'Document generation failed',
+                    extra={
+                        'path': format_query_path(self.path),
+                        'status': status,
+                        'err': str(e),
+                        'durationMs': round((time.perf_counter() - self._started_at) * 1000.0, 1),
+                    },
+                    exc_info=True,
+                )
+            else:
+                log.warning(
+                    'Document generation rejected',
+                    extra={'path': format_query_path(self.path), 'status': status, 'err': str(e)},
+                )
             msg=json.dumps({'error':str(e)},ensure_ascii=False).encode('utf-8')
-            self.send_response(400 if isinstance(e, ValueError) else 500); self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_response(status); self.send_header('Content-Type','application/json; charset=utf-8')
             self.send_header('Content-Length',str(len(msg))); self.end_headers(); self.wfile.write(msg)
         finally:
             cleanup_uploaded_files(files)
-    def log_message(self,*args): pass
+    def log_message(self, fmt, *args):
+        # Access log: BaseHTTPRequestHandler writes to stderr by default, which
+        # bypassed the JSON formatter and left no request trail at all. Health
+        # probes are skipped because Docker polls /health every 30 seconds.
+        if format_query_path(getattr(self, 'path', '')) in ('/health', '/api/health'):
+            return
+        log.info(
+            'Request',
+            extra={
+                'remote': self.client_address[0] if self.client_address else None,
+                'path': format_query_path(getattr(self, 'path', '')),
+                'method': getattr(self, 'command', ''),
+                'status': args[1] if len(args) > 1 else None,
+            },
+        )
 
 def create_local_server():
     """Start on a free loopback port. Port 5000 is often occupied by macOS AirPlay or another local service."""
@@ -2244,31 +2301,40 @@ if __name__=='__main__':
         try:
             init_database(wait_seconds=int(os.environ.get('DB_WAIT_SECONDS', '45')))
         except Exception as exc:
-            print(f'ОШИБКА ПОДКЛЮЧЕНИЯ К БАЗЕ ДАННЫХ: {exc}', flush=True)
+            log.error('Cannot connect to PostgreSQL', extra={'err': str(exc), 'required': os.environ.get('DB_REQUIRED', '0') == '1'}, exc_info=True)
             if os.environ.get('DB_REQUIRED', '0') == '1':
                 raise SystemExit(2)
     try:
         server, port = create_local_server()
     except OSError as exc:
-        print(f'ОШИБКА ЗАПУСКА: {exc}')
-        input('Нажмите Enter для выхода...')
+        log.error('Cannot start VDGO backend', extra={'err': str(exc)}, exc_info=True)
         raise SystemExit(1)
     docker_mode = os.environ.get('VDGO_DOCKER', '0') == '1'
     no_browser = os.environ.get('VDGO_NO_BROWSER', '0') == '1'
-    print('Backend ВДГО запущен.')
-    print(f'Внутренний адрес backend: http://127.0.0.1:{port}/health')
-    if docker_mode:
-        print('Интерфейс ВДГО доступен через общий frontend ScadaProfit: http://localhost:3001/vdgo/.')
-    elif no_browser:
-        print('React-интерфейс запускается из общего frontend workspace проекта (Vite dev server).')
-    else:
-        print(f'Адрес приложения: http://127.0.0.1:{port}/')
-    print('Не закрывайте это окно, пока работает приложение. Для остановки нажмите Ctrl+C.')
+    log.info(
+        'VDGO backend started',
+        extra={
+            'release': APP_RELEASE,
+            'backendVersion': BACKEND_IMAGE_VERSION,
+            'host': os.environ.get('VDGO_HOST', '127.0.0.1'),
+            'port': port,
+            'dockerMode': docker_mode,
+            'databaseConfigured': bool(os.environ.get('DATABASE_URL')),
+            'logLevel': os.environ.get('LOG_LEVEL', 'INFO'),
+        },
+    )
+    log.info(
+        'VDGO backend endpoints',
+        extra={
+            'health': f'http://127.0.0.1:{port}/health',
+            'spa': 'http://localhost:3001/vdgo/' if docker_mode else f'http://127.0.0.1:{port}/',
+        },
+    )
     if not docker_mode and not no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(f'http://127.0.0.1:{port}/')).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print('Остановка приложения...')
+        log.info('VDGO backend stopping')
     finally:
         server.server_close()

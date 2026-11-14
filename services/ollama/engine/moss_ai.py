@@ -35,16 +35,23 @@ MOSS_PIPE_MAX_ROUTES = 32
 MOSS_PIPE_MAX_POINTS = 64
 
 
+from logging_setup import emit_progress, get_logger
+
+log = get_logger('moss_ai')
+
+
 class MossAIError(RuntimeError):
     """Sanitized provider error; credentials are never included."""
 
 
 def _progress(message: str) -> None:
-    """Write safe, non-content diagnostics to the Python process stderr."""
-    safe = re.sub(r"[\r\n]+", " ", str(message or "")).strip()[:420]
-    if safe:
-        sys.stderr.write(f"[MOSS PIPE] {safe}\n")
-        sys.stderr.flush()
+    """Write safe, non-content diagnostics to the Python process stderr.
+
+    Kept as a single-argument helper: the shared emitter adds the timestamp,
+    level and `MOSS` stage, and the Node parent still renders it as
+    `[MOSS] message` inside progress.log.
+    """
+    emit_progress('MOSS', message, logger=log)
 
 
 def _redact(text: str, api_key: str = "") -> str:

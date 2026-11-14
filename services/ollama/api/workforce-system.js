@@ -2,6 +2,7 @@ import path from 'node:path';
 import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
+import { logger } from './logger.js';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
@@ -160,6 +161,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   const sessionsPath = path.join(authDir, 'sessions.json');
   const workforcePath = path.join(authDir, 'workspace.json');
   const reportFilesDir = path.join(authDir, 'report-files');
+  const log = logger.child({ module: 'workforce' });
   await mkdir(authDir, { recursive: true, mode: 0o700 });
   await mkdir(reportFilesDir, { recursive: true, mode: 0o700 });
 
@@ -370,8 +372,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
   routes.post('/api/auth/login', async (req, res) => {
     const user = await authenticateCredentials(users, req.body?.username, req.body?.password);
-    if (!user) return res.status(401).json({ error: 'Неверный логин или пароль.' });
+    if (!user) {
+      req.log.warn({ username: cleanText(req.body?.username, 48), requestId: req.id }, 'Rejected login: unknown user or wrong password');
+      return res.status(401).json({ error: 'Неверный логин или пароль.' });
+    }
     await sessionForUser(res, user);
+    req.log.info({ userId: user.id, role: user.role }, 'User signed in');
     return res.json({ ok: true, user: publicUser(user) });
   });
   routes.post('/api/auth/logout', async (req, res) => {
@@ -545,6 +551,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         } catch (processingError) {
           report.schemeStatus = 'failed';
           report.schemeError = cleanText(processingError?.message || 'Не удалось поставить эскиз в очередь автоматической обработки.', 900);
+          log.error({ err: processingError, reportId: report.id, taskId: task.id }, 'Failed to queue sketch for automatic processing');
         }
       } else {
         report.schemeStatus = 'failed';
@@ -555,10 +562,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       task.completedAt = new Date().toISOString();
       task.updatedAt = task.completedAt;
       await saveWorkspace();
+      req.log.info({ reportId: report.id, taskId: task.id, userId: req.user.id, schemeStatus: report.schemeStatus }, 'Field sketch report submitted');
       return res.status(201).json({ ok: true, report: reportForClient(report) });
     } catch (error) {
       await rm(reportDir, { recursive: true, force: true }).catch(() => {});
       for (const file of sketchFiles) await rm(file.path, { force: true }).catch(() => {});
+      req.log.error({ err: error, taskId: task.id, userId: req.user.id }, 'Failed to save field sketch report');
       return res.status(500).json({ error: `Не удалось сохранить отчёт: ${error.message}` });
     }
   });
@@ -620,6 +629,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       task.events.push({ type: 'defects_submitted', label: `Отправлены фотографии дефектов: ${photos.length} шт.`, at: createdEventAt, userId: req.user.id, userName: req.user.displayName });
       task.updatedAt = report.submittedAt;
       await saveWorkspace();
+      req.log.info({ reportId: report.id, taskId: task.id, userId: req.user.id, photos: photos.length }, 'Defect photo report submitted');
       return res.status(201).json({ ok: true, report: defectReportForClient(report) });
     } catch (error) {
       if (createdReport) workspace.defectReports = workspace.defectReports.filter(item => item.id !== createdReport.id);
@@ -629,6 +639,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       task.updatedAt = previousTaskUpdatedAt;
       await rm(reportDir, { recursive: true, force: true }).catch(() => {});
       await cleanupUploads();
+      req.log.error({ err: error, taskId: task.id, userId: req.user.id, photos: uploaded.length }, 'Failed to save defect photo report');
       return res.status(500).json({ error: `Не удалось сохранить фотографии дефектов: ${error.message}` });
     }
   });
@@ -672,6 +683,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     report.reviewedAt = new Date().toISOString();
     report.reviewedBy = req.user.id;
     await saveWorkspace();
+    req.log.info({ reportId: report.id, taskId: report.taskId, status, reviewerId: req.user.id }, 'Defect photo report reviewed');
     return res.json({ ok: true, report: defectReportForClient(report) });
   });
 
@@ -708,7 +720,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         const task = workspace.tasks.find(item => item.id === report.taskId);
         if (task && task.status === 'submitted') task.status = 'processing_failed';
       }
-    } catch (error) { report.schemeError = cleanText(error?.message || 'Не удалось проверить состояние CAD-обработки.', 900); }
+    } catch (error) {
+      report.schemeError = cleanText(error?.message || 'Не удалось проверить состояние CAD-обработки.', 900);
+      log.warn({ err: error, reportId: report.id, schemeJobId: report.schemeJobId }, 'Failed to refresh CAD scheme status');
+    }
   }
 
   routes.get('/api/workforce/reports', async (req, res) => {
@@ -793,6 +808,13 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       else delete task.conclusionFolderAddedBy;
       return res.status(500).json({ error: `Не удалось сохранить папку в заключение: ${error.message}` });
     }
+    req.log.info({
+      taskId: task.id,
+      userId: req.user.id,
+      schemes: schemeReports.length,
+      defects: defectReports.length,
+      photos: defectReports.reduce((sum, report) => sum + (report.photos || []).length, 0),
+    }, 'Address folder transferred into conclusion');
     return res.json({
       ok: true,
       folder: { taskId: task.id, street: task.street, address: task.address, schemesCount: schemeReports.length, defectReportsCount: defectReports.length, photosCount: defectReports.reduce((sum, report) => sum + (report.photos || []).length, 0), addedAt },
@@ -853,6 +875,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       if (status === 'revision_requested') { task.completedAt = null; task.visitedAt = null; task.officeAt = null; }
     }
     await saveWorkspace();
+    req.log.info({ reportId: report.id, taskId: report.taskId, status, reviewerId: req.user.id }, 'Sketch report reviewed');
     return res.json({ ok: true, report: reportForClient(report), task: task ? taskForClient(task) : null });
   });
 
@@ -929,6 +952,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       const user = { id: randomUUID(), username, displayName, firstName, lastName, role, passwordHash: await hashPassword(password), active: true, createdAt: new Date().toISOString() };
       users.push(user);
       await saveUsers();
+      req.log.info({ userId: user.id, role, username, generated: autoGenerate, createdBy: req.user.id }, 'Account created');
       return res.status(201).json({ ok: true, user: publicUser(user), credentials: { username, password, generated: autoGenerate } });
     } finally { accountCreationInProgress = false; }
   });
@@ -944,6 +968,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     // Revoke previous sessions so the new password takes effect immediately.
     sessions = sessions.filter(session => session.userId !== user.id);
     await Promise.all([saveUsers(), saveSessions()]);
+    req.log.warn({ userId: user.id, role: user.role, resetBy: req.user.id }, 'Password reset issued and sessions revoked');
     return res.json({
       ok: true,
       user: publicUser(user),

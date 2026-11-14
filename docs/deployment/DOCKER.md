@@ -40,10 +40,27 @@ Do not run `docker compose down -v` during an application update.
 - `POSTGRES_PASSWORD` — set a unique value in `.env` before deployment.
 - `COOKIE_SECURE` — set to `1` when HTTPS is terminated at the gateway or upstream proxy.
 - `QWEN_MODEL` — local Ollama model tag, default `qwen3-vl:4b-instruct`.
+- `LOG_LEVEL` — Node API verbosity, default `info`.
+- `VDGO_LOG_LEVEL` — document service verbosity, default `INFO`.
+- `APP_RELEASE` — release label reported by the VDGO `/health` endpoint, default `4.5.17`.
 
 The VDGO image installs the Carlito font package from the Debian repository at build time; font binaries are not committed to this repository.
 
 Docker runtime status must be checked on the target host after deployment. Local tests do not verify the remote Docker daemon, volumes, GPU runtime or reverse-proxy configuration.
+
+## Logs
+
+All five services write one JSON object per line to stdout/stderr and use the
+`json-file` driver with `max-size=20m`, `max-file=5`, so container logs cannot
+fill the disk.
+
+```bash
+docker compose logs -f --tail=150 app
+docker compose logs --since 30m vdgo-backend
+```
+
+See [LOGGING-RU.md](LOGGING-RU.md) for the record format, the split between
+stdout and `/jobs/:jobId/progress.log`, and the fields that are redacted.
 
 ## Optional host Ollama
 

@@ -4,7 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VDGO_HOST=0.0.0.0 \
     VDGO_PORT=8765 \
-    DB_REQUIRED=1
+    DB_REQUIRED=1 \
+    LOG_LEVEL=INFO
 WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
@@ -14,7 +15,7 @@ RUN apt-get update \
     && pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py pdf_to_docx.py pdf_to_docx_editable.py database.py ./
+COPY app.py pdf_to_docx.py pdf_to_docx_editable.py database.py logging_setup.py ./
 COPY templates ./templates
 COPY template ./template
 COPY assets ./assets

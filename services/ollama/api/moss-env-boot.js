@@ -8,6 +8,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { logger } from './logger.js';
 
 const dataDir = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
 const settingsPath = path.join(dataDir, '.private', 'moss-ai-settings.json');
@@ -23,14 +24,18 @@ try {
   process.env.MOSS_OCR_ENABLED = enabled && settings?.ocrEnabled !== false ? '1' : '0';
   process.env.MOSS_PIPE_ENABLED = enabled && settings?.pipeEnabled !== false ? '1' : '0';
 
-  console.info(
-    `[AI] MOSS startup settings loaded: enabled=${enabled}, ` +
-    `OCR=${process.env.MOSS_OCR_ENABLED}, PIPE=${process.env.MOSS_PIPE_ENABLED}`
+  logger.info(
+    {
+      enabled,
+      ocrEnabled: process.env.MOSS_OCR_ENABLED,
+      pipeEnabled: process.env.MOSS_PIPE_ENABLED,
+    },
+    'MOSS startup settings loaded'
   );
 } catch (error) {
   // Preserve any explicitly supplied environment configuration when no
   // private settings file exists. The key itself is never printed.
   if (error?.code !== 'ENOENT') {
-    console.error('[AI] Cannot load private MOSS startup settings:', error?.message || error);
+    logger.error({ err: error }, 'Cannot load private MOSS startup settings');
   }
 }
