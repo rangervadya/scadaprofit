@@ -1,5 +1,5 @@
-# Build the VDGO React interface as part of the single frontend workspace.
-# The resulting assets are served by the main ScadaProfit app at /vdgo/.
+# Build the unified ScadaProfit frontend (all role screens, including VDGO)
+# as one SPA bundle served by the main app at /vdgo/.
 FROM node:22-bookworm-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -32,10 +32,15 @@ COPY backend/package.json ./backend/package.json
 WORKDIR /app/backend
 RUN npm install --omit=dev --no-audit --no-fund
 COPY backend/ ./
+COPY VERSION /app/VERSION
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json
+# Keep the frontend source tree available to the repository-layout regression tests
+# executed in the runtime image. The built SPA remains the only served UI artifact.
+COPY --from=frontend-build /frontend/index.html /app/frontend/index.html
+COPY --from=frontend-build /frontend/vite.config.ts /app/frontend/vite.config.ts
+COPY --from=frontend-build /frontend/src/ /app/frontend/src/
 COPY frontend/public/ /app/frontend/public/
-COPY legacy/ /app/legacy/
 COPY --from=frontend-build /frontend/public/vdgo/ /app/frontend/public/vdgo/
 COPY services/vdgo/backend/app.py /app/services/vdgo/backend/app.py
 COPY services/vdgo/backend/templates/index.html /app/services/vdgo/backend/templates/index.html
