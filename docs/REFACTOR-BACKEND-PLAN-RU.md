@@ -104,6 +104,24 @@
 | P1-13 | Нет CI | `.github` отсутствует | install/lint/typecheck/test/build/scan на PR |
 | P1-14 | Нет типизации/валидации | ручные `cleanText`/проверки в routes | Zod (Node), Pydantic (VDGO), Prisma schema; expand-contract |
 
+### 3.2.1 JSON → PostgreSQL: карта
+
+| JSON/файл | Что хранит | Статус | Целевое место |
+|---|---|---|---|
+| `workforce/users.json` | аккаунты, scrypt-хеши | **cutover** | `users` |
+| `workforce/sessions.json` | сессии, `expiresAt` | **cutover** | `sessions` |
+| `address-library.json` | улицы → дома → карточки схем | JSON | `address_streets/buildings/schemes` |
+| `workforce/workspace.json` | tasks/reports/defectReports, события | JSON | `workforce_tasks/reports/defect_reports` |
+| `schemes/<jobId>.json` | метаданные схемы, статус, `partialGraphReady` | JSON | `address_schemes` / `scheme_meta` |
+| `manual-cad/<id>/project.json` | геометрия чертежа | JSON | `manual_cad_projects` (`jsonb`) |
+| `<jobId>/graph.json` | производный граф/CAD | остаётся файлом | артефакт тома |
+| `<jobId>/diagnostics.json` | производная диагностика | остаётся файлом | артефакт тома |
+| `output/archive_index.json` | метаданные архива | JSON | `archive_entries` / `report_runs` |
+| `report-files/*` | фото/эскизы | файлы | том + метаданные в БД |
+| `template/*` | шаблон PDF | файл | том |
+
+Правило: JSON остаётся только для производных артефактов и разового backfill; state-сущности — PostgreSQL.
+
 ### 3.3 P2 — качество и производительность
 
 | ID | Проблема | Evidence | Что делать |
@@ -161,13 +179,13 @@
 
 ### Фаза 1 — архитектурный минимум (1–3 недели)
 
-- [~] **P1-1** PostgreSQL для users/sessions/roles, tasks/reports/defects, address library, jobs, report_runs, audit; JSONB только для graph/document metadata; migration tool; индексы; пагинация.
-  - **Сделано (expand)**: Prisma-модели `User`/`Session`, миграция `20261114120000_init_users_sessions`, `postgres-repo.js`, dual-write из JSON, hydration пустого JSON из PostgreSQL, `AUTH_BACKEND=postgres`, `DATABASE_URL` в compose/env.
-  - **Проверено**: локальный PG `:55432` — setup/login/logout пишут/удаляют сессии; второй инстанс с пустым JSON подхватил пользователя из БД.
-  - **Осталось**: tasks/reports/defects/address library/jobs/audit, выключение JSON, migration/backfill, Prisma cutover.
-- [x] **P1-2** Сессии в БД: cleanup, rotation, revoke-all, idle timeout, CSRF.
-  - **Сделано**: периодическая очистка просроченных сессий (`workforce-system.js`).
-  - **Осталось**: таблица `sessions`, revoke-all, idle timeout, CSRF — после P1-1.
+- [~] **P1-1** PostgreSQL вместо JSON.
+  - **Готово**: `users` и `sessions` полностью в PostgreSQL (чтение/запись), JSON только для one-time backfill; `AUTH_BACKEND=postgres` по умолчанию в compose; Prisma-клиент генерируется в Docker.
+  - **Проверено**: backfill 4 пользователей, login/logout/create user — только PG; mtime `users.json`/`sessions.json` не меняются; Playwright-вход работает.
+  - **Осталось**: `address-library` (streets/buildings/schemes), `workspace` (tasks/reports/defects), `manual-cad` (JSONB), `scheme meta`, archive index; затем удалить JSON-код.
+- [~] **P1-2** Сессии в PostgreSQL.
+  - **Готово**: таблица `sessions`, cleanup, удаление при logout/reset/deactivate.
+  - **Осталось**: CSRF, idle timeout, revoke-all, multi-instance cache.
 - [~] **P1-3** Idempotency keys.
   - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`, заголовок `Idempotency-Key` на `POST /api/workforce/tasks`; повтор возвращает исходный ответ без создания дубля.
   - **Проверено**: два одинаковых запроса с одним ключом → один `assignmentGroupId`, одна задача, одна строка в БД.
@@ -284,3 +302,5 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - P1-1 (expand): Prisma `User`/`Session` + миграция + dual-write + hydration; проверено на локальном PostgreSQL `:55432`.
 - `AUTH_BACKEND=postgres` — dev-переключатель; по умолчанию `json`, JSON остаётся источником правды.
 - P1-3 (частично): `idempotency_keys` + `Idempotency-Key` на создание заданий; проверено на локальном PostgreSQL (дубль не создаётся).
+- P1-1 (auth cutover): `users`/`sessions` полностью в PostgreSQL; JSON только one-time backfill; `AUTH_BACKEND=postgres` по умолчанию; Prisma генерируется в Docker; проверено: backfill 4 пользователей, login/logout/create user без записи JSON, Playwright-вход.
+- Остальные JSON-сущности: `address-library`, `workspace`, `scheme meta`, `manual-cad`, `archive_index` — следующий этап.

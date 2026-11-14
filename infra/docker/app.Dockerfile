@@ -32,6 +32,7 @@ COPY services/ollama/package.json ./services/ollama/package.json
 WORKDIR /app/services/ollama
 RUN npm install --omit=dev --no-audit --no-fund
 COPY services/ollama/ ./
+RUN DATABASE_URL='postgresql://build:build@localhost:5432/build' npx prisma generate --schema prisma/schema.prisma
 COPY VERSION /app/VERSION
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json

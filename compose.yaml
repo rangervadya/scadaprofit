@@ -59,6 +59,8 @@ services:
       MAX_CONCURRENT_PYTHON_JOBS: "${MAX_CONCURRENT_PYTHON_JOBS:-1}"
       SHUTDOWN_TIMEOUT_MS: "${SHUTDOWN_TIMEOUT_MS:-20000}"
       DATA_DIR: "/data/cad-reconstruction-jobs"
+      AUTH_BACKEND: "${AUTH_BACKEND:-postgres}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://vdgo:change_me_vdgo_2026@vdgo-db:5432/vdgo}"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"
@@ -84,6 +86,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      vdgo-db:
+        condition: service_healthy
     volumes:
       - cad_jobs:/data/cad-reconstruction-jobs
     security_opt:
@@ -99,8 +103,6 @@ services:
       VDGO_HOST: 0.0.0.0
       VDGO_PORT: "8765"
       VDGO_DOCKER: "1"
-      AUTH_BACKEND: "${AUTH_BACKEND:-json}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://vdgo:change_me_vdgo_2026@vdgo-db:5432/vdgo}"
       DB_REQUIRED: "1"
       DB_WAIT_SECONDS: "60"
       LOG_LEVEL: "${VDGO_LOG_LEVEL:-info}"

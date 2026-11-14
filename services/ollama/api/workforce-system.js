@@ -4,12 +4,14 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
+import { postgresEnabled } from './db.js';
 import {
   mirrorUser,
   mirrorSession,
   deleteSession,
   deleteUserSessions,
   fetchUsers,
+  fetchSessions,
   findIdempotency,
   saveIdempotency,
 } from './postgres-repo.js';
@@ -217,8 +219,42 @@ export async function createWorkforceSystem({
     await rename(tmp, file);
   }
 
-  let users = await readJson(usersPath, []);
-  let sessions = await readJson(sessionsPath, []);
+  const usePostgres = postgresEnabled();
+  let users;
+  let sessions;
+  if (usePostgres) {
+    users = await fetchUsers();
+    sessions = await fetchSessions();
+    const legacyUsers = await readJson(usersPath, []);
+    const knownUsers = new Set(users.map((user) => user.id));
+    const missingUsers = Array.isArray(legacyUsers)
+      ? legacyUsers.filter((user) => user && !knownUsers.has(user.id))
+      : [];
+    if (missingUsers.length) {
+      users.push(...missingUsers);
+      await Promise.all(missingUsers.map((user) => mirrorUser(user)));
+      log.info({ count: missingUsers.length }, 'Imported legacy users.json into PostgreSQL');
+    }
+    const legacySessions = await readJson(sessionsPath, []);
+    const knownSessions = new Set(sessions.map((session) => session.tokenHash));
+    const missingSessions = Array.isArray(legacySessions)
+      ? legacySessions.filter(
+          (item) =>
+            item &&
+            !knownSessions.has(item.tokenHash) &&
+            Number(item.expiresAt) > Date.now() &&
+            users.some((user) => user.id === item.userId && user.active !== false),
+        )
+      : [];
+    if (missingSessions.length) {
+      sessions.push(...missingSessions);
+      await Promise.all(missingSessions.map((session) => mirrorSession(session)));
+      log.info({ count: missingSessions.length }, 'Imported legacy sessions.json into PostgreSQL');
+    }
+  } else {
+    users = await readJson(usersPath, []);
+    sessions = await readJson(sessionsPath, []);
+  }
   let workspace = await readJson(workforcePath, { tasks: [], reports: [] });
   if (!Array.isArray(users)) users = [];
   if (!Array.isArray(sessions)) sessions = [];
@@ -231,28 +267,28 @@ export async function createWorkforceSystem({
   delete workspace.locations;
   if (hadLegacyLocations) await atomicJson(workforcePath, workspace);
   const now = Date.now();
+  const expiredAtBoot = sessions.filter(
+    (item) => !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
+  );
   sessions = sessions.filter(
     (item) => Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false),
   );
-  await atomicJson(sessionsPath, sessions);
-  const saveUsers = () => atomicJson(usersPath, users);
-  const saveSessions = () => atomicJson(sessionsPath, sessions);
-  if (!users.length) {
-    try {
-      const rows = await fetchUsers();
-      if (rows.length) {
-        users = rows;
-        await saveUsers();
-        log.info({ count: rows.length }, 'Hydrated users from PostgreSQL');
-      }
-    } catch (error) {
-      log.warn({ err: error }, 'Cannot hydrate users from PostgreSQL; keeping JSON store');
+  if (expiredAtBoot.length) await Promise.all(expiredAtBoot.map((item) => deleteSession(item.tokenHash)));
+  if (!usePostgres) await atomicJson(sessionsPath, sessions);
+  const saveUsers = async () => {
+    if (usePostgres) {
+      await Promise.all(users.map((user) => mirrorUser(user)));
+      return;
     }
-  }
-  // Expand phase: keep the PostgreSQL mirror warm. mirrorUser/mirrorSession are
-  // no-ops when AUTH_BACKEND is not postgres.
-  await Promise.all(users.map((user) => mirrorUser(user)));
-  await Promise.all(sessions.map((session) => mirrorSession(session)));
+    await atomicJson(usersPath, users);
+  };
+  const saveSessions = async () => {
+    if (usePostgres) {
+      await Promise.all(sessions.map((session) => mirrorSession(session)));
+      return;
+    }
+    await atomicJson(sessionsPath, sessions);
+  };
   const sessionCleanup = setInterval(
     () => {
       const now = Date.now();
@@ -337,7 +373,6 @@ export async function createWorkforceSystem({
     };
     sessions.push(session);
     await saveSessions();
-    await mirrorSession(session);
     setSessionCookie(res, token, secureCookies);
   }
   function taskForClient(task) {
@@ -515,7 +550,6 @@ export async function createWorkforceSystem({
       };
       users.push(user);
       await saveUsers();
-      await mirrorUser(user);
       await sessionForUser(res, user);
       return res.status(201).json({ ok: true, user: publicUser(user) });
     } finally {
@@ -1459,7 +1493,6 @@ export async function createWorkforceSystem({
       };
       users.push(user);
       await saveUsers();
-      await mirrorUser(user);
       req.log.info(
         { userId: user.id, role, username, generated: autoGenerate, createdBy: req.user.id },
         'Account created',
@@ -1486,7 +1519,6 @@ export async function createWorkforceSystem({
     // Revoke previous sessions so the new password takes effect immediately.
     sessions = sessions.filter((session) => session.userId !== user.id);
     await Promise.all([saveUsers(), saveSessions()]);
-    await mirrorUser(user);
     await deleteUserSessions(user.id);
     req.log.warn(
       { userId: user.id, role: user.role, resetBy: req.user.id },
@@ -1539,7 +1571,6 @@ export async function createWorkforceSystem({
       await deleteUserSessions(user.id);
     }
     await saveUsers();
-    await mirrorUser(user);
     return res.json({ ok: true, user: publicUser(user) });
   });
 

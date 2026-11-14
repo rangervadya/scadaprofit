@@ -162,3 +162,15 @@ export async function saveIdempotency({ endpoint, key, userId = null, status, re
     return false;
   }
 }
+
+export async function fetchSessions() {
+  if (!postgresEnabled()) return [];
+  const prisma = await getPrismaClient();
+  const rows = await prisma.session.findMany({ orderBy: { createdAt: 'asc' } });
+  return rows.map((row) => ({
+    tokenHash: row.tokenHash,
+    userId: row.userId,
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.getTime(),
+  }));
+}

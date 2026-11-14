@@ -21,7 +21,16 @@
 
 ## Запуск в dev
 
-Нужны три процесса. Из корня проекта:
+Нужны три процесса и PostgreSQL (users/sessions хранятся в БД). Для локального
+PostgreSQL можно поднять dev-контейнер:
+
+```bash
+docker run -d --name scada-pg-dev \
+  -e POSTGRES_USER=vdgo -e POSTGRES_PASSWORD=vdgo -e POSTGRES_DB=vdgo \
+  -p 55432:5432 postgres:17.7-alpine
+```
+
+Затем из корня проекта:
 
 ```bash
 # 0. Зависимости (один раз)
@@ -31,6 +40,8 @@ npm --prefix services/ollama install
 
 # 1. Основной API (порт 3000)
 PORT=3000 DATA_DIR=/tmp/scadaprofit-data MASK_PYTHON=python3 \
+  AUTH_BACKEND=postgres \
+  DATABASE_URL=postgresql://vdgo:vdgo@127.0.0.1:55432/vdgo \
   npm --prefix services/ollama start
 
 # 2. Сервис заключений (порт 8765)
@@ -80,7 +91,7 @@ Ollama/модель/Tesseract недоступны.
 | `MAX_CONCURRENT_PYTHON_JOBS` | Сколько Python-джоб одновременно; для одного GPU — 1. |
 | `SHUTDOWN_TIMEOUT_MS` | Сколько Node ждёт активные Python-джобы при SIGTERM. |
 | `DATABASE_URL` | PostgreSQL для Prisma/аудита; без него audit отключён. |
-| `AUTH_BACKEND` | `json` (default) или `postgres` — expand-phase dual-write users/sessions. |
+| `AUTH_BACKEND` | `postgres` (default) или `json` — только для legacy/dev без БД. |
 
 ## Сборка
 
