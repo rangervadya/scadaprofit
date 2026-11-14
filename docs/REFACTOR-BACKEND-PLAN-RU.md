@@ -197,8 +197,8 @@
 - [x] **P1-7** Output isolation + archive.
   - **Сделано**: уникальные `_work_*.pdf`/`generated_*.pdf`/DOCX, удаление после ответа; архив уже подключён.
 - [~] **P1-8** VDGO request safety.
-  - **Сделано**: `VDGO_MAX_REQUEST_BYTES` (256 МБ) + проверка `Content-Length`.
-  - **Осталось**: streaming multipart, лимит на отдельный файл.
+  - **Сделано**: `VDGO_MAX_REQUEST_BYTES` (256 МБ) + проверка `Content-Length`; `VDGO_MAX_FILE_BYTES` (64 МБ) — лимит на отдельный файл внутри multipart.
+  - **Осталось**: streaming multipart (сейчас тело читается целиком в RAM).
 - [~] **P1-9** DB pool + timeouts + migrations.
   - **Сделано**: `statement_timeout=5000`, `lock_timeout=3000`, `application_name=vdgo`; пул соединений `psycopg_pool` в `services/vdgo/database.py` (`VDGO_DB_POOL_MIN/MAX/TIMEOUT/IDLE`), `close_pool()` при shutdown.
   - **Осталось**: pool для Node (Prisma уже пулится), migration tool в CI.

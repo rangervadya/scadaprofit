@@ -1702,6 +1702,9 @@ MAX_WORKFORCE_SCHEMES_JSON_BYTES = 180 * 1024 * 1024
 # close to an OOM for a threaded server; 256 MB still accepts the documented
 # 180 MB scheme payload while rejecting accidental multi-GB uploads early.
 MAX_REQUEST_BYTES = int(os.environ.get('VDGO_MAX_REQUEST_BYTES', str(256 * 1024 * 1024)))
+# Per-file cap inside a multipart request. A single huge image must not exhaust
+# RAM even when the total request stays under MAX_REQUEST_BYTES.
+MAX_FILE_BYTES = int(os.environ.get('VDGO_MAX_FILE_BYTES', str(64 * 1024 * 1024)))
 
 
 def is_structured_payload_field(key):
@@ -2241,6 +2244,8 @@ class Handler(BaseHTTPRequestHandler):
                 if filename:
                     data=part.get_payload(decode=True) or b''
                     if not data: continue
+                    if len(data)>MAX_FILE_BYTES:
+                        raise ValueError(f'Файл "{Path(filename).name}" превышает {MAX_FILE_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображения.')
                     safe=re.sub(r'[^A-Za-z0-9._-]+','_',Path(filename).name)
                     dst=UPLOADS/(uuid.uuid4().hex+'_'+safe); dst.write_bytes(data); files[name]=str(dst)
                 else:
