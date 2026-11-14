@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Button, Card, Field, Loading, Spinner, useToast } from '../components/ui';
-import { cadApi } from '../lib/api';
+import { cadApi, ApiError } from '../lib/api';
 import type {
   ManualCadDimension,
   ManualCadJunction,
@@ -169,7 +169,17 @@ export function CadEditorPage() {
       setDirty(false);
       notify('Чертёж сохранён', 'success');
     } catch (cause) {
-      notify(cause instanceof Error ? cause.message : 'Не удалось сохранить чертёж', 'error');
+      const conflict =
+        cause instanceof ApiError && (cause.status === 409 || cause.details?.includes('REVISION_CONFLICT'));
+      notify(
+        conflict
+          ? 'Чертёж изменил другой редактор. Обновите страницу, чтобы увидеть его правки.'
+          : cause instanceof Error
+            ? cause.message
+            : 'Не удалось сохранить чертёж',
+        'error',
+      );
+      if (conflict) setDirty(true);
     } finally {
       setSaving(false);
     }

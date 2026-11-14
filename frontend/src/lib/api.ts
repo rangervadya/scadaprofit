@@ -29,7 +29,11 @@ export class ApiError extends Error {
 /** Human-readable fallback for a transport-level failure (server unreachable). */
 const NETWORK_ERROR = 'Нет связи с сервером. Проверь, что сервис запущен, и попробуй ещё раз.';
 
-type RequestOptions = Omit<RequestInit, 'body'> & { body?: BodyInit | unknown };
+type RequestOptions = Omit<RequestInit, 'body'> & {
+  body?: BodyInit | unknown;
+  /** Optimistic-concurrency revision sent as If-Match: "<rev>". */
+  ifMatch?: number;
+};
 
 function isFormData(body: unknown): body is FormData {
   return typeof FormData !== 'undefined' && body instanceof FormData;
@@ -57,13 +61,14 @@ function toApiError(payload: unknown, response: Response, fallbackStatus: number
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { body, headers, ...rest } = options;
+  const { body, headers, ifMatch, ...rest } = options;
   const init: RequestInit = { credentials: 'same-origin', cache: 'no-store', ...rest };
   if (body !== undefined && body !== null) {
     init.body = isFormData(body) ? body : JSON.stringify(body);
   }
   const finalHeaders = new Headers(headers);
   if (init.body && !isFormData(body)) finalHeaders.set('Content-Type', 'application/json');
+  if (typeof ifMatch === 'number' && Number.isFinite(ifMatch)) finalHeaders.set('If-Match', `"${ifMatch}"`);
   finalHeaders.set('Accept', 'application/json');
   init.headers = finalHeaders;
 
@@ -171,8 +176,10 @@ export const cadApi = {
   get: (id: string) =>
     api.get<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`),
   save: (id: string, project: ManualCadProject) =>
-    api.put<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`, {
-      project,
+    request<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: { project },
+      ifMatch: project.manualEditRevision,
     }),
   importJob: (jobId: string, title: string) =>
     api.post<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/import-job/${encodeURIComponent(jobId)}`, {

@@ -220,7 +220,8 @@
 
 - [ ] **P2-1** Разбить монолиты на слои.
 - [ ] **P2-2** Compression/cache/ETag/delta-status.
-- [ ] **P2-3** Manual CAD optimistic concurrency.
+- [x] **P2-3** Manual CAD optimistic concurrency.
+  - **Сделано**: `If-Match: "<rev>"` / `body.expectedRevision`; атомарный `updateMany ... where revision = expected`; 409 `REVISION_CONFLICT`; `ETag` в ответе; фронт показывает «изменил другой редактор»; исправлена бесконечная рекурсия `readManualProject` в JSON-режиме; тест `tests/node/manual-cad-concurrency.test.js`.
 - [ ] **P2-4** Выделить AI-worker, очередь Redis/Postgres, retry/DLQ.
 - [ ] **P2-5** SLO + нагрузочные тесты.
 - [ ] **P2-6** Воспроизводимость сборки + SBOM.

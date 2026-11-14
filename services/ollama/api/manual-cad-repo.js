@@ -35,6 +35,40 @@ export async function saveManualProject(project) {
   return true;
 }
 
+/**
+ * Optimistic concurrency save: writes only when the stored revision still
+ * equals expectedRevision. Returns 'ok' | 'conflict' | 'missing'.
+ * On conflict the caller must re-read and merge — no silent overwrite.
+ */
+export async function saveManualProjectIfRevision(project, expectedRevision) {
+  if (!postgresEnabled() || !project?.id) return 'missing';
+  const prisma = await getPrismaClient();
+  const row = {
+    id: project.id,
+    title: String(project.title || ''),
+    data: project,
+    revision: Math.max(0, Number(project.manualEditRevision || 0)),
+  };
+  const expected = Math.max(0, Number(expectedRevision || 0));
+  const result = await prisma.manualCadProject.updateMany({
+    where: { id: project.id, revision: expected },
+    data: { title: row.title, data: row.data, revision: row.revision },
+  });
+  if (result.count === 1) return 'ok';
+  const exists = await prisma.manualCadProject.count({ where: { id: project.id } });
+  return exists ? 'conflict' : 'missing';
+}
+
+export async function currentManualRevision(id) {
+  if (!postgresEnabled() || !id) return null;
+  const prisma = await getPrismaClient();
+  const row = await prisma.manualCadProject.findUnique({
+    where: { id },
+    select: { revision: true },
+  });
+  return row ? Number(row.revision || 0) : null;
+}
+
 export async function deleteManualProject(id) {
   if (!postgresEnabled() || !id) return false;
   const prisma = await getPrismaClient();

@@ -10,3 +10,4 @@ frontend/public/vdgo/
 .playwright-mcp/
 services/ollama/prisma/generated/
 .ruff_cache/
+.pytest_cache/

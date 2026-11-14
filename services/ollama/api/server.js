@@ -41,6 +41,7 @@ import {
   fetchManualProject,
   fetchManualProjects,
   saveManualProject,
+  saveManualProjectIfRevision,
   findManualProjectBySourceJob,
   findManualProjectBySourceReport,
 } from './manual-cad-repo.js';
@@ -584,7 +585,16 @@ async function readManualProject(id) {
     }
     return project;
   }
-  return await readManualProject(id);
+  const target = manualProjectPath(id);
+  const raw = await readFile(target, 'utf8').catch((error) => {
+    if (error?.code === 'ENOENT') {
+      const notFound = new Error('Не удалось открыть ручной чертёж.');
+      notFound.code = 'ENOENT';
+      throw notFound;
+    }
+    throw error;
+  });
+  return JSON.parse(raw);
 }
 
 async function writeManualProject(project) {
@@ -597,6 +607,38 @@ async function writeManualProject(project) {
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
   await rename(temporary, target);
+}
+
+/**
+ * Optimistic-concurrency write. Postgres path is atomic via updateMany;
+ * JSON path re-reads the file under a temp+rename guard so a stale revision
+ * is rejected the same way. Returns 'ok' | 'conflict' | 'missing'.
+ */
+async function writeManualProjectIfRevision(project, expectedRevision) {
+  const expected = Math.max(0, Number(expectedRevision || 0));
+  if (postgresEnabled()) return saveManualProjectIfRevision(project, expected);
+
+  const target = manualProjectPath(project.id);
+  let raw;
+  try {
+    raw = await readFile(target, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 'missing';
+    throw error;
+  }
+  let current;
+  try {
+    current = JSON.parse(raw);
+  } catch {
+    return 'missing';
+  }
+  if (Math.max(0, Number(current.manualEditRevision || 0)) !== expected) return 'conflict';
+
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
+  await rename(temporary, target);
+  return 'ok';
 }
 
 async function listManualProjects() {
@@ -2427,8 +2469,34 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
     const input = req.body?.project && typeof req.body.project === 'object' ? req.body.project : req.body;
     const project = normalizeManualCadProject(input, current);
     project.source = current.source || null;
-    project.manualEditRevision = Math.max(0, Number(current.manualEditRevision || 0)) + 1;
-    await writeManualProject(project);
+    const currentRevision = Math.max(0, Number(current.manualEditRevision || 0));
+    project.manualEditRevision = currentRevision + 1;
+
+    // Optimistic concurrency: reject a write built on a stale revision.
+    // Clients may send If-Match: "<rev>" or body.expectedRevision.
+    const ifMatch = String(req.get('If-Match') || '')
+      .replace(/"/g, '')
+      .trim();
+    const expectedRevision = ifMatch !== '' ? Number(ifMatch) : Number(req.body?.expectedRevision);
+    if (Number.isFinite(expectedRevision) && expectedRevision !== currentRevision) {
+      return res.status(409).json({
+        error: 'Чертёж был изменён другим редактором. Обновите страницу и повторите сохранение.',
+        code: 'REVISION_CONFLICT',
+        currentRevision,
+      });
+    }
+
+    const result = await writeManualProjectIfRevision(project, currentRevision);
+    if (result === 'conflict') {
+      return res.status(409).json({
+        error: 'Чертёж был изменён другим редактором. Обновите страницу и повторите сохранение.',
+        code: 'REVISION_CONFLICT',
+        currentRevision,
+      });
+    }
+    if (result === 'missing') return res.status(404).json({ error: 'Чертёж не найден.' });
+
+    res.set('ETag', `"${project.manualEditRevision}"`);
     return res.json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 400;
