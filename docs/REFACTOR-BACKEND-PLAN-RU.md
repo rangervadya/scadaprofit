@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1: данные в PostgreSQL, осталось P1-4/5/12 и cleanup**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1: данные в PostgreSQL; P1-4/8/9/12 частично, P1-5 и cleanup — на прод; P1-14 нормализация и P2 — далее**. Обновляется по мере выполнения пунктов.
 
 ## 0. Как читать
 
@@ -189,7 +189,9 @@
 - [~] **P1-3** Idempotency keys.
   - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`; `Idempotency-Key` на `POST /api/workforce/tasks` и `POST /api/analyze` (повтор с тем же ключом не запускает GPU-пайплайн повторно); регресс-тест `tests/node/idempotency.test.js`.
   - **Осталось**: `/vdgo/generate` (бинарный ответ), in-memory fallback.
-- [ ] **P1-4** Retention + backup + restore drill.
+- [~] **P1-4** Retention + backup + restore drill.
+  - **Сделано**: `infra/scripts/backup.sh` (pg_dump + тома + `BACKUP_KEEP`), `infra/scripts/restore.sh`, `infra/scripts/retention.sh` (`RETENTION_DAYS`), `docs/BACKUP-RESTORE-RU.md`.
+  - **Осталось**: провести restore drill на чистой машине (DoD пункта).
 - [ ] **P1-5** OTel/metrics/tracing/dashboards/alerts.
 - [x] **P1-6** Health semantics + `/api/readyz`.
   - **Сделано**: liveness `/api/health` всегда `ok:true`; `/api/readyz` = 503 без Ollama/модели/Tesseract; кэш tesseract 30 с; Topbar показывает «Без Ollama: базовые сервисы».
