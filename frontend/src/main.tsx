@@ -4,7 +4,6 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { Spinner, ToastProvider } from './components/ui';
 import { AuthProvider, useAuth } from './lib/auth';
-import type { SessionUser } from './lib/types';
 import './styles/index.css';
 
 const lazyPage = (loader: () => Promise<Record<string, unknown>>, name: string) =>
@@ -44,14 +43,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RequireRole({ children, roles }: { children: React.ReactNode; roles: SessionUser['role'][] }) {
-  const { user } = useAuth();
-  if (!user || !roles.includes(user.role)) return <Navigate to="/" replace />;
-  return <>{children}</>;
-}
-
-const STAFF_ROLES: SessionUser['role'][] = ['receiver', 'supervisor', 'developer'];
-
 function NotFoundPage() {
   return (
     <div className="stack" style={{ justifyItems: 'center', textAlign: 'center', padding: '60px 0' }}>
@@ -78,14 +69,14 @@ export function App() {
               }
             >
               <Route index element={<DashboardPage />} />
-              <Route path="/conclusion" element={<RequireRole roles={STAFF_ROLES}><ConclusionPage /></RequireRole>} />
-              <Route path="/schemes" element={<RequireRole roles={STAFF_ROLES}><SchemesPage /></RequireRole>} />
-              <Route path="/schemes/:jobId" element={<RequireRole roles={STAFF_ROLES}><SchemeDetailPage /></RequireRole>} />
-              <Route path="/archive" element={<RequireRole roles={STAFF_ROLES}><ArchivePage /></RequireRole>} />
+              <Route path="/conclusion" element={<ConclusionPage />} />
+              <Route path="/schemes" element={<SchemesPage />} />
+              <Route path="/schemes/:jobId" element={<SchemeDetailPage />} />
+              <Route path="/archive" element={<ArchivePage />} />
               <Route path="/team" element={<TeamPage />} />
-              <Route path="/cad" element={<RequireRole roles={STAFF_ROLES}><CadPage /></RequireRole>} />
-              <Route path="/cad/:id" element={<RequireRole roles={STAFF_ROLES}><CadEditorPage /></RequireRole>} />
-              <Route path="/settings" element={<RequireRole roles={STAFF_ROLES}><SettingsPage /></RequireRole>} />
+              <Route path="/cad" element={<CadPage />} />
+              <Route path="/cad/:id" element={<CadEditorPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>

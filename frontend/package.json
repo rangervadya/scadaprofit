@@ -1,6 +1,6 @@
 {
   "name": "scadaprofit-unified-frontend",
-  "version": "4.5.15",
+  "version": "4.5.13",
   "private": true,
   "type": "module",
   "scripts": {

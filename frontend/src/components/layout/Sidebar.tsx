@@ -12,16 +12,14 @@ export type NavItem = {
   roles?: SessionUser['role'][];
 };
 
-const STAFF_ROLES: SessionUser['role'][] = ['receiver', 'supervisor', 'developer'];
-
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Рабочий стол', icon: 'home', end: true },
-  { to: '/conclusion', label: 'Заключение', icon: 'doc', roles: STAFF_ROLES },
-  { to: '/schemes', label: 'Схемы домов', icon: 'scheme', roles: STAFF_ROLES },
-  { to: '/archive', label: 'Архив', icon: 'archive', roles: STAFF_ROLES },
+  { to: '/conclusion', label: 'Заключение', icon: 'doc' },
+  { to: '/schemes', label: 'Схемы домов', icon: 'scheme' },
+  { to: '/archive', label: 'Архив', icon: 'archive' },
   { to: '/team', label: 'Команда', icon: 'team' },
-  { to: '/cad', label: 'CAD-редактор', icon: 'cad', roles: STAFF_ROLES },
-  { to: '/settings', label: 'Настройки', icon: 'settings', roles: STAFF_ROLES },
+  { to: '/cad', label: 'CAD-редактор', icon: 'cad' },
+  { to: '/settings', label: 'Настройки', icon: 'settings' },
 ];
 
 export function initials(name: string): string {

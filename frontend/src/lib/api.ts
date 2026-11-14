@@ -79,6 +79,7 @@ export const healthApi = {
   main: () => api.get<HealthResponse>(`${MAIN}/health`),
   vdgo: () => api.get<HealthResponse>(`${VDGO}/health`),
   reports: () => api.get<{ items?: ReportRun[] }>(`${VDGO}/reports`),
+  archiveReports: () => api.get<{ items?: ReportRun[] }>(`${VDGO}/reports?archived=1&limit=200`),
 };
 
 export const libraryApi = {
@@ -191,7 +192,9 @@ export const conclusionApi = {
   preview: (form: FormData) => submitForm('/vdgo/preview', form),
 };
 
-async function submitForm(path: string, form: FormData): Promise<void> {
+type FormSubmitResult = { reportId: number | null; filename: string };
+
+async function submitForm(path: string, form: FormData): Promise<FormSubmitResult> {
   const response = await fetch(path, { method: 'POST', body: form, credentials: 'same-origin' });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -205,10 +208,12 @@ async function submitForm(path: string, form: FormData): Promise<void> {
     }
     throw new ApiError(message, response.status);
   }
+  const reportId = Number(response.headers.get('X-Report-Id')) || null;
   const blob = await response.blob();
   const disposition = response.headers.get('Content-Disposition') || '';
   const filename = decodeDisposition(disposition) || (path.includes('docx') ? 'Заключение.docx' : 'Заключение.pdf');
   downloadBlob(blob, filename);
+  return { reportId, filename };
 }
 
 function decodeDisposition(value: string): string {

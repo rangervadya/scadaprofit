@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../ui/Icon';
 import { useHealth } from '../../lib/health';
 import { useActiveNav } from './Sidebar';
-import { useAuth } from '../../lib/auth';
 
 const stateLabel = (online: boolean | null, loading: boolean): string => {
   if (loading) return 'Проверка сервисов';
@@ -13,8 +12,6 @@ const stateLabel = (online: boolean | null, loading: boolean): string => {
 
 export function Topbar() {
   const { data, loading, error } = useHealth();
-  const { user } = useAuth();
-  const isFitter = user?.role === 'fitter';
   const location = useLocation();
   const active = useActiveNav();
   const navigate = useNavigate();
@@ -29,7 +26,7 @@ export function Topbar() {
       <Link to="/" className="topbar__icon mobile-only" aria-label="На главную">
         <Icon name="menu" />
       </Link>
-      {!isFitter ? <form
+      <form
         className="searchbox"
         role="search"
         onSubmit={event => {
@@ -47,17 +44,15 @@ export function Topbar() {
           aria-label="Глобальный поиск"
         />
         <kbd>Enter</kbd>
-      </form> : null}
+      </form>
       <span className="topbar__spacer" />
-      {!isFitter ? <>
-        <Link to="/settings" className="status-pill" title={error || data?.localRecognition?.mode || 'Состояние сервисов'}>
-          <span className={`status-dot ${loading ? 'status-dot--checking' : online ? 'status-dot--ok' : 'status-dot--error'}`} />
-          {stateLabel(online, loading)}
-        </Link>
-        <Link to="/settings" className="topbar__icon" aria-label="Настройки">
-          <Icon name="settings" />
-        </Link>
-      </> : null}
+      <Link to="/settings" className="status-pill" title={error || data?.localRecognition?.mode || 'Состояние сервисов'}>
+        <span className={`status-dot ${loading ? 'status-dot--checking' : online ? 'status-dot--ok' : 'status-dot--error'}`} />
+        {stateLabel(online, loading)}
+      </Link>
+      <Link to="/settings" className="topbar__icon" aria-label="Настройки">
+        <Icon name="settings" />
+      </Link>
       <span className="visually-hidden" aria-live="polite">{active?.label || 'Раздел'}</span>
     </header>
   );

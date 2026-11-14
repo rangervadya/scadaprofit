@@ -27,31 +27,20 @@ export function DashboardPage() {
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
   const [tasksError, setTasksError] = useState<string | null>(null);
 
-  const isFitter = user?.role === 'fitter';
-
   useEffect(() => {
-    if (!isFitter) {
-      healthApi.reports()
-        .then(data => setReports(Array.isArray(data.items) ? data.items : []))
-        .catch(cause => setReportsError(cause instanceof Error ? cause.message : 'Не удалось загрузить историю'));
-    } else {
-      setReports([]);
-      setReportsError(null);
-    }
+    healthApi.reports()
+      .then(data => setReports(Array.isArray(data.items) ? data.items : []))
+      .catch(cause => setReportsError(cause instanceof Error ? cause.message : 'Не удалось загрузить историю'));
     if (user) {
       workforceApi.tasks()
         .then(data => setTasks(data.tasks || []))
         .catch(cause => setTasksError(cause instanceof Error ? cause.message : 'Не удалось загрузить задания'));
     }
-  }, [user, isFitter]);
+  }, [user]);
 
   const activeTasks = useMemo(
     () => tasks.filter(task => !['accepted', 'superseded'].includes(task.status)),
     [tasks],
-  );
-  const visibleQuickLinks = useMemo(
-    () => (isFitter ? QUICK_LINKS.filter(link => link.to === '/team') : QUICK_LINKS),
-    [isFitter],
   );
   const myTasks = useMemo(
     () => (user?.role === 'fitter' ? tasks.filter(task => task.assignedTo === user.id) : activeTasks),
@@ -72,14 +61,12 @@ export function DashboardPage() {
               : 'Единый контур: заключения, ручные схемы, CAD-редактор, архив и приёмка работ слесарей.'}
           </p>
           <div className="hero__actions">
-            {!isFitter ? <>
-              <Link to="/conclusion" className="btn btn--primary"><Icon name="doc" /> Открыть заключение</Link>
-              <Link to="/schemes" className="btn"><Icon name="upload" /> Загрузить схему</Link>
-            </> : null}
-            <Link to="/team" className="btn"><Icon name="team" /> {isFitter ? 'Мои задания' : 'Задания и отчёты'}</Link>
+            <Link to="/conclusion" className="btn btn--primary"><Icon name="doc" /> Открыть заключение</Link>
+            <Link to="/schemes" className="btn"><Icon name="upload" /> Загрузить схему</Link>
+            <Link to="/team" className="btn"><Icon name="team" /> Задания и отчёты</Link>
           </div>
         </div>
-        {!isFitter ? <div className="hero__aside">
+        <div className="hero__aside">
           <div className="hero__metric">
             <div className="hero__metric-value">{reports.length}</div>
             <div className="hero__metric-label">Заключений сформировано</div>
@@ -88,11 +75,11 @@ export function DashboardPage() {
             <div className="hero__metric-value">{activeTasks.length}</div>
             <div className="hero__metric-label">Активных заданий</div>
           </div>
-        </div> : null}
+        </div>
       </section>
 
       <div className="quick-grid">
-        {visibleQuickLinks.map(link => (
+        {QUICK_LINKS.map(link => (
           <Link key={link.to} to={link.to} className="quick-card">
             <span className="quick-card__icon"><Icon name={link.icon} /></span>
             <span className="quick-card__title">{link.title}</span>
@@ -101,7 +88,7 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <div className={`split ${isFitter ? '' : 'split--equal'}`}>
+      <div className="split split--equal">
         <Card
           title={user?.role === 'fitter' ? 'Мои задания' : 'Ближайшие задания'}
           actions={<Link to="/team" className="btn btn--ghost btn--sm">Все задания <Icon name="chevronRight" /></Link>}
@@ -134,7 +121,7 @@ export function DashboardPage() {
           )}
         </Card>
 
-        {!isFitter ? <Card
+        <Card
           title="Последние заключения"
           actions={<Link to="/archive" className="btn btn--ghost btn--sm">Архив <Icon name="chevronRight" /></Link>}
           flush
@@ -162,34 +149,8 @@ export function DashboardPage() {
               </table>
             </div>
           )}
-        </Card> : null}
+        </Card>
       </div>
-
-      {!isFitter ? <Card title="Состояние контура">
-        {health.loading ? (
-          <Loading>Проверяем сервисы…</Loading>
-        ) : health.error ? (
-          <div className="alert alert--danger"><Icon name="alert" /><span>{health.error}</span></div>
-        ) : (
-          <div className="grid grid--3">
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="server" /></span> Основной сервис</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.mode || 'app'}</span>
-              <span className="stat__hint">{health.data?.version || 'версия не указана'}</span>
-            </div>
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="sparkles" /></span> Распознавание</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.localRecognition?.mode || '—'}</span>
-              <span className="stat__hint">Локальные модели, облако отключено</span>
-            </div>
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="doc" /></span> Эталонный шаблон</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.drawingTemplateConfigured ? 'Загружен' : 'Не загружен'}</span>
-              <span className="stat__hint">Управляется в настройках</span>
-            </div>
-          </div>
-        )}
-      </Card> : null}
     </>
   );
 }

@@ -8,6 +8,7 @@ import { useAuth } from '../lib/auth';
 export function LoginPage() {
   const { user, loading, login } = useAuth();
   const navigate = useNavigate();
+  const [setupRequired, setSetupRequired] = useState(false);
   const [mode, setMode] = useState<'login' | 'setup'>('login');
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -19,9 +20,10 @@ export function LoginPage() {
     authApi
       .status()
       .then(status => {
+        setSetupRequired(status.setupRequired);
         if (status.setupRequired) setMode('setup');
       })
-      .catch(() => setMode('login'));
+      .catch(() => setSetupRequired(false));
   }, []);
 
   if (loading) {
@@ -42,7 +44,6 @@ export function LoginPage() {
     try {
       if (mode === 'setup') {
         await authApi.setup(username, displayName, password);
-        await login(username, password);
       } else {
         await login(username, password);
       }
@@ -114,6 +115,18 @@ export function LoginPage() {
             {mode === 'setup' ? 'Создать аккаунт и войти' : 'Войти'}
           </Button>
 
+          {!setupRequired ? (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                setMode(current => (current === 'login' ? 'setup' : 'login'));
+                setError(null);
+              }}
+            >
+              {mode === 'login' ? 'Первичная настройка системы' : 'Вернуться ко входу'}
+            </button>
+          ) : null}
         </form>
       </main>
     </div>

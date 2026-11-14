@@ -21,7 +21,7 @@ export function ArchivePage() {
     setLoading(true);
     try {
       const [reportData, projectData] = await Promise.all([
-        healthApi.reports(),
+        healthApi.archiveReports(),
         cadApi.list(),
       ]);
       setReports(Array.isArray(reportData.items) ? reportData.items : []);
@@ -54,6 +54,11 @@ export function ArchivePage() {
     if (!needle) return projects;
     return projects.filter(project => `${project.title} ${project.siteAddress}`.toLocaleLowerCase('ru').includes(needle));
   }, [projects, query]);
+
+  const downloadReport = (report: ReportRun) => {
+    if (!report.archived) return;
+    window.location.assign(`/vdgo/api/reports/${report.id}/download`);
+  };
 
   return (
     <>
@@ -105,7 +110,7 @@ export function ArchivePage() {
           ) : (
             <div className="table-wrap">
               <table className="table">
-                <thead><tr><th>Номер</th><th>Дата заключения</th><th>Формат</th><th>Страниц</th><th>Создано</th><th>Файл</th></tr></thead>
+                <thead><tr><th>Номер</th><th>Дата заключения</th><th>Формат</th><th>Страниц</th><th>Создано</th><th>Файл</th><th /></tr></thead>
                 <tbody>
                   {filteredReports.map(report => (
                     <tr key={report.id}>
@@ -114,7 +119,16 @@ export function ArchivePage() {
                       <td><Badge tone="brand" plain>{report.output_format?.toUpperCase() || '—'}</Badge></td>
                       <td className="num">{report.page_count || '—'}</td>
                       <td className="nowrap muted">{formatDateTime(report.created_at)}</td>
-                      <td className="text-truncate" style={{ maxWidth: 260 }} title={report.output_filename}>{report.output_filename}</td>
+                      <td className="text-truncate" style={{ maxWidth: 260 }} title={report.original_filename || report.output_filename}>
+                        {report.original_filename || report.output_filename}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {report.archived ? (
+                          <Button size="sm" icon="download" onClick={() => downloadReport(report)}>Скачать</Button>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

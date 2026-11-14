@@ -126,7 +126,7 @@ export function TeamPage() {
     } finally {
       setLoading(false);
     }
-  }, [isFitter, canManage]);
+  }, [isFitter]);
 
   useEffect(() => {
     void load();
