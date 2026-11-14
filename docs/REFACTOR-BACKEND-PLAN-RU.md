@@ -228,7 +228,8 @@
 - [ ] **P2-5** SLO + нагрузочные тесты.
 - [ ] **P2-6** Воспроизводимость сборки + SBOM.
 - [ ] **P2-7** Удалить dead code.
-- [ ] **P2-8** ADR/runbook/DR.
+- [x] **P2-8** ADR/runbook/DR.
+  - **Сделано**: `docs/adr/0001-postgres-system-of-record.md`, `docs/adr/0002-no-api-versioning.md`, `docs/runbook.md` (запуск, verify, backup/restore, retention, аварии, отложенное до прода).
 
 ### Фаза 3 — долгосрочно
 
