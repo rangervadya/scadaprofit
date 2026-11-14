@@ -1,6 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import multer from 'multer';
 import path from 'node:path';
 import os from 'node:os';
@@ -451,13 +451,17 @@ const limitHeavyRequests = rateLimit({
 });
 // Per-user quota: authenticated users are limited by account id rather than IP so
 // one busy office cannot starve another behind the same NAT/gateway. Falls back
-// to IP for anonymous requests.
+// to IP for anonymous requests (normalized for IPv6 via ipKeyGenerator).
 const heavyQuota = rateLimit({
   windowMs: Number(process.env.HEAVY_QUOTA_WINDOW_MS || 60_000),
   limit: Number(process.env.HEAVY_QUOTA_LIMIT || 30),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.user?.id ? `user:${req.user.id}` : `ip:${req.ip}`),
+  keyGenerator: (req) => {
+    if (req.user?.id) return `user:${req.user.id}`;
+    // express-rate-limit v8 requires this helper for correct IPv6 handling.
+    return `ip:${ipKeyGenerator(req.ip)}`;
+  },
   message: { error: 'Превышена квота на тяжёлые операции. Повторите попытку позже.' },
 });
 app.use(
