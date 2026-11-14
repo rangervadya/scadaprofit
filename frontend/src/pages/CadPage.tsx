@@ -50,7 +50,7 @@ export function CadPage() {
     }
   };
 
-  const filtered = projects.filter(project => {
+  const filtered = projects.filter((project) => {
     const needle = query.trim().toLocaleLowerCase('ru');
     if (!needle) return true;
     return `${project.title} ${project.siteAddress}`.toLocaleLowerCase('ru').includes(needle);
@@ -65,38 +65,71 @@ export function CadPage() {
           <p className="page__subtitle">Рисуйте схемы вручную или дорабатывайте импортированные из распознавания.</p>
         </div>
         <div className="page__actions">
-          <Button icon="refresh" onClick={() => void load()} disabled={loading}>Обновить</Button>
-          <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>Новый чертёж</Button>
+          <Button icon="refresh" onClick={() => void load()} disabled={loading}>
+            Обновить
+          </Button>
+          <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
+            Новый чертёж
+          </Button>
         </div>
       </header>
 
       <div className="row row--wrap">
         <div className="searchbox" style={{ width: 'min(360px, 100%)' }}>
           <Icon name="search" />
-          <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Поиск по чертежам…" aria-label="Поиск по чертежам" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Поиск по чертежам…"
+            aria-label="Поиск по чертежам"
+          />
         </div>
         <span className="grow" />
         <Badge plain>Всего: {projects.length}</Badge>
       </div>
 
-      {loading ? <Card><Loading>Загружаем чертежи…</Loading></Card> : null}
+      {loading ? (
+        <Card>
+          <Loading>Загружаем чертежи…</Loading>
+        </Card>
+      ) : null}
 
       {error ? (
-        <div className="alert alert--danger"><Icon name="alert" /><div><div style={{ fontWeight: 650 }}>{error}</div><div className="row" style={{ marginTop: 8 }}><Button size="sm" onClick={() => void load()}>Повторить</Button></div></div></div>
+        <div className="alert alert--danger">
+          <Icon name="alert" />
+          <div>
+            <div style={{ fontWeight: 650 }}>{error}</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <Button size="sm" onClick={() => void load()}>
+                Повторить
+              </Button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {!loading && !error ? (
         filtered.length === 0 ? (
           <Card>
-            <Empty icon="cad" title="Чертежей нет" action={<Button variant="primary" icon="plus" onClick={() => setCreating(true)}>Создать чертёж</Button>}>
+            <Empty
+              icon="cad"
+              title="Чертежей нет"
+              action={
+                <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
+                  Создать чертёж
+                </Button>
+              }
+            >
               Начните с нового чертежа или откройте CAD из импортированной схемы.
             </Empty>
           </Card>
         ) : (
           <div className="grid grid--3">
-            {filtered.map(project => (
+            {filtered.map((project) => (
               <Link key={project.id} to={`/cad/${project.id}`} className="quick-card">
-                <span className="quick-card__icon"><Icon name="cad" /></span>
+                <span className="quick-card__icon">
+                  <Icon name="cad" />
+                </span>
                 <span className="quick-card__title">{project.title}</span>
                 <span className="quick-card__text">{project.siteAddress || 'Адрес не указан'}</span>
                 <span className="row row--wrap" style={{ marginTop: 4 }}>
@@ -117,18 +150,30 @@ export function CadPage() {
           footer={
             <>
               <Button onClick={() => setCreating(false)}>Отмена</Button>
-              <Button variant="primary" disabled={busy} onClick={create}>Создать</Button>
+              <Button variant="primary" disabled={busy} onClick={create}>
+                Создать
+              </Button>
             </>
           }
         >
           <Field label="Название" required>
-            <input className="input" value={title} onChange={event => setTitle(event.target.value)} autoFocus placeholder="Например, дом 5, подъезд 1" />
+            <input
+              className="input"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              autoFocus
+              placeholder="Например, дом 5, подъезд 1"
+            />
           </Field>
           <p className="field__hint">Чертёж создаётся пустым. Подложку можно загрузить внутри редактора.</p>
         </Modal>
       ) : null}
 
-      {busy ? <span className="loading"><Spinner /> Создаём чертёж…</span> : null}
+      {busy ? (
+        <span className="loading">
+          <Spinner /> Создаём чертёж…
+        </span>
+      ) : null}
     </>
   );
 }

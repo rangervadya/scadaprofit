@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Create a reflowable Word report with native editable text and tables.
 
 Unlike the layout-preserving exporter, this module does NOT insert each page as a
@@ -9,16 +8,15 @@ is naturally still an image and must be replaced or OCRed separately.
 """
 from __future__ import annotations
 
-from io import BytesIO
+import re
 from pathlib import Path
 from statistics import median
-import re
+
 import pymupdf as fitz
 from docx import Document
-from docx.shared import Cm, Pt, RGBColor
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
-
+from docx.shared import Cm, Pt, RGBColor
 from logging_setup import get_logger
 
 log = get_logger('vdgo.docx')

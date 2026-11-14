@@ -38,8 +38,10 @@ export function ConclusionPage() {
     setContextError(null);
     workforceApi
       .conclusionContext({ task: taskId, report: reportId || undefined, defectReport: defectId || undefined })
-      .then(data => setContext({ task: data.task, reports: data.reports || [], defectReports: data.defectReports || [] }))
-      .catch(cause => {
+      .then((data) =>
+        setContext({ task: data.task, reports: data.reports || [], defectReports: data.defectReports || [] }),
+      )
+      .catch((cause) => {
         setContext(null);
         setContextError(cause instanceof Error ? cause.message : 'Не удалось загрузить материалы задания');
       })
@@ -50,13 +52,15 @@ export function ConclusionPage() {
     const sections = document.querySelectorAll<HTMLElement>('.form-section');
     if (!sections.length) return;
     const observer = new IntersectionObserver(
-      entries => {
-        const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
         if (visible?.target.id) setActiveSection(visible.target.id);
       },
       { rootMargin: '-120px 0px -60% 0px', threshold: 0 },
     );
-    sections.forEach(section => observer.observe(section));
+    sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
   }, []);
 
@@ -64,10 +68,12 @@ export function ConclusionPage() {
     const reports = context?.reports || [];
     const defects = context?.defectReports || [];
     return {
-      schemes: reports.filter(report => report.manualCadProjectId && report.status === 'accepted'),
+      schemes: reports.filter((report) => report.manualCadProjectId && report.status === 'accepted'),
       defects,
       photos: defects.reduce((sum, report) => sum + (report.photos || []).length, 0),
-      ready: reports.every(report => report.manualCadProjectId || report.schemeJobId) && defects.every(report => (report.photos || []).length > 0),
+      ready:
+        reports.every((report) => report.manualCadProjectId || report.schemeJobId) &&
+        defects.every((report) => (report.photos || []).length > 0),
     };
   }, [context]);
 
@@ -123,7 +129,7 @@ export function ConclusionPage() {
       if (taskId && context && materials.schemes.length + materials.defects.length > 0) {
         schemes = await buildWorkforceSchemes(materials.schemes);
         const prepared = await buildDefectPhotos(materials.defects);
-        defectPhotos = prepared.map(item => item.file);
+        defectPhotos = prepared.map((item) => item.file);
       }
       const formData = form.buildFormData(schemes, defectPhotos);
       if (mode === 'preview') {
@@ -153,7 +159,11 @@ export function ConclusionPage() {
           <p className="page__eyebrow">Документы</p>
           <div className="page__title">
             <h1>Техническое заключение ВДГО</h1>
-            {context ? <Badge tone="brand">{context.task.street}, дом {context.task.address}</Badge> : null}
+            {context ? (
+              <Badge tone="brand">
+                {context.task.street}, дом {context.task.address}
+              </Badge>
+            ) : null}
           </div>
           <p className="page__subtitle">
             Заполните данные объекта, проверьте приложения и сформируйте PDF или Word. Черновик автоматически
@@ -161,14 +171,18 @@ export function ConclusionPage() {
           </p>
         </div>
         <div className="page__actions">
-          <Button icon="save" onClick={downloadDraft}>Сохранить JSON</Button>
-          <Button icon="upload" onClick={() => loadRef.current?.click()}>Загрузить JSON</Button>
+          <Button icon="save" onClick={downloadDraft}>
+            Сохранить JSON
+          </Button>
+          <Button icon="upload" onClick={() => loadRef.current?.click()}>
+            Загрузить JSON
+          </Button>
           <input
             ref={loadRef}
             type="file"
             accept="application/json,.json"
             hidden
-            onChange={event => {
+            onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void uploadDraft(file);
               event.target.value = '';
@@ -191,9 +205,14 @@ export function ConclusionPage() {
 
       {taskId ? (
         contextLoading ? (
-          <Card><Loading>Загружаем материалы задания…</Loading></Card>
+          <Card>
+            <Loading>Загружаем материалы задания…</Loading>
+          </Card>
         ) : contextError ? (
-          <div className="alert alert--warn"><Icon name="alert" /><span>{contextError}. Форму можно заполнить вручную без материалов задания.</span></div>
+          <div className="alert alert--warn">
+            <Icon name="alert" />
+            <span>{contextError}. Форму можно заполнить вручную без материалов задания.</span>
+          </div>
         ) : context ? (
           <Card
             title={
@@ -224,18 +243,22 @@ export function ConclusionPage() {
                 <div className="stack stack--sm">
                   <div className="row row--between">
                     <h4>Схемы · {materials.schemes.length}</h4>
-                    <Badge tone={materials.schemes.every(item => item.manualCadProjectId) ? 'success' : 'warn'}>
-                      {materials.schemes.every(item => item.manualCadProjectId) ? 'CAD готов' : 'Готовится'}
+                    <Badge tone={materials.schemes.every((item) => item.manualCadProjectId) ? 'success' : 'warn'}>
+                      {materials.schemes.every((item) => item.manualCadProjectId) ? 'CAD готов' : 'Готовится'}
                     </Badge>
                   </div>
                   {materials.schemes.length === 0 ? (
                     <p className="field__hint">Схемы ещё не добавлены.</p>
                   ) : (
-                    materials.schemes.map(report => (
+                    materials.schemes.map((report) => (
                       <div key={report.id} className="list-item">
                         <div className="list-item__main">
-                          <span className="list-item__title">{report.street}, дом {report.address}</span>
-                          <span className="list-item__meta">{report.userName} · {formatDateTime(report.submittedAt)}</span>
+                          <span className="list-item__title">
+                            {report.street}, дом {report.address}
+                          </span>
+                          <span className="list-item__meta">
+                            {report.userName} · {formatDateTime(report.submittedAt)}
+                          </span>
                         </div>
                         {report.manualCadProjectId ? (
                           <Badge tone="success">Принята</Badge>
@@ -248,19 +271,27 @@ export function ConclusionPage() {
                 </div>
                 <div className="stack stack--sm">
                   <div className="row row--between">
-                    <h4>Дефекты · {materials.defects.length} комплектов, {materials.photos} фото</h4>
-                    <Badge tone={materials.photos ? 'success' : 'warn'}>{materials.photos ? 'Фото есть' : 'Нет фото'}</Badge>
+                    <h4>
+                      Дефекты · {materials.defects.length} комплектов, {materials.photos} фото
+                    </h4>
+                    <Badge tone={materials.photos ? 'success' : 'warn'}>
+                      {materials.photos ? 'Фото есть' : 'Нет фото'}
+                    </Badge>
                   </div>
                   {materials.defects.length === 0 ? (
                     <p className="field__hint">Фотографии дефектов ещё не добавлены.</p>
                   ) : (
-                    materials.defects.map(report => (
+                    materials.defects.map((report) => (
                       <div key={report.id} className="list-item">
                         <div className="list-item__main">
-                          <span className="list-item__title">{report.userName} · {report.photos.length} фото</span>
+                          <span className="list-item__title">
+                            {report.userName} · {report.photos.length} фото
+                          </span>
                           <span className="list-item__meta">{report.note || 'Без комментария'}</span>
                         </div>
-                        <Badge tone={report.status === 'accepted' ? 'success' : 'warn'}>{report.status === 'accepted' ? 'Принят' : 'На проверке'}</Badge>
+                        <Badge tone={report.status === 'accepted' ? 'success' : 'warn'}>
+                          {report.status === 'accepted' ? 'Принят' : 'На проверке'}
+                        </Badge>
                       </div>
                     ))
                   )}
@@ -268,24 +299,30 @@ export function ConclusionPage() {
               </div>
             )}
             <p className="field__hint" style={{ marginTop: 12 }}>
-              Перед экспортом выбранные CAD-схемы растрируются, а фотографии дефектов добавляются в фотослоты и печатаются
-              в Приложении 3.
+              Перед экспортом выбранные CAD-схемы растрируются, а фотографии дефектов добавляются в фотослоты и
+              печатаются в Приложении 3.
             </p>
           </Card>
         ) : (
-          <Card><Empty icon="folder" title="Материалы задания недоступны">Проверьте ссылку или откройте задание в разделе «Команда».</Empty></Card>
+          <Card>
+            <Empty icon="folder" title="Материалы задания недоступны">
+              Проверьте ссылку или откройте задание в разделе «Команда».
+            </Empty>
+          </Card>
         )
       ) : null}
 
       <div className="conclusion-layout">
         <nav className="conclusion-nav" aria-label="Разделы заключения">
-          {SECTIONS.map(section => (
+          {SECTIONS.map((section) => (
             <button
               key={section.id}
               type="button"
               className="conclusion-nav__link"
               aria-current={activeSection === section.id}
-              onClick={() => document.getElementById(section.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              onClick={() =>
+                document.getElementById(section.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }
             >
               <span className="conclusion-nav__num">{section.num}</span>
               {section.title}
@@ -303,7 +340,7 @@ export function ConclusionPage() {
         </nav>
 
         <form id="conclusion-form" ref={formRef} className="stack" onSubmit={submit} noValidate={false}>
-          {SECTIONS.map(section => (
+          {SECTIONS.map((section) => (
             <SectionRenderer key={section.id} section={section} form={form} />
           ))}
 
@@ -320,7 +357,9 @@ export function ConclusionPage() {
             </header>
             <div className="form-section__body">
               <div className="pill-list">
-                <Badge tone="brand" plain>49 основных страниц</Badge>
+                <Badge tone="brand" plain>
+                  49 основных страниц
+                </Badge>
                 <Badge plain>Дополнительные фотолисты</Badge>
                 <Badge plain>11 строк дефектов</Badge>
                 <Badge plain>Без автогенерации вывода</Badge>
@@ -328,18 +367,46 @@ export function ConclusionPage() {
               </div>
               <div className="alert alert--info">
                 <Icon name="info" />
-                <span>Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный адрес.</span>
+                <span>
+                  Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный
+                  адрес.
+                </span>
               </div>
             </div>
           </section>
 
           <div className="sticky-actions">
-            <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>Сбросить</Button>
+            <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>
+              Сбросить
+            </Button>
             <span className="sticky-actions__spacer" />
-            {busy ? <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}><Spinner /> Формируем…</span> : null}
-            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy)}>Word</Button>
-            <Button icon="doc" type="submit" name="format" value="preview" data-format="preview" disabled={Boolean(busy)}>Проверить PDF</Button>
-            <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={Boolean(busy)}>
+            {busy ? (
+              <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}>
+                <Spinner /> Формируем…
+              </span>
+            ) : null}
+            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy)}>
+              Word
+            </Button>
+            <Button
+              icon="doc"
+              type="submit"
+              name="format"
+              value="preview"
+              data-format="preview"
+              disabled={Boolean(busy)}
+            >
+              Проверить PDF
+            </Button>
+            <Button
+              variant="primary"
+              icon="download"
+              type="submit"
+              name="format"
+              value="pdf"
+              data-format="pdf"
+              disabled={Boolean(busy)}
+            >
               Сформировать PDF
             </Button>
             {archivedReportId ? (

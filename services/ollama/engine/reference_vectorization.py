@@ -8,7 +8,6 @@ when a vision model times out or topology selection is conservative.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import cv2
 import numpy as np

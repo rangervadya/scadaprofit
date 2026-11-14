@@ -40,7 +40,8 @@ const paths: Record<string, string> = {
   menu: 'M4 7h16M4 12h16M4 17h16',
   server: 'M4 5h16v6H4zM4 13h16v6H4zM7 8h.01M7 16h.01',
   camera: 'M4 8h3l2-3h6l2 3h3v11H4zM12 16a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z',
-  sparkles: 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 16l.9 2.3 2.3.9-2.3.9L18 22l-.9-2.3-2.3-.9 2.3-.9z',
+  sparkles:
+    'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 16l.9 2.3 2.3.9-2.3.9L18 22l-.9-2.3-2.3-.9 2.3-.9z',
 };
 
 export type IconName = keyof typeof paths | string;

@@ -36,9 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="error-screen" role="alert">
         <h1>Раздел не отрисовался</h1>
-        <p className="muted">
-          Не удалось отобразить этот экран. Обнови страницу — данные на сервере не затронуты.
-        </p>
+        <p className="muted">Не удалось отобразить этот экран. Обнови страницу — данные на сервере не затронуты.</p>
         <pre className="error-screen__detail">{error.message}</pre>
         <div className="row">
           <Button variant="primary" onClick={() => window.location.reload()}>

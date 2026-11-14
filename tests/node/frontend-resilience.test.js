@@ -38,7 +38,7 @@ test('server errors carry the request id the backend logs', async () => {
   assert.match(api, /· запрос \$\{requestId\.slice\(0, 8\)\}/);
   // The id is only useful if it is attached to the thrown error.
   assert.match(api, /throw toApiError\(payload, response, 0\)/);
-  assert.match(api, /response\.status, requestId\)/);
+  assert.match(api, /response\.status,\s*requestId/);
 });
 
 test('toasts are dismissible, capped and announced with the right role', async () => {

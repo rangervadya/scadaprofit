@@ -6,14 +6,13 @@ never changes pipe connectivity, bends, intersections or branch topology.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 import math
 import re
+from copy import deepcopy
 from typing import Any
 
 from cad_symbols import symbol_port_positions, symbol_primitives
 from drawing_template import apply_page_orientation
-
 
 _NUMERIC_LABEL = re.compile(r"^(?:№|#)?\s*(?:(?:Ø|ø|DN|Ду)\s*)?\d[\d\s.,:/+()–—-]*$", re.IGNORECASE)
 

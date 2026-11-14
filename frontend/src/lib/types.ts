@@ -3,6 +3,7 @@ export type ServiceState = 'checking' | 'ok' | 'error' | 'not-configured' | 'unk
 export type HealthResponse = {
   status?: string;
   ok?: boolean;
+  ready?: boolean;
   backend?: string;
   version?: string;
   release?: string;
@@ -11,7 +12,7 @@ export type HealthResponse = {
   drawingTemplateConfigured?: boolean;
   mode?: string;
   qwenModel?: string;
-  ollama?: { reachable?: boolean; error?: string | null; model?: string };
+  ollama?: { reachable?: boolean; error?: string | null; model?: string; hint?: string };
 };
 
 export type ReportRun = {

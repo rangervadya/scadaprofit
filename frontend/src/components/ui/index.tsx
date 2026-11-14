@@ -142,7 +142,11 @@ export function Field({
         {required ? <span style={{ color: 'var(--danger)' }}> *</span> : null}
       </span>
       {children}
-      {error ? <span className="field__error">{error}</span> : hint ? <span className="field__hint">{hint}</span> : null}
+      {error ? (
+        <span className="field__error">{error}</span>
+      ) : hint ? (
+        <span className="field__hint">{hint}</span>
+      ) : null}
     </label>
   );
 }
@@ -162,10 +166,19 @@ export function Checkbox({
 }) {
   return (
     <label className={cx('check')}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} />
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
       <span>
         {label}
-        {hint ? <span className="field__hint" style={{ display: 'block' }}>{hint}</span> : null}
+        {hint ? (
+          <span className="field__hint" style={{ display: 'block' }}>
+            {hint}
+          </span>
+        ) : null}
       </span>
     </label>
   );
@@ -191,7 +204,11 @@ export function Modal({
   }, [onClose]);
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
       <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <header className="modal__header">
           <h2>{title}</h2>
@@ -227,33 +244,42 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       window.clearTimeout(timer);
       timers.current.delete(id);
     }
-    setToasts(current => current.filter(item => item.id !== id));
+    setToasts((current) => current.filter((item) => item.id !== id));
   }, []);
 
-  useEffect(() => () => {
-    for (const timer of timers.current.values()) window.clearTimeout(timer);
-    timers.current.clear();
-  }, []);
+  useEffect(
+    () => () => {
+      for (const timer of timers.current.values()) window.clearTimeout(timer);
+      timers.current.clear();
+    },
+    [],
+  );
 
-  const notify = useCallback((message: string, tone: ToastTone = 'info') => {
-    const id = Date.now() + Math.random();
-    // Errors carry a request id and are longer to read, so they stay up longer
-    // and are never dropped silently when many arrive at once.
-    const ttl = tone === 'error' ? 9000 : 5200;
-    setToasts(current => {
-      const next = [...current, { id, tone, message }];
-      const overflow = next.slice(0, Math.max(0, next.length - MAX_TOASTS));
-      for (const dropped of overflow) {
-        const timer = timers.current.get(dropped.id);
-        if (timer !== undefined) {
-          window.clearTimeout(timer);
-          timers.current.delete(dropped.id);
+  const notify = useCallback(
+    (message: string, tone: ToastTone = 'info') => {
+      const id = Date.now() + Math.random();
+      // Errors carry a request id and are longer to read, so they stay up longer
+      // and are never dropped silently when many arrive at once.
+      const ttl = tone === 'error' ? 9000 : 5200;
+      setToasts((current) => {
+        const next = [...current, { id, tone, message }];
+        const overflow = next.slice(0, Math.max(0, next.length - MAX_TOASTS));
+        for (const dropped of overflow) {
+          const timer = timers.current.get(dropped.id);
+          if (timer !== undefined) {
+            window.clearTimeout(timer);
+            timers.current.delete(dropped.id);
+          }
         }
-      }
-      return next.slice(-MAX_TOASTS);
-    });
-    timers.current.set(id, window.setTimeout(() => dismiss(id), ttl));
-  }, [dismiss]);
+        return next.slice(-MAX_TOASTS);
+      });
+      timers.current.set(
+        id,
+        window.setTimeout(() => dismiss(id), ttl),
+      );
+    },
+    [dismiss],
+  );
 
   const value = useMemo(() => ({ notify }), [notify]);
 
@@ -261,7 +287,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       <div className="toasts">
-        {toasts.map(toast => (
+        {toasts.map((toast) => (
           <div
             key={toast.id}
             className={cx('toast', `toast--${toast.tone}`)}
@@ -269,7 +295,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           >
             <Icon name={toast.tone === 'error' ? 'alert' : toast.tone === 'success' ? 'check' : 'info'} />
             <span className="toast__text">{toast.message}</span>
-            <button type="button" className="toast__close" aria-label="Закрыть уведомление" onClick={() => dismiss(toast.id)}>
+            <button
+              type="button"
+              className="toast__close"
+              aria-label="Закрыть уведомление"
+              onClick={() => dismiss(toast.id)}
+            >
               <Icon name="x" />
             </button>
           </div>
@@ -302,7 +333,9 @@ export function Confirm({
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose} disabled={busy}>Отмена</Button>
+          <Button onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
           <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={busy}>
             {busy ? <Spinner light={!danger} /> : null}
             {confirmLabel}

@@ -5,9 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const file = relative => path.join(root, relative);
+const file = (relative) => path.join(root, relative);
 
-const read = relative => readFile(file(relative), 'utf8');
+const read = (relative) => readFile(file(relative), 'utf8');
 
 test('one React frontend is the active UI; backend and document services stay separate', async () => {
   const required = [
@@ -63,10 +63,10 @@ test('one React frontend is the active UI; backend and document services stay se
   assert.match(nginx, /location \/vdgo\/api\//);
   assert.match(nginx, /proxy_pass http:\/\/app:3000/);
   assert.doesNotMatch(nginx, /vdgo-frontend:4173/);
-  const staticVdgoBlock = nginx.match(/location \/vdgo\/ \{([\s\S]*?)\n    \}/)?.[1] || '';
+  const staticVdgoBlock = nginx.match(/location \/vdgo\/ \{([\s\S]*?)\n {4}\}/)?.[1] || '';
   assert.ok(staticVdgoBlock, 'static SPA location exists');
   assert.doesNotMatch(staticVdgoBlock, /auth_request/);
-  assert.match(nginx, /location \/vdgo\/api\/ \{\n        auth_request/);
+  assert.match(nginx, /location \/vdgo\/api\/ \{\n {8}auth_request/);
 
   const dockerfile = await read('infra/docker/app.Dockerfile');
   assert.match(dockerfile, /COPY frontend\/ \.\//);
@@ -87,12 +87,16 @@ test('the replacement frontend exposes the project workflows and address-folder 
   assert.match(source, /DashboardPage/);
   assert.match(source, /ConclusionPage/);
   assert.match(source, /CadEditorPage/);
-  assert.match(source, /const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/);
+  const roles = await read('frontend/src/lib/roles.ts');
+  assert.match(
+    roles,
+    /export const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/,
+  );
   assert.match(sidebar, /roles: STAFF_ROLES/);
   assert.match(topbar, /const isFitter = user\?\.role === 'fitter'/);
   assert.match(topbar, /!isFitter \?/);
   assert.match(sidebar, /to: '\/team'.*label: 'Команда'/);
-  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi\.reports\(\)/);
+  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi[\s\S]*?\.reports\(\)/);
   assert.doesNotMatch(login, /Выбрать аккаунт|Выберите роль|Первичная настройка системы/);
   assert.match(team, /Добавить папку в заключение|Папка добавлена в заключение/);
   assert.match(team, /reviewReport/);

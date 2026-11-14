@@ -20,7 +20,7 @@ services/ollama/.venv/bin/python -m pip install -r services/ollama/requirements.
 
 if [[ ! -f .env ]]; then cp .env.example .env; fi
 npm --prefix services/ollama install
-npm --prefix services/ollama run check
+npm --prefix services/ollama run test
 
 services/ollama/.venv/bin/python - <<'PYTHON'
 import cv2, pytesseract, ezdxf, cairosvg

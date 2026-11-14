@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: up down config check tests logs frontend-build
+.PHONY: up down config verify check tests logs frontend-build
 
 config:
 	docker compose config --quiet
@@ -10,9 +10,12 @@ up:
 down:
 	docker compose down
 
-check:
-	npm --prefix services/ollama run check
-	PYTHONPATH=services/ollama python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
+verify:
+	npm run lint
+	npm run typecheck
+	npm run test
+
+check: verify
 
 logs:
 	docker compose logs -f --tail=150

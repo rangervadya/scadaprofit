@@ -1,11 +1,11 @@
-import sys
-import unittest
 import json
 import os
+import sys
 import time
-from unittest.mock import patch
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -14,18 +14,18 @@ ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "services/ollama" / "engine"
 sys.path.insert(0, str(BACKEND))
 import processor
-from structured_model import build_document_model, validate_document_model
-from recognition_channels import split_recognition_channels
-from cad_symbols import assign_symbol_type, symbol_primitives
-from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 from annotation_linking import link_annotations
-from engineering_validation import validate_engineering_model
-from clean_layout import build_clean_layout
-from clean_export import build_layout_svg, build_layout_dxf
-from drawing_template import build_drawing_template
-from pipeline_diagnostics import build_pipeline_diagnostics
-from reference_vectorization import build_reference_trace
+from cad_symbols import assign_symbol_type, symbol_primitives
 from centerline_vectorization import build_centerline_trace, zhang_suen_thinning
+from clean_export import build_layout_dxf, build_layout_svg
+from clean_layout import build_clean_layout
+from drawing_template import build_drawing_template
+from engineering_validation import validate_engineering_model
+from pipeline_diagnostics import build_pipeline_diagnostics
+from recognition_channels import split_recognition_channels
+from reference_vectorization import build_reference_trace
+from structured_model import build_document_model, validate_document_model
+from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 
 
 class CenterlineVectorizationTests(unittest.TestCase):
@@ -2114,72 +2114,6 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertIn('function annotationExportLayer(item)', app_js)
 
 
-
-    def test_low_confidence_tesseract_box_does_not_mask_pipe_geometry(self):
-        boxes = processor._confirmed_text_boxes([
-            {'source': 'tesseract', 'text': 'noise', 'confidence': 34, 'verified': False,
-             'bbox': {'x': 10, 'y': 10, 'w': 30, 'h': 15}},
-            {'source': 'tesseract', 'text': 'DN50', 'confidence': 72, 'verified': True,
-             'bbox': {'x': 50, 'y': 10, 'w': 35, 'h': 15}},
-            {'source': 'qwen3-vl-block', 'text': '?', 'confidence': 0, 'verified': False,
-             'bbox': {'x': 90, 'y': 10, 'w': 50, 'h': 18}},
-            {'source': 'qwen3-vl', 'text': '1500', 'confidence': 31, 'verified': False,
-             'bbox': {'x': 150, 'y': 10, 'w': 32, 'h': 15}},
-        ])
-        self.assertEqual(len(boxes), 3)
-        self.assertNotIn({'x': 10, 'y': 10, 'w': 30, 'h': 15}, boxes)
-
-    def test_join_candidates_reject_same_edge_self_join(self):
-        nodes = [
-            {'id': 'N1', 'x': 10, 'y': 10, 'degree': 1},
-            {'id': 'N2', 'x': 110, 'y': 10, 'degree': 1},
-        ]
-        edges = [{'id': 'E1', 'from': 'N1', 'to': 'N2',
-                  'geometry': [[10, 10], [110, 10]], 'component_id': 'C1',
-                  'component_role': 'line_structure'}]
-        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
-
-    def test_join_candidates_reject_endpoint_inside_other_edge(self):
-        nodes = [
-            {'id': 'N1', 'x': 100, 'y': 10, 'degree': 1},
-            {'id': 'N2', 'x': 70, 'y': 11, 'degree': 1},
-        ]
-        edges = [
-            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 10], [100, 10]],
-             'component_id': 'C1', 'component_role': 'line_structure'},
-            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[70, 11], [140, 11]],
-             'component_id': 'C2', 'component_role': 'line_structure'},
-        ]
-        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
-
-    def test_join_candidates_require_gap_to_lie_on_both_tangent_axes(self):
-        nodes = [
-            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
-            {'id': 'N2', 'x': 65, 'y': 65, 'degree': 1},
-        ]
-        edges = [
-            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 60], [50, 50]],
-             'component_id': 'C1', 'component_role': 'line_structure'},
-            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[65, 65], [110, 55]],
-             'component_id': 'C2', 'component_role': 'line_structure'},
-        ]
-        self.assertEqual(processor._build_join_candidates(nodes, edges), [])
-
-    def test_join_candidates_keep_true_collinear_gap_for_review(self):
-        nodes = [
-            {'id': 'N1', 'x': 50, 'y': 50, 'degree': 1},
-            {'id': 'N2', 'x': 62, 'y': 50, 'degree': 1},
-        ]
-        edges = [
-            {'id': 'E1', 'from': 'A', 'to': 'N1', 'geometry': [[0, 50], [50, 50]],
-             'component_id': 'C1', 'component_role': 'line_structure'},
-            {'id': 'E2', 'from': 'N2', 'to': 'B', 'geometry': [[62, 50], [112, 50]],
-             'component_id': 'C2', 'component_role': 'line_structure'},
-        ]
-        result = processor._build_join_candidates(nodes, edges)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['distance'], 12.0)
-        self.assertEqual(result[0]['status'], 'needs_review')
 
     def test_low_confidence_tesseract_box_does_not_mask_pipe_geometry(self):
         boxes = processor._confirmed_text_boxes([

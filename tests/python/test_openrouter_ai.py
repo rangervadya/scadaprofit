@@ -5,9 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PIL import Image
-
 import openrouter_ai
+from PIL import Image
 
 
 class OpenRouterImageTests(unittest.TestCase):

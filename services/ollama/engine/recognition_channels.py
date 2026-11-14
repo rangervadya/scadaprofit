@@ -1,12 +1,10 @@
 """Separate detector output into pipe, symbol, text and dimension channels."""
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
 
 from symbol_recognition import suggest_symbol_types
-
 
 _DIAMETER_RE = re.compile(
     r"^(?:(?:DN|DU|ДН|ДУ)\s*[-:]?\s*|[Ø⌀ФфDДd]\s*=?\s*|диаметр\s*[:=]?\s*)(\d+(?:[.,]\d+)?)\s*(?:мм|mm)?$",

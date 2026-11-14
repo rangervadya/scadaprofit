@@ -19,7 +19,7 @@ export function LoginPage() {
   useEffect(() => {
     authApi
       .status()
-      .then(status => {
+      .then((status) => {
         setSetupRequired(status.setupRequired);
         if (status.setupRequired) setMode('setup');
       })
@@ -73,13 +73,17 @@ export function LoginPage() {
             </p>
           </div>
 
-          {error ? <div className="auth__error" role="alert">{error}</div> : null}
+          {error ? (
+            <div className="auth__error" role="alert">
+              {error}
+            </div>
+          ) : null}
 
           <Field label="Логин" required>
             <input
               className="input"
               value={username}
-              onChange={event => setUsername(event.target.value)}
+              onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
               required
               placeholder="ivan.petrov"
@@ -91,7 +95,7 @@ export function LoginPage() {
               <input
                 className="input"
                 value={displayName}
-                onChange={event => setDisplayName(event.target.value)}
+                onChange={(event) => setDisplayName(event.target.value)}
                 required
                 placeholder="Иван Петров"
               />
@@ -103,7 +107,7 @@ export function LoginPage() {
               className="input"
               type="password"
               value={password}
-              onChange={event => setPassword(event.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
               required
               placeholder="••••••••••"
@@ -120,11 +124,11 @@ export function LoginPage() {
               type="button"
               className="btn btn--ghost btn--sm"
               onClick={() => {
-                setMode(current => (current === 'login' ? 'setup' : 'login'));
+                setMode((current) => (current === 'login' ? 'setup' : 'login'));
                 setError(null);
               }}
             >
-              {mode === 'login' ? 'Первичная настройка системы' : 'Вернуться ко входу'}
+              {mode === 'login' ? 'Настроить доступ' : 'Вернуться ко входу'}
             </button>
           ) : null}
         </form>

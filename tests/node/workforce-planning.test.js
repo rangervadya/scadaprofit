@@ -3,13 +3,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseHouseAddresses } from '../../services/ollama/api/workforce-system.js';
 
-const read = relative => readFile(new URL(`../../${relative}`, import.meta.url), 'utf8');
+const read = (relative) => readFile(new URL(`../../${relative}`, import.meta.url), 'utf8');
 
 test('multi-house dispatch parses one house per line and removes duplicates', () => {
-  assert.deepEqual(
-    parseHouseAddresses('12\n12А\n14/2\n12а\n;\n16'),
-    ['12', '12А', '14/2', '16']
-  );
+  assert.deepEqual(parseHouseAddresses('12\n12А\n14/2\n12а\n;\n16'), ['12', '12А', '14/2', '16']);
 });
 
 test('legacy single-address assignment remains supported', () => {
@@ -30,13 +27,13 @@ test('receivers can dispatch multiple house tasks to selected fitters', async ()
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
   const route = backend.slice(
     backend.indexOf("routes.post('/api/workforce/tasks'"),
-    backend.indexOf("routes.post('/api/workforce/tasks/:id/start'")
+    backend.indexOf("routes.post('/api/workforce/tasks/:id/start'"),
   );
 
   assert.match(route, /requireRoles\(req, res, \['receiver', 'supervisor', 'developer'\]\)/);
   assert.match(route, /parseHouseAddresses\(req\.body\?\.addresses, req\.body\?\.address\)/);
   assert.match(route, /const assignmentGroupId = randomUUID\(\)/);
-  assert.match(route, /addresses\.map\(address =>/);
+  assert.match(route, /addresses\.map\(\s*\(?address\)?\s*=>/);
   assert.match(route, /createdCount: clientTasks\.length/);
   assert.match(html, /name="addresses"/);
   assert.match(html, /Каждый дом с новой строки/);

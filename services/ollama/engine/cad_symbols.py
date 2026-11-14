@@ -4,7 +4,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-
 SYMBOL_CATALOG: dict[str, dict[str, Any]] = {
     "shutoff_valve": {
         "label": "Запорный элемент",

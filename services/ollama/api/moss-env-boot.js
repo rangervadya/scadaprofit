@@ -30,7 +30,7 @@ try {
       ocrEnabled: process.env.MOSS_OCR_ENABLED,
       pipeEnabled: process.env.MOSS_PIPE_ENABLED,
     },
-    'MOSS startup settings loaded'
+    'MOSS startup settings loaded',
   );
 } catch (error) {
   // Preserve any explicitly supplied environment configuration when no

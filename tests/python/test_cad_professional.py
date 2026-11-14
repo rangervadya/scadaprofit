@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from pathlib import Path
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import cv2
 import numpy as np
-
-from cad_symbols import SYMBOL_CATALOG, symbol_port_positions, symbol_primitives
 from cad_overlay import render_cad_alignment_overlay
+from cad_symbols import SYMBOL_CATALOG, symbol_port_positions, symbol_primitives
 from clean_export import build_layout_dxf, build_layout_svg
-from clean_layout import build_clean_layout, _merge_pipe_network
+from clean_layout import _merge_pipe_network, build_clean_layout
 from drawing_quality import validate_clean_layout
 from drawing_template import build_drawing_template
 
@@ -34,6 +33,7 @@ class ProfessionalSheetLayoutTests(unittest.TestCase):
 
     def test_long_ink_supported_trunk_is_recovered_without_joining_gaps(self):
         from copy import deepcopy
+
         from processor import select_primary_cad_edges
         nodes = [{"id": str(i)} for i in range(8)]
         base = [

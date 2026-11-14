@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { BrandMark, Icon } from '../ui/Icon';
 import { useAuth } from '../../lib/auth';
+import { STAFF_ROLES } from '../../lib/roles';
 import type { SessionUser } from '../../lib/types';
 
 export type NavItem = {
@@ -14,12 +15,12 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Рабочий стол', icon: 'home', end: true },
-  { to: '/conclusion', label: 'Заключение', icon: 'doc' },
-  { to: '/schemes', label: 'Схемы домов', icon: 'scheme' },
-  { to: '/archive', label: 'Архив', icon: 'archive' },
+  { to: '/conclusion', label: 'Заключение', icon: 'doc', roles: STAFF_ROLES },
+  { to: '/schemes', label: 'Схемы домов', icon: 'scheme', roles: STAFF_ROLES },
+  { to: '/archive', label: 'Архив', icon: 'archive', roles: STAFF_ROLES },
   { to: '/team', label: 'Команда', icon: 'team' },
-  { to: '/cad', label: 'CAD-редактор', icon: 'cad' },
-  { to: '/settings', label: 'Настройки', icon: 'settings' },
+  { to: '/cad', label: 'CAD-редактор', icon: 'cad', roles: STAFF_ROLES },
+  { to: '/settings', label: 'Настройки', icon: 'settings', roles: STAFF_ROLES },
 ];
 
 export function initials(name: string): string {
@@ -27,13 +28,13 @@ export function initials(name: string): string {
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
-    .map(part => part[0]?.toUpperCase() || '')
+    .map((part) => part[0]?.toUpperCase() || '')
     .join('');
 }
 
 export function useActiveNav(): NavItem | undefined {
   const location = useLocation();
-  return NAV_ITEMS.find(item => (item.end ? location.pathname === item.to : location.pathname.startsWith(item.to)));
+  return NAV_ITEMS.find((item) => (item.end ? location.pathname === item.to : location.pathname.startsWith(item.to)));
 }
 
 const COLLAPSED_KEY = 'profit.sidebar.collapsed';
@@ -50,13 +51,15 @@ export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }
     };
   }, [collapsed]);
 
-  const toggle = () => setCollapsed(value => !value);
+  const toggle = () => setCollapsed((value) => !value);
 
   return (
     <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
       <div className="sidebar__head">
         <NavLink to="/" className="sidebar__brand" title="ПРОФИТ — на главную">
-          <span className="sidebar__mark"><BrandMark size={20} /></span>
+          <span className="sidebar__mark">
+            <BrandMark size={20} />
+          </span>
           <span className="sidebar__brand-name">ПРОФИТ</span>
         </NavLink>
         <button
@@ -72,7 +75,7 @@ export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }
       </div>
       <p className="sidebar__caption">Инженерные сервисы</p>
       <nav className="sidebar__nav" aria-label="Модули ПРОФИТ">
-        {NAV_ITEMS.filter(item => !item.roles || (user && item.roles.includes(user.role))).map(item => {
+        {NAV_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role))).map((item) => {
           const count = badges?.[item.to];
           return (
             <NavLink
@@ -92,7 +95,10 @@ export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }
       <div className="sidebar__footer">
         {user ? (
           <>
-            <div className="sidebar__user" title={collapsed ? `${user.displayName || user.username} · ${user.roleName}` : undefined}>
+            <div
+              className="sidebar__user"
+              title={collapsed ? `${user.displayName || user.username} · ${user.roleName}` : undefined}
+            >
               <span className="sidebar__avatar">{initials(user.displayName || user.username)}</span>
               <span className="sidebar__user-copy">
                 <span className="sidebar__user-name">{user.displayName || user.username}</span>

@@ -3,21 +3,32 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { evaluateAddressFolder } from '../../services/ollama/api/workforce-system.js';
 
-const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
+const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 
 const acceptedScheme = (overrides = {}) => ({
-  id: 'scheme-1', taskId: 'task-house-10', status: 'accepted',
-  schemeJobId: 'job-1', schemeStatus: 'completed', schemePartialGraphReady: false,
-  seenBy: ['receiver-1'], ...overrides
+  id: 'scheme-1',
+  taskId: 'task-house-10',
+  status: 'accepted',
+  schemeJobId: 'job-1',
+  schemeStatus: 'completed',
+  schemePartialGraphReady: false,
+  seenBy: ['receiver-1'],
+  ...overrides,
 });
 const acceptedDefects = (overrides = {}) => ({
-  id: 'defect-1', taskId: 'task-house-10', status: 'accepted',
-  photos: [{ id: 'photo-1' }, { id: 'photo-2' }], seenBy: ['receiver-1'], ...overrides
+  id: 'defect-1',
+  taskId: 'task-house-10',
+  status: 'accepted',
+  photos: [{ id: 'photo-1' }, { id: 'photo-2' }],
+  seenBy: ['receiver-1'],
+  ...overrides,
 });
 
 test('an address folder is transferable only when all schemes and defect sets are accepted and visible', () => {
   const state = evaluateAddressFolder({
-    schemes: [acceptedScheme()], defects: [acceptedDefects()], userId: 'receiver-1'
+    schemes: [acceptedScheme()],
+    defects: [acceptedDefects()],
+    userId: 'receiver-1',
   });
   assert.equal(state.ready, true);
   assert.equal(state.items.length, 2);
@@ -29,7 +40,8 @@ test('one pending or returned material blocks transfer of the complete address f
   for (const status of ['processing', 'pending_review', 'revision_requested']) {
     const state = evaluateAddressFolder({
       schemes: [acceptedScheme(), acceptedScheme({ id: 'scheme-2', status })],
-      defects: [acceptedDefects()], userId: 'receiver-1'
+      defects: [acceptedDefects()],
+      userId: 'receiver-1',
     });
     assert.equal(state.ready, false, `${status} must block the whole folder`);
     assert.equal(state.allAccepted, false);
@@ -40,7 +52,7 @@ test('an unseen item blocks receiver folder transfer even if all materials are a
   const state = evaluateAddressFolder({
     schemes: [acceptedScheme()],
     defects: [acceptedDefects({ seenBy: [] })],
-    userId: 'receiver-1'
+    userId: 'receiver-1',
   });
   assert.equal(state.unseenCount, 1);
   assert.equal(state.ready, false);
@@ -49,13 +61,16 @@ test('an unseen item blocks receiver folder transfer even if all materials are a
 test('unfinished CAD or empty defect set blocks the complete folder transfer', () => {
   const waitingCad = evaluateAddressFolder({
     schemes: [acceptedScheme({ schemeStatus: 'queued' })],
-    defects: [acceptedDefects()], userId: 'receiver-1'
+    defects: [acceptedDefects()],
+    userId: 'receiver-1',
   });
   assert.equal(waitingCad.schemesReady, false);
   assert.equal(waitingCad.ready, false);
 
   const noPhotos = evaluateAddressFolder({
-    schemes: [acceptedScheme()], defects: [acceptedDefects({ photos: [] })], userId: 'receiver-1'
+    schemes: [acceptedScheme()],
+    defects: [acceptedDefects({ photos: [] })],
+    userId: 'receiver-1',
   });
   assert.equal(noPhotos.photosReady, false);
   assert.equal(noPhotos.ready, false);
@@ -64,7 +79,8 @@ test('unfinished CAD or empty defect set blocks the complete folder transfer', (
 test('a correction-replaced report does not block or enter the address folder', () => {
   const state = evaluateAddressFolder({
     schemes: [acceptedScheme(), acceptedScheme({ id: 'old-scheme', status: 'superseded', schemeStatus: 'failed' })],
-    defects: [acceptedDefects()], userId: 'receiver-1'
+    defects: [acceptedDefects()],
+    userId: 'receiver-1',
   });
   assert.equal(state.items.length, 2);
   assert.equal(state.ready, true);

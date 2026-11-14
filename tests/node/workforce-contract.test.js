@@ -2,10 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
+const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 
 test('Team link is permanently visible in the left navigation on every core module', async () => {
-  for (const path of ['tests/fixtures/legacy-frontend/public/index.html', 'tests/fixtures/legacy-frontend/public/dashboard.html', 'tests/fixtures/legacy-frontend/public/manual-cad.html', 'tests/fixtures/legacy-frontend/public/conclusion.html']) {
+  for (const path of [
+    'tests/fixtures/legacy-frontend/public/index.html',
+    'tests/fixtures/legacy-frontend/public/dashboard.html',
+    'tests/fixtures/legacy-frontend/public/manual-cad.html',
+    'tests/fixtures/legacy-frontend/public/conclusion.html',
+  ]) {
     const html = await read(path);
     const team = html.indexOf('class="profit-team-link" href="/workforce.html"');
     const settings = html.indexOf('href="/settings"');
@@ -45,7 +50,10 @@ test('fitter workflow keeps button-only tracking and sends sketches separately f
   assert.match(backend, /defectUpload\.array\('defectPhotos', 10\)/);
   assert.match(backend, /workspace\.defectReports\.unshift\(report\)/);
   assert.match(backend, /onSketchSubmitted\(\{ report, sourcePath:/);
-  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:id/defects'"), backend.indexOf("routes.get('/api/workforce/defects'"));
+  const defectRoute = backend.slice(
+    backend.indexOf("'/api/workforce/tasks/:id/defects'"),
+    backend.indexOf("'/api/workforce/defects'"),
+  );
   assert.doesNotMatch(defectRoute, /onSketchSubmitted|schemeJobId/);
   assert.match(defectRoute, /persistUploadedFile/);
   assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/review'/);
@@ -66,7 +74,10 @@ test('receiver sees schemes and defect photos in one inbox and confirms photos w
   assert.match(js, /data-inbox-folder=/);
   assert.match(js, /data-accept-defect=/);
   assert.match(js, /Да, фотографии подходят/);
-  assert.match(js, /\/api\/workforce\/defects\/\$\{encodeURIComponent\(event\.currentTarget\.dataset\.acceptDefect\)\}\/review/);
+  assert.match(
+    js,
+    /\/api\/workforce\/defects\/\$\{encodeURIComponent\(event\.currentTarget\.dataset\.acceptDefect\)\}\/review/,
+  );
   assert.match(backend, /routes\.get\('\/api\/workforce\/defects'/);
   assert.match(backend, /routes\.post\('\/api\/workforce\/defects\/:id\/seen'/);
   assert.match(backend, /!\['accepted', 'revision_requested'\]\.includes\(status\)/);
@@ -103,7 +114,7 @@ test('receiver can view generated CAD preview and transfer it into the conclusio
   assert.match(server, /project\.sourceReportId = workforceReportId/);
   assert.match(cadJs, /К папке адреса в уведомлениях/);
   assert.match(backend, /manualCadProjectId/);
-  assert.match(backend, /manualCadBase \? `\$\{manualCadBase\}\/preview\.svg`/);
+  assert.match(backend, /manualCadBase[\s\S]{0,60}\/preview\.svg/);
   assert.match(js, /Автоматически построенная CAD-схема/);
   assert.match(js, /data-open-folder-cad/);
   assert.match(cadHtml, /Сохранить и вернуться в папку/);
@@ -124,7 +135,10 @@ test('receiver can view generated CAD preview and transfer it into the conclusio
 
 test('PDF and Word generation wait until both selected CAD schemes and defect photos are attached', async () => {
   const conclusionJs = await read('tests/fixtures/legacy-frontend/public/conclusion-workforce.js');
-  assert.match(conclusionJs, /const hasSelectedMaterials = Boolean\(\(conclusionContext\?\.reports \|\| \[\]\)\.length \|\| \(conclusionContext\?\.defectReports \|\| \[\]\)\.length\)/);
+  assert.match(
+    conclusionJs,
+    /const hasSelectedMaterials = Boolean\(\(conclusionContext\?\.reports \|\| \[\]\)\.length \|\| \(conclusionContext\?\.defectReports \|\| \[\]\)\.length\)/,
+  );
   assert.match(conclusionJs, /Promise\.all\(materialJobs\)/);
   assert.match(conclusionJs, /button\.disabled = !ready/);
   assert.match(conclusionJs, /Формирование заблокировано, чтобы не выпустить документ без вложений/);
@@ -135,10 +149,22 @@ test('all accepted materials transfer together from one address folder into the 
   const conclusionJs = await read('tests/fixtures/legacy-frontend/public/conclusion-workforce.js');
   const template = await read('services/vdgo/templates/index.html');
   const pdfBackend = await read('services/vdgo/app.py');
-  const schemeRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/reports/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"));
-  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"));
-  const folderRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"), backend.indexOf("routes.get('/api/workforce/conclusion'"));
-  const scopedGet = backend.slice(backend.indexOf("routes.get('/api/workforce/conclusion'"), backend.indexOf("routes.post('/api/workforce/reports/:id/review'"));
+  const schemeRoute = backend.slice(
+    backend.indexOf("routes.post('/api/workforce/reports/:id/conclusion'"),
+    backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"),
+  );
+  const defectRoute = backend.slice(
+    backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"),
+    backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"),
+  );
+  const folderRoute = backend.slice(
+    backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"),
+    backend.indexOf("routes.get('/api/workforce/conclusion'"),
+  );
+  const scopedGet = backend.slice(
+    backend.indexOf("routes.get('/api/workforce/conclusion'"),
+    backend.indexOf("routes.post('/api/workforce/reports/:id/review'"),
+  );
   assert.match(schemeRoute, /status\(409\)/);
   assert.match(schemeRoute, /только целой папкой адреса/);
   assert.match(defectRoute, /status\(409\)/);
@@ -174,7 +200,7 @@ test('supervisors have an employee credential directory with names and one-time 
   assert.match(js, /lastName/);
   assert.match(backend, /routes\.post\('\/api\/workforce\/users\/:id\/reset-password'/);
   assert.match(backend, /\['fitter', 'receiver'\]\.includes\(user\.role\)/);
-  assert.match(backend, /sessions = sessions\.filter\(session => session\.userId !== user\.id\)/);
+  assert.match(backend, /sessions = sessions\.filter\(\s*\(?session\)?\s*=>\s*session\.userId !== user\.id/);
   assert.match(backend, /credentials: \{ username: user\.username, password, reset: true \}/);
   const publicUserBody = backend.slice(backend.indexOf('function publicUser'), backend.indexOf('function tokenHash'));
   assert.doesNotMatch(publicUserBody, /passwordHash/);
@@ -183,8 +209,14 @@ test('supervisors have an employee credential directory with names and one-time 
 test('receiver keeps access to the editable CAD editor and save API', async () => {
   const backend = await read('services/ollama/api/workforce-system.js');
   const server = await read('services/ollama/api/server.js');
-  const authMiddleware = backend.slice(backend.indexOf('async function authMiddleware'), backend.indexOf("const routes ="));
-  const cadSaveRoute = server.slice(server.indexOf("app.put('/api/manual-cad/projects/:id'"), server.indexOf("app.post('/api/manual-cad/projects/:id/source'"));
+  const authMiddleware = backend.slice(
+    backend.indexOf('async function authMiddleware'),
+    backend.indexOf('const routes ='),
+  );
+  const cadSaveRoute = server.slice(
+    server.indexOf("app.put('/api/manual-cad/projects/:id'"),
+    server.indexOf("app.post('/api/manual-cad/projects/:id/source'"),
+  );
   assert.match(authMiddleware, /req\.user\.role === 'fitter'/);
   assert.doesNotMatch(authMiddleware, /req\.user\.role === 'receiver'/);
   assert.match(server, /\['receiver', 'supervisor', 'developer'\]\.includes\(req\.user\?\.role\)/);
@@ -222,11 +254,19 @@ test('team workspace uses the familiar left PROFIT sidebar with role-specific se
 
 test('defect photo intake is limited, private, rollback-safe, and separate from conclusion documents', async () => {
   const backend = await read('services/ollama/api/workforce-system.js');
-  const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
-  const uploadConfig = backend.slice(backend.indexOf('const defectUpload = multer('), backend.indexOf('function getCurrentUser'));
-  const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:id/defects'"), backend.indexOf("routes.get('/api/workforce/defects'"));
-  const fileRoute = backend.slice(backend.indexOf("routes.get('/api/workforce/defects/:reportId/files/:fileId'"), backend.indexOf('async function refreshSchemeState'));
+  const uploadConfig = backend.slice(
+    backend.indexOf('const defectUpload = multer('),
+    backend.indexOf('function getCurrentUser'),
+  );
+  const defectRoute = backend.slice(
+    backend.indexOf("'/api/workforce/tasks/:id/defects'"),
+    backend.indexOf("'/api/workforce/defects'"),
+  );
+  const fileRoute = backend.slice(
+    backend.indexOf("'/api/workforce/defects/:reportId/files/:fileId'"),
+    backend.indexOf('async function refreshSchemeState'),
+  );
   assert.match(uploadConfig, /fileSize:\s*16\s*\*\s*1024\s*\*\s*1024/);
   assert.match(uploadConfig, /files:\s*10/);
   assert.match(js, /name="defectPhotos"[^>]*multiple required/);
@@ -237,6 +277,7 @@ test('defect photo intake is limited, private, rollback-safe, and separate from 
   assert.doesNotMatch(defectRoute, /onSketchSubmitted|schemeJobId|conclusionAddedAt|workforceConclusion/);
   assert.match(fileRoute, /\['fitter', 'receiver', 'supervisor', 'developer'\]\.includes\(req\.user\.role\)/);
   assert.match(fileRoute, /report\.userId !== req\.user\.id/);
+  assert.match(fileRoute, /dotfiles: 'allow'/);
   assert.match(js, /browserPreview/);
   assert.match(js, /Да, фотографии подходят/);
 });

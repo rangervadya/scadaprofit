@@ -8,7 +8,6 @@ from pathlib import Path
 
 import processor
 
-
 ROOT = Path(__file__).resolve().parent
 EXAMPLES = ROOT / 'examples'
 OUTPUT = ROOT / 'evaluation-results'

@@ -1,8 +1,8 @@
 """Conservative topology attachment through confirmed CAD symbols."""
 from __future__ import annotations
 
-from copy import deepcopy
 import math
+from copy import deepcopy
 from typing import Any
 
 from cad_symbols import symbol_port_positions
@@ -112,6 +112,7 @@ def split_segments_at_endpoint_junctions(
     candidates are left untouched for the existing crossing/review workflow.
     """
     import math
+
     import numpy as np
 
     if not segments or ink is None:

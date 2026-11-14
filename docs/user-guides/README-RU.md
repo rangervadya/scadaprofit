@@ -58,8 +58,8 @@ docker compose ps
 ## Проверки
 
 ```bash
-npm --prefix services/ollama run check
-PYTHONPATH=services/ollama python -m unittest discover -s tests/vdgo -p 'test_*.py'
+npm install
+npm run verify
 ```
 
 После обновления отдельно проверь статус контейнеров на целевом сервере: успешные тесты исходников не заменяют проверку реального Docker-развёртывания.

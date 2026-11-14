@@ -1,17 +1,28 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, quote
-from pathlib import Path
+import base64
+import html as htmlmod
+import json
+import math
+import os
+import re
+import shutil
+import threading
+import time
+import uuid
+import webbrowser
+from datetime import datetime
 from email.parser import BytesParser
 from email.policy import default
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
+
+import archive
 import pymupdf as fitz
-import os, json, math, re, shutil, threading, time, webbrowser, html as htmlmod, tempfile, uuid, subprocess, sys, base64
-from datetime import datetime
+from database import database_status, init_database, recent_reports, record_generation
+from logging_setup import configure_logging, format_query_path, get_logger
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
-from database import init_database, database_status, recent_reports, record_generation
-from io import BytesIO
-
-from logging_setup import configure_logging, format_query_path, get_logger
+from schemas import parse_workforce_schemes
 
 configure_logging()
 log = get_logger('vdgo')
@@ -1419,14 +1430,7 @@ def prepare_workforce_schemes(form, files):
         return []
     if len(raw.encode('utf-8')) > MAX_WORKFORCE_SCHEMES_JSON_BYTES:
         raise ValueError('Общий размер выбранных CAD-схем превышает 180 МБ. Уменьшите количество схем и повторите экспорт.')
-    try:
-        entries = json.loads(raw)
-    except Exception as exc:
-        raise ValueError('Не удалось прочитать список CAD-схем для пункта 7. Обновите страницу заключения и повторите экспорт.') from exc
-    if not isinstance(entries, list):
-        raise ValueError('Список CAD-схем пункта 7 имеет неверный формат.')
-    if len(entries) > 40:
-        raise ValueError('За один раз можно включить не более 40 схем в пункт 7.')
+    entries = parse_workforce_schemes(raw)
 
     prepared = []
     total_bytes = 0
@@ -1459,7 +1463,7 @@ def prepare_workforce_schemes(form, files):
             target.unlink(missing_ok=True)
             raise ValueError(f'Схема № {index}: не удалось проверить PNG-вложение.') from exc
 
-        def safe_meta(key, limit=180):
+        def safe_meta(key, limit=180, entry=entry):
             value = str(entry.get(key) or '').replace('\x00', ' ')
             return re.sub(r'\s+', ' ', value).strip()[:limit]
 
@@ -1534,7 +1538,7 @@ def append_workforce_scheme_pages(doc, schemes, form):
 def build_pdf(form, photo_paths, workforce_schemes=None):
     # Text is written directly as embedded PDF text objects; no raster text queues exist.
     _FITZ_FONT_CACHE.clear()
-    work=OUTPUT/'_work.pdf'; shutil.copy2(TEMPLATE,work); doc=fitz.open(work)
+    work=OUTPUT/f'_work_{uuid.uuid4().hex}.pdf'; shutil.copy2(TEMPLATE,work); doc=fitz.open(work)
     # Explicit source-to-form mapping. Blank form values erase sample values.
     # Cover page uses larger centered typography than running headers/protocol tables.
     replace_all(doc,SOURCE_VALUES['report_number'],val(form,'report_number'),8,5,skip_pages={0,2})
@@ -1678,13 +1682,13 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
     append_workforce_scheme_pages(doc, workforce_schemes or [], form)
     renumber_document_pages(doc)
     add_searchable_text_layer(doc)
-    out=OUTPUT/'generated.pdf'
+    out=OUTPUT/f'generated_{uuid.uuid4().hex}.pdf'
     doc.save(out,garbage=4,deflate=True); doc.close()
     _FITZ_FONT_CACHE.clear()
     for temp_photo in temp_photos + temp_materials + temp_extra_photos:
         try: temp_photo.unlink(missing_ok=True)
         except Exception as exc: log.debug('Cannot remove temporary photo', extra={'err': str(exc)})
-    try: work.unlink()
+    try: work.unlink(missing_ok=True)
     except Exception as exc: log.debug('Cannot remove working PDF copy', extra={'err': str(exc)})
     return out
 
@@ -1694,6 +1698,10 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
 # limit must never be applied to their JSON/base64 payload.
 STRUCTURED_PAYLOAD_FIELDS = frozenset({'workforce_schemes_json'})
 MAX_WORKFORCE_SCHEMES_JSON_BYTES = 180 * 1024 * 1024
+# The form is read fully into memory (multipart + base64 schemes). 512 MB is too
+# close to an OOM for a threaded server; 256 MB still accepts the documented
+# 180 MB scheme payload while rejecting accidental multi-GB uploads early.
+MAX_REQUEST_BYTES = int(os.environ.get('VDGO_MAX_REQUEST_BYTES', str(256 * 1024 * 1024)))
 
 
 def is_structured_payload_field(key):
@@ -2117,7 +2125,7 @@ def normalize_form_dates(form):
     return form
 
 
-def _download_disposition(form: dict[str, str], extension: str) -> str:
+def _download_filename(form: dict[str, str], extension: str) -> str:
     """Build a safe, useful filename for a browser attachment response."""
     def clean(value: object, fallback: str) -> str:
         raw = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._-]+", "_", str(value or "").strip()).strip("._-")
@@ -2125,19 +2133,42 @@ def _download_disposition(form: dict[str, str], extension: str) -> str:
 
     report_number = clean(val(form, "report_number"), "bez_nomera")
     report_date = clean(val(form, "report_date"), "bez_daty")
-    filename = f"Заключение_{report_number}_{report_date}.{extension}"
+    return f"Заключение_{report_number}_{report_date}.{extension}"
+
+
+def _download_disposition(form: dict[str, str], extension: str) -> str:
+    filename = _download_filename(form, extension)
     # ASCII fallback is for older clients; filename* preserves Cyrillic safely.
-    ascii_number = re.sub(r"[^A-Za-z0-9._-]+", "_", report_number)
-    ascii_date = re.sub(r"[^A-Za-z0-9._-]+", "_", report_date)
+    ascii_number = re.sub(r"[^A-Za-z0-9._-]+", "_", str(val(form, "report_number") or "bez_nomera"))
+    ascii_date = re.sub(r"[^A-Za-z0-9._-]+", "_", str(val(form, "report_date") or "bez_daty"))
     fallback = f"Zaklyuchenie_{ascii_number}_{ascii_date}.{extension}"
     return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
+def _attachment_disposition(filename: str) -> str:
+    safe_ascii = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "document"
+    return f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+
+
 class Handler(BaseHTTPRequestHandler):
+    # A slow or stalled client must not occupy a worker forever: generation
+    # already has gateway/backend timeouts, but the socket read itself needs one.
+    timeout = 120
+
     def _send_json(self, status, payload):
         data=json.dumps(payload,ensure_ascii=False,default=str).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Content-Length',str(len(data)))
+        self.end_headers(); self.wfile.write(data)
+
+    def _send_file(self, path, content_type, filename):
+        data=Path(path).read_bytes()
+        self.send_response(200)
+        self.send_header('Content-Type',content_type or 'application/octet-stream')
+        self.send_header('Content-Length',str(len(data)))
+        self.send_header('Content-Disposition',_attachment_disposition(filename))
+        self.send_header('Cache-Control','no-store')
+        self.send_header('X-Content-Type-Options','nosniff')
         self.end_headers(); self.wfile.write(data)
 
     def do_GET(self):
@@ -2150,18 +2181,53 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
-        if self.path=='/api/reports':
+        parsed = urlparse(self.path)
+        if parsed.path == '/api/reports':
+            query = parse_qs(parsed.query)
+            archived = str((query.get('archived') or ['0'])[0]).lower() in {'1', 'true', 'yes'}
             try:
-                self._send_json(200, {'items':recent_reports(limit=12)})
+                limit = int((query.get('limit') or ['12'])[0])
+            except ValueError:
+                limit = 12
+            try:
+                if archived:
+                    items = archive.list_archived(limit=limit)
+                else:
+                    rows = recent_reports(limit=limit)
+                    entries = {str(item['id']): item for item in archive.list_archived(limit=500) if item.get('id') is not None}
+                    items = []
+                    for row in rows:
+                        entry = entries.get(str(row['id']), {})
+                        items.append({
+                            **row,
+                            'archived': bool(entry),
+                            'original_filename': entry.get('original_filename') or row.get('output_filename') or '',
+                            'content_type': entry.get('content_type') or ('application/pdf' if row.get('output_format') == 'pdf' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+                            'file_size': int(entry.get('file_size') or 0),
+                        })
+                self._send_json(200, {'items': items})
             except Exception as exc:
                 log.error('Cannot read report journal', extra={'err': str(exc), 'path': format_query_path(self.path)})
                 self._send_json(503, {'error':'Не удалось прочитать журнал формирования документов', 'detail':str(exc)})
             return
+        if parsed.path.startswith('/api/reports/') and parsed.path.endswith('/download'):
+            report_id = parsed.path[len('/api/reports/'):-len('/download')]
+            entry = archive.find_archived(report_id)
+            path = archive.archived_path(report_id)
+            if not entry or not path:
+                self._send_json(404, {'error':'Файл архива не найден.'})
+                return
+            try:
+                self._send_file(path, entry.get('content_type') or 'application/octet-stream', entry.get('original_filename') or Path(path).name)
+            except OSError as exc:
+                log.error('Cannot read archived document', extra={'err': str(exc), 'reportId': report_id})
+                self._send_json(500, {'error':'Не удалось прочитать файл архива.'})
+            return
         self.send_error(404)
     def parse_form(self):
         n=int(self.headers.get('Content-Length','0'))
-        if n>512*1024*1024:
-            raise ValueError('Общий размер запроса превышает 512 МБ. Уменьшите размер изображений и повторите попытку.')
+        if n>MAX_REQUEST_BYTES:
+            raise ValueError(f'Общий размер запроса превышает {MAX_REQUEST_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображений и повторите попытку.')
         raw=self.rfile.read(n); ctype=self.headers.get('Content-Type','')
         form={}; files={}
         if ctype.startswith('multipart/form-data'):
@@ -2196,33 +2262,53 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in ('/generate','/generate_docx','/preview'):
             self.send_error(404); return
         files={}
+        generated_paths=[]
         try:
             form,files=self.parse_form()
             workforce_schemes=prepare_workforce_schemes(form,files)
             validate_form(form,files)
             if self.path == '/generate_docx':
                 pdf_path=build_pdf(form,files,workforce_schemes=workforce_schemes)
+                generated_paths.append(pdf_path)
                 # DOCX export uses normal editable Word paragraphs and tables. Photographs,
                 # schematics and authentic scans remain separate image objects in Word.
-                out=OUTPUT/'Заключение_редактируемый_текст.docx'
+                out=OUTPUT/f'Заключение_редактируемый_текст_{uuid.uuid4().hex}.docx'
+                generated_paths.append(out)
                 page_count=pdf_to_docx_editable(pdf_path,out)
                 output_format='docx-editable'
                 payload=out.read_bytes()
                 content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                 disposition=_download_disposition(form, 'docx')
             else:
-                out=build_pdf(form,files,workforce_schemes=workforce_schemes); payload=out.read_bytes()
+                out=build_pdf(form,files,workforce_schemes=workforce_schemes); generated_paths.append(out); payload=out.read_bytes()
                 with fitz.open(out) as generated_doc:
                     page_count=len(generated_doc)
                 content_type='application/pdf'
                 disposition='inline; filename="preview.pdf"' if self.path=='/preview' else _download_disposition(form, 'pdf')
                 output_format='preview' if self.path=='/preview' else 'pdf'
+            report_id = None
             try:
-                record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
+                recorded = record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
+                if isinstance(recorded, int):
+                    report_id = recorded
             except Exception as db_exc:
                 # The document is already generated; a missing audit row must
                 # not fail the request, but it must be visible in the log.
                 log.warning('Generated document was not recorded in PostgreSQL', extra={'err': str(db_exc), 'reportNumber': val(form,'report_number')})
+            if report_id is not None and self.path in ('/generate', '/generate_docx'):
+                try:
+                    archive.archive_document(
+                        out,
+                        report_id=report_id,
+                        report_number=val(form,'report_number'),
+                        report_date=val(form,'report_date'),
+                        output_format=output_format,
+                        page_count=page_count,
+                        content_type=content_type,
+                        original_filename=_download_filename(form, 'docx' if output_format == 'docx-editable' else 'pdf'),
+                    )
+                except Exception as archive_exc:
+                    log.warning('Generated document was not archived', extra={'err': str(archive_exc), 'reportNumber': val(form,'report_number')})
             self.send_response(200)
             self.send_header('Content-Type',content_type)
             self.send_header('Content-Disposition',disposition)
@@ -2265,6 +2351,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status); self.send_header('Content-Type','application/json; charset=utf-8')
             self.send_header('Content-Length',str(len(msg))); self.end_headers(); self.wfile.write(msg)
         finally:
+            for generated in generated_paths:
+                try:
+                    Path(generated).unlink(missing_ok=True)
+                except OSError:
+                    pass
             cleanup_uploaded_files(files)
     def log_message(self, fmt, *args):
         # Access log: BaseHTTPRequestHandler writes to stderr by default, which
@@ -2290,7 +2381,10 @@ def create_local_server():
     for port in candidates:
         try:
             host = os.environ.get('VDGO_HOST', '127.0.0.1')
-            server = HTTPServer((host, port), Handler)
+            server = ThreadingHTTPServer((host, port), Handler)
+            server.daemon_threads = True
+            server.block_on_close = False
+            server.request_queue_size = 128
             return server, port
         except OSError as exc:
             last_error = exc

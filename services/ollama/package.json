@@ -9,14 +9,24 @@
   },
   "scripts": {
     "start": "node --import ./api/moss-env-boot.js api/server.js",
-    "check": "node --check api/moss-env-boot.js && node --check api/logger.js && node --check api/server.js && node --check api/workforce-system.js && node --test ../../tests/node/logging.test.js ../../tests/node/frontend-resilience.test.js ../../tests/node/workforce-auth.test.js ../../tests/node/workforce-contract.test.js ../../tests/node/workforce-upload.test.js ../../tests/node/workforce-planning.test.js ../../tests/node/workforce-inbox-folders.test.js ../../tests/node/repository-layout.test.js && node --check api/manual-cad-core.js && node --check ../../tests/fixtures/legacy-frontend/public/login.js && node --check ../../tests/fixtures/legacy-frontend/public/workforce.js && node --check ../../tests/fixtures/legacy-frontend/public/app.js && node --check ../../tests/fixtures/legacy-frontend/public/manual-cad.js && node --check ../../tests/fixtures/legacy-frontend/public/manual-cad-ink-trace.js && node --test ../../tests/node/manual-cad.test.js ../../tests/node/manual-cad-ink-trace.test.js && PYTHONPATH=./engine python -m py_compile engine/processor.py && PYTHONPATH=./engine python -m unittest discover -s ../../tests/python -p \"test_*.py\""
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:validate": "prisma validate --schema prisma/schema.prisma",
+    "test:node": "node --check api/moss-env-boot.js && node --check api/logger.js && node --check api/server.js && node --check api/workforce-system.js && node --check api/schemas.js && node --test ../../tests/node/logging.test.js ../../tests/node/frontend-resilience.test.js ../../tests/node/workforce-auth.test.js ../../tests/node/workforce-contract.test.js ../../tests/node/workforce-upload.test.js ../../tests/node/workforce-planning.test.js ../../tests/node/workforce-inbox-folders.test.js ../../tests/node/repository-layout.test.js && node --check api/manual-cad-core.js && node --check ../../tests/fixtures/legacy-frontend/public/login.js && node --check ../../tests/fixtures/legacy-frontend/public/workforce.js && node --check ../../tests/fixtures/legacy-frontend/public/app.js && node --check ../../tests/fixtures/legacy-frontend/public/manual-cad.js && node --check ../../tests/fixtures/legacy-frontend/public/manual-cad-ink-trace.js && node --test ../../tests/node/manual-cad.test.js ../../tests/node/manual-cad-ink-trace.test.js",
+    "test:python": "PYTHONPATH=./engine python -m py_compile engine/processor.py && PYTHONPATH=./engine python -m unittest discover -s ../../tests/python -p \"test_*.py\"",
+    "test": "npm run test:node && npm run test:python",
+    "test:vdgo": "PYTHONPATH=./engine python -m unittest discover -s ../../tests/vdgo -p \"test_*.py\""
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
     "multer": "^2.0.2",
     "pino": "^10.4.0",
-    "pino-http": "^11.0.0"
+    "pino-http": "^11.0.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "prisma": "^6.19.3"
   }
 }

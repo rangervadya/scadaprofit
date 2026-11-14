@@ -1,0 +1,12 @@
+node_modules
+package-lock.json
+frontend/package-lock.json
+services/ollama/package-lock.json
+frontend/public/vdgo
+services/ollama/prisma/generated
+services/vdgo/output
+services/vdgo/uploads
+__pycache__
+*.pyc
+tests/fixtures/legacy-frontend
+docs

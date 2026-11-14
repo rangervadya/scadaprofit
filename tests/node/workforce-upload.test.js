@@ -50,9 +50,14 @@ test('persistUploadedFile safely stores a Multer upload across filesystem bounda
 });
 
 test('workforce report uploads use the cross-device-safe persistence helper', async () => {
-  const source = await (await import('node:fs/promises')).readFile(new URL('../../services/ollama/api/workforce-system.js', import.meta.url), 'utf8');
+  const source = await (
+    await import('node:fs/promises')
+  ).readFile(new URL('../../services/ollama/api/workforce-system.js', import.meta.url), 'utf8');
   assert.match(source, /await persistUploadedFile\(file\.path, path\.join\(reportDir, fileName\)\)/);
-  const persistBody = source.slice(source.indexOf('export async function persistUploadedFile'), source.indexOf('export async function createWorkforceSystem'));
+  const persistBody = source.slice(
+    source.indexOf('export async function persistUploadedFile'),
+    source.indexOf('export async function createWorkforceSystem'),
+  );
   assert.match(persistBody, /await copyFile\(sourcePath, stagingPath\)/);
   assert.match(persistBody, /await rename\(stagingPath, destinationPath\)/);
   assert.doesNotMatch(source, /await rename\(file\.path, path\.join\(reportDir, fileName\)\)/);

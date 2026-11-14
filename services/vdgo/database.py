@@ -26,7 +26,12 @@ def _connect():
         import psycopg
     except ImportError as exc:  # pragma: no cover - environment-specific
         raise RuntimeError("The psycopg database driver is not installed") from exc
-    return psycopg.connect(dsn, connect_timeout=4)
+    return psycopg.connect(
+        dsn,
+        connect_timeout=4,
+        application_name='vdgo',
+        options='-c statement_timeout=5000 -c lock_timeout=3000',
+    )
 
 
 def init_database(wait_seconds: int = 45) -> None:
@@ -78,18 +83,20 @@ def database_status() -> dict[str, Any]:
         return {"status": "error", "configured": True, "message": f"База данных недоступна: {exc}"}
 
 
-def record_generation(report_number: str, report_date: str, output_format: str, page_count: int, filename: str) -> None:
+def record_generation(report_number: str, report_date: str, output_format: str, page_count: int, filename: str) -> int | None:
     if not _dsn():
-        return
+        return None
     try:
         with _connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO report_runs (report_number, report_date, output_format, page_count, output_filename)
                 VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (report_number or "", report_date or "", output_format, int(page_count), filename or ""),
-            )
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else None
     except Exception as exc:
         # Callers treat a missing audit row as non-fatal; log it with the report
         # number so the document can still be matched to its row later.

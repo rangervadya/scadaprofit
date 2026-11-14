@@ -21,28 +21,35 @@
 
 ## Запуск в dev
 
-Нужны три процесса.
+Нужны три процесса. Из корня проекта:
 
 ```bash
-# 1. Основной API (порт 3000)
-cd backend
+# 0. Зависимости (один раз)
 npm install
-PORT=3000 DATA_DIR=/tmp/scadaprofit-data MASK_PYTHON=python3 node api/server.js
+npm --prefix frontend install
+npm --prefix services/ollama install
+
+# 1. Основной API (порт 3000)
+PORT=3000 DATA_DIR=/tmp/scadaprofit-data MASK_PYTHON=python3 \
+  npm --prefix services/ollama start
 
 # 2. Сервис заключений (порт 8765)
-cd services/vdgo
-VDGO_HOST=127.0.0.1 VDGO_PORT=8765 VDGO_NO_BROWSER=1 python3 app.py
+VDGO_HOST=127.0.0.1 VDGO_PORT=8765 VDGO_NO_BROWSER=1 \
+  python3 services/vdgo/app.py
 
 # 3. SPA (порт 5173)
-cd frontend
-npm install
-npm run dev
+npm --prefix frontend run dev
 ```
 
 Откройте `http://127.0.0.1:5173/vdgo/`.
 
-При первом запуске нажмите «Первичная настройка системы» и создайте аккаунт
-разработчика. Остальные роли создаются в разделе «Команда → Пользователи».
+При первом запуске нажмите «Настроить доступ» и создайте аккаунт разработчика.
+Остальные роли создаются в разделе «Команда → Пользователи».
+
+Ollama/Qwen3-VL не обязательны для UI: без них вход, роли, команда, CAD и
+заключения работают, а распознавание эскиза получает статус `failed`.
+`/api/health` остаётся liveness (`ok:true`), `/api/readyz` возвращает 503, если
+Ollama/модель/Tesseract недоступны.
 
 ## Маршруты
 
@@ -69,6 +76,10 @@ npm run dev
 | `MAIN_BACKEND_URL` | Куда Vite проксирует `/api` и `/jobs` (по умолчанию `http://127.0.0.1:3000`). |
 | `VDGO_BACKEND_URL` | Куда Vite проксирует `/vdgo/*` (по умолчанию `http://127.0.0.1:8765`). |
 | `VDGO_FONT_DIR` | Каталог шрифтов Carlito для PDF; есть fallback на `google-carlito-fonts`. |
+| `VDGO_MAX_REQUEST_BYTES` | Лимит тела запроса VDGO (по умолчанию 256 МБ). |
+| `MAX_CONCURRENT_PYTHON_JOBS` | Сколько Python-джоб одновременно; для одного GPU — 1. |
+| `SHUTDOWN_TIMEOUT_MS` | Сколько Node ждёт активные Python-джобы при SIGTERM. |
+| `DATABASE_URL` | PostgreSQL для Prisma/аудита; без него audit отключён. |
 
 ## Сборка
 
@@ -83,11 +94,15 @@ npm run build
 ## Проверки
 
 ```bash
-# типы и сборка SPA
-npm run build
+# всё: Prettier + ESLint + Ruff + typecheck + Node/Python/VDGO тесты
+npm run verify
 
-# backend + node-тесты + Python-тесты
-npm --prefix services/ollama run check
+# только backend-тесты
+npm --prefix services/ollama run test
+
+# только SPA
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
 ```
 
 ## Диагностика

@@ -1,8 +1,8 @@
 """Conservative association of OCR labels and dimensions with CAD objects."""
 from __future__ import annotations
 
-from copy import deepcopy
 import math
+from copy import deepcopy
 from typing import Any
 
 

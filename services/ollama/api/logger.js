@@ -43,7 +43,9 @@ function readAppVersion() {
  * is not an explicit development run keeps the quieter `info` level.
  */
 export function resolveLogLevel(env = process.env) {
-  const raw = String(env.LOG_LEVEL || '').trim().toLowerCase();
+  const raw = String(env.LOG_LEVEL || '')
+    .trim()
+    .toLowerCase();
   if (LEVELS.has(raw)) return raw;
   return env.NODE_ENV === 'development' ? 'debug' : DEFAULT_LEVEL;
 }
@@ -84,7 +86,7 @@ export const logger = pino({
   messageKey: 'msg',
   errorKey: 'err',
   redact: { paths: REDACT_PATHS, censor: '[redacted]' },
-  formatters: { level: label => ({ level: label }) },
+  formatters: { level: (label) => ({ level: label }) },
 });
 
 /** Short, stable job identifier used in every log line and in progress.log. */
@@ -120,16 +122,20 @@ export function parseProgressLine(line) {
       /* Not JSON: fall through and keep the raw line readable. */
     }
   }
-  const message = text.replace(/[\r\n]+/g, ' ').trim().slice(0, MAX_PROGRESS_MESSAGE);
+  const message = text
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, MAX_PROGRESS_MESSAGE);
   return { structured: false, message };
 }
 
 /** Render a structured event as the compact `[STAGE] message` progress line. */
 export function renderProgressLine(record) {
-  const stage = String(record?.stage || 'JOB')
-    .replace(/[^A-Za-z0-9_-]/g, '')
-    .slice(0, MAX_PROGRESS_STAGE)
-    .toUpperCase() || 'JOB';
+  const stage =
+    String(record?.stage || 'JOB')
+      .replace(/[^A-Za-z0-9_-]/g, '')
+      .slice(0, MAX_PROGRESS_STAGE)
+      .toUpperCase() || 'JOB';
   const message = String(record?.msg || '')
     .replace(/[\r\n]+/g, ' ')
     .trim()
@@ -151,21 +157,21 @@ export function isStructuredProgress(record) {
  */
 export const requestLogger = pinoHttp({
   logger,
-  genReqId: req => String(req.headers['x-request-id'] || randomUUID()),
+  genReqId: (req) => String(req.headers['x-request-id'] || randomUUID()),
   autoLogging: {
-    ignore: req => req.url === '/api/health' || req.url === '/favicon.ico',
+    ignore: (req) => req.url === '/api/health' || req.url === '/favicon.ico',
   },
   customLogLevel: (req, res, error) => {
     if (error || res.statusCode >= 500) return 'error';
     if (res.statusCode >= 400) return 'warn';
     return 'info';
   },
-  customSuccessMessage: req => `${req.method} ${req.url}`,
-  customErrorMessage: req => `${req.method} ${req.url}`,
-  customProps: req => ({ role: req.user?.role || null }),
+  customSuccessMessage: (req) => `${req.method} ${req.url}`,
+  customErrorMessage: (req) => `${req.method} ${req.url}`,
+  customProps: (req) => ({ role: req.user?.role || null }),
   serializers: {
-    req: req => ({ method: req.method, url: req.url, remoteAddress: req.remoteAddress, requestId: req.id }),
-    res: res => ({ statusCode: res.statusCode }),
+    req: (req) => ({ method: req.method, url: req.url, remoteAddress: req.remoteAddress, requestId: req.id }),
+    res: (res) => ({ statusCode: res.statusCode }),
   },
 });
 

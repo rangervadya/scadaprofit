@@ -6,49 +6,54 @@ geometry image, because doing so can sever a pipe under a handwritten label.
 Detected segments are candidates; ambiguous joins remain review items.
 """
 from __future__ import annotations
+
 import argparse
+import base64
+import hashlib
 import json
 import math
 import os
 import re
-import sys
-import time
-import base64
-import hashlib
 import socket
-import urllib.request
+import time
 import urllib.error
+import urllib.request
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageOps
-
-from structured_model import build_document_model
-from recognition_channels import split_recognition_channels
-from cad_symbols import catalog_manifest
-from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 from annotation_linking import link_annotations
-from engineering_validation import validate_engineering_model
-from clean_layout import build_clean_layout
-from clean_export import build_layout_svg, build_layout_dxf
-from drawing_template import build_drawing_template
-from drawing_quality import validate_clean_layout
 from cad_overlay import render_cad_alignment_overlay
-from pipeline_diagnostics import build_pipeline_diagnostics
-from reference_vectorization import build_reference_trace
+from cad_symbols import catalog_manifest
 from centerline_vectorization import build_centerline_trace
-from openrouter_ai import (
-    DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL, test_openrouter_ai,
-    openrouter_ocr_annotations, openrouter_semantic_routes,
+from clean_export import build_layout_dxf, build_layout_svg
+from clean_layout import build_clean_layout
+from drawing_quality import validate_clean_layout
+from drawing_template import build_drawing_template
+from engineering_validation import validate_engineering_model
+from logging_setup import configure_logging, emit_progress, get_logger
+from moss_ai import (
+    DEFAULT_MODEL as DEFAULT_MOSS_MODEL,
 )
 from moss_ai import (
-    DEFAULT_MODEL as DEFAULT_MOSS_MODEL, test_moss_ai,
-    moss_ocr_annotations, moss_semantic_routes,
+    moss_ocr_annotations,  # noqa: F401 - tests patch processor.moss_ocr_annotations
+    test_moss_ai,
 )
-from logging_setup import configure_logging, emit_progress, get_logger
+from openrouter_ai import (
+    DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL,
+)
+from openrouter_ai import (
+    openrouter_ocr_annotations,  # noqa: F401 - tests patch processor.openrouter_ocr_annotations
+    test_openrouter_ai,
+)
+from PIL import Image, ImageOps
+from pipeline_diagnostics import build_pipeline_diagnostics
+from recognition_channels import split_recognition_channels
+from reference_vectorization import build_reference_trace
+from structured_model import build_document_model
+from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
 
 configure_logging()
 log = get_logger('processor')
@@ -61,6 +66,25 @@ def _progress(stage: str, message: str) -> None:
     the Node parent can render it as `[STAGE] message` exactly as before.
     """
     emit_progress(stage, message, logger=log)
+
+
+def _atomic_write_text(path: str | Path, text: str) -> None:
+    """Persist a text artifact without exposing a truncated file on SIGKILL.
+
+    `write_text` truncates first, so a container kill during a multi-megabyte
+    graph leaves invalid JSON. Write beside the target and `os.replace` it.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f'{target.name}.{os.getpid()}.tmp')
+    try:
+        temporary.write_text(text, encoding='utf-8')
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_image(path: str) -> np.ndarray:
@@ -4954,8 +4978,6 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
                       "ambiguous_components":sum(1 for c in components if c['role']=='ambiguous'),
                       "ink_pixels":int(np.count_nonzero(ink)),
                       "faint_ink_pixels":int(np.count_nonzero(ink_layers["faint"])),
-                      "t_junctions_added": t_junction_diagnostics.get("tJunctionsAdded", 0),
-                      "t_junction_segments_created": t_junction_diagnostics.get("segmentsCreated", 0),
                       "preprocessing":prep},
            "warnings":["PIPE_MAIN использует только связные многосегментные маршруты с геометрическими признаками труб. Одиночные длинные штрихи, размерные линии и неоднозначные группы остаются в DETAIL_REVIEW.",
                        "В 4.3.9 сложные многоветвевые компоненты дополнительно проверяются по топологии, длине, плотности, поворотам, чернилам и OCR; сильные чернила сами по себе не являются основанием для включения.",
@@ -4979,11 +5001,11 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
     # Write the graph once before collecting artifact diagnostics so graph.json
     # is not incorrectly reported as missing, then persist diagnostics in both files.
-    Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
+    _atomic_write_text(Path(out_dir, 'graph.json'), json.dumps(graph, ensure_ascii=False, indent=2))
     diagnostics = build_pipeline_diagnostics(input_path, out_dir, graph)
     graph['diagnostics'] = diagnostics
-    Path(out_dir,'diagnostics.json').write_text(json.dumps(diagnostics,ensure_ascii=False,indent=2),encoding='utf-8')
-    Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
+    _atomic_write_text(Path(out_dir, 'diagnostics.json'), json.dumps(diagnostics, ensure_ascii=False, indent=2))
+    _atomic_write_text(Path(out_dir, 'graph.json'), json.dumps(graph, ensure_ascii=False, indent=2))
     _progress('EXPORT', 'graph.json written; intermediate checkpoints retained')
     if processing_complete:
         _progress('JOB', 'Analysis completed successfully; selected OCR and pipe-tracing providers completed')

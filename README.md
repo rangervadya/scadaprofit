@@ -73,10 +73,13 @@ Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксиру
 ## Проверки
 
 ```bash
-npm --prefix services/ollama run check
-PYTHONPATH=services/ollama python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
+npm install
+npm run verify
 cd frontend && npm ci && npm run build
 ```
+
+`npm run verify` = ESLint + Prettier check + Ruff + frontend typecheck + Node/Python/VDGO тесты.
+Старый `npm run check` удалён; отдельные команды: `npm run lint`, `npm run format`, `npm run typecheck`, `npm run test`.
 
 ## Документация
 

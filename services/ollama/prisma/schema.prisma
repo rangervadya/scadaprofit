@@ -1,0 +1,54 @@
+// Typed data layer for the PostgreSQL migration (P1-1).
+//
+// The Node app still reads users/sessions/workforce from JSON files. These models
+// are the target schema: they let the team generate a typed client and write a
+// repository before the expand-and-contract cutover. `report_runs` already exists
+// in the VDGO database and is mapped as-is.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ReportRun {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  report_number   String   @db.VarChar(120)
+  report_date     String   @db.VarChar(20)
+  output_format   String   @db.VarChar(30)
+  page_count      Int      @default(0)
+  output_filename String   @db.VarChar(255)
+
+  @@map("report_runs")
+}
+
+model User {
+  id            String    @id @db.Uuid
+  username      String    @unique @db.VarChar(80)
+  display_name  String    @db.VarChar(120)
+  role          String    @db.VarChar(20)
+  password_hash String    @db.Text
+  active        Boolean   @default(true)
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime  @updatedAt @db.Timestamptz(6)
+  sessions      Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id         String   @id @db.Uuid
+  user_id    String   @db.Uuid
+  token_hash String   @unique @db.VarChar(128)
+  expires_at DateTime @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([expires_at])
+  @@map("sessions")
+}

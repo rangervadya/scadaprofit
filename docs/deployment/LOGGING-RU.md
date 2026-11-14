@@ -161,9 +161,7 @@ docker compose exec gateway tail -f /var/log/nginx/scadaprofit.log
 ## 9. Проверки
 
 ```bash
-npm --prefix services/ollama run check          # node --test + py_compile + tests/python
-PYTHONPATH=services/ollama/engine python -m unittest discover -s tests/python -p 'test_*.py'
-PYTHONPATH=services/vdgo python -m unittest discover -s tests/vdgo -p 'test_*.py'
+make verify                                     # lint + typecheck + node/python/vdgo tests
 ```
 
 `tests/node/logging.test.js` проверяет: уровни, round-trip прогресса, отсутствие

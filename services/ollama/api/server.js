@@ -9,24 +9,57 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
+import {
+  createManualCadProject,
+  createManualCadProjectFromGraph,
+  normalizeManualCadProject,
+  renderManualCadSvg,
+  renderManualCadDxf,
+  isManualCadId,
+} from './manual-cad-core.js';
 import { createWorkforceSystem } from './workforce-system.js';
 import {
-  logger, jobLogger, shortJobId, parseProgressLine, renderProgressLine,
-  requestLogger, requestIdHeader, logRequestError,
+  validateBody,
+  streetSchema,
+  buildingSchema,
+  manualProjectCreateSchema,
+  connectionSchema,
+  reviewSchema,
+} from './schemas.js';
+import {
+  logger,
+  jobLogger,
+  shortJobId,
+  parseProgressLine,
+  renderProgressLine,
+  requestLogger,
+  requestIdHeader,
+  logRequestError,
 } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
 const BUILD_INFO = {
   version: (await readFile(path.join(__dirname, '../../../VERSION'), 'utf8')).trim(),
-  pipelineSha256: createHash('sha256').update(Buffer.concat(await Promise.all(
-    ['../engine/processor.py', '../engine/clean_layout.py', '../engine/drawing_template.py', 'manual-cad-core.js', 'workforce-system.js', 'server.js']
-      .map(name => readFile(path.join(__dirname, name)))
-  ))).digest('hex')
+  pipelineSha256: createHash('sha256')
+    .update(
+      Buffer.concat(
+        await Promise.all(
+          [
+            '../engine/processor.py',
+            '../engine/clean_layout.py',
+            '../engine/drawing_template.py',
+            'manual-cad-core.js',
+            'workforce-system.js',
+            'server.js',
+          ].map((name) => readFile(path.join(__dirname, name))),
+        ),
+      ),
+    )
+    .digest('hex'),
 };
 const app = express();
-if (process.env.TRUST_GATEWAY_PROXY === "1") app.set("trust proxy", 1);
+if (process.env.TRUST_GATEWAY_PROXY === '1') app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
@@ -81,13 +114,17 @@ const workforceSystem = await createWorkforceSystem({
   uploadDir: UPLOAD_DIR,
   secureCookies: process.env.COOKIE_SECURE === '1',
   onSketchSubmitted: createWorkforceSchemeJob,
-  getSketchStatus: getWorkforceSchemeStatus
+  getSketchStatus: getWorkforceSchemeStatus,
 });
 
 function localRecognitionPythonEnvironment() {
   return {
-    MOSS_API_KEY: '', MOSS_OCR_ENABLED: '0', MOSS_PIPE_ENABLED: '0',
-    OPENROUTER_API_KEY: '', OPENROUTER_OCR_ENABLED: '0', OPENROUTER_PIPE_ENABLED: '0',
+    MOSS_API_KEY: '',
+    MOSS_OCR_ENABLED: '0',
+    MOSS_PIPE_ENABLED: '0',
+    OPENROUTER_API_KEY: '',
+    OPENROUTER_OCR_ENABLED: '0',
+    OPENROUTER_PIPE_ENABLED: '0',
     RECOGNITION_MODE: 'local-qwen-tesseract',
   };
 }
@@ -104,11 +141,20 @@ function checkTesseract() {
       resolve(value);
     };
     const child = spawn('tesseract', ['--list-langs'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    child.stdout.on('data', chunk => { output += chunk.toString(); });
-    child.stderr.on('data', chunk => { output += chunk.toString(); });
-    child.on('error', error => finish({ available: false, languages: [], error: String(error.message || error).slice(0, 180) }));
-    child.on('close', code => {
-      const languages = output.split(/\r?\n/).map(line => line.trim()).filter(line => /^[a-z]{3}$/.test(line));
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    child.on('error', (error) =>
+      finish({ available: false, languages: [], error: String(error.message || error).slice(0, 180) }),
+    );
+    child.on('close', (code) => {
+      const languages = output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^[a-z]{3}$/.test(line));
       finish({
         available: code === 0,
         languages,
@@ -130,13 +176,51 @@ const analysisQueue = [];
 const queuedAnalysisIds = new Set();
 let analysisQueueRunning = false;
 
-function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER, env = null }) {
+// Every Python analysis is CPU/RAM heavy and talks to the same single-GPU
+// Ollama. A single global slot protects the container from unbounded forks;
+// stored schemes wait their turn, while the legacy synchronous /api/analyze
+// endpoint rejects with 429 instead of queueing an HTTP request for 90 minutes.
+const MAX_CONCURRENT_PYTHON_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_PYTHON_JOBS || 1));
+const activePythonChildren = new Set();
+let runningPythonJobs = 0;
+const pythonJobWaiters = [];
+
+function pythonSlotAvailable() {
+  return runningPythonJobs < MAX_CONCURRENT_PYTHON_JOBS;
+}
+
+function tryAcquirePythonSlot() {
+  if (!pythonSlotAvailable()) return false;
+  runningPythonJobs += 1;
+  return true;
+}
+
+function acquirePythonSlot() {
+  if (tryAcquirePythonSlot()) return Promise.resolve();
+  return new Promise((resolve) => pythonJobWaiters.push(resolve));
+}
+
+function releasePythonSlot() {
+  const next = pythonJobWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  runningPythonJobs = Math.max(0, runningPythonJobs - 1);
+}
+
+function runPythonStreaming(
+  args,
+  { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER, env = null },
+) {
   return new Promise((resolve, reject) => {
     const shortId = String(jobId).slice(0, 8);
     const child = spawn(PYTHON, args, {
-      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-      env: env ? { ...process.env, ...env } : process.env
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: env ? { ...process.env, ...env } : process.env,
     });
+    activePythonChildren.add(child);
     const progressFile = createWriteStream(progressPath, { flags: 'a' });
     let stdout = '';
     let stdoutBytes = 0;
@@ -147,7 +231,8 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
     let settled = false;
     let spawnError = null;
     let progressFileFailed = false;
-    let timeoutHandle;
+    // eslint-disable-next-line prefer-const -- assigned after handlers are registered
+    let timeoutHandle; // assigned below; complete() may run before that assignment
     let forceKillHandle;
 
     const jobLog = jobLogger(shortId, { source: 'python' });
@@ -194,6 +279,7 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
     };
 
     const complete = (code, signal) => {
+      activePythonChildren.delete(child);
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (forceKillHandle) clearTimeout(forceKillHandle);
       if (stderrPending.trim()) logLine(stderrPending);
@@ -202,13 +288,15 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
         if (spawnError) {
           fail(Object.assign(spawnError, { stderr: stderrTail, stdout }));
         } else if (timedOut) {
-          const error = new Error(`Python job exceeded ${Math.round(timeout / 60_000)} minute timeout and was terminated.`);
+          const error = new Error(
+            `Python job exceeded ${Math.round(timeout / 60_000)} minute timeout and was terminated.`,
+          );
           Object.assign(error, {
             code: 'ETIMEDOUT',
             killed: true,
             signal: signal || 'SIGTERM',
             stderr: stderrTail,
-            stdout
+            stdout,
           });
           fail(error);
         } else if (outputOverflow) {
@@ -218,7 +306,7 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
             killed: true,
             signal: signal || 'SIGTERM',
             stderr: stderrTail,
-            stdout
+            stdout,
           });
           fail(error);
         } else if (code !== 0) {
@@ -303,32 +391,40 @@ app.use(requestIdHeader);
 // the relative CSS/JS URLs to HTTPS. There is no TLS listener in this container, so assets
 // then fail with ERR_SSL_PROTOCOL_ERROR and the page appears as unstyled HTML.
 // Use an explicit CSP without upgrade-insecure-requests for this offline/LAN deployment.
-app.use(helmet({
-  contentSecurityPolicy: {
-    useDefaults: false,
-    directives: {
-      defaultSrc: ["'self'"],
-      baseUri: ["'self'"],
-      fontSrc: ["'self'", 'data:'],
-      formAction: ["'self'"],
-      frameAncestors: ["'none'"],
-      imgSrc: ["'self'", 'data:', 'blob:'],
-      objectSrc: ["'none'"],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      connectSrc: ["'self'"]
-    }
-  },
-  crossOriginEmbedderPolicy: false,
-  crossOriginOpenerPolicy: false,
-  originAgentCluster: false,
-  hsts: false
-}));
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        fontSrc: ["'self'", 'data:'],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        connectSrc: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+    hsts: false,
+  }),
+);
 
 app.use(express.json({ limit: '15mb' }));
 // Session and role checks run before static pages, uploaded job files and API routes.
 app.use(workforceSystem.authMiddleware);
-const authRateLimit = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Слишком много попыток входа. Повторите позже.' } });
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много попыток входа. Повторите позже.' },
+});
 app.use('/api/auth/login', authRateLimit);
 app.use('/api/auth/setup', authRateLimit);
 const limitHeavyRequests = rateLimit({
@@ -336,14 +432,16 @@ const limitHeavyRequests = rateLimit({
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' }
+  message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' },
 });
-app.use(express.static(path.join(__dirname, '../../../frontend/public'), {
-  maxAge: 0,
-  setHeaders(res, filePath) {
-    if (/\.(html|css|js)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store, max-age=0');
-  }
-}));
+app.use(
+  express.static(path.join(__dirname, '../../../frontend/public'), {
+    maxAge: 0,
+    setHeaders(res, filePath) {
+      if (/\.(html|css|js)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store, max-age=0');
+    },
+  }),
+);
 app.use('/jobs', express.static(DATA, { maxAge: '1h', dotfiles: 'deny', index: false }));
 
 const upload = multer({
@@ -353,14 +451,20 @@ const upload = multer({
     const extOk = /\.(jpe?g|png|webp|tiff?)$/i.test(file.originalname || '');
     const mimeOk = /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
     cb(null, extOk || mimeOk);
-  }
+  },
 });
 
 const templateExtensions = new Set(['.pdf', '.svg', '.dxf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
 const templateMimeTypes = {
-  '.pdf': 'application/pdf', '.svg': 'image/svg+xml', '.dxf': 'application/dxf',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff'
+  '.pdf': 'application/pdf',
+  '.svg': 'image/svg+xml',
+  '.dxf': 'application/dxf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
 };
 const templateUpload = multer({
   dest: UPLOAD_DIR,
@@ -368,7 +472,7 @@ const templateUpload = multer({
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(String(file.originalname || '')).toLowerCase();
     cb(null, templateExtensions.has(ext));
-  }
+  },
 });
 
 const manualSourceUpload = multer({
@@ -378,31 +482,41 @@ const manualSourceUpload = multer({
     const extOk = /\.(jpe?g|png|webp|tiff?)$/i.test(file.originalname || '');
     const mimeOk = /^image\/(jpeg|png|webp|tiff|x-tiff)$/.test(file.mimetype || '');
     cb(null, extOk || mimeOk);
-  }
+  },
 });
 
-function rasterDimensions(buffer, extension = '') {
+function rasterDimensions(buffer) {
   try {
-    if (buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+    if (buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
       return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
     }
     if (buffer.length > 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
       let offset = 2;
       while (offset + 9 < buffer.length) {
-        if (buffer[offset] !== 0xff) { offset += 1; continue; }
+        if (buffer[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
         const marker = buffer[offset + 1];
         offset += 2;
         if (marker === 0xd9 || marker === 0xda) break;
         if (offset + 2 > buffer.length) break;
         const length = buffer.readUInt16BE(offset);
-        if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker) && offset + 7 < buffer.length) {
+        if (
+          [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker) &&
+          offset + 7 < buffer.length
+        ) {
           return { height: buffer.readUInt16BE(offset + 3), width: buffer.readUInt16BE(offset + 5) };
         }
         if (length < 2) break;
         offset += length;
       }
     }
-    if (buffer.length >= 30 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    if (
+      buffer.length >= 30 &&
+      buffer.toString('ascii', 0, 4) === 'RIFF' &&
+      buffer.toString('ascii', 8, 12) === 'WEBP'
+    ) {
       const type = buffer.toString('ascii', 12, 16);
       if (type === 'VP8X') return { width: 1 + buffer.readUIntLE(24, 3), height: 1 + buffer.readUIntLE(27, 3) };
       if (type === 'VP8 ') return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff };
@@ -413,17 +527,20 @@ function rasterDimensions(buffer, extension = '') {
     }
     if (buffer.length >= 16 && ['II', 'MM'].includes(buffer.toString('ascii', 0, 2))) {
       const little = buffer.toString('ascii', 0, 2) === 'II';
-      const read16 = off => little ? buffer.readUInt16LE(off) : buffer.readUInt16BE(off);
-      const read32 = off => little ? buffer.readUInt32LE(off) : buffer.readUInt32BE(off);
+      const read16 = (off) => (little ? buffer.readUInt16LE(off) : buffer.readUInt16BE(off));
+      const read32 = (off) => (little ? buffer.readUInt32LE(off) : buffer.readUInt32BE(off));
       if (read16(2) === 42) {
         const ifd = read32(4);
         const count = Math.min(512, read16(ifd));
-        let width = 0, height = 0;
+        let width = 0,
+          height = 0;
         for (let i = 0; i < count; i += 1) {
           const entry = ifd + 2 + i * 12;
           if (entry + 12 > buffer.length) break;
-          const tag = read16(entry), type = read16(entry + 2), items = read32(entry + 4);
-          if (![256,257].includes(tag) || items < 1) continue;
+          const tag = read16(entry),
+            type = read16(entry + 2),
+            items = read32(entry + 4);
+          if (![256, 257].includes(tag) || items < 1) continue;
           let value = 0;
           if (type === 3) value = read16(entry + 8);
           else if (type === 4) value = read32(entry + 8);
@@ -433,7 +550,9 @@ function rasterDimensions(buffer, extension = '') {
         if (width > 0 && height > 0) return { width, height };
       }
     }
-  } catch { /* malformed image: use a neutral canvas size */ }
+  } catch {
+    /* malformed image: use a neutral canvas size */
+  }
   return { width: 1600, height: 1000 };
 }
 
@@ -446,7 +565,11 @@ function manualProjectResponse(project) {
     sourceUrl: project.source?.fileName ? `/api/manual-cad/projects/${project.id}/source` : null,
     previewUrl: `/api/manual-cad/projects/${project.id}/preview.svg`,
     editUrl: `/manual-cad.html?project=${encodeURIComponent(project.id)}`,
-    returnUrl: project.sourceReportId ? `/workforce.html?report=${encodeURIComponent(project.sourceReportId)}` : project.sourceJobId ? `/?job=${encodeURIComponent(project.sourceJobId)}` : '/'
+    returnUrl: project.sourceReportId
+      ? `/workforce.html?report=${encodeURIComponent(project.sourceReportId)}`
+      : project.sourceJobId
+        ? `/?job=${encodeURIComponent(project.sourceJobId)}`
+        : '/',
   };
 }
 
@@ -457,7 +580,9 @@ async function findManualCadProjectForJob(jobId) {
     try {
       const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
       if (project.sourceJobId === jobId && project.id === entry.name) return project;
-    } catch { /* ignore incomplete project folders */ }
+    } catch {
+      /* ignore incomplete project folders */
+    }
   }
   return null;
 }
@@ -497,7 +622,11 @@ function attachJobUrls(jobId, graph, sourceName = null) {
 }
 
 function cleanLabel(value, maxLength = 100) {
-  return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
 }
 
 async function readTemplateMeta() {
@@ -510,7 +639,7 @@ async function readTemplateMeta() {
       storageName,
       mimeType: templateMimeTypes[path.extname(storageName).toLowerCase()] || 'application/octet-stream',
       size: Math.max(0, Number(meta.size) || 0),
-      uploadedAt: meta.uploadedAt || null
+      uploadedAt: meta.uploadedAt || null,
     };
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
@@ -522,7 +651,7 @@ async function readTemplateMeta() {
 // the same page profile even if the global template is replaced in settings.
 async function pinTemplateReference(jobDir) {
   // Keep the original reference used by a job even after a global replacement.
-  const existing = (await readdir(jobDir)).find(name => /^\.drawing-template-reference\.[a-z0-9]+$/i.test(name));
+  const existing = (await readdir(jobDir)).find((name) => /^\.drawing-template-reference\.[a-z0-9]+$/i.test(name));
   if (existing) return path.join(jobDir, existing);
   const meta = await readTemplateMeta();
   if (!meta) return null;
@@ -547,7 +676,7 @@ function publicTemplate(meta) {
     mimeType: meta.mimeType,
     size: meta.size,
     uploadedAt: meta.uploadedAt,
-    downloadUrl: '/api/template/file'
+    downloadUrl: '/api/template/file',
   };
 }
 
@@ -556,25 +685,38 @@ async function readAddressLibrary() {
     const parsed = JSON.parse(await readFile(LIBRARY_PATH, 'utf8'));
     return {
       schemaVersion: 1,
-      streets: Array.isArray(parsed.streets) ? parsed.streets.map(street => ({
-        id: String(street.id || ''), name: cleanLabel(street.name),
-        createdAt: street.createdAt || null,
-        buildings: Array.isArray(street.buildings) ? street.buildings.map(building => ({
-          id: String(building.id || ''), name: cleanLabel(building.name),
-          createdAt: building.createdAt || null,
-          schemes: Array.isArray(building.schemes) ? building.schemes.filter(item => item && JOB_ID_PATTERN.test(String(item.jobId || ''))).map(item => ({
-            jobId: String(item.jobId), title: cleanLabel(item.title || 'Схема', 140),
-            createdAt: item.createdAt || null, uploadedBy: cleanLabel(item.uploadedBy || '', 80),
-            sourceName: cleanLabel(item.sourceName || '', 180),
-            status: ['pending', 'queued', 'processing', 'completed', 'failed'].includes(item.status)
-              ? item.status : 'completed',
-            originalName: cleanLabel(item.originalName || item.title || 'Эскиз', 180),
-            error: cleanLabel(item.error || '', 240),
-            updatedAt: item.updatedAt || item.createdAt || null,
-            completedAt: item.completedAt || null
-          })) : []
-        })) : []
-      })) : []
+      streets: Array.isArray(parsed.streets)
+        ? parsed.streets.map((street) => ({
+            id: String(street.id || ''),
+            name: cleanLabel(street.name),
+            createdAt: street.createdAt || null,
+            buildings: Array.isArray(street.buildings)
+              ? street.buildings.map((building) => ({
+                  id: String(building.id || ''),
+                  name: cleanLabel(building.name),
+                  createdAt: building.createdAt || null,
+                  schemes: Array.isArray(building.schemes)
+                    ? building.schemes
+                        .filter((item) => item && JOB_ID_PATTERN.test(String(item.jobId || '')))
+                        .map((item) => ({
+                          jobId: String(item.jobId),
+                          title: cleanLabel(item.title || 'Схема', 140),
+                          createdAt: item.createdAt || null,
+                          uploadedBy: cleanLabel(item.uploadedBy || '', 80),
+                          sourceName: cleanLabel(item.sourceName || '', 180),
+                          status: ['pending', 'queued', 'processing', 'completed', 'failed'].includes(item.status)
+                            ? item.status
+                            : 'completed',
+                          originalName: cleanLabel(item.originalName || item.title || 'Эскиз', 180),
+                          error: cleanLabel(item.error || '', 240),
+                          updatedAt: item.updatedAt || item.createdAt || null,
+                          completedAt: item.completedAt || null,
+                        }))
+                    : [],
+                }))
+              : [],
+          }))
+        : [],
     };
   } catch (error) {
     if (error?.code === 'ENOENT') return { schemaVersion: 1, streets: [] };
@@ -601,8 +743,8 @@ function updateAddressLibrary(mutator) {
 }
 
 function findBuilding(library, streetId, buildingId) {
-  const street = library.streets.find(item => item.id === streetId);
-  const building = street?.buildings.find(item => item.id === buildingId);
+  const street = library.streets.find((item) => item.id === streetId);
+  const building = street?.buildings.find((item) => item.id === buildingId);
   return street && building ? { street, building } : null;
 }
 
@@ -611,7 +753,7 @@ function addSchemeToBuilding(library, street, building, scheme) {
   // from any previous building before the new reference is written.
   for (const item of library.streets) {
     for (const house of item.buildings) {
-      house.schemes = house.schemes.filter(existing => existing.jobId !== scheme.jobId);
+      house.schemes = house.schemes.filter((existing) => existing.jobId !== scheme.jobId);
     }
   }
   building.schemes.unshift(scheme);
@@ -621,7 +763,7 @@ function addSchemeToBuilding(library, street, building, scheme) {
 function findScheme(library, jobId) {
   for (const street of library.streets) {
     for (const building of street.buildings) {
-      const scheme = building.schemes.find(item => item.jobId === jobId);
+      const scheme = building.schemes.find((item) => item.jobId === jobId);
       if (scheme) return { street, building, scheme };
     }
   }
@@ -646,26 +788,36 @@ async function readSchemeMeta(jobId) {
     if (error?.code !== 'ENOENT') throw error;
     const library = await readAddressLibrary();
     const found = findScheme(library, jobId);
-    return found ? {
-      jobId, title: found.scheme.title, createdAt: found.scheme.createdAt,
-      uploadedBy: found.scheme.uploadedBy, sourceName: found.scheme.sourceName,
-      status: found.scheme.status || 'completed', originalName: found.scheme.originalName || found.scheme.title,
-      streetName: found.street.name, buildingName: found.building.name,
-      error: found.scheme.error || ''
-    } : null;
+    return found
+      ? {
+          jobId,
+          title: found.scheme.title,
+          createdAt: found.scheme.createdAt,
+          uploadedBy: found.scheme.uploadedBy,
+          sourceName: found.scheme.sourceName,
+          status: found.scheme.status || 'completed',
+          originalName: found.scheme.originalName || found.scheme.title,
+          streetName: found.street.name,
+          buildingName: found.building.name,
+          error: found.scheme.error || '',
+        }
+      : null;
   }
 }
 
 async function updateSchemeStatus(jobId, status, extra = {}) {
-  const existing = await readSchemeMeta(jobId) || { jobId };
+  const existing = (await readSchemeMeta(jobId)) || { jobId };
   const updated = { ...existing, ...extra, status, updatedAt: new Date().toISOString() };
   await writeSchemeMeta(jobId, updated);
-  await updateAddressLibrary(library => {
+  await updateAddressLibrary((library) => {
     const found = findScheme(library, jobId);
-    if (found) Object.assign(found.scheme, {
-      status, error: cleanLabel(updated.error || '', 240),
-      updatedAt: updated.updatedAt, completedAt: updated.completedAt || null
-    });
+    if (found)
+      Object.assign(found.scheme, {
+        status,
+        error: cleanLabel(updated.error || '', 240),
+        updatedAt: updated.updatedAt,
+        completedAt: updated.completedAt || null,
+      });
   });
   return updated;
 }
@@ -679,11 +831,20 @@ async function runStoredSchemeAnalysis(jobId) {
   const templatePath = await pinTemplateReference(jobDir);
   const processorArgs = [path.join(__dirname, '../engine/processor.py'), '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
-  if (meta.rotationDegrees != null && [0, 90, 180, 270].includes(Number(meta.rotationDegrees))) processorArgs.push('--rotation', String(Number(meta.rotationDegrees)));
-  await runPythonStreaming(
-    processorArgs,
-    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
-  );
+  if (meta.rotationDegrees != null && [0, 90, 180, 270].includes(Number(meta.rotationDegrees)))
+    processorArgs.push('--rotation', String(Number(meta.rotationDegrees)));
+  await acquirePythonSlot();
+  try {
+    await runPythonStreaming(processorArgs, {
+      jobId,
+      progressPath,
+      timeout: PYTHON_TIMEOUT_MS,
+      maxBuffer: PYTHON_MAX_BUFFER,
+      env: localRecognitionPythonEnvironment(),
+    });
+  } finally {
+    releasePythonSlot();
+  }
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
     throw new Error('Python обработчик создал неполный graph.json.');
@@ -692,21 +853,22 @@ async function runStoredSchemeAnalysis(jobId) {
     const reasons = Array.isArray(graph.incompleteReasons) ? graph.incompleteReasons : [];
     const message = [
       'Обработка завершилась частично: не все этапы OCR или трассировки труб были завершены.',
-      ...reasons.map(value => String(value)).filter(Boolean),
-      'Успешные локальные Qwen-плитки сохранены. Нажми «Повторить преобразование», чтобы повторить незавершённые этапы.'
+      ...reasons.map((value) => String(value)).filter(Boolean),
+      'Успешные локальные Qwen-плитки сохранены. Нажми «Повторить преобразование», чтобы повторить незавершённые этапы.',
     ].join(' ');
     await updateSchemeStatus(jobId, 'failed', {
       error: message.slice(0, 900),
       graphSummary: graph.summary || null,
       partialGraphReady: true,
-      completedAt: null
+      completedAt: null,
     });
     return graph;
   }
   await updateSchemeStatus(jobId, 'completed', {
-    completedAt: new Date().toISOString(), error: '',
+    completedAt: new Date().toISOString(),
+    error: '',
     graphSummary: graph.summary || null,
-    partialGraphReady: false
+    partialGraphReady: false,
   });
   return graph;
 }
@@ -714,10 +876,17 @@ async function runStoredSchemeAnalysis(jobId) {
 async function markStoredAnalysisFailed(jobId, error) {
   jobLogger(jobId).error({ err: error, stderr: error?.stderr || null }, 'Stored scheme analysis failed');
   await updateSchemeStatus(jobId, 'failed', {
-    error: `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(-900),
-    partialGraphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false),
-    completedAt: null
-  }).catch(statusError => logger.error({ err: statusError, jobId: shortJobId(jobId) }, 'Failed to save analysis error'));
+    error:
+      `${String(error?.stderr || error?.message || error).slice(-650)} Если в .checkpoints уже есть успешные плитки, повторный запуск использует их и запросит только недостающие.`.slice(
+        -900,
+      ),
+    partialGraphReady: await readFile(path.join(DATA, jobId, 'graph.json'))
+      .then(() => true)
+      .catch(() => false),
+    completedAt: null,
+  }).catch((statusError) =>
+    logger.error({ err: statusError, jobId: shortJobId(jobId) }, 'Failed to save analysis error'),
+  );
 }
 
 async function drainAnalysisQueue() {
@@ -732,11 +901,15 @@ async function drainAnalysisQueue() {
       activeAnalyses.set(jobId, Promise.resolve());
       try {
         await updateSchemeStatus(jobId, 'processing', {
-          error: '', startedAt: new Date().toISOString(), completedAt: null,
-          partialGraphReady: false, queuePosition: null
+          error: '',
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          partialGraphReady: false,
+          queuePosition: null,
         });
-        const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId))
-          .catch(error => markStoredAnalysisFailed(jobId, error));
+        const task = Promise.resolve()
+          .then(() => runStoredSchemeAnalysis(jobId))
+          .catch((error) => markStoredAnalysisFailed(jobId, error));
         activeAnalyses.set(jobId, task);
         await task;
       } catch (error) {
@@ -764,7 +937,10 @@ async function enqueueStoredSchemeAnalysis(jobId) {
   }
   const queuePosition = analysisQueue.length;
   await updateSchemeStatus(jobId, 'queued', {
-    error: '', queuePosition, queuedAt: new Date().toISOString(), completedAt: null
+    error: '',
+    queuePosition,
+    queuedAt: new Date().toISOString(),
+    completedAt: null,
   });
   return 'queued';
 }
@@ -773,9 +949,9 @@ async function resumeStoredAnalysisQueue() {
   try {
     const library = await readAddressLibrary();
     const interrupted = [];
-    for (const street of (library.streets || [])) {
-      for (const building of (street.buildings || [])) {
-        for (const scheme of (building.schemes || [])) {
+    for (const street of library.streets || []) {
+      for (const building of street.buildings || []) {
+        for (const scheme of building.schemes || []) {
           if (!['queued', 'processing'].includes(String(scheme.status || ''))) continue;
           if (!JOB_ID_PATTERN.test(String(scheme.jobId || ''))) continue;
           const meta = await readSchemeMeta(scheme.jobId);
@@ -784,7 +960,11 @@ async function resumeStoredAnalysisQueue() {
       }
     }
     for (const jobId of interrupted) await enqueueStoredSchemeAnalysis(jobId);
-    if (interrupted.length) logger.info({ count: interrupted.length, jobIds: interrupted.map(shortJobId) }, 'Resumed interrupted house-scheme jobs');
+    if (interrupted.length)
+      logger.info(
+        { count: interrupted.length, jobIds: interrupted.map(shortJobId) },
+        'Resumed interrupted house-scheme jobs',
+      );
   } catch (error) {
     logger.error({ err: error }, 'Could not restore interrupted house-scheme jobs');
   }
@@ -796,7 +976,8 @@ async function resumeStoredAnalysisQueue() {
 async function createWorkforceSchemeJob({ report, sourcePath }) {
   if (!report?.id || !sourcePath) throw new Error('Не хватает данных отчёта для создания CAD-задания.');
   const ext = path.extname(String(report.sketch?.originalName || sourcePath)).toLowerCase();
-  if (!/^\.(?:jpe?g|png|webp|tiff?)$/.test(ext)) throw new Error('Для автоматического преобразования нужен JPG, PNG, WEBP или TIFF.');
+  if (!/^\.(?:jpe?g|png|webp|tiff?)$/.test(ext))
+    throw new Error('Для автоматического преобразования нужен JPG, PNG, WEBP или TIFF.');
 
   const jobId = randomUUID();
   const jobDir = path.join(DATA, jobId);
@@ -807,32 +988,58 @@ async function createWorkforceSchemeJob({ report, sourcePath }) {
   try {
     await mkdir(jobDir, { recursive: true });
     await copyFile(sourcePath, path.join(jobDir, sourceName));
-    addressIds = await updateAddressLibrary(library => {
-      let street = library.streets.find(item => String(item.name || '').toLocaleLowerCase('ru') === streetName.toLocaleLowerCase('ru'));
+    addressIds = await updateAddressLibrary((library) => {
+      let street = library.streets.find(
+        (item) => String(item.name || '').toLocaleLowerCase('ru') === streetName.toLocaleLowerCase('ru'),
+      );
       if (!street) {
         street = { id: randomUUID(), name: streetName, createdAt: new Date().toISOString(), buildings: [] };
         library.streets.push(street);
       }
       street.buildings = Array.isArray(street.buildings) ? street.buildings : [];
-      let building = street.buildings.find(item => String(item.name || '').toLocaleLowerCase('ru') === buildingName.toLocaleLowerCase('ru'));
+      let building = street.buildings.find(
+        (item) => String(item.name || '').toLocaleLowerCase('ru') === buildingName.toLocaleLowerCase('ru'),
+      );
       if (!building) {
         building = { id: randomUUID(), name: buildingName, createdAt: new Date().toISOString(), schemes: [] };
         street.buildings.push(building);
       }
       building.schemes = Array.isArray(building.schemes) ? building.schemes : [];
       const meta = {
-        jobId, title: cleanLabel(`${streetName}, дом ${buildingName} — ручная схема`, 140),
-        originalName: cleanLabel(report.sketch?.originalName || 'Эскиз слесаря', 180), sourceName,
-        uploadedBy: cleanLabel(report.userName || 'Слесарь', 80), rotationDegrees: null,
-        streetId: street.id, streetName: street.name, buildingId: building.id, buildingName: building.name,
-        workforceReportId: report.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        status: 'pending', error: ''
+        jobId,
+        title: cleanLabel(`${streetName}, дом ${buildingName} — ручная схема`, 140),
+        originalName: cleanLabel(report.sketch?.originalName || 'Эскиз слесаря', 180),
+        sourceName,
+        uploadedBy: cleanLabel(report.userName || 'Слесарь', 80),
+        rotationDegrees: null,
+        streetId: street.id,
+        streetName: street.name,
+        buildingId: building.id,
+        buildingName: building.name,
+        workforceReportId: report.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: 'pending',
+        error: '',
       };
       addSchemeToBuilding(library, street, building, {
-        jobId, title: meta.title, originalName: meta.originalName, createdAt: meta.createdAt,
-        uploadedBy: meta.uploadedBy, sourceName, status: 'pending', error: '', workforceReportId: report.id
+        jobId,
+        title: meta.title,
+        originalName: meta.originalName,
+        createdAt: meta.createdAt,
+        uploadedBy: meta.uploadedBy,
+        sourceName,
+        status: 'pending',
+        error: '',
+        workforceReportId: report.id,
       });
-      return { streetId: street.id, streetName: street.name, buildingId: building.id, buildingName: building.name, meta };
+      return {
+        streetId: street.id,
+        streetName: street.name,
+        buildingId: building.id,
+        buildingName: building.name,
+        meta,
+      };
     });
     await writeSchemeMeta(jobId, addressIds.meta);
     const status = await enqueueStoredSchemeAnalysis(jobId);
@@ -848,8 +1055,10 @@ async function getWorkforceSchemeStatus(jobId) {
   const meta = await readSchemeMeta(jobId);
   if (!meta) return { status: 'failed', error: 'Задание автоматической обработки не найдено.' };
   return {
-    status: meta.status || 'queued', error: meta.error || '', completedAt: meta.completedAt || null,
-    partialGraphReady: Boolean(meta.partialGraphReady)
+    status: meta.status || 'queued',
+    error: meta.error || '',
+    completedAt: meta.completedAt || null,
+    partialGraphReady: Boolean(meta.partialGraphReady),
   };
 }
 
@@ -883,11 +1092,12 @@ app.get('/api/template/file', async (_req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     // Always download reference files, including SVG, rather than rendering user content inline.
     res.setHeader('Content-Type', 'application/octet-stream');
-    return res.download(filePath, meta.originalName, error => {
-      if (error && !res.headersSent) res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
+    return res.download(filePath, meta.originalName, (error) => {
+      if (error && !res.headersSent)
+        res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
     });
   } catch (error) {
-    req.log.error({ err: error }, 'Cannot download template');
+    _req.log.error({ err: error }, 'Cannot download template');
     return res.status(500).json({ error: 'Не удалось скачать эталонный шаблон.' });
   }
 });
@@ -899,7 +1109,8 @@ app.post('/api/template', limitHeavyRequests, templateUpload.single('template'),
     await rm(req.file.path, { force: true }).catch(() => {});
     return res.status(400).json({ error: 'Формат файла шаблона не поддерживается.' });
   }
-  const originalName = cleanLabel(path.basename(String(req.file.originalname || '').replace(/\\/g, '/')), 180) || `template${ext}`;
+  const originalName =
+    cleanLabel(path.basename(String(req.file.originalname || '').replace(/\\/g, '/')), 180) || `template${ext}`;
   const storageName = `template-${randomUUID()}${ext}`;
   const destination = path.join(TEMPLATE_DIR, storageName);
   const previous = await readTemplateMeta().catch(() => null);
@@ -907,10 +1118,11 @@ app.post('/api/template', limitHeavyRequests, templateUpload.single('template'),
     // /tmp and the named Docker volume can be different filesystems: copy, then remove.
     await copyFile(req.file.path, destination);
     const meta = {
-      originalName, storageName,
+      originalName,
+      storageName,
       mimeType: templateMimeTypes[ext] || 'application/octet-stream',
       size: Number(req.file.size) || 0,
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
     };
     await saveTemplateMeta(meta);
     if (previous?.storageName && previous.storageName !== storageName) {
@@ -948,13 +1160,15 @@ app.get('/api/library', async (req, res) => {
   }
 });
 
-app.post('/api/library/streets', async (req, res) => {
+app.post('/api/library/streets', validateBody(streetSchema), async (req, res) => {
   const name = cleanLabel(req.body?.name, 100);
   if (!name) return res.status(400).json({ error: 'Укажи название улицы.' });
   try {
-    const street = await updateAddressLibrary(library => {
-      if (library.streets.some(item => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
-        const error = new Error('Такая улица уже есть в папках.'); error.status = 409; throw error;
+    const street = await updateAddressLibrary((library) => {
+      if (library.streets.some((item) => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
+        const error = new Error('Такая улица уже есть в папках.');
+        error.status = 409;
+        throw error;
       }
       const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), buildings: [] };
       library.streets.push(created);
@@ -966,16 +1180,22 @@ app.post('/api/library/streets', async (req, res) => {
   }
 });
 
-app.post('/api/library/buildings', async (req, res) => {
+app.post('/api/library/buildings', validateBody(buildingSchema), async (req, res) => {
   const streetId = String(req.body?.streetId || '');
   const name = cleanLabel(req.body?.name, 80);
   if (!UUID_PATTERN.test(streetId) || !name) return res.status(400).json({ error: 'Выбери улицу и укажи номер дома.' });
   try {
-    const building = await updateAddressLibrary(library => {
-      const street = library.streets.find(item => item.id === streetId);
-      if (!street) { const error = new Error('Улица не найдена. Обнови список папок.'); error.status = 404; throw error; }
-      if (street.buildings.some(item => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
-        const error = new Error('Такой дом уже есть в этой улице.'); error.status = 409; throw error;
+    const building = await updateAddressLibrary((library) => {
+      const street = library.streets.find((item) => item.id === streetId);
+      if (!street) {
+        const error = new Error('Улица не найдена. Обнови список папок.');
+        error.status = 404;
+        throw error;
+      }
+      if (street.buildings.some((item) => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
+        const error = new Error('Такой дом уже есть в этой улице.');
+        error.status = 409;
+        throw error;
       }
       const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), schemes: [] };
       street.buildings.push(created);
@@ -1018,28 +1238,48 @@ app.post('/api/library/schemes/upload', limitHeavyRequests, upload.single('image
     await rm(req.file.path, { force: true });
 
     const requestedRotation = String(req.body?.rotationDegrees ?? 'auto');
-    const rotationDegrees = ['0','90','180','270'].includes(requestedRotation) ? Number(requestedRotation) : null;
+    const rotationDegrees = ['0', '90', '180', '270'].includes(requestedRotation) ? Number(requestedRotation) : null;
     const meta = {
-      jobId, title, originalName, sourceName, uploadedBy, rotationDegrees,
-      streetId, streetName: address.street.name,
-      buildingId, buildingName: address.building.name,
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      status: 'pending', error: ''
+      jobId,
+      title,
+      originalName,
+      sourceName,
+      uploadedBy,
+      rotationDegrees,
+      streetId,
+      streetName: address.street.name,
+      buildingId,
+      buildingName: address.building.name,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'pending',
+      error: '',
     };
     await writeSchemeMeta(jobId, meta);
-    await updateAddressLibrary(current => {
+    await updateAddressLibrary((current) => {
       const target = findBuilding(current, streetId, buildingId);
-      if (!target) { const error = new Error('Адрес удалён во время отправки.'); error.status = 404; throw error; }
+      if (!target) {
+        const error = new Error('Адрес удалён во время отправки.');
+        error.status = 404;
+        throw error;
+      }
       addSchemeToBuilding(current, target.street, target.building, {
-        jobId, title, originalName, createdAt: meta.createdAt,
-        updatedAt: meta.updatedAt, uploadedBy, sourceName, status: 'pending', error: ''
+        jobId,
+        title,
+        originalName,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        uploadedBy,
+        sourceName,
+        status: 'pending',
+        error: '',
       });
     });
     const analysisStatus = await enqueueStoredSchemeAnalysis(jobId);
     return res.status(201).json({
       ok: true,
       scheme: { ...meta, status: analysisStatus, sourceUrl: `/jobs/${jobId}/${sourceName}` },
-      library: await readAddressLibrary()
+      library: await readAddressLibrary(),
     });
   } catch (error) {
     await rm(jobDir, { recursive: true, force: true }).catch(() => {});
@@ -1063,7 +1303,7 @@ app.get('/api/library/schemes/:jobId', async (req, res) => {
       streetName: found.street.name,
       buildingName: found.building.name,
       sourceUrl: `/jobs/${jobId}/${path.basename(meta.sourceName)}`,
-      progressUrl: `/jobs/${jobId}/progress.log`
+      progressUrl: `/jobs/${jobId}/progress.log`,
     };
     return res.json({ ok: true, scheme });
   } catch (error) {
@@ -1084,11 +1324,19 @@ app.get('/api/library/schemes/:jobId/status', async (req, res) => {
     try {
       const raw = await readFile(path.join(DATA, jobId, 'progress.log'), 'utf8');
       progress = raw.trim().split(/\r?\n/).slice(-1)[0] || '';
-    } catch { /* pending upload has no processing log yet */ }
+    } catch {
+      /* pending upload has no processing log yet */
+    }
     return res.json({
-      ok: true, jobId, status: meta?.status || found.scheme.status || 'completed',
-      progress, error: meta?.error || found.scheme.error || '', queuePosition: meta?.queuePosition || null,
-      graphReady: await readFile(path.join(DATA, jobId, 'graph.json')).then(() => true).catch(() => false)
+      ok: true,
+      jobId,
+      status: meta?.status || found.scheme.status || 'completed',
+      progress,
+      error: meta?.error || found.scheme.error || '',
+      queuePosition: meta?.queuePosition || null,
+      graphReady: await readFile(path.join(DATA, jobId, 'graph.json'))
+        .then(() => true)
+        .catch(() => false),
     });
   } catch (error) {
     req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot read scheme status');
@@ -1120,21 +1368,27 @@ app.post('/api/library/schemes/:jobId', async (req, res) => {
   const buildingId = String(req.body?.buildingId || '');
   const title = cleanLabel(req.body?.title || 'Схема', 140) || 'Схема';
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
-  if (!UUID_PATTERN.test(streetId) || !UUID_PATTERN.test(buildingId)) return res.status(400).json({ error: 'Выбери улицу и дом.' });
+  if (!UUID_PATTERN.test(streetId) || !UUID_PATTERN.test(buildingId))
+    return res.status(400).json({ error: 'Выбери улицу и дом.' });
   try {
     const jobDir = path.join(DATA, jobId);
-    const [graphRaw, entries] = await Promise.all([
-      readFile(path.join(jobDir, 'graph.json'), 'utf8'), readdir(jobDir)
-    ]);
+    const [graphRaw, entries] = await Promise.all([readFile(path.join(jobDir, 'graph.json'), 'utf8'), readdir(jobDir)]);
     const graph = JSON.parse(graphRaw);
-    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
+    const sourceName = entries.find((name) => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name));
     if (!sourceName) return res.status(404).json({ error: 'Исходное изображение этой схемы не найдено.' });
-    await updateAddressLibrary(library => {
+    await updateAddressLibrary((library) => {
       const context = findBuilding(library, streetId, buildingId);
-      if (!context) { const error = new Error('Указанная улица или дом не найдены.'); error.status = 404; throw error; }
+      if (!context) {
+        const error = new Error('Указанная улица или дом не найдены.');
+        error.status = 404;
+        throw error;
+      }
       addSchemeToBuilding(library, context.street, context.building, {
-        jobId, title, createdAt: graph.createdAt || graph.timestamp || new Date().toISOString(),
-        uploadedBy: cleanLabel(req.body?.uploadedBy, 80), sourceName
+        jobId,
+        title,
+        createdAt: graph.createdAt || graph.timestamp || new Date().toISOString(),
+        uploadedBy: cleanLabel(req.body?.uploadedBy, 80),
+        sourceName,
       });
     });
     return res.json({ ok: true, library: await readAddressLibrary() });
@@ -1150,25 +1404,20 @@ app.get('/api/jobs/:jobId/graph', async (req, res) => {
 
   const jobDir = path.join(DATA, jobId);
   try {
-    const [raw, entries] = await Promise.all([
-      readFile(path.join(jobDir, 'graph.json'), 'utf8'),
-      readdir(jobDir)
-    ]);
+    const [raw, entries] = await Promise.all([readFile(path.join(jobDir, 'graph.json'), 'utf8'), readdir(jobDir)]);
     const graph = JSON.parse(raw);
-    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    const sourceName = entries.find((name) => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
     if (!sourceName) return res.status(404).json({ error: 'Исходное изображение задания не найдено.' });
     return res.json(attachJobUrls(jobId, graph, sourceName));
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
     return res.status(status).json({
-      error: status === 404
-        ? 'Сохранённое задание не найдено или уже удалено.'
-        : 'Не удалось прочитать граф задания.'
+      error: status === 404 ? 'Сохранённое задание не найдено или уже удалено.' : 'Не удалось прочитать граф задания.',
     });
   }
 });
 
-app.post('/api/jobs/:jobId/connections', async (req, res) => {
+app.post('/api/jobs/:jobId/connections', validateBody(connectionSchema), async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
 
@@ -1191,7 +1440,7 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
     graph.joinCandidates = Array.isArray(graph.joinCandidates) ? graph.joinCandidates : [];
     graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
 
-    const nodeById = new Map(graph.nodes.map(node => [String(node.id), node]));
+    const nodeById = new Map(graph.nodes.map((node) => [String(node.id), node]));
     const a = nodeById.get(from);
     const b = nodeById.get(to);
     if (!a || !b) {
@@ -1200,26 +1449,32 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
 
     let candidate = null;
     if (candidateId) {
-      candidate = graph.joinCandidates.find(item => {
-        const samePair = (String(item.from) === from && String(item.to) === to) ||
+      candidate = graph.joinCandidates.find((item) => {
+        const samePair =
+          (String(item.from) === from && String(item.to) === to) ||
           (String(item.from) === to && String(item.to) === from);
         return String(item.id) === candidateId && samePair;
       });
 
       if (!candidate) {
-        return res.status(409).json({ error: 'Кандидат устарел или уже был использован. Обновите сохранённое задание.' });
+        return res
+          .status(409)
+          .json({ error: 'Кандидат устарел или уже был использован. Обновите сохранённое задание.' });
       }
       if (candidate.has_alternatives && !confirmAlternative) {
-        return res.status(409).json({ error: 'У узла есть конкурирующие варианты. Требуется явное подтверждение выбранной пары.' });
+        return res
+          .status(409)
+          .json({ error: 'У узла есть конкурирующие варианты. Требуется явное подтверждение выбранной пары.' });
       }
       if (Number(a.degree) !== 1 || Number(b.degree) !== 1) {
         return res.status(409).json({ error: 'Один из концов уже соединён. Обновите список кандидатов.' });
       }
     }
 
-    const duplicate = graph.edges.some(edge =>
-      (String(edge.from) === from && String(edge.to) === to) ||
-      (String(edge.from) === to && String(edge.to) === from)
+    const duplicate = graph.edges.some(
+      (edge) =>
+        (String(edge.from) === from && String(edge.to) === to) ||
+        (String(edge.from) === to && String(edge.to) === from),
     );
     if (duplicate) return res.status(409).json({ error: 'Такое соединение уже существует.' });
 
@@ -1232,7 +1487,10 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
       to,
       source: 'manual',
       confidence: 1,
-      geometry: [[Number(a.x), Number(a.y)], [Number(b.x), Number(b.y)]],
+      geometry: [
+        [Number(a.x), Number(a.y)],
+        [Number(b.x), Number(b.y)],
+      ],
       visible: true,
       review: false,
       detector: 'MANUAL',
@@ -1241,7 +1499,7 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
       manual_reason: candidate ? 'user-confirmed-join-candidate' : 'user-created-connection',
       candidate_id: candidate?.id || null,
       candidate_score: candidate?.score ?? null,
-      confirmed_at: confirmedAt
+      confirmed_at: confirmedAt,
     });
 
     a.degree = Number(a.degree || 0) + 1;
@@ -1257,12 +1515,12 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
       to,
       score: candidate?.score ?? null,
       confirmedAt,
-      confirmation: 'explicit-user-action'
+      confirmation: 'explicit-user-action',
     };
     graph.confirmedConnections.push(record);
     const consumed = new Set([from, to]);
-    graph.joinCandidates = graph.joinCandidates.filter(item =>
-      !consumed.has(String(item.from)) && !consumed.has(String(item.to))
+    graph.joinCandidates = graph.joinCandidates.filter(
+      (item) => !consumed.has(String(item.from)) && !consumed.has(String(item.to)),
     );
 
     graph.summary = graph.summary && typeof graph.summary === 'object' ? graph.summary : {};
@@ -1274,47 +1532,60 @@ app.post('/api/jobs/:jobId/connections', async (req, res) => {
     await rename(tempPath, graphPath);
 
     const entries = await readdir(jobDir);
-    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
-    req.log.info({ jobId: shortJobId(jobId), connectionId: record.id, from, to, edgeId, candidateId: candidate?.id || 'manual' }, 'Confirmed graph connection');
+    const sourceName = entries.find((name) => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    req.log.info(
+      { jobId: shortJobId(jobId), connectionId: record.id, from, to, edgeId, candidateId: candidate?.id || 'manual' },
+      'Confirmed graph connection',
+    );
     return res.json({ ok: true, connection: record, graph: attachJobUrls(jobId, graph, sourceName) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
     req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot save connection');
-    return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить соединение.' });
+    return res
+      .status(status)
+      .json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить соединение.' });
   }
 });
 
-app.post('/api/jobs/:jobId/review', async (req, res) => {
+app.post('/api/jobs/:jobId/review', validateBody(reviewSchema), async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
   const action = String(req.body?.action || '').trim();
   const targetId = String(req.body?.targetId || '').trim();
-  if (!action || !targetId || targetId.length > 64) return res.status(400).json({ error: 'Не указано действие или объект проверки.' });
+  if (!action || !targetId || targetId.length > 64)
+    return res.status(400).json({ error: 'Не указано действие или объект проверки.' });
   const jobDir = path.join(DATA, jobId);
   const graphPath = path.join(jobDir, 'graph.json');
   try {
     const graph = JSON.parse(await readFile(graphPath, 'utf8'));
     const model = graph.documentModel;
-    if (!model || typeof model !== 'object') return res.status(409).json({ error: 'В задании нет редактируемой модели.' });
+    if (!model || typeof model !== 'object')
+      return res.status(409).json({ error: 'В задании нет редактируемой модели.' });
     model.reviewTasks = Array.isArray(model.reviewTasks) ? model.reviewTasks : [];
     model.validationFindings = Array.isArray(model.validationFindings) ? model.validationFindings : [];
-    const resolveTasks = kind => model.reviewTasks.forEach(task => {
-      if ((!kind || task.kind === kind) && (task.targetIds || []).map(String).includes(targetId)) task.status = 'resolved';
-    });
+    const resolveTasks = (kind) =>
+      model.reviewTasks.forEach((task) => {
+        if ((!kind || task.kind === kind) && (task.targetIds || []).map(String).includes(targetId))
+          task.status = 'resolved';
+      });
     if (action === 'classify_symbol') {
-      const symbol = (model.symbols || []).find(item => String(item.id) === targetId);
+      const symbol = (model.symbols || []).find((item) => String(item.id) === targetId);
       const symbolType = String(req.body?.symbolType || '').trim();
-      const catalog = (graph.symbolCatalog || []).find(item => String(item.type) === symbolType);
+      const catalog = (graph.symbolCatalog || []).find((item) => String(item.type) === symbolType);
       if (!symbol) return res.status(404).json({ error: 'Кандидат символа не найден.' });
       if (!catalog) return res.status(400).json({ error: 'Неизвестный тип CAD-символа.' });
-      Object.assign(symbol, { type: symbolType, catalogLabel: cleanLabel(catalog.label, 100),
+      Object.assign(symbol, {
+        type: symbolType,
+        catalogLabel: cleanLabel(catalog.label, 100),
         rotation: Math.max(0, Math.min(359.99, Number(req.body?.rotation) || 0)),
-        ports: Array.isArray(catalog.ports) ? catalog.ports : [], state: 'primary' });
+        ports: Array.isArray(catalog.ports) ? catalog.ports : [],
+        state: 'primary',
+      });
       resolveTasks('classify_symbol');
     } else if (action === 'assign_dimension') {
-      const dimension = (model.dimensions || []).find(item => String(item.id) === targetId);
+      const dimension = (model.dimensions || []).find((item) => String(item.id) === targetId);
       const pipeId = String(req.body?.pipeId || '').trim();
-      const pipe = (model.pipes || []).find(item => String(item.id) === pipeId && item.state === 'primary');
+      const pipe = (model.pipes || []).find((item) => String(item.id) === pipeId && item.state === 'primary');
       if (!dimension) return res.status(404).json({ error: 'Размер не найден.' });
       if (!pipe) return res.status(400).json({ error: 'Выберите подтверждённый участок трубопровода.' });
       const numericValue = Number(req.body?.value);
@@ -1322,67 +1593,109 @@ app.post('/api/jobs/:jobId/review', async (req, res) => {
       Object.assign(dimension, { targetId: pipeId, state: 'primary' });
       resolveTasks('assign_dimension');
     } else if (action === 'verify_text') {
-      const label = (model.labels || []).find(item => String(item.id) === targetId);
+      const label = (model.labels || []).find((item) => String(item.id) === targetId);
       const text = cleanLabel(req.body?.text, 240);
       if (!label) return res.status(404).json({ error: 'Подпись не найдена.' });
       if (!text) return res.status(400).json({ error: 'Введите подтверждённый текст.' });
       Object.assign(label, { text, state: 'primary' });
       resolveTasks('verify_text');
     } else if (action === 'resolve_finding') {
-      const finding = model.validationFindings.find(item => String(item.id) === targetId);
+      const finding = model.validationFindings.find((item) => String(item.id) === targetId);
       if (!finding) return res.status(404).json({ error: 'Замечание не найдено.' });
-      Object.assign(finding, { status: 'resolved', resolution: cleanLabel(req.body?.resolution || 'Проверено оператором', 180) });
+      Object.assign(finding, {
+        status: 'resolved',
+        resolution: cleanLabel(req.body?.resolution || 'Проверено оператором', 180),
+      });
     } else if (action === 'dismiss_task') {
-      const task = model.reviewTasks.find(item => String(item.id) === targetId);
+      const task = model.reviewTasks.find((item) => String(item.id) === targetId);
       if (!task) return res.status(404).json({ error: 'Задание проверки не найдено.' });
       task.status = 'dismissed';
     } else return res.status(400).json({ error: 'Неподдерживаемое действие проверки.' });
 
-    model.status = model.reviewTasks.some(item => item.status === 'open') || model.validationFindings.some(item => item.status === 'open') ? 'needs_review' : 'confirmed';
+    model.status =
+      model.reviewTasks.some((item) => item.status === 'open') ||
+      model.validationFindings.some((item) => item.status === 'open')
+        ? 'needs_review'
+        : 'confirmed';
     graph.status = model.status;
     const tempPath = `${graphPath}.tmp-${randomUUID()}`;
     await writeFile(tempPath, JSON.stringify(graph, null, 2), 'utf8');
     await rename(tempPath, graphPath);
     const entries = await readdir(jobDir);
-    const sourceName = entries.find(name => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
+    const sourceName = entries.find((name) => /^source\.(?:jpe?g|png|webp|tiff?)$/i.test(name)) || null;
     return res.json({ ok: true, graph: attachJobUrls(jobId, graph, sourceName) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 500;
     req.log.error({ err: error, jobId: shortJobId(jobId) }, 'Cannot save review action');
-    return res.status(status).json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить решение проверки.' });
+    return res
+      .status(status)
+      .json({ error: status === 404 ? 'Задание не найдено.' : 'Не удалось сохранить решение проверки.' });
   }
 });
 
 // Backward-compatible status routes: cloud integrations are intentionally disabled.
-const cloudProviderDisabled = (_req, res) => res.status(410).json({
-  ok: false,
-  disabled: true,
-  error: 'Облачные AI-провайдеры отключены. Используется локальная связка Qwen3-VL + Tesseract.',
-});
-app.get('/api/openrouter-settings', (_req, res) => res.json({ ok: true, disabled: true, openrouter: { configured: false, enabled: false }, local: { mode: 'Qwen3-VL + Tesseract' } }));
+const cloudProviderDisabled = (_req, res) =>
+  res.status(410).json({
+    ok: false,
+    disabled: true,
+    error: 'Облачные AI-провайдеры отключены. Используется локальная связка Qwen3-VL + Tesseract.',
+  });
+app.get('/api/openrouter-settings', (_req, res) =>
+  res.json({
+    ok: true,
+    disabled: true,
+    openrouter: { configured: false, enabled: false },
+    local: { mode: 'Qwen3-VL + Tesseract' },
+  }),
+);
 app.put('/api/openrouter-settings', cloudProviderDisabled);
 app.delete('/api/openrouter-settings', cloudProviderDisabled);
 app.post('/api/openrouter-settings/test', cloudProviderDisabled);
-app.get('/api/moss-settings', (_req, res) => res.json({ ok: true, disabled: true, moss: { configured: false, enabled: false }, local: { mode: 'Qwen3-VL + Tesseract' } }));
+app.get('/api/moss-settings', (_req, res) =>
+  res.json({
+    ok: true,
+    disabled: true,
+    moss: { configured: false, enabled: false },
+    local: { mode: 'Qwen3-VL + Tesseract' },
+  }),
+);
 app.put('/api/moss-settings', cloudProviderDisabled);
 app.delete('/api/moss-settings', cloudProviderDisabled);
 app.post('/api/moss-settings/test', cloudProviderDisabled);
 
-app.get('/api/health', async (_req, res) => {
+let tesseractStatusCache = { checkedAt: 0, value: null };
+
+async function checkTesseractCached(maxAgeMs = 30_000) {
+  const now = Date.now();
+  if (tesseractStatusCache.value && now - tesseractStatusCache.checkedAt < maxAgeMs) {
+    return tesseractStatusCache.value;
+  }
+  const value = await checkTesseract();
+  tesseractStatusCache = { checkedAt: now, value };
+  return value;
+}
+
+async function checkOllamaStatus() {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
-  const tagsUrl = process.env.OLLAMA_TAGS_URL ||
+  const tagsUrl =
+    process.env.OLLAMA_TAGS_URL ||
     (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
 
-  let ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
+  const ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
   try {
     const response = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
     if (!response.ok) throw new Error(`Ollama API вернула HTTP ${response.status}`);
     const data = await response.json();
     const models = Array.isArray(data.models) ? data.models : [];
-    const names = models.map(item => String(item.name || item.model || '')).filter(Boolean);
+    const names = models.map((item) => String(item.name || item.model || '')).filter(Boolean);
     ollama.reachable = true;
     ollama.models = names;
-    ollama.modelInstalled = names.some(name => name === qwenModel || name === `${qwenModel}:latest` || name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''));
+    ollama.modelInstalled = names.some(
+      (name) =>
+        name === qwenModel ||
+        name === `${qwenModel}:latest` ||
+        name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''),
+    );
     if (!ollama.modelInstalled) {
       ollama.error = `Модель ${qwenModel} не найдена. Установлены: ${names.join(', ') || 'нет моделей'}.`;
       ollama.hint = `Выполните: docker compose exec ollama ollama pull ${qwenModel}`;
@@ -1391,17 +1704,25 @@ app.get('/api/health', async (_req, res) => {
     ollama.error = String(error?.message || error).slice(0, 240);
     ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
   }
+  return ollama;
+}
 
-  const tesseract = await checkTesseract();
+app.get('/api/health', async (_req, res) => {
+  const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
+  const ollama = await checkOllamaStatus();
+  const tesseract = await checkTesseractCached();
+  const ready = Boolean(ollama.reachable && ollama.modelInstalled && tesseract.russianEnglishReady);
   res.json({
     ok: true,
+    ready,
     version: BUILD_INFO.version,
     build: BUILD_INFO,
     drawingTemplateConfigured: Boolean(await readTemplateMeta().catch(() => null)),
     pythonJobTimeoutMs: PYTHON_TIMEOUT_MS,
     mode: 'cad-reconstruction-engine',
     recognitionMode: 'local-qwen-tesseract',
-    geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated local Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
+    geometry:
+      'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated local Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
     ocr: 'Local Ollama Qwen3-VL is the primary OCR and route-tracing model; local Tesseract rus+eng supplements text recognition. Cloud providers are disabled in the production pipeline.',
     qwenModel,
     qwenLimits: {
@@ -1417,13 +1738,27 @@ app.get('/api/health', async (_req, res) => {
       pipeTileOverlap: Number(process.env.QWEN_PIPE_TILE_OVERLAP || 0.14),
       ocrTileGrid: Number(process.env.QWEN_OCR_TILE_GRID || 3),
       ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2),
-      modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
+      modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m',
     },
     localRecognition: { mode: 'Qwen3-VL + Tesseract', cloudDisabled: true, qwen: ollama, tesseract },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
     cloudProvidersDisabled: true,
     ollamaRequiredForCleanCad: false,
     ollamaRequired: false,
+    ollama,
+  });
+});
+
+app.get('/api/readyz', async (_req, res) => {
+  const ollama = await checkOllamaStatus();
+  const tesseract = await checkTesseractCached();
+  const ready = Boolean(ollama.reachable && ollama.modelInstalled && tesseract.russianEnglishReady);
+  res.status(ready ? 200 : 503).json({
+    ok: ready,
+    checks: {
+      ollama: { reachable: ollama.reachable, modelInstalled: ollama.modelInstalled, model: ollama.model },
+      tesseract: { available: tesseract.available, russianEnglishReady: tesseract.russianEnglishReady },
+    },
     ollama,
   });
 });
@@ -1457,6 +1792,7 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
 
   const ext = path.extname(req.file.originalname || '').toLowerCase() || '.img';
   const sourcePath = path.join(jobDir, `source${ext}`);
+  let pythonSlotAcquired = false;
 
   try {
     // Move uploaded temp file into isolated job folder.
@@ -1464,37 +1800,69 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
     await fs.copyFile(req.file.path, sourcePath);
     await fs.rm(req.file.path, { force: true });
 
+    if (!tryAcquirePythonSlot()) {
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+      req.log.warn(
+        { jobId: shortJobId(id), running: runningPythonJobs, max: MAX_CONCURRENT_PYTHON_JOBS },
+        'Rejected analyze: Python slot busy',
+      );
+      return res.status(429).json({
+        error: 'Сервис распознавания занят другим заданием. Повторите попытку позже.',
+        retryAfterSeconds: 60,
+      });
+    }
+    pythonSlotAcquired = true;
+
     const progressPath = path.join(jobDir, 'progress.log');
     const templatePath = await pinTemplateReference(jobDir);
     const processorArgs = [path.join(__dirname, '../engine/processor.py'), '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
     const requestedRotation = String(req.body?.rotationDegrees ?? 'auto');
-    if (['0','90','180','270'].includes(requestedRotation)) processorArgs.push('--rotation', requestedRotation);
-    await runPythonStreaming(
-      processorArgs,
-      { jobId: id, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
-    );
+    if (['0', '90', '180', '270'].includes(requestedRotation)) processorArgs.push('--rotation', requestedRotation);
+    await runPythonStreaming(processorArgs, {
+      jobId: id,
+      progressPath,
+      timeout: PYTHON_TIMEOUT_MS,
+      maxBuffer: PYTHON_MAX_BUFFER,
+      env: localRecognitionPythonEnvironment(),
+    });
 
     const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
     attachJobUrls(id, graph, path.basename(sourcePath));
     graph.confirmedConnections = Array.isArray(graph.confirmedConnections) ? graph.confirmedConnections : [];
     if (selectedAddress) {
-      const title = cleanLabel(req.body?.schemeTitle || path.basename(req.file.originalname || 'Схема', ext), 140) || 'Схема';
+      const title =
+        cleanLabel(req.body?.schemeTitle || path.basename(req.file.originalname || 'Схема', ext), 140) || 'Схема';
       try {
-        await updateAddressLibrary(library => {
+        await updateAddressLibrary((library) => {
           const context = findBuilding(library, streetId, buildingId);
-          if (!context) { const error = new Error('Выбранный дом удалён во время обработки.'); error.status = 404; throw error; }
+          if (!context) {
+            const error = new Error('Выбранный дом удалён во время обработки.');
+            error.status = 404;
+            throw error;
+          }
           addSchemeToBuilding(library, context.street, context.building, {
-            jobId: id, title, createdAt: new Date().toISOString(),
-            uploadedBy: cleanLabel(req.body?.uploadedBy, 80), sourceName: path.basename(sourcePath)
+            jobId: id,
+            title,
+            createdAt: new Date().toISOString(),
+            uploadedBy: cleanLabel(req.body?.uploadedBy, 80),
+            sourceName: path.basename(sourcePath),
           });
         });
         graph.librarySaved = true;
-        graph.libraryLocation = { streetId, streetName: selectedAddress.street.name, buildingId, buildingName: selectedAddress.building.name };
+        graph.libraryLocation = {
+          streetId,
+          streetName: selectedAddress.street.name,
+          buildingId,
+          buildingName: selectedAddress.building.name,
+        };
       } catch (libraryError) {
         graph.librarySaved = false;
         graph.libraryError = String(libraryError?.message || libraryError).slice(0, 180);
-        req.log.error({ err: libraryError, jobId: shortJobId(id), streetId, buildingId }, 'Processed but failed to add to address library');
+        req.log.error(
+          { err: libraryError, jobId: shortJobId(id), streetId, buildingId },
+          'Processed but failed to add to address library',
+        );
       }
     }
 
@@ -1508,60 +1876,64 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
     const oq = graph.ocr?.qwen || {};
     const ot = graph.ocr?.tesseract || {};
     const st = graph.semanticTrace || {};
-    const maskBoxes = metric('text_regions_used_for_geometry_mask') !== 'MISSING'
-      ? metric('text_regions_used_for_geometry_mask')
-      : metric('geometry_excluded_text_regions');
+    const maskBoxes =
+      metric('text_regions_used_for_geometry_mask') !== 'MISSING'
+        ? metric('text_regions_used_for_geometry_mask')
+        : metric('geometry_excluded_text_regions');
 
-    jobLogger(id, { source: 'engine' }).info({
-      segments: metric('segment_candidates'),
-      nodes: metric('nodes'),
-      edges: metric('edges'),
-      crossings: metric('crossings_to_review'),
-      ocrQwenAnnotations: oq.annotations || 0,
-      ocrQwenTilesOk: oq.successful_tiles || 0,
-      ocrQwenTilesTotal: oq.tiles || 0,
-      ocrQwenNoteBlocks: oq.block_annotations || 0,
-      ocrQwenNoteBlockPasses: oq.block_passes || 0,
-      ocrTesseractAnnotations: ot.annotations || 0,
-      verifiedText: metric('verified_annotations'),
-      textReview: metric('text_review_annotations'),
-      pipeQwenRoutes: st.routes || 0,
-      pipeRawRoutes: st.raw_routes || 0,
-      pipeTilesOk: st.successful_tiles || 0,
-      pipeTilesTotal: st.tiles || 0,
-      pipeRejectedInvalid: st.rejected_invalid || 0,
-      pipeRejectedLowConfidence: st.rejected_low_confidence || 0,
-      cadPrimaryEdges: metric('cad_primary_edges'),
-      cadReviewEdges: metric('cad_review_edges'),
-      topologyNetworkCandidateComponents: metric('topology_network_candidate_components'),
-      topologyNetworkPrimaryEdges: metric('topology_network_primary_edges'),
-      cadPrimaryQwenRoutes: metric('cad_primary_qwen_routes'),
-      cadPrimaryTotalPaths: metric('cad_primary_total_paths'),
-      isolatedReview: metric('isolated_strokes_kept_for_review'),
-      textRegionMaskBoxes: maskBoxes,
-      inkPixelsMasked: metric('ink_pixels_inside_text_regions'),
-      textComponents: metric('text_or_annotation_components'),
-      ambiguousComponents: metric('review_only_ambiguous_components'),
-      timings: graph.timings_ms || {},
-    }, 'Analysis metrics collected');
+    jobLogger(id, { source: 'engine' }).info(
+      {
+        segments: metric('segment_candidates'),
+        nodes: metric('nodes'),
+        edges: metric('edges'),
+        crossings: metric('crossings_to_review'),
+        ocrQwenAnnotations: oq.annotations || 0,
+        ocrQwenTilesOk: oq.successful_tiles || 0,
+        ocrQwenTilesTotal: oq.tiles || 0,
+        ocrQwenNoteBlocks: oq.block_annotations || 0,
+        ocrQwenNoteBlockPasses: oq.block_passes || 0,
+        ocrTesseractAnnotations: ot.annotations || 0,
+        verifiedText: metric('verified_annotations'),
+        textReview: metric('text_review_annotations'),
+        pipeQwenRoutes: st.routes || 0,
+        pipeRawRoutes: st.raw_routes || 0,
+        pipeTilesOk: st.successful_tiles || 0,
+        pipeTilesTotal: st.tiles || 0,
+        pipeRejectedInvalid: st.rejected_invalid || 0,
+        pipeRejectedLowConfidence: st.rejected_low_confidence || 0,
+        cadPrimaryEdges: metric('cad_primary_edges'),
+        cadReviewEdges: metric('cad_review_edges'),
+        topologyNetworkCandidateComponents: metric('topology_network_candidate_components'),
+        topologyNetworkPrimaryEdges: metric('topology_network_primary_edges'),
+        cadPrimaryQwenRoutes: metric('cad_primary_qwen_routes'),
+        cadPrimaryTotalPaths: metric('cad_primary_total_paths'),
+        isolatedReview: metric('isolated_strokes_kept_for_review'),
+        textRegionMaskBoxes: maskBoxes,
+        inkPixelsMasked: metric('ink_pixels_inside_text_regions'),
+        textComponents: metric('text_or_annotation_components'),
+        ambiguousComponents: metric('review_only_ambiguous_components'),
+        timings: graph.timings_ms || {},
+      },
+      'Analysis metrics collected',
+    );
 
     // Возвращаем граф целиком: все показатели также доступны в response.summary.
     return res.json(graph);
   } catch (error) {
     req.log.error({ err: error, jobId: shortJobId(id), progressUrl: `/jobs/${id}/progress.log` }, 'Analyze failed');
     const progressUrl = `/jobs/${id}/progress.log`;
-    const details = [
-      String(error?.stderr || '').slice(-900),
-      String(error?.message || error).slice(-350)
-    ].filter(Boolean).join('\n');
+    const details = [String(error?.stderr || '').slice(-900), String(error?.message || error).slice(-350)]
+      .filter(Boolean)
+      .join('\n');
 
     return res.status(500).json({
       error: 'Не удалось проанализировать изображение.',
       details: `${details}\nЖурнал этапов: ${progressUrl}`,
       jobId: id,
-      progressUrl
+      progressUrl,
     });
   } finally {
+    if (pythonSlotAcquired) releasePythonSlot();
     if (req.file?.path) {
       const fs = await import('node:fs/promises');
       await fs.rm(req.file.path, { force: true }).catch(() => {});
@@ -1581,11 +1953,13 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
       // The prepared image is in the exact coordinate space of graph.image.
       // Do not fall back to the unrotated upload: that would misalign geometry.
       readFile(path.join(DATA, jobId, 'prepared-input.png')),
-      readAddressLibrary()
+      readAddressLibrary(),
     ]);
     const graph = JSON.parse(rawGraph);
     if (!graph?.image?.width || !graph?.image?.height) {
-      return res.status(409).json({ error: 'В графе нет размеров подготовленного изображения. Повторно обработай схему перед переносом в CAD.' });
+      return res.status(409).json({
+        error: 'В графе нет размеров подготовленного изображения. Повторно обработай схему перед переносом в CAD.',
+      });
     }
     const address = findScheme(library, jobId);
     if (!address) return res.status(404).json({ error: 'Схема больше не привязана к папке улицы и дома.' });
@@ -1606,22 +1980,31 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
       if (existing.sourceReportId) await workforceSystem.linkManualCadProject(existing.sourceReportId, existing.id);
       if (Number(existing.manualEditRevision || 0) === 0) {
         const refreshed = createManualCadProjectFromGraph(graph, {
-          id: existing.id, title, siteAddress,
-          sourceJobId: jobId, sourceStreetId: address.street.id,
-          sourceBuildingId: address.building.id
+          id: existing.id,
+          title,
+          siteAddress,
+          sourceJobId: jobId,
+          sourceStreetId: address.street.id,
+          sourceBuildingId: address.building.id,
         });
         refreshed.createdAt = existing.createdAt || refreshed.createdAt;
         refreshed.source = {
-          fileName: 'source.png', originalName: 'Подготовленное изображение автообработки',
-          size: preparedImage.length, uploadedAt: new Date().toISOString()
+          fileName: 'source.png',
+          originalName: 'Подготовленное изображение автообработки',
+          size: preparedImage.length,
+          uploadedAt: new Date().toISOString(),
         };
         refreshed.manualEditRevision = 0;
         refreshed.sourceReportId = workforceReportId || existing.sourceReportId || null;
         projectDir = path.join(MANUAL_CAD_DIR, existing.id);
         await writeFile(path.join(projectDir, 'source.png'), preparedImage);
         await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(refreshed, null, 2), 'utf8');
-        if (refreshed.sourceReportId) await workforceSystem.linkManualCadProject(refreshed.sourceReportId, refreshed.id);
-        req.log.info({ jobId: shortJobId(jobId), projectId: existing.id.slice(0, 8) }, 'Refreshed unedited house project from job');
+        if (refreshed.sourceReportId)
+          await workforceSystem.linkManualCadProject(refreshed.sourceReportId, refreshed.id);
+        req.log.info(
+          { jobId: shortJobId(jobId), projectId: existing.id.slice(0, 8) },
+          'Refreshed unedited house project from job',
+        );
         return res.json({ ok: true, reused: true, refreshed: true, project: manualProjectResponse(refreshed) });
       }
       return res.json({ ok: true, reused: true, preservedManualEdits: true, project: manualProjectResponse(existing) });
@@ -1630,30 +2013,50 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
     const projectId = randomUUID();
     projectDir = path.join(MANUAL_CAD_DIR, projectId);
     const project = createManualCadProjectFromGraph(graph, {
-      id: projectId, title, siteAddress,
-      sourceJobId: jobId, sourceStreetId: address.street.id,
-      sourceBuildingId: address.building.id
+      id: projectId,
+      title,
+      siteAddress,
+      sourceJobId: jobId,
+      sourceStreetId: address.street.id,
+      sourceBuildingId: address.building.id,
     });
     project.sourceReportId = workforceReportId;
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, 'source.png'), preparedImage);
     project.source = {
-      fileName: 'source.png', originalName: 'Подготовленное изображение автообработки',
-      size: preparedImage.length, uploadedAt: new Date().toISOString()
+      fileName: 'source.png',
+      originalName: 'Подготовленное изображение автообработки',
+      size: preparedImage.length,
+      uploadedAt: new Date().toISOString(),
     };
     await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
     if (project.sourceReportId) await workforceSystem.linkManualCadProject(project.sourceReportId, project.id);
-    req.log.info({ jobId: shortJobId(jobId), projectId: projectId.slice(0, 8), pipes: project.pipes.length, labels: project.labels.length, symbols: project.symbols.length }, 'Created house project');
+    req.log.info(
+      {
+        jobId: shortJobId(jobId),
+        projectId: projectId.slice(0, 8),
+        pipes: project.pipes.length,
+        labels: project.labels.length,
+        symbols: project.symbols.length,
+      },
+      'Created house project',
+    );
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
-    if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
+    if (
+      projectDir &&
+      !(await readFile(path.join(projectDir, 'project.json'))
+        .then(() => true)
+        .catch(() => false))
+    ) {
       await rm(projectDir, { recursive: true, force: true }).catch(() => {});
     }
     const status = error?.code === 'ENOENT' ? 404 : 400;
     return res.status(status).json({
-      error: status === 404
-        ? 'Подготовленное изображение, граф задания или папка дома не найдены. Повтори обработку схемы и попробуй снова.'
-        : (error.message || 'Не удалось подготовить чистовой CAD-лист.')
+      error:
+        status === 404
+          ? 'Подготовленное изображение, граф задания или папка дома не найдены. Повтори обработку схемы и попробуй снова.'
+          : error.message || 'Не удалось подготовить чистовой CAD-лист.',
     });
   }
 });
@@ -1687,7 +2090,7 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
     projectDir = path.join(MANUAL_CAD_DIR, projectId);
     const project = createManualCadProject({
       id: projectId,
-      title: cleanLabel(req.body?.title || meta.title || address.scheme.title || 'Чертёж дома', 140)
+      title: cleanLabel(req.body?.title || meta.title || address.scheme.title || 'Чертёж дома', 140),
     });
     project.width = width;
     project.height = height;
@@ -1699,24 +2102,38 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
     project.sourceStreetId = address.street.id;
     project.sourceBuildingId = address.building.id;
     project.analysisComplete = false;
-    project.notes = 'Ручная трассировка по исходной фотографии: автоматическая геометрия не была доступна. Начертите фактические трубопроводы, ответвления и оборудование по подложке; не используйте предположительные размеры или соединения.';
+    project.notes =
+      'Ручная трассировка по исходной фотографии: автоматическая геометрия не была доступна. Начертите фактические трубопроводы, ответвления и оборудование по подложке; не используйте предположительные размеры или соединения.';
     project.source = {
       fileName: `source${extension}`,
       originalName: cleanLabel(meta.originalName || sourceName, 180),
       size: sourceBytes.length,
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
     };
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
     await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
-    req.log.info({ jobId: shortJobId(jobId), projectId: id.slice(0, 8) }, 'Created source-only manual project for failed or unavailable job');
+    req.log.info(
+      { jobId: shortJobId(projectId), projectId: projectId.slice(0, 8) },
+      'Created source-only manual project for failed or unavailable job',
+    );
     return res.status(201).json({ ok: true, reused: false, sourceOnly: true, project: manualProjectResponse(project) });
   } catch (error) {
-    if (projectDir && !await readFile(path.join(projectDir, 'project.json')).then(() => true).catch(() => false)) {
+    if (
+      projectDir &&
+      !(await readFile(path.join(projectDir, 'project.json'))
+        .then(() => true)
+        .catch(() => false))
+    ) {
       await rm(projectDir, { recursive: true, force: true }).catch(() => {});
     }
     const status = error?.code === 'ENOENT' ? 404 : 400;
-    return res.status(status).json({ error: status === 404 ? 'Исходная фотография не найдена. Повтори загрузку схемы.' : (error.message || 'Не удалось создать CAD-проект по исходной фотографии.') });
+    return res.status(status).json({
+      error:
+        status === 404
+          ? 'Исходная фотография не найдена. Повтори загрузку схемы.'
+          : error.message || 'Не удалось создать CAD-проект по исходной фотографии.',
+    });
   }
 });
 
@@ -1729,7 +2146,9 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
   const ext = path.extname(String(report.sketch.originalName || '')).toLowerCase();
   const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
   if (!allowed.has(ext) || !String(report.sketch.mimeType || '').startsWith('image/')) {
-    return res.status(415).json({ error: 'Для прямого открытия в CAD загрузи ручную схему как JPG, PNG, WEBP или TIFF. PDF можно открыть отдельно.' });
+    return res.status(415).json({
+      error: 'Для прямого открытия в CAD загрузи ручную схему как JPG, PNG, WEBP или TIFF. PDF можно открыть отдельно.',
+    });
   }
   let projectDir = null;
   try {
@@ -1741,15 +2160,20 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
         if (existing.sourceReportId === report.id && existing.id === entry.name) {
           return res.json({ ok: true, reused: true, project: manualProjectResponse(existing) });
         }
-      } catch { /* incomplete project */ }
+      } catch {
+        /* incomplete project */
+      }
     }
     const sourcePath = workforceSystem.getReportFilePath(report.id, report.sketch.id);
     if (!sourcePath) return res.status(404).json({ error: 'Файл ручной схемы не найден в хранилище отчётов.' });
     const sourceBytes = await readFile(sourcePath);
     const id = randomUUID();
     projectDir = path.join(MANUAL_CAD_DIR, id);
-    const project = createManualCadProject({ id, title: cleanLabel(`${report.street}, дом ${report.address} — ${report.taskTitle}`, 140) });
-    const dimensions = rasterDimensions(sourceBytes, ext);
+    const project = createManualCadProject({
+      id,
+      title: cleanLabel(`${report.street}, дом ${report.address} — ${report.taskTitle}`, 140),
+    });
+    const dimensions = rasterDimensions(sourceBytes);
     project.width = Math.max(100, Math.min(30000, dimensions.width));
     project.height = Math.max(100, Math.min(30000, dimensions.height));
     project.siteAddress = `${report.street}, дом ${report.address}`;
@@ -1757,8 +2181,10 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
     project.notes = `Исходный ручной эскиз из отчёта ${report.id}. Перед чистовым выпуском проверь фактические трассы, соединения, размеры и оборудование.`;
     project.sourceReportId = report.id;
     project.source = {
-      fileName: `source${ext}`, originalName: cleanLabel(report.sketch.originalName, 180),
-      size: sourceBytes.length, uploadedAt: report.sketch.uploadedAt || report.submittedAt || new Date().toISOString()
+      fileName: `source${ext}`,
+      originalName: cleanLabel(report.sketch.originalName, 180),
+      size: sourceBytes.length,
+      uploadedAt: report.sketch.uploadedAt || report.submittedAt || new Date().toISOString(),
     };
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
@@ -1766,7 +2192,14 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
     if (projectDir) await rm(projectDir, { recursive: true, force: true }).catch(() => {});
-    req.log.error({ err: error, projectId: projectDir ? path.basename(projectDir).slice(0, 8) : null, jobId: shortJobId(jobId) }, 'Cannot create manual project from job');
+    req.log.error(
+      {
+        err: error,
+        projectId: projectDir ? path.basename(projectDir).slice(0, 8) : null,
+        reportId: req.params.reportId,
+      },
+      'Cannot create manual project from job',
+    );
     return res.status(500).json({ error: error.message || 'Не удалось открыть ручной эскиз в CAD.' });
   }
 });
@@ -1779,20 +2212,29 @@ app.get('/api/manual-cad/projects', async (_req, res) => {
       if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
       try {
         const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
-        projects.push({ id: project.id, title: project.title, updatedAt: project.updatedAt,
-          createdAt: project.createdAt, source: project.source || null, sourceJobId: project.sourceJobId || null,
-          siteAddress: project.siteAddress || '', pipeCount: Array.isArray(project.pipes) ? project.pipes.filter(pipe => pipe.reviewOnly !== true).length : 0 });
-      } catch { /* ignore an incomplete project folder */ }
+        projects.push({
+          id: project.id,
+          title: project.title,
+          updatedAt: project.updatedAt,
+          createdAt: project.createdAt,
+          source: project.source || null,
+          sourceJobId: project.sourceJobId || null,
+          siteAddress: project.siteAddress || '',
+          pipeCount: Array.isArray(project.pipes) ? project.pipes.filter((pipe) => pipe.reviewOnly !== true).length : 0,
+        });
+      } catch {
+        /* ignore an incomplete project folder */
+      }
     }
     projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     return res.json({ ok: true, projects });
   } catch (error) {
-    req.log.error({ err: error }, 'Cannot list manual CAD projects');
+    _req.log.error({ err: error }, 'Cannot list manual CAD projects');
     return res.status(500).json({ error: error.message || 'Не удалось получить список ручных чертежей.' });
   }
 });
 
-app.post('/api/manual-cad/projects', async (req, res) => {
+app.post('/api/manual-cad/projects', validateBody(manualProjectCreateSchema), async (req, res) => {
   const id = randomUUID();
   const projectDir = path.join(MANUAL_CAD_DIR, id);
   try {
@@ -1838,36 +2280,45 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
   }
 });
 
-app.post('/api/manual-cad/projects/:id/source', limitHeavyRequests, manualSourceUpload.single('source'), async (req, res) => {
-  const { id } = req.params;
-  if (!isManualCadId(id)) {
-    if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
-    return res.status(400).json({ error: 'Некорректный ID проекта.' });
-  }
-  if (!req.file) return res.status(400).json({ error: 'Выбери JPG, PNG, WEBP или TIFF.' });
-  try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
-    const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
-    const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
-    if (!allowed.has(ext)) throw new Error('Неподдерживаемый формат изображения.');
-    const fileName = `source${ext}`;
-    const projectDir = path.dirname(manualProjectPath(id));
-    await rename(req.file.path, path.join(projectDir, fileName));
-    const width = Math.round(Math.max(100, Math.min(30000, Number(req.body?.width) || project.width || 1600)));
-    const height = Math.round(Math.max(100, Math.min(30000, Number(req.body?.height) || project.height || 1000)));
-    project.source = { fileName, originalName: cleanLabel(req.file.originalname, 180), size: req.file.size,
-      uploadedAt: new Date().toISOString() };
-    project.width = width;
-    project.height = height;
-    project.updatedAt = new Date().toISOString();
-    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
-    return res.json({ ok: true, project: manualProjectResponse(project) });
-  } catch (error) {
-    if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
-    const status = error?.code === 'ENOENT' ? 404 : 400;
-    return res.status(status).json({ error: error.message || 'Не удалось загрузить исходный эскиз.' });
-  }
-});
+app.post(
+  '/api/manual-cad/projects/:id/source',
+  limitHeavyRequests,
+  manualSourceUpload.single('source'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isManualCadId(id)) {
+      if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
+      return res.status(400).json({ error: 'Некорректный ID проекта.' });
+    }
+    if (!req.file) return res.status(400).json({ error: 'Выбери JPG, PNG, WEBP или TIFF.' });
+    try {
+      const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+      const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
+      const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
+      if (!allowed.has(ext)) throw new Error('Неподдерживаемый формат изображения.');
+      const fileName = `source${ext}`;
+      const projectDir = path.dirname(manualProjectPath(id));
+      await rename(req.file.path, path.join(projectDir, fileName));
+      const width = Math.round(Math.max(100, Math.min(30000, Number(req.body?.width) || project.width || 1600)));
+      const height = Math.round(Math.max(100, Math.min(30000, Number(req.body?.height) || project.height || 1000)));
+      project.source = {
+        fileName,
+        originalName: cleanLabel(req.file.originalname, 180),
+        size: req.file.size,
+        uploadedAt: new Date().toISOString(),
+      };
+      project.width = width;
+      project.height = height;
+      project.updatedAt = new Date().toISOString();
+      await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+      return res.json({ ok: true, project: manualProjectResponse(project) });
+    } catch (error) {
+      if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
+      const status = error?.code === 'ENOENT' ? 404 : 400;
+      return res.status(status).json({ error: error.message || 'Не удалось загрузить исходный эскиз.' });
+    }
+  },
+);
 
 app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
   const { id } = req.params;
@@ -1875,7 +2326,8 @@ app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
   try {
     const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
     const fileName = path.basename(String(project.source?.fileName || ''));
-    if (!fileName || !/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName)) return res.status(404).json({ error: 'Подложка не загружена.' });
+    if (!fileName || !/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName))
+      return res.status(404).json({ error: 'Подложка не загружена.' });
     return res.sendFile(path.join(path.dirname(manualProjectPath(id)), fileName));
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть подложку.' });
@@ -1891,7 +2343,9 @@ app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.send(renderManualCadSvg(project, { includeReview: req.query.draft === '1' }));
   } catch (error) {
-    return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось сформировать предпросмотр CAD.' });
+    return res
+      .status(error?.code === 'ENOENT' ? 404 : 500)
+      .json({ error: 'Не удалось сформировать предпросмотр CAD.' });
   }
 });
 
@@ -1928,7 +2382,7 @@ app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
 app.get('/vdgo', (_req, res) => res.redirect(308, '/vdgo/'));
 app.get(/^\/vdgo(?:\/.*)?$/, (_req, res) => {
   res.sendFile(path.join(__dirname, '../../../frontend/public/vdgo', 'index.html'), {
-    headers: { 'Cache-Control': 'no-store, max-age=0' }
+    headers: { 'Cache-Control': 'no-store, max-age=0' },
   });
 });
 
@@ -1944,25 +2398,79 @@ app.use((err, req, res, _next) => {
   logRequestError(req, err, 'Unhandled request error');
   const isTemplateUpload = req.path === '/api/template';
   const isWorkforceReport = req.path.startsWith('/api/workforce/tasks/') && req.path.endsWith('/report');
-  const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
-  const message = err?.code === 'LIMIT_FILE_SIZE'
-    ? (isTemplateUpload ? 'Файл шаблона больше 30 МБ.' : isWorkforceReport ? 'Одно вложение отчёта больше 24 МБ.' : 'Файл больше 18 МБ.')
-    : err?.code === 'LIMIT_UNEXPECTED_FILE'
-      ? (isWorkforceReport ? 'Прикладывай до 8 фотографий и один файл ручной схемы.' : 'Можно загрузить только один файл за раз.')
-      : 'Ошибка запроса.';
-  res.status(status).json({ error: message, details: err.message });
+  const status =
+    err?.code === 'LIMIT_FILE_SIZE'
+      ? 413
+      : Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
+        ? err.status
+        : 400;
+  const message =
+    err?.code === 'LIMIT_FILE_SIZE'
+      ? isTemplateUpload
+        ? 'Файл шаблона больше 30 МБ.'
+        : isWorkforceReport
+          ? 'Одно вложение отчёта больше 24 МБ.'
+          : 'Файл больше 18 МБ.'
+      : err?.code === 'LIMIT_UNEXPECTED_FILE'
+        ? isWorkforceReport
+          ? 'Прикладывай до 8 фотографий и один файл ручной схемы.'
+          : 'Можно загрузить только один файл за раз.'
+        : err?.status === 422
+          ? err.message
+          : 'Ошибка запроса.';
+  const details = Array.isArray(err?.details) ? err.details : err?.message;
+  res.status(status).json({ error: message, details });
 });
 
-app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  logger.info({
-    pipelineSha256: BUILD_INFO.pipelineSha256,
-    host: process.env.HOST || '0.0.0.0',
-    port: PORT,
-    pythonTimeoutMs: PYTHON_TIMEOUT_MS,
-    manualCadDir: MANUAL_CAD_DIR,
-    configuredLevel: logger.level,
-  }, 'ScadaProfit API started');
-  logger.info('Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.');
-  logger.info('Workforce: password-authenticated accounts, manual visit/office check-ins, sketch-only reports and automatic CAD processing enabled; GPS tracking disabled.');
+const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
+  logger.info(
+    {
+      pipelineSha256: BUILD_INFO.pipelineSha256,
+      host: process.env.HOST || '0.0.0.0',
+      port: PORT,
+      pythonTimeoutMs: PYTHON_TIMEOUT_MS,
+      maxConcurrentPythonJobs: MAX_CONCURRENT_PYTHON_JOBS,
+      manualCadDir: MANUAL_CAD_DIR,
+      configuredLevel: logger.level,
+    },
+    'ScadaProfit API started',
+  );
+  logger.info(
+    'Geometry: selected OpenCV graph edges are merged into continuous CAD routes; crossings remain disconnected unless the graph confirms a shared junction.',
+  );
+  logger.info(
+    'Workforce: password-authenticated accounts, manual visit/office check-ins, sketch-only reports and automatic CAD processing enabled; GPS tracking disabled.',
+  );
   void resumeStoredAnalysisQueue();
 });
+
+// Docker sends SIGTERM, waits stop_grace_period, then SIGKILL. Close the HTTP
+// listener first, then give active Python jobs a bounded window to finish so a
+// restart does not truncate graph.json or leave an orphan on the GPU.
+let shuttingDown = false;
+const SHUTDOWN_TIMEOUT_MS = Math.max(1_000, Number(process.env.SHUTDOWN_TIMEOUT_MS || 20_000));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal, activePythonJobs: activePythonChildren.size }, 'Shutdown requested');
+  server.close(() => logger.info('HTTP server closed'));
+  if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+
+  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+  while (Date.now() < deadline && activePythonChildren.size > 0) {
+    for (const child of activePythonChildren) {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    }
+    await sleep(250);
+  }
+  for (const child of activePythonChildren) {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
+  logger.info({ activePythonJobs: activePythonChildren.size }, 'Shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

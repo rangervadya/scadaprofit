@@ -96,7 +96,7 @@ def build_document_model(width: int, height: int, nodes: list[dict[str, Any]],
             continue
         route_id = unique_id(f"QWEN{route_index}")
 
-        def endpoint_node(suffix: str, point: list[float]) -> str:
+        def endpoint_node(suffix: str, point: list[float], route_id: str = route_id) -> str:
             nearby = []
             for node in model_nodes:
                 position = node.get("position") or []

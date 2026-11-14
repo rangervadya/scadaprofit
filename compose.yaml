@@ -43,6 +43,7 @@ services:
       dockerfile: infra/docker/app.Dockerfile
     restart: unless-stopped
     init: true
+    stop_grace_period: 30s
     logging: *default-logging
     expose:
       - "3000"
@@ -55,6 +56,8 @@ services:
       HOST: "0.0.0.0"
       MASK_PYTHON: "/opt/venv/bin/python"
       PYTHON_JOB_TIMEOUT_MS: "5400000"
+      MAX_CONCURRENT_PYTHON_JOBS: "${MAX_CONCURRENT_PYTHON_JOBS:-1}"
+      SHUTDOWN_TIMEOUT_MS: "${SHUTDOWN_TIMEOUT_MS:-20000}"
       DATA_DIR: "/data/cad-reconstruction-jobs"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"

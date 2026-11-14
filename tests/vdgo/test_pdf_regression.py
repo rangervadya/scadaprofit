@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import sys
 import unittest
-from pathlib import Path
 import zipfile
-from io import BytesIO
-from tempfile import TemporaryDirectory
 from http.server import HTTPServer
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Thread
+from unittest.mock import patch
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from unittest.mock import patch
 
 import fitz
 from PIL import Image
@@ -23,9 +23,31 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "services" / "vdgo"
 sys.path.insert(0, str(BACKEND))
-from app import OUTPUT, TEMPLATE, DEFECTS, Handler, build_pdf, normalize_form_dates, PAGE, append_extra_photo_pages, _ordered_uploaded_photos, compact_specialist_certificate, _download_disposition  # noqa: E402
+from app import (  # noqa: E402
+    DEFECTS,
+    FONT,
+    FONT_BOLD,
+    FONT_BOLD_ITALIC,
+    FONT_ITALIC,
+    OUTPUT,
+    PAGE,
+    TEMPLATE,
+    Handler,
+    _download_disposition,
+    _ordered_uploaded_photos,
+    append_extra_photo_pages,
+    build_pdf,
+    compact_specialist_certificate,
+    normalize_form_dates,
+)
 from pdf_to_docx import pdf_to_docx  # noqa: E402
 from pdf_to_docx_editable import pdf_to_docx_editable  # noqa: E402
+
+_FONTS_AVAILABLE = all(Path(path).exists() for path in (FONT, FONT_BOLD, FONT_ITALIC, FONT_BOLD_ITALIC))
+requires_fonts = unittest.skipUnless(
+    _FONTS_AVAILABLE,
+    "Carlito fonts are not installed; install fonts-crosextra-carlito (Docker image installs it)",
+)
 
 
 class DownloadBehaviorRegressionTests(unittest.TestCase):
@@ -76,6 +98,7 @@ class DownloadBehaviorRegressionTests(unittest.TestCase):
                 thread.join(timeout=3)
 
 
+@requires_fonts
 class PdfRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -160,14 +183,12 @@ class PdfRegressionTests(unittest.TestCase):
         cls.uploads = {f"photo_{i}": str(cls.upload_image) for i in range(1, 20)}
         cls.uploads["material_page_16"] = str(cls.upload_image)
         cls.uploads["material_page_17"] = str(cls.upload_image)
-        build_pdf(cls.form, cls.uploads)
+        cls.output = build_pdf(cls.form, cls.uploads)
 
     @classmethod
     def tearDownClass(cls):
         cls.output.unlink(missing_ok=True)
         cls.upload_image.unlink(missing_ok=True)
-        work = OUTPUT / "_work.pdf"
-        work.unlink(missing_ok=True)
 
     def test_document_has_49_pages(self):
         with fitz.open(self.output) as doc:
@@ -618,9 +639,11 @@ def self_form_fixture():
     }
 
 
+@requires_fonts
 class WorkforceSchemeSection7Tests(unittest.TestCase):
     def test_selected_workforce_scheme_is_embedded_in_pdf_and_editable_word(self):
         from unittest.mock import patch
+
         from docx import Document
         with TemporaryDirectory() as temporary:
             temp = Path(temporary)
@@ -678,6 +701,7 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
     def test_workforce_payload_is_validated_and_written_as_png(self):
         import base64
         import json
+
         from app import prepare_workforce_schemes
         with TemporaryDirectory() as temporary:
             from unittest.mock import patch
@@ -748,6 +772,7 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
 
     def test_workforce_json_still_has_its_own_payload_size_limit(self):
         from unittest.mock import patch
+
         from app import prepare_workforce_schemes
         with patch("app.MAX_WORKFORCE_SCHEMES_JSON_BYTES", 100):
             with self.assertRaisesRegex(ValueError, "превышает 180 МБ"):

@@ -49,7 +49,7 @@ COPY compose.yaml /app/compose.yaml
 COPY infra/docker/app.Dockerfile /app/infra/docker/app.Dockerfile
 COPY infra/nginx/nginx-unified.conf /app/infra/nginx/nginx-unified.conf
 RUN test -s /app/frontend/public/vdgo/index.html \
-    && npm run check \
+    && npm run test \
     && chown -R node:node /app \
     && mkdir -p /data/cad-reconstruction-jobs \
     && chown -R node:node /data

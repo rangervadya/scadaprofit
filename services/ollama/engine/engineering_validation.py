@@ -1,9 +1,9 @@
 """Engineering consistency checks for the editable reconstruction model."""
 from __future__ import annotations
 
-from copy import deepcopy
 import math
 import re
+from copy import deepcopy
 from typing import Any
 
 

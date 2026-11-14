@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Convert generated PDF to an editable, page-faithful DOCX.
 
 Text from PDF text objects is rebuilt as editable Word text boxes. Images are
@@ -10,13 +9,14 @@ OCR/replacement if it must be edited.
 """
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
 import pymupdf as fitz
 from docx import Document
-from docx.shared import Cm, Pt
 from docx.oxml import OxmlElement
-from docx.oxml.ns import qn, nsmap
+from docx.oxml.ns import nsmap, qn
+from docx.shared import Cm, Pt
 
 EMU_PER_PT = 12700
 VML_NS = 'urn:schemas-microsoft-com:vml'
