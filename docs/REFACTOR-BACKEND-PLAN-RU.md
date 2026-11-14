@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 частично**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1: данные в PostgreSQL, осталось P1-4/5/10/12 и cleanup**. Обновляется по мере выполнения пунктов.
 
 ## 0. Как читать
 
@@ -19,32 +19,32 @@
 | API + SPA | Express 5, `server.js` 1968 строк, `workforce-system.js` 1033 | монолит: routes + домен + файловое хранилище |
 | AI-пайплайн | Python `processor.py` 5040 строк, `child_process` | один процесс на джобу, stdout 16 МБ, таймаут 90 мин |
 | Очередь | `Map` + массив в памяти (`server.js:128-131`) | теряется при рестарте, один GPU-слот |
-| VDGO | `BaseHTTPRequestHandler` + `HTTPServer`, 2341 строка | один запрос за раз, 512 МБ тела в RAM |
-| Данные | JSON + Docker volumes + PostgreSQL только для audit | нет транзакций, миграций, retention |
+| VDGO | `ThreadingHTTPServer`, 2341 строка | один запрос за раз, 512 МБ тела в RAM |
+| Данные | PostgreSQL: users, sessions, manual_cad_projects, address_library, workforce_workspace, scheme_meta, archive_entries; тома для артефактов | JSON только fallback/backfill; in-memory cache |
 | Gateway | nginx, один server, HTTP | нет TLS, rate limit, лимитов |
 | Наблюдаемость | pino JSON + request id в Node; JSON-логи в Python | нет метрик, трейсинга, SLO, алертов |
-| Тесты | 47 node-тестов, 201 Python-тест, 50 VDGO-тестов | source-string assertions, нет CI |
+| Тесты | 48 node-тестов, 201 Python-тест, 50 VDGO-тестов | source-string assertions, нет CI на GitHub |
 | Тулинг | ESLint 9 + Prettier 3 + Ruff, `npm run verify` | `check` заменён на `lint`/`typecheck`/`test` |
 
 ## 2. Соответствие чек-листу Backend Architect
 
 | Принцип | Статус | Доказательство |
 |---|---|---|
-| Data/schema engineering, 100k+ entities, <20 ms | ❌ | `address-library.json` и `workspace.json` читаются/пишутся целиком (`workforce-system.js:172-203`) |
-| ETL/валидация схем, обратная совместимость | ⚠️ | `schemaVersion` только у address library; миграций нет |
-| Real-time updates, ordering | ❌ | polling 5–6 с (`SchemeDetailPage.tsx:70`), полный `graph.json` каждый раз |
-| Выбор архитектуры под нагрузку | ⚠️ | монолит оправдан, но AI-worker не выделен, очередь в памяти |
-| API versioning/contracts | ❌ | `/api/...` без версии, OpenAPI нет, контракт `archived` разъехался |
-| Standard error/pagination/idempotency/correlation | ⚠️ | разный error envelope; пагинации нет; idempotency нет; `X-Request-Id` только в Node |
-| Timeouts/retries/circuit breakers/DLQ | ⚠️ | Qwen retry есть, circuit breaker/DLQ нет; `QWEN_TILE_RETRY_BUDGET=0` |
-| Bulkheads/rate limits/poison messages | ❌ | API и Python в одном контейнере; rate limit in-memory; один слот на всё |
-| Backup/DR | ❌ | тома без backup, restore не описан и не проверялся |
+| Data/schema engineering, 100k+ entities, <20 ms | ⚠️ | state-данные в PostgreSQL; нормализованных таблиц и нагрузочных тестов пока нет |
+| ETL/валидация схем, обратная совместимость | ✅ | Prisma-миграции, backfill legacy JSON, `graph/1.2` |
+| Real-time updates, ordering | ❌ | polling 5–6 с, полный `graph.json` каждый раз |
+| Выбор архитектуры под нагрузку | ⚠️ | modular monolith + AI worker; очередь всё ещё in-memory |
+| API versioning/contracts | ❌ | `/api/...` без версии, OpenAPI нет |
+| Standard error/pagination/idempotency/correlation | ⚠️ | idempotency только `POST /tasks`; пагинации нет; error envelope разный |
+| Timeouts/retries/circuit breakers/DLQ | ⚠️ | Qwen retry есть; circuit breaker/DLQ нет |
+| Bulkheads/rate limits/poison messages | ⚠️ | Python-семафор, 256 МБ лимит, nginx login rate limit; общий store нет |
+| Backup/DR | ❌ | тома без backup, restore не проверялся |
 | Monitoring/alerting/SLO | ❌ | только логи; нет метрик/трейсинга/алертов |
-| Security: least privilege, encryption | ⚠️ | non-root, `no-new-privileges` только у app; HTTP без TLS; дефолтный пароль БД |
-| Auth/authz, CSRF | ⚠️ | scrypt + session cookie; нет CSRF-токена, ротации; сессии не чистятся |
-| Zero-downtime migrations / expand-contract | ❌ | DDL `CREATE TABLE IF NOT EXISTS`, JSON без схемы |
-| Observability by design | ⚠️ | логи есть, request id в Node, но vdgo не пробрасывает id, нет RED/USE |
-| SLO: p95 <200 ms, 99.9%, 10x | ❌ | не измеряется; AI-джобы — минуты; health лжёт |
+| Security: least privilege, encryption | ⚠️ | non-root; HTTP/TLS и дефолтный пароль БД отложены (dev) |
+| Auth/authz, CSRF | ⚠️ | PostgreSQL-сессии, cleanup; нет CSRF, idle timeout, revoke-all |
+| Zero-downtime migrations / expand-contract | ⚠️ | Prisma-миграции есть; zero-downtime/expand-contract для state-таблиц не отработан |
+| Observability by design | ⚠️ | логи + request id в Node; vdgo не пробрасывает id, RED/USE нет |
+| SLO: p95 <200 ms, 99.9%, 10x | ❌ | не измеряется; AI-джобы — минуты |
 
 ## 3. Проблемы
 
@@ -54,7 +54,7 @@
 - **Evidence**: `tests/node/repository-layout.test.js:89-90` ждут `STAFF_ROLES` и `RequireRole`, которых нет в `frontend/src/main.tsx`; `infra/docker/app.Dockerfile:52` запускал `npm run check` в `RUN`.
 - **Impact**: `docker compose build app` падал на чистой сборке; Python-тесты после node-тестов не запускались.
 - **Fix**: восстановлены ролевые guard-ы (`lib/roles.ts`, `RequireRole`), тест переведён на `lib/roles.ts`; `check` заменён на `test`/`verify`; Dockerfile теперь `npm run test`.
-- **Проверка**: 47 node-тестов и 201 Python-тест зелёные.
+- **Проверка**: 48 node-тестов и 201 Python-тест зелёные.
 
 #### P0-2. ReferenceError в manual-CAD — ✅ сделано
 - **Evidence**: `server.js:1712` вызывал `shortJobId(jobId)` в `import-source-job`; `server.js:1769` использовал `jobId` в catch `import-workforce-report`; additional `id`/`req` bugs found by ESLint.
@@ -110,13 +110,13 @@
 |---|---|---|---|
 | `workforce/users.json` | аккаунты, scrypt-хеши | **cutover** | `users` |
 | `workforce/sessions.json` | сессии, `expiresAt` | **cutover** | `sessions` |
-| `address-library.json` | улицы → дома → карточки схем | JSON | `address_streets/buildings/schemes` |
-| `workforce/workspace.json` | tasks/reports/defectReports, события | JSON | `workforce_tasks/reports/defect_reports` |
-| `schemes/<jobId>.json` | метаданные схемы, статус, `partialGraphReady` | JSON | `address_schemes` / `scheme_meta` |
-| `manual-cad/<id>/project.json` | геометрия чертежа | JSON | `manual_cad_projects` (`jsonb`) |
+| `address-library.json` | улицы → дома → карточки схем | **PostgreSQL** (`address_library`, jsonb) | нормализация в таблицы — позже |
+| `workforce/workspace.json` | tasks/reports/defectReports, события | **PostgreSQL** (`workforce_workspace`, jsonb) | нормализация в таблицы — позже |
+| `schemes/<jobId>.json` | метаданные схемы, статус, `partialGraphReady` | **PostgreSQL** (`scheme_meta`, jsonb) | — |
+| `manual-cad/<id>/project.json` | геометрия чертежа | **PostgreSQL** (`manual_cad_projects`, jsonb) | — |
 | `<jobId>/graph.json` | производный граф/CAD | остаётся файлом | артефакт тома |
 | `<jobId>/diagnostics.json` | производная диагностика | остаётся файлом | артефакт тома |
-| `output/archive_index.json` | метаданные архива | JSON | `archive_entries` / `report_runs` |
+| `output/archive_index.json` | метаданные архива | **PostgreSQL** (`archive_entries`) | JSON fallback |
 | `report-files/*` | фото/эскизы | файлы | том + метаданные в БД |
 | `template/*` | шаблон PDF | файл | том |
 
@@ -210,7 +210,9 @@
 - [x] **P1-13** CI.
   - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
   - **Осталось**: прогнать на GitHub, добавить build/scan.
-- [ ] **P1-14** Prisma cutover: repository для users/sessions, expand-contract, typed client.
+- [~] **P1-14** Prisma cutover.
+  - **Готово**: state-данные переведены на PostgreSQL через Prisma/репозитории (users, sessions, manual CAD, address library, workspace, scheme meta, archive).
+  - **Осталось**: нормализованные таблицы вместо jsonb для address/workspace, typed client в runtime, expand-contract без JSON fallback.
 
 ### Фаза 2 — качество и производительность (1–2 месяца)
 
@@ -281,7 +283,7 @@
 Ruff: `line-length=140`, `select = E4,E7,E9,F,I,UP,B`; `E701/E702/B008/B905/B007/B904/F841` оставлены вне проверки как legacy-стиль движка (уборка — P2-10).
 Prettier: 120 символов, `singleQuote`, `trailingComma: all`.
 ESLint: backend `services/ollama/api` + `tests/node`; `no-control-regex` выключен для санитайзеров, которые намеренно ловят control-chars.
-Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`), `npm --prefix services/ollama run db:validate`; runtime cutover — P1-14.
+Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, `IdempotencyKey`, `ManualCadProject`, `AddressLibrary`, `WorkforceWorkspace`, `SchemeMeta`), `npm --prefix services/ollama run db:validate`; state-данные уже в PostgreSQL, нормализация/typed runtime — P1-14.
 
 ## 10. Журнал изменений рефакторинга
 
@@ -309,4 +311,5 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - P1-1 (scheme meta): `scheme_meta` (`jsonb`), backfill, read/write через PG; `analyze` → status `processing` в PG; JSON mtime unchanged.
 - P1-1 (archive): `archive_entries` в PostgreSQL, backfill `archive_index.json`, DB-first read/write; download 200, JSON mtime unchanged.
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
-- Остальные JSON-сущности: `address-library`, `workspace`, `scheme meta`, `manual-cad`, `archive_index` — следующий этап.
+- Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
+- Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
