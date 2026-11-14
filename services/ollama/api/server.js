@@ -36,6 +36,14 @@ import {
   requestIdHeader,
   logRequestError,
 } from './logger.js';
+import { postgresEnabled } from './db.js';
+import {
+  fetchManualProject,
+  fetchManualProjects,
+  saveManualProject,
+  findManualProjectBySourceJob,
+  findManualProjectBySourceReport,
+} from './manual-cad-repo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -559,6 +567,98 @@ function rasterDimensions(buffer) {
 function manualProjectPath(id) {
   return path.join(MANUAL_CAD_DIR, id, 'project.json');
 }
+
+async function readManualProject(id) {
+  if (postgresEnabled()) {
+    const project = await fetchManualProject(id);
+    if (!project) {
+      const error = new Error('Не удалось открыть ручной чертёж.');
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return project;
+  }
+  return await readManualProject(id);
+}
+
+async function writeManualProject(project) {
+  if (postgresEnabled()) {
+    await saveManualProject(project);
+    return;
+  }
+  const target = manualProjectPath(project.id);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
+  await rename(temporary, target);
+}
+
+async function listManualProjects() {
+  if (postgresEnabled()) return fetchManualProjects();
+  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+  const projects = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+    try {
+      projects.push(await readManualProject(entry.name));
+    } catch {
+      /* ignore incomplete project folders */
+    }
+  }
+  return projects;
+}
+
+async function findManualCadProjectForJob(jobId) {
+  if (postgresEnabled()) return findManualProjectBySourceJob(jobId);
+  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+    try {
+      const project = await readManualProject(entry.name);
+      if (project.sourceJobId === jobId && project.id === entry.name) return project;
+    } catch {
+      /* ignore incomplete project folders */
+    }
+  }
+  return null;
+}
+
+async function findManualCadProjectForReport(reportId) {
+  if (postgresEnabled()) return findManualProjectBySourceReport(reportId);
+  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+    try {
+      const project = await readManualProject(entry.name);
+      if (project.sourceReportId === reportId && project.id === entry.name) return project;
+    } catch {
+      /* ignore incomplete project folders */
+    }
+  }
+  return null;
+}
+
+async function backfillManualCadProjects() {
+  if (!postgresEnabled()) return;
+  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true }).catch((error) => {
+    logger.warn({ err: error, dir: MANUAL_CAD_DIR }, 'Cannot scan legacy manual CAD directory');
+    return [];
+  });
+  logger.info({ count: entries.length, dir: MANUAL_CAD_DIR }, 'Manual CAD backfill scan');
+  let imported = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
+    try {
+      const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
+      await saveManualProject(project);
+      imported += 1;
+    } catch (error) {
+      logger.warn({ err: error, id: entry.name }, 'Cannot import legacy manual CAD project');
+    }
+  }
+  if (imported) logger.info({ count: imported }, 'Imported legacy manual CAD projects into PostgreSQL');
+}
+
 function manualProjectResponse(project) {
   return {
     ...project,
@@ -571,20 +671,6 @@ function manualProjectResponse(project) {
         ? `/?job=${encodeURIComponent(project.sourceJobId)}`
         : '/',
   };
-}
-
-async function findManualCadProjectForJob(jobId) {
-  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-    try {
-      const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
-      if (project.sourceJobId === jobId && project.id === entry.name) return project;
-    } catch {
-      /* ignore incomplete project folders */
-    }
-  }
-  return null;
 }
 
 function attachJobUrls(jobId, graph, sourceName = null) {
@@ -1975,7 +2061,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
     if (existing) {
       if (workforceReportId && existing.sourceReportId !== workforceReportId) {
         existing.sourceReportId = workforceReportId;
-        await writeFile(manualProjectPath(existing.id), JSON.stringify(existing, null, 2), 'utf8');
+        await writeManualProject(existing);
       }
       if (existing.sourceReportId) await workforceSystem.linkManualCadProject(existing.sourceReportId, existing.id);
       if (Number(existing.manualEditRevision || 0) === 0) {
@@ -1998,7 +2084,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
         refreshed.sourceReportId = workforceReportId || existing.sourceReportId || null;
         projectDir = path.join(MANUAL_CAD_DIR, existing.id);
         await writeFile(path.join(projectDir, 'source.png'), preparedImage);
-        await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(refreshed, null, 2), 'utf8');
+        await writeManualProject(refreshed);
         if (refreshed.sourceReportId)
           await workforceSystem.linkManualCadProject(refreshed.sourceReportId, refreshed.id);
         req.log.info(
@@ -2029,7 +2115,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
       size: preparedImage.length,
       uploadedAt: new Date().toISOString(),
     };
-    await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
+    await writeManualProject(project);
     if (project.sourceReportId) await workforceSystem.linkManualCadProject(project.sourceReportId, project.id);
     req.log.info(
       {
@@ -2045,7 +2131,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
   } catch (error) {
     if (
       projectDir &&
-      !(await readFile(path.join(projectDir, 'project.json'))
+      !(await readManualProject(path.basename(projectDir))
         .then(() => true)
         .catch(() => false))
     ) {
@@ -2112,7 +2198,7 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
     };
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
-    await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project, null, 2), 'utf8');
+    await writeManualProject(project);
     req.log.info(
       { jobId: shortJobId(projectId), projectId: projectId.slice(0, 8) },
       'Created source-only manual project for failed or unavailable job',
@@ -2121,7 +2207,7 @@ app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (
   } catch (error) {
     if (
       projectDir &&
-      !(await readFile(path.join(projectDir, 'project.json'))
+      !(await readManualProject(path.basename(projectDir))
         .then(() => true)
         .catch(() => false))
     ) {
@@ -2152,18 +2238,8 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
   }
   let projectDir = null;
   try {
-    const existingEntries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-    for (const entry of existingEntries) {
-      if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-      try {
-        const existing = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
-        if (existing.sourceReportId === report.id && existing.id === entry.name) {
-          return res.json({ ok: true, reused: true, project: manualProjectResponse(existing) });
-        }
-      } catch {
-        /* incomplete project */
-      }
-    }
+    const existing = await findManualCadProjectForReport(report.id);
+    if (existing) return res.json({ ok: true, reused: true, project: manualProjectResponse(existing) });
     const sourcePath = workforceSystem.getReportFilePath(report.id, report.sketch.id);
     if (!sourcePath) return res.status(404).json({ error: 'Файл ручной схемы не найден в хранилище отчётов.' });
     const sourceBytes = await readFile(sourcePath);
@@ -2188,7 +2264,7 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
     };
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, project.source.fileName), sourceBytes);
-    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+    await writeManualProject(project);
     return res.status(201).json({ ok: true, reused: false, project: manualProjectResponse(project) });
   } catch (error) {
     if (projectDir) await rm(projectDir, { recursive: true, force: true }).catch(() => {});
@@ -2206,27 +2282,18 @@ app.post('/api/manual-cad/import-workforce-report/:reportId', async (req, res) =
 
 app.get('/api/manual-cad/projects', async (_req, res) => {
   try {
-    const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-    const projects = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-      try {
-        const project = JSON.parse(await readFile(manualProjectPath(entry.name), 'utf8'));
-        projects.push({
-          id: project.id,
-          title: project.title,
-          updatedAt: project.updatedAt,
-          createdAt: project.createdAt,
-          source: project.source || null,
-          sourceJobId: project.sourceJobId || null,
-          siteAddress: project.siteAddress || '',
-          pipeCount: Array.isArray(project.pipes) ? project.pipes.filter((pipe) => pipe.reviewOnly !== true).length : 0,
-        });
-      } catch {
-        /* ignore an incomplete project folder */
-      }
-    }
-    projects.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const projects = (await listManualProjects())
+      .map((project) => ({
+        id: project.id,
+        title: project.title,
+        updatedAt: project.updatedAt,
+        createdAt: project.createdAt,
+        source: project.source || null,
+        sourceJobId: project.sourceJobId || null,
+        siteAddress: project.siteAddress || '',
+        pipeCount: Array.isArray(project.pipes) ? project.pipes.filter((pipe) => pipe.reviewOnly !== true).length : 0,
+      }))
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     return res.json({ ok: true, projects });
   } catch (error) {
     _req.log.error({ err: error }, 'Cannot list manual CAD projects');
@@ -2240,7 +2307,7 @@ app.post('/api/manual-cad/projects', validateBody(manualProjectCreateSchema), as
   try {
     await mkdir(projectDir, { recursive: true });
     const project = createManualCadProject({ id, title: cleanLabel(req.body?.title || 'Новая схема', 140) });
-    await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+    await writeManualProject(project);
     return res.status(201).json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     await rm(projectDir, { recursive: true, force: true }).catch(() => {});
@@ -2253,7 +2320,7 @@ app.get('/api/manual-cad/projects/:id', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).json({ error: 'Некорректный ID проекта.' });
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readManualProject(id);
     return res.json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть ручной чертёж.' });
@@ -2264,15 +2331,12 @@ app.put('/api/manual-cad/projects/:id', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).json({ error: 'Некорректный ID проекта.' });
   try {
-    const current = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const current = await readManualProject(id);
     const input = req.body?.project && typeof req.body.project === 'object' ? req.body.project : req.body;
     const project = normalizeManualCadProject(input, current);
     project.source = current.source || null;
     project.manualEditRevision = Math.max(0, Number(current.manualEditRevision || 0)) + 1;
-    const target = manualProjectPath(id);
-    const temporary = `${target}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
-    await rename(temporary, target);
+    await writeManualProject(project);
     return res.json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     const status = error?.code === 'ENOENT' ? 404 : 400;
@@ -2292,12 +2356,13 @@ app.post(
     }
     if (!req.file) return res.status(400).json({ error: 'Выбери JPG, PNG, WEBP или TIFF.' });
     try {
-      const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+      const project = await readManualProject(id);
       const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
       const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff']);
       if (!allowed.has(ext)) throw new Error('Неподдерживаемый формат изображения.');
       const fileName = `source${ext}`;
       const projectDir = path.dirname(manualProjectPath(id));
+      await mkdir(projectDir, { recursive: true });
       await rename(req.file.path, path.join(projectDir, fileName));
       const width = Math.round(Math.max(100, Math.min(30000, Number(req.body?.width) || project.width || 1600)));
       const height = Math.round(Math.max(100, Math.min(30000, Number(req.body?.height) || project.height || 1000)));
@@ -2310,7 +2375,7 @@ app.post(
       project.width = width;
       project.height = height;
       project.updatedAt = new Date().toISOString();
-      await writeFile(manualProjectPath(id), JSON.stringify(project, null, 2), 'utf8');
+      await writeManualProject(project);
       return res.json({ ok: true, project: manualProjectResponse(project) });
     } catch (error) {
       if (req.file?.path) await rm(req.file.path, { force: true }).catch(() => {});
@@ -2324,7 +2389,7 @@ app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readManualProject(id);
     const fileName = path.basename(String(project.source?.fileName || ''));
     if (!fileName || !/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName))
       return res.status(404).json({ error: 'Подложка не загружена.' });
@@ -2338,7 +2403,7 @@ app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readManualProject(id);
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(renderManualCadSvg(project, { includeReview: req.query.draft === '1' }));
@@ -2353,7 +2418,7 @@ app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readManualProject(id);
     const svg = renderManualCadSvg(project);
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.svg"`);
@@ -2367,7 +2432,7 @@ app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readManualProject(id);
     const dxf = renderManualCadDxf(project);
     res.setHeader('Content-Type', 'application/dxf; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.dxf"`);
@@ -2422,6 +2487,7 @@ app.use((err, req, res, _next) => {
   res.status(status).json({ error: message, details });
 });
 
+await backfillManualCadProjects();
 const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   logger.info(
     {

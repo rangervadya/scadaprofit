@@ -69,3 +69,15 @@ model IdempotencyKey {
   @@index([expiresAt])
   @@map("idempotency_keys")
 }
+
+model ManualCadProject {
+  id        String   @id @db.Uuid
+  title     String   @db.VarChar(200)
+  data      Json
+  revision  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([updatedAt])
+  @@map("manual_cad_projects")
+}
