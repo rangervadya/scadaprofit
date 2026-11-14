@@ -36,7 +36,7 @@ import {
   requestIdHeader,
   logRequestError,
 } from './logger.js';
-import { postgresEnabled } from './db.js';
+import { requirePostgres } from './db.js';
 import {
   fetchManualProject,
   fetchManualProjects,
@@ -120,6 +120,8 @@ await chmod(LIBRARY_DIR, 0o700).catch(() => {});
 // Yandex integration was retired at the user's request. Remove only its private
 // settings file; address data, CAD projects, templates and other app data remain.
 await rm(LEGACY_YANDEX_CONFIG_PATH, { force: true }).catch(() => {});
+// Fail fast before binding a port if the database is not configured.
+requirePostgres();
 await mkdir(SCHEME_META_DIR, { recursive: true });
 await mkdir(TEMPLATE_DIR, { recursive: true });
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
@@ -591,118 +593,41 @@ function manualProjectPath(id) {
 }
 
 async function readManualProject(id) {
-  if (postgresEnabled()) {
-    const project = await fetchManualProject(id);
-    if (!project) {
-      const error = new Error('Не удалось открыть ручной чертёж.');
-      error.code = 'ENOENT';
-      throw error;
-    }
-    return project;
-  }
-  const target = manualProjectPath(id);
-  const raw = await readFile(target, 'utf8').catch((error) => {
-    if (error?.code === 'ENOENT') {
-      const notFound = new Error('Не удалось открыть ручной чертёж.');
-      notFound.code = 'ENOENT';
-      throw notFound;
-    }
+  const project = await fetchManualProject(id);
+  if (!project) {
+    const error = new Error('Не удалось открыть ручной чертёж.');
+    error.code = 'ENOENT';
     throw error;
-  });
-  return JSON.parse(raw);
+  }
+  return project;
 }
 
 async function writeManualProject(project) {
-  if (postgresEnabled()) {
-    await saveManualProject(project);
-    return;
-  }
-  const target = manualProjectPath(project.id);
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
-  await rename(temporary, target);
+  await saveManualProject(project);
 }
 
 /**
- * Optimistic-concurrency write. Postgres path is atomic via updateMany;
- * JSON path re-reads the file under a temp+rename guard so a stale revision
- * is rejected the same way. Returns 'ok' | 'conflict' | 'missing'.
+ * Optimistic-concurrency write: Postgres updateMany is atomic, so a stale
+ * revision is rejected. Returns 'ok' | 'conflict' | 'missing'.
  */
 async function writeManualProjectIfRevision(project, expectedRevision) {
   const expected = Math.max(0, Number(expectedRevision || 0));
-  if (postgresEnabled()) return saveManualProjectIfRevision(project, expected);
-
-  const target = manualProjectPath(project.id);
-  let raw;
-  try {
-    raw = await readFile(target, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') return 'missing';
-    throw error;
-  }
-  let current;
-  try {
-    current = JSON.parse(raw);
-  } catch {
-    return 'missing';
-  }
-  if (Math.max(0, Number(current.manualEditRevision || 0)) !== expected) return 'conflict';
-
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(temporary, JSON.stringify(project, null, 2), 'utf8');
-  await rename(temporary, target);
-  return 'ok';
+  return saveManualProjectIfRevision(project, expected);
 }
 
 async function listManualProjects() {
-  if (postgresEnabled()) return fetchManualProjects();
-  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-  const projects = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-    try {
-      projects.push(await readManualProject(entry.name));
-    } catch {
-      /* ignore incomplete project folders */
-    }
-  }
-  return projects;
+  return fetchManualProjects();
 }
 
 async function findManualCadProjectForJob(jobId) {
-  if (postgresEnabled()) return findManualProjectBySourceJob(jobId);
-  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-    try {
-      const project = await readManualProject(entry.name);
-      if (project.sourceJobId === jobId && project.id === entry.name) return project;
-    } catch {
-      /* ignore incomplete project folders */
-    }
-  }
-  return null;
+  return findManualProjectBySourceJob(jobId);
 }
 
 async function findManualCadProjectForReport(reportId) {
-  if (postgresEnabled()) return findManualProjectBySourceReport(reportId);
-  const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isManualCadId(entry.name)) continue;
-    try {
-      const project = await readManualProject(entry.name);
-      if (project.sourceReportId === reportId && project.id === entry.name) return project;
-    } catch {
-      /* ignore incomplete project folders */
-    }
-  }
-  return null;
+  return findManualProjectBySourceReport(reportId);
 }
 
 async function backfillManualCadProjects() {
-  if (!postgresEnabled()) return;
   const entries = await readdir(MANUAL_CAD_DIR, { withFileTypes: true }).catch((error) => {
     logger.warn({ err: error, dir: MANUAL_CAD_DIR }, 'Cannot scan legacy manual CAD directory');
     return [];
@@ -873,30 +798,15 @@ async function readAddressLibraryFile() {
   }
 }
 
-async function saveAddressLibraryFile(library) {
-  const tempPath = `${LIBRARY_PATH}.tmp-${randomUUID()}`;
-  await writeFile(tempPath, JSON.stringify(library, null, 2), 'utf8');
-  await rename(tempPath, LIBRARY_PATH);
-}
-
 async function readAddressLibrary() {
-  if (postgresEnabled()) {
-    const stored = await fetchAddressLibraryPg();
-    if (stored) return stored;
-  }
-  return readAddressLibraryFile();
+  return fetchAddressLibraryPg();
 }
 
 async function saveAddressLibrary(library) {
-  if (postgresEnabled()) {
-    await saveAddressLibraryPg(library);
-    return;
-  }
-  await saveAddressLibraryFile(library);
+  await saveAddressLibraryPg(library);
 }
 
 async function backfillAddressLibrary() {
-  if (!postgresEnabled()) return;
   const stored = await fetchAddressLibraryPg();
   if (stored) return;
   const legacy = await readAddressLibraryFile();
@@ -946,59 +856,15 @@ function findScheme(library, jobId) {
   return null;
 }
 
-function schemeMetaPath(jobId) {
-  return path.join(SCHEME_META_DIR, `${jobId}.json`);
-}
-
-async function writeSchemeMetaFile(jobId, meta) {
-  const target = schemeMetaPath(jobId);
-  const temporary = `${target}.tmp-${randomUUID()}`;
-  await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
-  await rename(temporary, target);
-}
-
-async function readSchemeMetaFile(jobId) {
-  try {
-    return JSON.parse(await readFile(schemeMetaPath(jobId), 'utf8'));
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    const library = await readAddressLibrary();
-    const found = findScheme(library, jobId);
-    return found
-      ? {
-          jobId,
-          title: found.scheme.title,
-          createdAt: found.scheme.createdAt,
-          uploadedBy: found.scheme.uploadedBy,
-          sourceName: found.scheme.sourceName,
-          status: found.scheme.status || 'completed',
-          originalName: found.scheme.originalName || found.scheme.title,
-          streetName: found.street.name,
-          buildingName: found.building.name,
-          error: found.scheme.error || '',
-        }
-      : null;
-  }
-}
-
 async function readSchemeMeta(jobId) {
-  if (postgresEnabled()) {
-    const stored = await fetchSchemeMetaPg(jobId);
-    if (stored) return stored;
-  }
-  return readSchemeMetaFile(jobId);
+  return fetchSchemeMetaPg(jobId);
 }
 
 async function writeSchemeMeta(jobId, meta) {
-  if (postgresEnabled()) {
-    await saveSchemeMetaPg(jobId, meta);
-    return;
-  }
-  await writeSchemeMetaFile(jobId, meta);
+  await saveSchemeMetaPg(jobId, meta);
 }
 
 async function backfillSchemeMeta() {
-  if (!postgresEnabled()) return;
   const entries = await readdir(SCHEME_META_DIR, { withFileTypes: true }).catch(() => []);
   let imported = 0;
   for (const entry of entries) {

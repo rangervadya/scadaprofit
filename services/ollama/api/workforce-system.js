@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
-import { postgresEnabled } from './db.js';
+import { requirePostgres } from './db.js';
 import {
   mirrorUser,
   mirrorSession,
@@ -198,6 +198,8 @@ export async function createWorkforceSystem({
   getSketchStatus = null,
 }) {
   const authDir = path.join(dataDir, 'workforce');
+  // Legacy JSON paths are read-only: they are imported once when PostgreSQL is
+  // empty and are never written again.
   const usersPath = path.join(authDir, 'users.json');
   const sessionsPath = path.join(authDir, 'sessions.json');
   const workforcePath = path.join(authDir, 'workspace.json');
@@ -214,71 +216,52 @@ export async function createWorkforceSystem({
       throw error;
     }
   }
-  async function atomicJson(file, value) {
-    const tmp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
-    await rename(tmp, file);
-  }
 
-  const usePostgres = postgresEnabled();
-  let users;
-  let sessions;
-  if (usePostgres) {
-    users = await fetchUsers();
-    sessions = await fetchSessions();
-    const legacyUsers = await readJson(usersPath, []);
-    const knownUsers = new Set(users.map((user) => user.id));
-    const missingUsers = Array.isArray(legacyUsers)
-      ? legacyUsers.filter((user) => user && !knownUsers.has(user.id))
-      : [];
-    if (missingUsers.length) {
-      users.push(...missingUsers);
-      await Promise.all(missingUsers.map((user) => mirrorUser(user)));
-      log.info({ count: missingUsers.length }, 'Imported legacy users.json into PostgreSQL');
-    }
-    const legacySessions = await readJson(sessionsPath, []);
-    const knownSessions = new Set(sessions.map((session) => session.tokenHash));
-    const missingSessions = Array.isArray(legacySessions)
-      ? legacySessions.filter(
-          (item) =>
-            item &&
-            !knownSessions.has(item.tokenHash) &&
-            Number(item.expiresAt) > Date.now() &&
-            users.some((user) => user.id === item.userId && user.active !== false),
-        )
-      : [];
-    if (missingSessions.length) {
-      sessions.push(...missingSessions);
-      await Promise.all(missingSessions.map((session) => mirrorSession(session)));
-      log.info({ count: missingSessions.length }, 'Imported legacy sessions.json into PostgreSQL');
-    }
-  } else {
-    users = await readJson(usersPath, []);
-    sessions = await readJson(sessionsPath, []);
+  requirePostgres();
+  let users = await fetchUsers();
+  let sessions = await fetchSessions();
+  const legacyUsers = await readJson(usersPath, []);
+  const knownUsers = new Set(users.map((user) => user.id));
+  const missingUsers = Array.isArray(legacyUsers) ? legacyUsers.filter((user) => user && !knownUsers.has(user.id)) : [];
+  if (missingUsers.length) {
+    users.push(...missingUsers);
+    await Promise.all(missingUsers.map((user) => mirrorUser(user)));
+    log.info({ count: missingUsers.length }, 'Imported legacy users.json into PostgreSQL');
   }
-  let workspace;
-  if (usePostgres) {
-    workspace = await fetchWorkspacePg();
-    if (!workspace) {
-      workspace = await readJson(workforcePath, { tasks: [], reports: [] });
-      const hasLegacyData =
-        (Array.isArray(workspace.tasks) && workspace.tasks.length) ||
-        (Array.isArray(workspace.reports) && workspace.reports.length) ||
-        (Array.isArray(workspace.defectReports) && workspace.defectReports.length);
-      if (hasLegacyData) {
-        await saveWorkspacePg(workspace);
-        log.info(
-          {
-            tasks: workspace.tasks.length,
-            reports: workspace.reports.length,
-            defects: workspace.defectReports.length,
-          },
-          'Imported legacy workspace.json into PostgreSQL',
-        );
-      }
-    }
-  } else {
+  const legacySessions = await readJson(sessionsPath, []);
+  const knownSessions = new Set(sessions.map((session) => session.tokenHash));
+  const missingSessions = Array.isArray(legacySessions)
+    ? legacySessions.filter(
+        (item) =>
+          item &&
+          !knownSessions.has(item.tokenHash) &&
+          Number(item.expiresAt) > Date.now() &&
+          users.some((user) => user.id === item.userId && user.active !== false),
+      )
+    : [];
+  if (missingSessions.length) {
+    sessions.push(...missingSessions);
+    await Promise.all(missingSessions.map((session) => mirrorSession(session)));
+    log.info({ count: missingSessions.length }, 'Imported legacy sessions.json into PostgreSQL');
+  }
+  let workspace = await fetchWorkspacePg();
+  if (!workspace) {
     workspace = await readJson(workforcePath, { tasks: [], reports: [] });
+    const hasLegacyData =
+      (Array.isArray(workspace.tasks) && workspace.tasks.length) ||
+      (Array.isArray(workspace.reports) && workspace.reports.length) ||
+      (Array.isArray(workspace.defectReports) && workspace.defectReports.length);
+    if (hasLegacyData) {
+      await saveWorkspacePg(workspace);
+      log.info(
+        {
+          tasks: workspace.tasks.length,
+          reports: workspace.reports.length,
+          defects: workspace.defectReports.length,
+        },
+        'Imported legacy workspace.json into PostgreSQL',
+      );
+    }
   }
   if (!Array.isArray(users)) users = [];
   if (!Array.isArray(sessions)) sessions = [];
@@ -289,10 +272,8 @@ export async function createWorkforceSystem({
   // GPS tracking was intentionally removed. Purge legacy coordinate histories from older 4.4 workspaces.
   const hadLegacyLocations = Object.prototype.hasOwnProperty.call(workspace, 'locations');
   delete workspace.locations;
-  if (hadLegacyLocations) {
-    if (usePostgres) await saveWorkspacePg(workspace);
-    else await atomicJson(workforcePath, workspace);
-  }
+  if (hadLegacyLocations) await saveWorkspacePg(workspace);
+
   const now = Date.now();
   const expiredAtBoot = sessions.filter(
     (item) => !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
@@ -301,20 +282,11 @@ export async function createWorkforceSystem({
     (item) => Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false),
   );
   if (expiredAtBoot.length) await Promise.all(expiredAtBoot.map((item) => deleteSession(item.tokenHash)));
-  if (!usePostgres) await atomicJson(sessionsPath, sessions);
   const saveUsers = async () => {
-    if (usePostgres) {
-      await Promise.all(users.map((user) => mirrorUser(user)));
-      return;
-    }
-    await atomicJson(usersPath, users);
+    await Promise.all(users.map((user) => mirrorUser(user)));
   };
   const saveSessions = async () => {
-    if (usePostgres) {
-      await Promise.all(sessions.map((session) => mirrorSession(session)));
-      return;
-    }
-    await atomicJson(sessionsPath, sessions);
+    await Promise.all(sessions.map((session) => mirrorSession(session)));
   };
   const sessionCleanup = setInterval(
     () => {
@@ -340,13 +312,7 @@ export async function createWorkforceSystem({
   let setupInProgress = false;
   let accountCreationInProgress = false;
   const saveWorkspace = () => {
-    const pending = workspaceWrite.then(async () => {
-      if (usePostgres) {
-        await saveWorkspacePg(workspace);
-        return;
-      }
-      await atomicJson(workforcePath, workspace);
-    });
+    const pending = workspaceWrite.then(() => saveWorkspacePg(workspace));
     workspaceWrite = pending.catch(() => {});
     return pending;
   };

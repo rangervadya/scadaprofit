@@ -103,9 +103,11 @@ select count(*) from manual_cad_projects;
 
 ## 4. Откат
 
-- `AUTH_BACKEND=json` возвращает auth к JSON-режиму (legacy).
-- Для manual CAD откат — вернуть предыдущий коммит; новые проекты в БД не теряются, файлы остаются.
-- Перед удалением JSON сделать копию тома.
+- `AUTH_BACKEND=json` больше не поддерживается: legacy JSON-хранилища удалены
+  после бэкапа, приложение fail-fast без PostgreSQL (`POSTGRES_REQUIRED`).
+- Для manual CAD откат — восстановить предыдущий коммит и БД из бэкапа
+  (`infra/scripts/restore.sh`).
+- Перед удалением JSON делать копию тома (`infra/scripts/backup.sh`).
 
 ## 5. Правила
 

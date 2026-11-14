@@ -3,6 +3,18 @@
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
 Статус: **фаза 1: данные в PostgreSQL; P1-4/8/9/12 частично, P1-5 и cleanup — на прод; P1-14 нормализация и P2 — далее**. Обновляется по мере выполнения пунктов.
 
+## Сводка выполнения
+
+| Группа | Закрыто | Частично | Не начато / отложено |
+|---|---|---|---|
+| P0 | 6 (P0-1…P0-6) | P0-7 | — |
+| Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
+| P1 | 3 (P1-6, P1-7, P1-10) + P1-13 | 9 (P1-1, P1-2, P1-3, P1-4, P1-8, P1-9, P1-11, P1-12, P1-14) | P1-5 (на прод) |
+| P2 | 2 (P2-6, P2-13) | 1 (P2-2) | 9 (P2-1, P2-3…P2-5, P2-7…P2-12, P2-14) |
+| P3 | 0 | 0 | 5 |
+
+**Итог: план не завершён.** Полностью закрыты только P0-1…P0-6, фаза 0.5 и три пункта P1 (P1-6, P1-7, P1-10) плюс CI (P1-13). Остальные пункты P1/P2 — частично или не начаты; часть сознательно отложена до production.
+
 ## 0. Как читать
 
 - **P0** — блокирует релиз, приводит к потере данных или критичной уязвимости. Делаем сейчас.
@@ -21,7 +33,7 @@
 | Очередь | `Map` + массив в памяти (`server.js:128-131`) | теряется при рестарте, один GPU-слот |
 | VDGO | `ThreadingHTTPServer`, 2341 строка | один запрос за раз, 512 МБ тела в RAM |
 | Данные | PostgreSQL: users, sessions, manual_cad_projects, address_library, workforce_workspace, scheme_meta, archive_entries; тома для артефактов | JSON только fallback/backfill; in-memory cache |
-| Gateway | nginx, один server, HTTP | нет TLS, rate limit, лимитов |
+| Gateway | nginx, один server, HTTP | TLS нет; gzip, `limit_req`, per-location `client_max_body_size` — есть |
 | Наблюдаемость | pino JSON + request id в Node; JSON-логи в Python | нет метрик, трейсинга, SLO, алертов |
 | Тесты | 48 node-тестов, 201 Python-тест, 50 VDGO-тестов | source-string assertions, нет CI на GitHub |
 | Тулинг | ESLint 9 + Prettier 3 + Ruff, `npm run verify` | `check` заменён на `lint`/`typecheck`/`test` |
@@ -34,11 +46,11 @@
 | ETL/валидация схем, обратная совместимость | ✅ | Prisma-миграции, backfill legacy JSON, `graph/1.2` |
 | Real-time updates, ordering | ❌ | polling 5–6 с, полный `graph.json` каждый раз |
 | Выбор архитектуры под нагрузку | ⚠️ | modular monolith + AI worker; очередь всё ещё in-memory |
-| API versioning/contracts | ❌ | `/api/...` без версии, OpenAPI нет |
-| Standard error/pagination/idempotency/correlation | ⚠️ | idempotency только `POST /tasks`; пагинации нет; error envelope разный |
+| API versioning/contracts | ✅ | версий нет по решению; `docs/openapi.yaml` + `tests/node/openapi.test.js` |
+| Standard error/pagination/idempotency/correlation | ⚠️ | idempotency на `POST /tasks` и `POST /analyze`; пагинации нет; error envelope `{error,code?,details?}` задокументирован |
 | Timeouts/retries/circuit breakers/DLQ | ⚠️ | Qwen retry есть; circuit breaker/DLQ нет |
 | Bulkheads/rate limits/poison messages | ⚠️ | Python-семафор, 256 МБ лимит, nginx login rate limit; общий store нет |
-| Backup/DR | ❌ | тома без backup, restore не проверялся |
+| Backup/DR | ⚠️ | скрипты `infra/scripts/{backup,restore,retention}.sh`; restore drill не проведён |
 | Monitoring/alerting/SLO | ❌ | только логи; нет метрик/трейсинга/алертов |
 | Security: least privilege, encryption | ⚠️ | non-root; HTTP/TLS и дефолтный пароль БД отложены (dev) |
 | Auth/authz, CSRF | ⚠️ | PostgreSQL-сессии, cleanup; нет CSRF, idle timeout, revoke-all |
@@ -222,18 +234,29 @@
 
 ### Фаза 2 — качество и производительность (1–2 месяца)
 
-- [ ] **P2-1** Разбить монолиты на слои.
-- [~] **P2-2** Compression/cache/ETag/delta-status.
-  - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m для загрузок, 2m для обычных `/api/`); `ETag` на `PUT /api/manual-cad/projects/:id` (см. P2-3).
-  - **Осталось**: ETag/`If-None-Match` для GET-списков и схем, delta-status вместо полного графа.
-- [x] **P2-3** Manual CAD optimistic concurrency.
+Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
+
+- [ ] **P2-1** Разбить монолиты на слои (`server.js`, `workforce-system.js`, `app.py`, `processor.py` → routes/domain/services).
+- [~] **P2-2** Compression/cache/ETag.
+  - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `ETag` на `PUT /api/manual-cad/projects/:id` (см. P2-6).
+  - **Осталось**: ETag/`If-None-Match` для GET-списков и схем.
+- [ ] **P2-3** Polling полного графа → SSE/delta-status/projection.
+- [ ] **P2-4** Write amplification (не писать workspace на каждый GET, diff-сохранение).
+- [ ] **P2-5** O(n) сканы → индексы/БД/кэш.
+- [x] **P2-6** Optimistic concurrency для manual CAD.
   - **Сделано**: `If-Match: "<rev>"` / `body.expectedRevision`; атомарный `updateMany ... where revision = expected`; 409 `REVISION_CONFLICT`; `ETag` в ответе; фронт показывает «изменил другой редактор»; исправлена бесконечная рекурсия `readManualProject` в JSON-режиме; тест `tests/node/manual-cad-concurrency.test.js`.
-- [ ] **P2-4** Выделить AI-worker, очередь Redis/Postgres, retry/DLQ.
-- [ ] **P2-5** SLO + нагрузочные тесты.
-- [ ] **P2-6** Воспроизводимость сборки + SBOM.
-- [ ] **P2-7** Удалить dead code.
-- [x] **P2-8** ADR/runbook/DR.
+- [ ] **P2-7** Воспроизводимость сборки + SBOM (`npm ci`, lock, digest, `--require-hashes`).
+- [ ] **P2-8** Runtime image без тестов (вынести тесты в CI).
+- [ ] **P2-9** Версии/docs drift (single source version, changelog automation).
+- [ ] **P2-10** Удалить dead code (`engine/graph.js`, `strokes.js`, `prompts.js`, `moss_ai.py`, `openrouter_ai.py`, legacy UI).
+- [ ] **P2-11** Source-string тесты → поведенческие.
+- [ ] **P2-12** SLO + нагрузочные тесты (k6/Locust, capacity model).
+- [x] **P2-13** ADR/runbook/DR.
   - **Сделано**: `docs/adr/0001-postgres-system-of-record.md`, `docs/adr/0002-no-api-versioning.md`, `docs/runbook.md` (запуск, verify, backup/restore, retention, аварии, отложенное до прода).
+
+#### Отдельно (вне §3.3, но в работе)
+
+- [ ] **P2-14** Выделить AI-worker, очередь Redis/Postgres, retry/DLQ.
 
 ### Фаза 3 — долгосрочно
 
@@ -323,3 +346,19 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-14 (продолжение)
+
+- **P1-10** закрыт: `docs/openapi.yaml` + `tests/node/openapi.test.js` (контрактные тесты без `/api/v1`).
+- **P1-4** частично: `infra/scripts/backup.sh`, `restore.sh`, `retention.sh`, `docs/BACKUP-RESTORE-RU.md`; restore drill не проведён.
+- **P1-9** частично: `psycopg_pool` в `services/vdgo/database.py`, `close_pool()` при shutdown, env `VDGO_DB_POOL_*`.
+- **P1-8** частично: `VDGO_MAX_FILE_BYTES` (64 МБ) на файл внутри multipart.
+- **P1-3** частично: идемпотентность `/api/analyze` по `Idempotency-Key`.
+- **P1-2** частично: `POST /api/workforce/users/:id/revoke-sessions`.
+- **P1-11** частично: `heavyQuota` (per-user, IPv6-safe) на GPU-маршрутах.
+- **P1-12** частично: `no-new-privileges`, `cap_drop: [ALL]`, `tmpfs /tmp`.
+- **P2-6** закрыт: optimistic concurrency manual CAD (`If-Match`, 409 `REVISION_CONFLICT`, `ETag`); попутно исправлена бесконечная рекурсия `readManualProject` в JSON-режиме.
+- **P2-2** частично: nginx `gzip`, per-location `client_max_body_size`.
+- **P2-13** закрыт: ADR-0001, ADR-0002, `docs/runbook.md`.
+- Проверка: `npm run verify` exit 0; 82 node-теста; E2E optimistic concurrency (200 → 409) на локальном PostgreSQL.
+- **Отложено до production**: P0-7 (TLS/дефолтный пароль), CSRF/idle timeout/global revoke-all, shared store, P1-5 (OTel/metrics/alerts), P1-12 `read_only`, P1-13 прогон на GitHub, cleanup legacy JSON и нормализация P1-14.
