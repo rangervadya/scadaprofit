@@ -76,7 +76,7 @@ services:
 
   vdgo-backend:
     build:
-      context: ./services/vdgo/backend
+      context: ./services/vdgo
       dockerfile: Dockerfile
     image: vdgo-backend:5.3.9
     environment:

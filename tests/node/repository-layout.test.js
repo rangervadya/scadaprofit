@@ -12,10 +12,10 @@ const read = relative => readFile(file(relative), 'utf8');
 test('one React frontend is the active UI; backend and document services stay separate', async () => {
   const required = [
     'compose.yaml',
-    'backend/package.json',
-    'backend/api/server.js',
-    'backend/api/workforce-system.js',
-    'backend/engine/processor.py',
+    'services/ollama/package.json',
+    'services/ollama/api/server.js',
+    'services/ollama/api/workforce-system.js',
+    'services/ollama/engine/processor.py',
     'frontend/package.json',
     'frontend/package-lock.json',
     'frontend/index.html',
@@ -25,25 +25,25 @@ test('one React frontend is the active UI; backend and document services stay se
     'frontend/src/pages/ConclusionPage.tsx',
     'frontend/public/robots.txt',
     'tests/fixtures/legacy-frontend/public/manual-cad.js',
-    'services/vdgo/backend/app.py',
-    'services/vdgo/backend/templates/index.html',
+    'services/vdgo/app.py',
+    'services/vdgo/templates/index.html',
     'infra/docker/app.Dockerfile',
     'infra/nginx/nginx-unified.conf',
   ];
   for (const relative of required) await access(file(relative));
 
-  const server = await read('backend/api/server.js');
+  const server = await read('services/ollama/api/server.js');
   assert.match(server, /frontend\/public/);
   assert.match(server, /frontend\/public\/vdgo/);
   assert.match(server, /redirect\(308, '\/vdgo\/'\)/);
 
-  const auth = await read('backend/api/workforce-system.js');
+  const auth = await read('services/ollama/api/workforce-system.js');
   assert.match(auth, /pathname\.startsWith\('\/vdgo\/'\)/);
   assert.match(auth, /redirect\('\/vdgo\/login'\)/);
 
   const compose = await read('compose.yaml');
   assert.match(compose, /dockerfile: infra\/docker\/app\.Dockerfile/);
-  assert.match(compose, /context: \.\/services\/vdgo\/backend/);
+  assert.match(compose, /context: \.\/services\/vdgo\n/);
   assert.doesNotMatch(compose, /vdgo-frontend|services\/vdgo\/frontend/);
 
   const frontendPackage = JSON.parse(await read('frontend/package.json'));

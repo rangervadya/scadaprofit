@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parseHouseAddresses } from '../../backend/api/workforce-system.js';
+import { parseHouseAddresses } from '../../services/ollama/api/workforce-system.js';
 
 const read = relative => readFile(new URL(`../../${relative}`, import.meta.url), 'utf8');
 
@@ -25,7 +25,7 @@ test('house list is capped at 100 distinct addresses', () => {
 });
 
 test('receivers can dispatch multiple house tasks to selected fitters', async () => {
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
   const route = backend.slice(

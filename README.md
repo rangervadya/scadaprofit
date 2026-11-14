@@ -12,10 +12,10 @@ frontend/                 Единое React-приложение для все�
   index.html              Vite entry point
   vite.config.ts           Сборка в frontend/public/vdgo
   public/                  Публичные статические файлы
-backend/                  Основной Node.js API и Python CAD/recognition engine
+services/ollama/          Основной Node.js API и Python CAD/recognition engine
   api/                    Авторизация, workforce API, обработка заданий
   engine/                 Распознавание ручных схем и CAD-реконструкция
-services/vdgo/backend/    API технических заключений, PDF/Word и PostgreSQL
+services/vdgo/            API технических заключений, PDF/Word и PostgreSQL
 infra/                    Dockerfile, Nginx, compose overrides и scripts
 tests/                    Node.js, Python и VDGO regression tests
 docs/                     Руководства, deployment, architecture и changelog
@@ -68,13 +68,13 @@ npm ci
 npm run dev
 ```
 
-Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксируя `/api` к основному backend и `/vdgo/api`, `/vdgo/generate*` к backend заключений. Для полной разработки запустите также основной API и `services/vdgo/backend` согласно `docs/deployment/DOCKER.md` и frontend README.
+Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксируя `/api` к основному backend и `/vdgo/api`, `/vdgo/generate*` к backend заключений. Для полной разработки запустите также основной API и `services/vdgo` согласно `docs/deployment/DOCKER.md` и frontend README.
 
 ## Проверки
 
 ```bash
-npm --prefix backend run check
-PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
+npm --prefix services/ollama run check
+PYTHONPATH=services/ollama python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
 cd frontend && npm ci && npm run build
 ```
 

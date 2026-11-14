@@ -30,7 +30,7 @@ npm install
 PORT=3000 DATA_DIR=/tmp/scadaprofit-data MASK_PYTHON=python3 node api/server.js
 
 # 2. Сервис заключений (порт 8765)
-cd services/vdgo/backend
+cd services/vdgo
 VDGO_HOST=127.0.0.1 VDGO_PORT=8765 VDGO_NO_BROWSER=1 python3 app.py
 
 # 3. SPA (порт 5173)
@@ -87,7 +87,7 @@ npm run build
 npm run build
 
 # backend + node-тесты + Python-тесты
-npm --prefix backend run check
+npm --prefix services/ollama run check
 ```
 
 ## Диагностика

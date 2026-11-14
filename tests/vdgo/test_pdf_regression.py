@@ -21,7 +21,7 @@ import fitz
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKEND = ROOT / "services" / "vdgo" / "backend"
+BACKEND = ROOT / "services" / "vdgo"
 sys.path.insert(0, str(BACKEND))
 from app import OUTPUT, TEMPLATE, DEFECTS, Handler, build_pdf, normalize_form_dates, PAGE, append_extra_photo_pages, _ordered_uploaded_photos, compact_specialist_certificate, _download_disposition  # noqa: E402
 from pdf_to_docx import pdf_to_docx  # noqa: E402

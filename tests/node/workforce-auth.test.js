@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hashPassword, verifyPassword, authenticateCredentials } from '../../backend/api/workforce-system.js';
+import { hashPassword, verifyPassword, authenticateCredentials } from '../../services/ollama/api/workforce-system.js';
 
 test('password hashes are salted and cannot be used as plain-text credentials', async () => {
   const first = await hashPassword('A-very-strong-Password-1');

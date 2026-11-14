@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { evaluateAddressFolder } from '../../backend/api/workforce-system.js';
+import { evaluateAddressFolder } from '../../services/ollama/api/workforce-system.js';
 
 const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 
@@ -94,7 +94,7 @@ test('CAD editor saves its edits and returns to the selected address folder with
 });
 
 test('backend exposes one atomic folder-level transfer and rejects legacy per-item transfers', async () => {
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   assert.match(backend, /export function evaluateAddressFolder/);
   assert.match(backend, /routes\.post\('\/api\/workforce\/tasks\/:taskId\/conclusion'/);
   assert.match(backend, /report\.conclusionFolderId = task\.id/);

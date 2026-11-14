@@ -31,7 +31,7 @@ test('login screen requires credentials and does not offer role/account selectio
 test('fitter workflow keeps button-only tracking and sends sketches separately from defect photos', async () => {
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   assert.match(html, /Трекер состоит только из кнопок этапов работы/);
   assert.match(js, /Начать обход дома/);
   assert.match(js, /Отметить: прошёл этот дом/);
@@ -55,7 +55,7 @@ test('fitter workflow keeps button-only tracking and sends sketches separately f
 test('receiver sees schemes and defect photos in one inbox and confirms photos with an approval checkbox', async () => {
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   assert.match(html, /id="inboxStreetFilter"/);
   assert.match(html, /Папки по адресам/);
   assert.match(html, /id="reportList"/);
@@ -80,7 +80,7 @@ test('receiver sees schemes and defect photos in one inbox and confirms photos w
 test('supervisors can create fitter and receiver accounts with generated credentials', async () => {
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   assert.match(html, /Создать аккаунт и выдать данные/);
   assert.match(js, /autoGenerate: true/);
   assert.match(js, /createdCredentials/);
@@ -93,10 +93,10 @@ test('receiver can view generated CAD preview and transfer it into the conclusio
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
   const conclusion = await read('tests/fixtures/legacy-frontend/public/conclusion-workforce.js');
   const html = await read('tests/fixtures/legacy-frontend/public/conclusion.html');
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   const cadHtml = await read('tests/fixtures/legacy-frontend/public/manual-cad.html');
   const cadJs = await read('tests/fixtures/legacy-frontend/public/manual-cad.js');
-  const server = await read('backend/api/server.js');
+  const server = await read('services/ollama/api/server.js');
   assert.match(cadHtml, /id="returnToAddressFolderBtn"/);
   assert.ok(cadJs.includes('window.location.href = `/workforce.html?report=${encodeURIComponent(reportId)}`'));
   assert.doesNotMatch(cadJs, /api\/workforce\/reports.*conclusion/);
@@ -131,10 +131,10 @@ test('PDF and Word generation wait until both selected CAD schemes and defect ph
 });
 
 test('all accepted materials transfer together from one address folder into the task-scoped conclusion and Appendix 3', async () => {
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   const conclusionJs = await read('tests/fixtures/legacy-frontend/public/conclusion-workforce.js');
-  const template = await read('services/vdgo/backend/templates/index.html');
-  const pdfBackend = await read('services/vdgo/backend/app.py');
+  const template = await read('services/vdgo/templates/index.html');
+  const pdfBackend = await read('services/vdgo/app.py');
   const schemeRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/reports/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"));
   const defectRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/defects/:id/conclusion'"), backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"));
   const folderRoute = backend.slice(backend.indexOf("routes.post('/api/workforce/tasks/:taskId/conclusion'"), backend.indexOf("routes.get('/api/workforce/conclusion'"));
@@ -164,7 +164,7 @@ test('all accepted materials transfer together from one address folder into the 
 test('supervisors have an employee credential directory with names and one-time password reset', async () => {
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   assert.match(html, /id="credentialsSection"/);
   assert.match(html, /База логинов и паролей/);
   assert.match(html, /credentialDatabase/);
@@ -181,8 +181,8 @@ test('supervisors have an employee credential directory with names and one-time 
 });
 
 test('receiver keeps access to the editable CAD editor and save API', async () => {
-  const backend = await read('backend/api/workforce-system.js');
-  const server = await read('backend/api/server.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
+  const server = await read('services/ollama/api/server.js');
   const authMiddleware = backend.slice(backend.indexOf('async function authMiddleware'), backend.indexOf("const routes ="));
   const cadSaveRoute = server.slice(server.indexOf("app.put('/api/manual-cad/projects/:id'"), server.indexOf("app.post('/api/manual-cad/projects/:id/source'"));
   assert.match(authMiddleware, /req\.user\.role === 'fitter'/);
@@ -221,7 +221,7 @@ test('team workspace uses the familiar left PROFIT sidebar with role-specific se
 });
 
 test('defect photo intake is limited, private, rollback-safe, and separate from conclusion documents', async () => {
-  const backend = await read('backend/api/workforce-system.js');
+  const backend = await read('services/ollama/api/workforce-system.js');
   const html = await read('tests/fixtures/legacy-frontend/public/workforce.html');
   const js = await read('tests/fixtures/legacy-frontend/public/workforce.js');
   const uploadConfig = backend.slice(backend.indexOf('const defectUpload = multer('), backend.indexOf('function getCurrentUser'));

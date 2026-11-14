@@ -10,7 +10,7 @@ if [[ "${VDGO_FORCE_LOCAL:-0}" != "1" ]] && command -v docker >/dev/null 2>&1 &&
 fi
 command -v python3 >/dev/null || { echo "Установите Python 3.12+ или Docker."; exit 1; }
 command -v node >/dev/null || { echo "Установите Node.js 22.12+ или Docker."; exit 1; }
-cd "$ROOT/backend"
+cd "$ROOT"
 [ -x .venv/bin/python ] || python3 -m venv .venv
 .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
 BACKEND_PORT=8765

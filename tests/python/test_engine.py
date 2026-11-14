@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKEND = ROOT / "backend" / "engine"
+BACKEND = ROOT / "services/ollama" / "engine"
 sys.path.insert(0, str(BACKEND))
 import processor
 from structured_model import build_document_model, validate_document_model
@@ -1664,7 +1664,7 @@ class BrowserExportRegressionTests(unittest.TestCase):
 
     def test_fitter_upload_stays_in_house_and_automatically_queues_conversion(self):
         app_js = (ROOT / 'tests' / 'fixtures' / 'legacy-frontend' / 'public' / 'app.js').read_text(encoding='utf-8')
-        server_js = (ROOT / 'backend' / 'api' / 'server.js').read_text(encoding='utf-8')
+        server_js = (ROOT / 'services/ollama' / 'api' / 'server.js').read_text(encoding='utf-8')
         upload_start = app_js.index("analyzeBtn.addEventListener('click'")
         upload_end = app_js.index("$('processSchemeBtn').addEventListener('click'", upload_start)
         upload_handler = app_js[upload_start:upload_end]

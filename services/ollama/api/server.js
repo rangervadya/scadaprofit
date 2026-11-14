@@ -15,7 +15,7 @@ import { createWorkforceSystem } from './workforce-system.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
 const BUILD_INFO = {
-  version: (await readFile(path.join(__dirname, '../../VERSION'), 'utf8')).trim(),
+  version: (await readFile(path.join(__dirname, '../../../VERSION'), 'utf8')).trim(),
   pipelineSha256: createHash('sha256').update(Buffer.concat(await Promise.all(
     ['../engine/processor.py', '../engine/clean_layout.py', '../engine/drawing_template.py', 'manual-cad-core.js', 'workforce-system.js', 'server.js']
       .map(name => readFile(path.join(__dirname, name)))
@@ -297,7 +297,7 @@ const limitHeavyRequests = rateLimit({
   legacyHeaders: false,
   message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' }
 });
-app.use(express.static(path.join(__dirname, '../../frontend/public'), {
+app.use(express.static(path.join(__dirname, '../../../frontend/public'), {
   maxAge: 0,
   setHeaders(res, filePath) {
     if (/\.(html|css|js)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -1883,7 +1883,7 @@ app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
 // into frontend/public/vdgo/. Direct SPA routes share this same entry document.
 app.get('/vdgo', (_req, res) => res.redirect(308, '/vdgo/'));
 app.get(/^\/vdgo(?:\/.*)?$/, (_req, res) => {
-  res.sendFile(path.join(__dirname, '../../frontend/public/vdgo', 'index.html'), {
+  res.sendFile(path.join(__dirname, '../../../frontend/public/vdgo', 'index.html'), {
     headers: { 'Cache-Control': 'no-store, max-age=0' }
   });
 });

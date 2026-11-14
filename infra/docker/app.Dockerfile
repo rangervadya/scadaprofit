@@ -21,17 +21,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY backend/requirements.txt /tmp/requirements.txt
+COPY services/ollama/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 ENV PATH="/opt/venv/bin:${PATH}"
 
-COPY backend/package.json ./backend/package.json
-WORKDIR /app/backend
+COPY services/ollama/package.json ./services/ollama/package.json
+WORKDIR /app/services/ollama
 RUN npm install --omit=dev --no-audit --no-fund
-COPY backend/ ./
+COPY services/ollama/ ./
 COPY VERSION /app/VERSION
 COPY frontend/package.json /app/frontend/package.json
 COPY frontend/package-lock.json /app/frontend/package-lock.json
@@ -42,8 +42,8 @@ COPY --from=frontend-build /frontend/vite.config.ts /app/frontend/vite.config.ts
 COPY --from=frontend-build /frontend/src/ /app/frontend/src/
 COPY frontend/public/ /app/frontend/public/
 COPY --from=frontend-build /frontend/public/vdgo/ /app/frontend/public/vdgo/
-COPY services/vdgo/backend/app.py /app/services/vdgo/backend/app.py
-COPY services/vdgo/backend/templates/index.html /app/services/vdgo/backend/templates/index.html
+COPY services/vdgo/app.py /app/services/vdgo/app.py
+COPY services/vdgo/templates/index.html /app/services/vdgo/templates/index.html
 COPY tests/ /app/tests/
 COPY compose.yaml /app/compose.yaml
 COPY infra/docker/app.Dockerfile /app/infra/docker/app.Dockerfile

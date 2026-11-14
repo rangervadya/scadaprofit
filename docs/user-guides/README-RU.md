@@ -15,9 +15,9 @@ ScadaProfit объединяет распознавание ручных схе�
 ## Структура репозитория
 
 - `frontend/` — единственное React SPA для всех ролей и рабочих разделов; отдельной папки/контейнера frontend ВДГО нет.
-- `backend/api/` — Node.js API и workforce-модуль.
-- `backend/engine/` — Python-движок распознавания и CAD.
-- `services/vdgo/backend/` — отдельный API и генератор PDF/Word технических заключений.
+- `services/ollama/api/` — Node.js API и workforce-модуль.
+- `services/ollama/engine/` — Python-движок распознавания и CAD.
+- `services/vdgo/` — отдельный API и генератор PDF/Word технических заключений.
 - `infra/` — Dockerfile, Nginx, Compose-override и скрипты установки.
 - `tests/` — проверки Node.js, Python и VDGO.
 - `docs/` — инструкции и техническая документация.
@@ -58,8 +58,8 @@ docker compose ps
 ## Проверки
 
 ```bash
-npm --prefix backend run check
-PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py'
+npm --prefix services/ollama run check
+PYTHONPATH=services/ollama python -m unittest discover -s tests/vdgo -p 'test_*.py'
 ```
 
 После обновления отдельно проверь статус контейнеров на целевом сервере: успешные тесты исходников не заменяют проверку реального Docker-развёртывания.

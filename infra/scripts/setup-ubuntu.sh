@@ -12,17 +12,17 @@ fi
 sudo apt update
 sudo apt install -y python3 python3-venv python3-opencv tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng libcairo2 curl ca-certificates
 
-if [[ ! -d backend/.venv ]]; then
-  python3 -m venv --system-site-packages backend/.venv
+if [[ ! -d services/ollama/.venv ]]; then
+  python3 -m venv --system-site-packages services/ollama/.venv
 fi
-backend/.venv/bin/python -m pip install --upgrade pip
-backend/.venv/bin/python -m pip install -r backend/requirements.txt
+services/ollama/.venv/bin/python -m pip install --upgrade pip
+services/ollama/.venv/bin/python -m pip install -r services/ollama/requirements.txt
 
 if [[ ! -f .env ]]; then cp .env.example .env; fi
-npm --prefix backend install
-npm --prefix backend run check
+npm --prefix services/ollama install
+npm --prefix services/ollama run check
 
-backend/.venv/bin/python - <<'PYTHON'
+services/ollama/.venv/bin/python - <<'PYTHON'
 import cv2, pytesseract, ezdxf, cairosvg
 print('OpenCV:', cv2.__version__)
 print('Tesseract wrapper: OK')
@@ -33,5 +33,5 @@ PYTHON
 tesseract --list-langs || true
 
 echo
-echo "Установка завершена. Запуск: npm --prefix backend start"
+echo "Установка завершена. Запуск: npm --prefix services/ollama start"
 echo "Для полного набора сервисов используйте: docker compose up -d --build"
