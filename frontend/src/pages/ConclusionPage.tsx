@@ -23,6 +23,7 @@ export function ConclusionPage() {
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(Boolean(taskId));
   const [busy, setBusy] = useState<Busy>(null);
+  const [archivedReportId, setArchivedReportId] = useState<number | null>(null);
   const [activeSection, setActiveSection] = useState('main');
   const loadRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -125,9 +126,19 @@ export function ConclusionPage() {
         defectPhotos = prepared.map(item => item.file);
       }
       const formData = form.buildFormData(schemes, defectPhotos);
-      if (mode === 'preview') await conclusionApi.preview(formData);
-      else await conclusionApi.generate(formData, mode);
-      notify(mode === 'preview' ? 'Предпросмотр PDF открыт' : mode === 'docx' ? 'Документ Word сформирован' : 'PDF сформирован', 'success');
+      if (mode === 'preview') {
+        await conclusionApi.preview(formData);
+        notify('Предпросмотр PDF открыт', 'success');
+      } else {
+        const result = await conclusionApi.generate(formData, mode);
+        if (result.reportId) setArchivedReportId(result.reportId);
+        notify(
+          result.reportId
+            ? `${mode === 'docx' ? 'Документ Word' : 'PDF'} сформирован и сохранён в архиве`
+            : `${mode === 'docx' ? 'Документ Word' : 'PDF'} сформирован`,
+          'success',
+        );
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Не удалось сформировать документ', 'error');
     } finally {
@@ -331,6 +342,11 @@ export function ConclusionPage() {
             <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={Boolean(busy)}>
               Сформировать PDF
             </Button>
+            {archivedReportId ? (
+              <Link className="btn btn--ghost" to="/archive">
+                <Icon name="archive" /> В архиве
+              </Link>
+            ) : null}
           </div>
         </form>
       </div>

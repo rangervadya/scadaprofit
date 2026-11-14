@@ -22,6 +22,10 @@ export type ReportRun = {
   output_format: string;
   page_count: number;
   output_filename: string;
+  archived: boolean;
+  original_filename: string;
+  content_type: string;
+  file_size: number;
 };
 
 export type Role = 'fitter' | 'receiver' | 'supervisor' | 'developer';

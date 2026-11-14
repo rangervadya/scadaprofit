@@ -151,32 +151,6 @@ export function DashboardPage() {
           )}
         </Card>
       </div>
-
-      <Card title="Состояние контура">
-        {health.loading ? (
-          <Loading>Проверяем сервисы…</Loading>
-        ) : health.error ? (
-          <div className="alert alert--danger"><Icon name="alert" /><span>{health.error}</span></div>
-        ) : (
-          <div className="grid grid--3">
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="server" /></span> Основной сервис</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.mode || 'app'}</span>
-              <span className="stat__hint">{health.data?.version || 'версия не указана'}</span>
-            </div>
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="sparkles" /></span> Распознавание</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.localRecognition?.mode || '—'}</span>
-              <span className="stat__hint">Локальные модели, облако отключено</span>
-            </div>
-            <div className="stat">
-              <span className="stat__label"><span className="stat__icon"><Icon name="doc" /></span> Эталонный шаблон</span>
-              <span className="stat__value" style={{ fontSize: 16 }}>{health.data?.drawingTemplateConfigured ? 'Загружен' : 'Не загружен'}</span>
-              <span className="stat__hint">Управляется в настройках</span>
-            </div>
-          </div>
-        )}
-      </Card>
     </>
   );
 }

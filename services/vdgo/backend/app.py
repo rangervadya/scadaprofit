@@ -1,5 +1,5 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 from pathlib import Path
 from email.parser import BytesParser
 from email.policy import default
@@ -8,7 +8,7 @@ import os, json, math, re, shutil, threading, webbrowser, html as htmlmod, tempf
 from datetime import datetime
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
-from database import init_database, database_status, recent_reports, record_generation
+from database import init_database, database_status, recent_reports, record_generation, get_report
 from io import BytesIO
 
 APP_RELEASE = '4.5.11'
@@ -24,6 +24,7 @@ if not TEMPLATE.is_file():
         TEMPLATE = _template_candidates[0]
 OUTPUT = BASE / 'output'
 UPLOADS = BASE / 'uploads'
+ARCHIVE = OUTPUT / 'archive'
 FONT_DIR = Path(os.environ.get('VDGO_FONT_DIR', '/usr/share/fonts/truetype/crosextra'))
 if not (FONT_DIR / 'Carlito-Regular.ttf').exists() and Path('/usr/share/fonts/google-carlito-fonts/Carlito-Regular.ttf').exists():
     FONT_DIR = Path('/usr/share/fonts/google-carlito-fonts')
@@ -33,6 +34,7 @@ FONT_ITALIC = FONT_DIR / 'Carlito-Italic.ttf'
 FONT_BOLD_ITALIC = FONT_DIR / 'Carlito-BoldItalic.ttf'
 OUTPUT.mkdir(exist_ok=True)
 UPLOADS.mkdir(exist_ok=True)
+ARCHIVE.mkdir(exist_ok=True)
 
 DEFECTS = [
     {'id':'1.1','location':'Подъезд №1, условный проход Ду32, 25, смотри схему контроля, фото 1, 6, 9, 10.','defect':'Нарушение технологии заделки футляра (СП 42-101-2003 (п.6.7)).','recommendation':'Пространство между газопроводом и футляром на всю его длину необходимо заделывать просмоленной паклей, резиновыми втулками или другим эластичными материалами.'},
@@ -2126,6 +2128,38 @@ def _download_disposition(form: dict[str, str], extension: str) -> str:
     fallback = f"Zaklyuchenie_{ascii_number}_{ascii_date}.{extension}"
     return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
+
+def _archive_document_filename(form: dict[str, str], extension: str) -> str:
+    """Human-readable filename shown in the archive, independent of the storage key."""
+    def clean(value: object, fallback: str) -> str:
+        raw = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._-]+", "_", str(value or "").strip()).strip("._-")
+        return raw[:96] or fallback
+
+    report_number = clean(val(form, "report_number"), "bez_nomera")
+    report_date = clean(val(form, "report_date"), "bez_daty")
+    return f"Заключение_{report_number}_{report_date}.{extension}"
+
+
+def _archive_generated_document(source: Path, form: dict[str, str], output_format: str) -> tuple[Path, str, int]:
+    """Copy a generated file into the persistent archive and return its safe storage path."""
+    source = Path(source)
+    if not source.is_file():
+        raise RuntimeError('Сформированный файл не найден для архивации')
+    extension = 'docx' if str(output_format).startswith('docx') else 'pdf'
+    original_filename = _archive_document_filename(form, extension)
+    safe_number = re.sub(r"[^0-9A-Za-z._-]+", "_", val(form, "report_number")).strip("._-")[:80] or "bez_nomera"
+    storage_name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:10]}_{safe_number}.{extension}"
+    destination = ARCHIVE / storage_name
+    shutil.copy2(source, destination)
+    return destination, original_filename, destination.stat().st_size
+
+
+def _filename_disposition(filename: str, fallback: str) -> str:
+    """Content-Disposition for an already archived file."""
+    safe = str(filename or fallback)
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe).strip("._-") or fallback
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(safe, safe="")}'
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload):
         data=json.dumps(payload,ensure_ascii=False,default=str).encode('utf-8')
@@ -2135,6 +2169,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(data)
 
     def do_GET(self):
+        parsed_path=urlsplit(self.path)
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
@@ -2142,11 +2177,42 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
-        if self.path=='/api/reports':
+        if parsed_path.path=='/api/reports':
             try:
-                self._send_json(200, {'items':recent_reports(limit=12)})
+                query=parse_qs(parsed_path.query)
+                archived=(query.get('archived', ['0'])[0].lower() in ('1','true','yes'))
+                limit=int(query.get('limit', ['50'])[0])
+                self._send_json(200, {'items':recent_reports(limit=limit, archived_only=archived)})
             except Exception as exc:
                 self._send_json(503, {'error':'Не удалось прочитать журнал формирования документов', 'detail':str(exc)})
+            return
+        download_match=re.fullmatch(r'/api/reports/(\d+)/download', parsed_path.path)
+        if download_match:
+            try:
+                report=get_report(int(download_match.group(1)))
+            except Exception as exc:
+                self._send_json(503, {'error':'Не удалось прочитать архив', 'detail':str(exc)})
+                return
+            if not report or not report.get('archived') or not report.get('storage_path'):
+                self._send_json(404, {'error':'Файл не найден в архиве'})
+                return
+            try:
+                storage=Path(report['storage_path']).resolve()
+                if not storage.is_relative_to(ARCHIVE.resolve()) or not storage.is_file():
+                    raise FileNotFoundError
+                payload=storage.read_bytes()
+            except (FileNotFoundError, OSError):
+                self._send_json(404, {'error':'Файл архива отсутствует на диске'})
+                return
+            content_type=report.get('content_type') or 'application/octet-stream'
+            filename=report.get('original_filename') or f"report-{report['id']}"
+            self.send_response(200)
+            self.send_header('Content-Type',content_type)
+            self.send_header('Content-Disposition',_filename_disposition(filename, f"report-{report['id']}"))
+            self.send_header('Content-Length',str(len(payload)))
+            self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
+            self.send_header('X-Content-Type-Options','nosniff')
+            self.end_headers(); self.wfile.write(payload)
             return
         self.send_error(404)
     def parse_form(self):
@@ -2207,8 +2273,24 @@ class Handler(BaseHTTPRequestHandler):
                 content_type='application/pdf'
                 disposition='inline; filename="preview.pdf"' if self.path=='/preview' else _download_disposition(form, 'pdf')
                 output_format='preview' if self.path=='/preview' else 'pdf'
+            archive_path=None
+            original_filename=''
+            archive_size=0
+            if self.path != '/preview':
+                try:
+                    archive_path,original_filename,archive_size=_archive_generated_document(out,form,output_format)
+                except Exception as archive_exc:
+                    print(f'ПРЕДУПРЕЖДЕНИЕ: не удалось сохранить документ в архив: {archive_exc}', flush=True)
+            report_id=None
             try:
-                record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
+                report_id=record_generation(
+                    val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name,
+                    archived=archive_path is not None,
+                    storage_path=str(archive_path) if archive_path else '',
+                    original_filename=original_filename,
+                    content_type=content_type,
+                    file_size=archive_size,
+                )
             except Exception as db_exc:
                 print(f'ПРЕДУПРЕЖДЕНИЕ: не удалось записать событие в PostgreSQL: {db_exc}', flush=True)
             self.send_response(200)
@@ -2216,6 +2298,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Disposition',disposition)
             self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
             self.send_header('X-Content-Type-Options','nosniff')
+            if isinstance(report_id,int):
+                self.send_header('X-Report-Id',str(report_id))
             self.send_header('Content-Length',str(len(payload)))
             self.end_headers(); self.wfile.write(payload)
         except Exception as e:
@@ -2242,13 +2326,12 @@ def create_local_server():
                   f'Закройте другой экземпляр приложения или задайте переменную VDGO_PORT. Детали: {last_error}')
 
 if __name__=='__main__':
-    if os.environ.get('DATABASE_URL'):
-        try:
-            init_database(wait_seconds=int(os.environ.get('DB_WAIT_SECONDS', '45')))
-        except Exception as exc:
-            print(f'ОШИБКА ПОДКЛЮЧЕНИЯ К БАЗЕ ДАННЫХ: {exc}', flush=True)
-            if os.environ.get('DB_REQUIRED', '0') == '1':
-                raise SystemExit(2)
+    try:
+        init_database(wait_seconds=int(os.environ.get('DB_WAIT_SECONDS', '45')))
+    except Exception as exc:
+        print(f'ОШИБКА ПОДКЛЮЧЕНИЯ К БАЗЕ ДАННЫХ: {exc}', flush=True)
+        if os.environ.get('DB_REQUIRED', '0') == '1':
+            raise SystemExit(2)
     try:
         server, port = create_local_server()
     except OSError as exc:
