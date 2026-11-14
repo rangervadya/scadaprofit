@@ -208,7 +208,9 @@
 - [~] **P1-11** Gateway rate limit + per-user quota.
   - **Сделано**: nginx `limit_req` на `/api/auth/login` (20 r/m, burst 10); `heavyQuota` (per-user по `req.user.id`, fallback IP) на `/api/analyze`, `schemes/upload`, `schemes/:jobId/analyze`, `manual-cad/import-job|import-source-job`; `HEAVY_QUOTA_WINDOW_MS`/`HEAVY_QUOTA_LIMIT`.
   - **Осталось**: общий store (Redis/PG) для multi-instance.
-- [ ] **P1-12** Compose hardening.
+- [~] **P1-12** Compose hardening.
+  - **Сделано**: `no-new-privileges`, `cap_drop: [ALL]`, `tmpfs /tmp` для `app` и `vdgo-backend`.
+  - **Осталось**: `read_only: true` (требует точного аудита путей записи), `cap_add` только при доказанной необходимости.
 - [x] **P1-13** CI.
   - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
   - **Осталось**: прогнать на GitHub, добавить build/scan.

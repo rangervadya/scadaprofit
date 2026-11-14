@@ -92,6 +92,10 @@ services:
       - cad_jobs:/data/cad-reconstruction-jobs
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=256m
 
   vdgo-backend:
     build:
@@ -121,6 +125,12 @@ services:
     volumes:
       - vdgo_output:/app/output
       - vdgo_uploads:/app/uploads
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=512m
     restart: unless-stopped
     depends_on:
       vdgo-db:
