@@ -526,8 +526,15 @@ class PdfRegressionTests(unittest.TestCase):
                 temps=append_extra_photo_pages(doc,[str(test_image)], {'report_number':'QA-2026','address':'Тестовый адрес'})
                 try:
                     self.assertEqual(len(doc),50)
-                    self.assertEqual(len(doc[-1].get_images(full=True)),1)
-                    self.assertIn('Приложение 3. Фото дефектного участка (продолжение', doc[-1].get_text())
+                    overflow_pages = [index for index, page in enumerate(doc)
+                                      if 'Приложение 3. Фото дефектного участка (продолжение' in page.get_text()]
+                    self.assertEqual(len(overflow_pages), 1)
+                    overflow_index = overflow_pages[0]
+                    self.assertEqual(len(doc[overflow_index].get_images(full=True)),1)
+                    appendix_4 = next(index for index, page in enumerate(doc)
+                                      if index >= 10 and 'Приложение 4' in page.get_text())
+                    self.assertLess(overflow_index, appendix_4,
+                                    'Overflow photos must stay inside Appendix 3 before Appendix 4')
                 finally:
                     for tmp in temps: Path(tmp).unlink(missing_ok=True)
         finally:
@@ -619,20 +626,21 @@ def self_form_fixture():
 
 
 class WorkforceSchemeSection7Tests(unittest.TestCase):
-    def test_selected_workforce_scheme_is_embedded_in_pdf_and_editable_word(self):
+    def test_accepted_workforce_materials_fill_original_defect_photo_and_scheme_placements_in_pdf_and_word(self):
         from unittest.mock import patch
         from docx import Document
         with TemporaryDirectory() as temporary:
             temp = Path(temporary)
             scheme_path = temp / "field-scheme.png"
+            photo_path = temp / "defect-photo.png"
             image = Image.new("RGB", (900, 620), "white")
-            # Draw a visible, unique schematic mark to ensure it is embedded as an image.
             from PIL import ImageDraw
             draw = ImageDraw.Draw(image)
             draw.line((60, 80, 840, 80), fill="black", width=5)
             draw.line((450, 80, 450, 540), fill="black", width=5)
             draw.rectangle((220, 220, 680, 420), outline="black", width=4)
             image.save(scheme_path, format="PNG")
+            Image.new("RGB", (900, 620), "white").save(photo_path, format="PNG")
             scheme = {
                 "path": str(scheme_path),
                 "street": "улица Тестовая",
@@ -642,38 +650,57 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                 "reportId": "test-report-7",
                 "status": "accepted",
             }
+            form = self_form_fixture()
+            form.update({
+                "defect_1_enabled": "1",
+                "defect_1_location": "Подъезд 2, дом 15",
+                "defect_1_text": "Коррозия участка газопровода",
+                "defect_1_recommendation": "Восстановить защитное покрытие",
+            })
             with patch("app.OUTPUT", temp):
-                pdf_path = build_pdf(self_form_fixture(), {}, workforce_schemes=[scheme])
+                pdf_path = build_pdf(form, {"photo_1": str(photo_path)}, workforce_schemes=[scheme])
                 with fitz.open(pdf_path) as pdf:
-                    matches = [i for i, page in enumerate(pdf)
-                               if "7. Актуальные схемы, удостоверения и акты" in page.get_text()]
-                    self.assertEqual(len(matches), 1)
-                    page = pdf[matches[0]]
-                    text = page.get_text()
-                    self.assertIn("улица Тестовая, дом 15", text)
-                    self.assertIn("Иванов Иван Иванович", text)
-                    self.assertIn("принята приёмщиком", text)
-                    self.assertEqual(len(page.get_images(full=True)), 1)
-                    self.assertLess(matches[0], next(i for i, p in enumerate(pdf) if "Приложение 6" in p.get_text()))
-                # Export just the inserted PDF page through the same DOCX converter.
-                # The main suite already exercises complete-document Word conversion;
-                # this focused page-level check proves the new image survives conversion
-                # without repeating a costly 40+ page conversion in the regression run.
-                section_pdf = temp / "section-7-only.pdf"
-                with fitz.open(pdf_path) as full_pdf:
+                    scheme_pages = [i for i, page in enumerate(pdf)
+                                    if "Приложение 2. Схема неразрушающего контроля" in page.get_text()
+                                    and "улица Тестовая, дом 15" in page.get_text()]
+                    photo_pages = [i for i, page in enumerate(pdf)
+                                   if "Приложение 3" in page.get_text()
+                                   and "Фото дефектного участка" in page.get_text()
+                                   and "Фото 1" in page.get_text()]
+                    self.assertEqual(len(scheme_pages), 1)
+                    self.assertEqual(len(photo_pages), 1)
+                    self.assertLess(scheme_pages[0], photo_pages[0],
+                                    "Appendix 2 schemes must remain before the original Appendix 3 photo sheets")
+                    scheme_page = pdf[scheme_pages[0]]
+                    self.assertIn("Иванов Иван Иванович", scheme_page.get_text())
+                    self.assertEqual(len(scheme_page.get_images(full=True)), 1)
+                    photo_page = pdf[photo_pages[0]]
+                    self.assertGreaterEqual(len(photo_page.get_images(full=True)), 1)
+                    defect_page = next(page for page in pdf if "Коррозия участка газопровода" in page.get_text())
+                    self.assertIn("Подъезд 2, дом 15", defect_page.get_text())
+                    # The field worker supplies the factual defect description only;
+                    # the receiver must enter the corrective recommendation in the
+                    # existing form field rather than having one invented automatically.
+
+                    # Export the actual, unchanged template locations for CAD, defects and photos.
+                    selected_pages = [defect_page.number, scheme_pages[0], photo_pages[0]]
+                    section_pdf = temp / "workforce-sections.pdf"
                     section_doc = fitz.open()
-                    section_doc.insert_pdf(full_pdf, from_page=matches[0], to_page=matches[0])
+                    for page_no in selected_pages:
+                        section_doc.insert_pdf(pdf, from_page=page_no, to_page=page_no)
                     section_doc.save(section_pdf)
                     section_doc.close()
-                docx_path = temp / "report-with-field-scheme.docx"
+
+                docx_path = temp / "report-with-workforce-materials.docx"
                 page_count = pdf_to_docx_editable(section_pdf, docx_path)
                 word = Document(docx_path)
                 word_text = "\n".join(p.text for p in word.paragraphs)
-                self.assertIn("7. Актуальные схемы, удостоверения и акты", word_text)
+                self.assertIn("Приложение 2. Схема неразрушающего контроля", word_text)
                 self.assertIn("улица Тестовая, дом 15", word_text)
                 self.assertIn("Иванов Иван Иванович", word_text)
-                self.assertGreaterEqual(len(word.inline_shapes), 1)
-                self.assertEqual(page_count, 1)
+                self.assertIn("Коррозия участка газопровода", word_text)
+                self.assertGreaterEqual(len(word.inline_shapes), 2)
+                self.assertEqual(page_count, 3)
 
     def test_workforce_payload_is_validated_and_written_as_png(self):
         import base64
