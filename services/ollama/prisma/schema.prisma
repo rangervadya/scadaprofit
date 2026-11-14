@@ -54,3 +54,18 @@ model Session {
   @@index([expiresAt])
   @@map("sessions")
 }
+
+model IdempotencyKey {
+  id        String   @id @db.Uuid
+  key       String   @db.VarChar(200)
+  endpoint  String   @db.VarChar(120)
+  userId    String?  @map("user_id") @db.Uuid
+  status    String   @db.VarChar(20)
+  response  Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@unique([key, endpoint])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}

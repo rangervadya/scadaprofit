@@ -4,7 +4,15 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
-import { mirrorUser, mirrorSession, deleteSession, deleteUserSessions, fetchUsers } from './postgres-repo.js';
+import {
+  mirrorUser,
+  mirrorSession,
+  deleteSession,
+  deleteUserSessions,
+  fetchUsers,
+  findIdempotency,
+  saveIdempotency,
+} from './postgres-repo.js';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
@@ -560,6 +568,11 @@ export async function createWorkforceSystem({
   routes.post('/api/workforce/tasks', async (req, res) => {
     // Dispatchers (receivers), supervisors and developers can assign jobs to fitters.
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const idempotencyKey = cleanText(req.get('Idempotency-Key'), 200);
+    if (idempotencyKey) {
+      const existing = await findIdempotency('POST /api/workforce/tasks', idempotencyKey);
+      if (existing) return res.status(existing.status).json(existing.response);
+    }
     const assignedTo = cleanText(req.body?.assignedTo, 80);
     const fitter = users.find((user) => user.id === assignedTo && user.role === 'fitter' && user.active !== false);
     const title = cleanText(req.body?.title, 160);
@@ -602,13 +615,23 @@ export async function createWorkforceSystem({
     workspace.tasks.unshift(...createdTasks);
     await saveWorkspace();
     const clientTasks = createdTasks.map(taskForClient);
-    return res.status(201).json({
+    const payload = {
       ok: true,
       assignmentGroupId,
       createdCount: clientTasks.length,
       tasks: clientTasks,
       task: clientTasks[0],
-    });
+    };
+    if (idempotencyKey) {
+      await saveIdempotency({
+        endpoint: 'POST /api/workforce/tasks',
+        key: idempotencyKey,
+        userId: req.user.id,
+        status: 201,
+        response: payload,
+      });
+    }
+    return res.status(201).json(payload);
   });
 
   routes.post('/api/workforce/tasks/:id/start', async (req, res) => {

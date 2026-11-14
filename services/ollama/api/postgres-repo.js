@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getPrismaClient, postgresEnabled } from './db.js';
 import { logger } from './logger.js';
 
@@ -118,4 +119,46 @@ export async function countUsers() {
   if (!postgresEnabled()) return 0;
   const prisma = await getPrismaClient();
   return prisma.user.count();
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function findIdempotency(endpoint, key) {
+  if (!postgresEnabled() || !endpoint || !key) return null;
+  try {
+    const prisma = await getPrismaClient();
+    const row = await prisma.idempotencyKey.findUnique({
+      where: { key_endpoint: { key, endpoint } },
+    });
+    if (!row || row.expiresAt <= new Date()) return null;
+    return { status: Number(row.status), response: row.response };
+  } catch (error) {
+    log.warn({ err: error, endpoint }, 'Cannot read idempotency key');
+    return null;
+  }
+}
+
+export async function saveIdempotency({ endpoint, key, userId = null, status, response }) {
+  if (!postgresEnabled() || !endpoint || !key) return false;
+  try {
+    const prisma = await getPrismaClient();
+    const row = {
+      id: randomUUID(),
+      key,
+      endpoint,
+      userId,
+      status: String(status),
+      response,
+      expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
+    };
+    await prisma.idempotencyKey.upsert({
+      where: { key_endpoint: { key, endpoint } },
+      create: row,
+      update: { status: row.status, response: row.response, expiresAt: row.expiresAt },
+    });
+    return true;
+  } catch (error) {
+    log.warn({ err: error, endpoint }, 'Cannot store idempotency key');
+    return false;
+  }
 }

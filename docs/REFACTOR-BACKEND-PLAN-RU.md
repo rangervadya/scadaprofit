@@ -168,7 +168,10 @@
 - [x] **P1-2** Сессии в БД: cleanup, rotation, revoke-all, idle timeout, CSRF.
   - **Сделано**: периодическая очистка просроченных сессий (`workforce-system.js`).
   - **Осталось**: таблица `sessions`, revoke-all, idle timeout, CSRF — после P1-1.
-- [ ] **P1-3** Idempotency keys.
+- [~] **P1-3** Idempotency keys.
+  - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`, заголовок `Idempotency-Key` на `POST /api/workforce/tasks`; повтор возвращает исходный ответ без создания дубля.
+  - **Проверено**: два одинаковых запроса с одним ключом → один `assignmentGroupId`, одна задача, одна строка в БД.
+  - **Осталось**: `/vdgo/generate`, `/analyze`, in-memory fallback.
 - [ ] **P1-4** Retention + backup + restore drill.
 - [ ] **P1-5** OTel/metrics/tracing/dashboards/alerts.
 - [x] **P1-6** Health semantics + `/api/readyz`.
@@ -280,3 +283,4 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - P1-13: добавлен `.github/workflows/ci.yml` (node + python), YAML валидирован локально.
 - P1-1 (expand): Prisma `User`/`Session` + миграция + dual-write + hydration; проверено на локальном PostgreSQL `:55432`.
 - `AUTH_BACKEND=postgres` — dev-переключатель; по умолчанию `json`, JSON остаётся источником правды.
+- P1-3 (частично): `idempotency_keys` + `Idempotency-Key` на создание заданий; проверено на локальном PostgreSQL (дубль не создаётся).
