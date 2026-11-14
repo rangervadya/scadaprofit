@@ -335,9 +335,6 @@ export type WorkforceReport = {
   reviewedAt: string | null;
   schemeJobId: string | null;
   manualCadProjectId: string | null;
-  schemeSvgUrl?: string | null;
-  schemeDxfUrl?: string | null;
-  schemeOriginalUrl?: string | null;
   schemeStatus: string;
   schemeError: string;
   schemePartialGraphReady: boolean;

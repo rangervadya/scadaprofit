@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import {
   Badge,
@@ -82,7 +82,6 @@ function evaluateFolder(schemes: WorkforceReport[], defects: WorkforceDefectRepo
 export function TeamPage() {
   const { user } = useAuth();
   const { notify } = useToast();
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState<Tab>('tasks');
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
@@ -212,8 +211,7 @@ export function TeamPage() {
       }));
       await workforceApi.addToConclusion(taskId);
       await refresh('Папка добавлена в заключение');
-      // Open the same task-scoped conclusion so accepted defects and attachments are loaded immediately.
-      navigate(`/conclusion?task=${encodeURIComponent(taskId)}`);
+      setParams({ task: taskId });
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : 'Не удалось перенести папку', 'error');
     } finally {

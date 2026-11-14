@@ -46,17 +46,6 @@ export function ConclusionPage() {
   }, [taskId, reportId, defectId]);
 
   useEffect(() => {
-    if (!context) return;
-    // Accepted fitter defect reports become editable rows in the existing defect table.
-    form.applyWorkforceDefects(context.defectReports || [], context.task.id);
-    // Keep the existing conclusion template and bind this task's accepted materials
-    // to the same address. This prevents importing a draft for another house and
-    // accidentally generating a mixed-address document.
-    const address = `${context.task.street}, дом ${context.task.address}`;
-    if (form.values.address !== address) form.setField('address', address);
-  }, [context, form.applyWorkforceDefects, form.setField]);
-
-  useEffect(() => {
     const sections = document.querySelectorAll<HTMLElement>('.form-section');
     if (!sections.length) return;
     const observer = new IntersectionObserver(
@@ -73,14 +62,11 @@ export function ConclusionPage() {
   const materials = useMemo(() => {
     const reports = context?.reports || [];
     const defects = context?.defectReports || [];
-    const acceptedSchemes = reports.filter(report => report.status === 'accepted' && (report.schemeSvgUrl || report.manualCadProjectId || report.schemeJobId));
-    const acceptedDefects = defects.filter(report => report.status === 'accepted');
     return {
-      schemes: acceptedSchemes,
-      defects: acceptedDefects,
-      photos: acceptedDefects.reduce((sum, report) => sum + (report.photos || []).length, 0),
-      ready: reports.every(report => report.status === 'accepted' && Boolean(report.schemeSvgUrl || report.manualCadProjectId || report.schemeJobId))
-        && defects.every(report => report.status === 'accepted' && (report.photos || []).length > 0),
+      schemes: reports.filter(report => report.manualCadProjectId && report.status === 'accepted'),
+      defects,
+      photos: defects.reduce((sum, report) => sum + (report.photos || []).length, 0),
+      ready: reports.every(report => report.manualCadProjectId || report.schemeJobId) && defects.every(report => (report.photos || []).length > 0),
     };
   }, [context]);
 
@@ -99,13 +85,8 @@ export function ConclusionPage() {
 
   const uploadDraft = async (file: File) => {
     try {
-      const imported = form.importDraft(await file.text());
-      if (context) {
-        form.applyWorkforceDefects(context.defectReports || [], context.task.id);
-        form.setField('address', `${context.task.street}, дом ${context.task.address}`);
-      }
-      const formatLabel = imported.format === 'legacy-vdgo' ? 'старый формат ВДГО' : 'формат заключения';
-      notify(`JSON импортирован (${formatLabel}): заполнено ${imported.importedCount} полей и строк`, 'success');
+      form.importDraft(await file.text());
+      notify('Черновик загружен', 'success');
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Не удалось прочитать файл', 'error');
     }
@@ -124,10 +105,6 @@ export function ConclusionPage() {
 
   const run = async (mode: Busy) => {
     if (!mode) return;
-    if (form.workforceDefectOverflow > 0) {
-      notify(`В форме осталось только 11 строк дефектов. Не помещается ещё ${form.workforceDefectOverflow} записи слесарей — объедините однотипные дефекты или увеличьте число строк вручную.`, 'error');
-      return;
-    }
     if (taskId && context) {
       if (!materials.schemes.length && !materials.defects.length) {
         notify('Формирование заблокировано: к заданию не добавлены схемы и фотографии дефектов', 'error');
@@ -279,12 +256,9 @@ export function ConclusionPage() {
                 </div>
               </div>
             )}
-            {form.workforceDefectOverflow > 0 ? (
-              <div className="alert alert--warn"><Icon name="alert" /><span>Не все описания дефектов помещаются в 11 строк раздела 6.1. Объедините однотипные записи или оформите продолжение вручную.</span></div>
-            ) : null}
             <p className="field__hint" style={{ marginTop: 12 }}>
-              Принятые описания дефектов уже подставлены в таблицу раздела 6.1 — заполните рекомендации по устранению.
-              Фото дефектов пойдут в Приложение 3, а CAD-схемы — в Приложение 2 (ссылка на неё остаётся в пункте 5.1.3).
+              Перед экспортом выбранные CAD-схемы растрируются, а фотографии дефектов добавляются в фотослоты и печатаются
+              в Приложении 3.
             </p>
           </Card>
         ) : (
@@ -319,13 +293,7 @@ export function ConclusionPage() {
 
         <form id="conclusion-form" ref={formRef} className="stack" onSubmit={submit} noValidate={false}>
           {SECTIONS.map(section => (
-            <SectionRenderer
-              key={section.id}
-              section={section}
-              form={form}
-              workforceDefectReports={materials.defects}
-              workforceSchemes={materials.schemes}
-            />
+            <SectionRenderer key={section.id} section={section} form={form} />
           ))}
 
           <section className="card form-section" id="finish">

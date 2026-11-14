@@ -985,7 +985,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {
     if (!requireRoles(req, res, ['developer'])) return;
-    return res.json({ ok: true, version: '4.5.20', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, unifiedInbox: true, taskScopedConclusionTransfer: true, addressFolderInbox: true, atomicFolderConclusionTransfer: true, appendix3DefectPhotos: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
+    return res.json({ ok: true, version: '4.5.17', node: process.version, users: users.length, tasks: workspace.tasks.length, reports: workspace.reports.length, defectReports: workspace.defectReports.length, sessions: sessions.length, gpsTracking: false, manualSketchCadQueue: true, unifiedInbox: true, taskScopedConclusionTransfer: true, addressFolderInbox: true, atomicFolderConclusionTransfer: true, appendix3DefectPhotos: true, multiHouseDispatch: true, receiverCanAssignFitters: true, dataStore: 'persistent-json' });
   });
 
   async function linkManualCadProject(reportId, projectId) {

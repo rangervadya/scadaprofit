@@ -307,10 +307,7 @@ async function convertDefectPhoto(blob: Blob, name: string, mimeType: string): P
 export async function buildWorkforceSchemes(reports: WorkforceReport[]) {
   const payload: Array<Record<string, string>> = [];
   for (const report of reports) {
-    const svgUrl = report.schemeSvgUrl
-      || (report.manualCadProjectId ? `/api/manual-cad/projects/${encodeURIComponent(report.manualCadProjectId)}/preview.svg` : null)
-      || (report.schemeJobId ? `/jobs/${encodeURIComponent(report.schemeJobId)}/clean.svg` : null);
-    if (!svgUrl) throw new ApiError(`Для схемы «${report.street}, дом ${report.address}» ещё нет готового CAD-файла`, 409);
+    const svgUrl = `/api/manual-cad/projects/${report.manualCadProjectId}/preview.svg`;
     const pngBase64 = await svgToPngBase64(svgUrl);
     payload.push({
       id: report.id,

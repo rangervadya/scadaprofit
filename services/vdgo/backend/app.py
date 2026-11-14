@@ -11,8 +11,8 @@ from PIL import Image, ImageOps
 from database import init_database, database_status, recent_reports, record_generation
 from io import BytesIO
 
-APP_RELEASE = '4.5.20'
-BACKEND_IMAGE_VERSION = '5.3.12'
+APP_RELEASE = '4.5.16'
+BACKEND_IMAGE_VERSION = '5.3.9'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'
 TEMPLATE = TEMPLATE_DIR / '905_З(2).pdf'
@@ -585,44 +585,16 @@ def place_photos(doc, photo_paths):
     return temp_photos, ordered[len(PHOTO_SLOTS):], pages_to_remove
 
 
-def _actual_appendix_page_index(doc, appendix_number, title_fragment=None, start_after=10):
-    """Find a real appendix page, never a matching row in the table of contents.
-
-    The contents page itself contains every appendix number and title. The original
-    appendix sheets begin later in the template (page 16 onward); after optional
-    sheets are removed they still remain safely after `start_after`.
-    """
-    token = f'Приложение {appendix_number}'
-    for index, page in enumerate(doc):
-        if index < start_after:
-            continue
-        text = ' '.join(page.get_text().split())
-        if token not in text:
-            continue
-        if title_fragment and title_fragment.casefold() not in text.casefold():
-            continue
-        return index
-    return None
-
-
 def append_extra_photo_pages(doc, extra_photo_paths, form):
-    """Insert overflow photos immediately after the existing Appendix 3 photo sheets."""
+    """Append two native photo objects per additional photo sheet after the 49 base pages."""
     if not extra_photo_paths:
         return []
     temp_photos=[]
     page_width, page_height = 595.32, 841.92
     report_no=val(form,'report_number')
     address=val(form,'address')
-    # Do not match the table-of-contents row: place overflow sheets before the real
-    # Appendix 4 page, or immediately after the last real Appendix 3 photo sheet.
-    app4_index = _actual_appendix_page_index(doc, 4)
-    app3_indexes = [
-        index for index, page in enumerate(doc)
-        if index >= 10 and 'Приложение 3' in page.get_text() and 'Фото дефектного участка' in page.get_text()
-    ]
-    insertion_index = app4_index if app4_index is not None else (max(app3_indexes) + 1 if app3_indexes else len(doc))
     for offset in range(0, len(extra_photo_paths), 2):
-        page=doc.new_page(pno=insertion_index + offset // 2, width=page_width, height=page_height)
+        page=doc.new_page(width=page_width, height=page_height)
         put(page,(38,12,557,25),f'Заключение № {report_no} по результатам технического диагностирования внутридомового газового оборудования.',7.8,1,1.0)
         header_size=7.8
         while header_size >= 6.8:
@@ -1498,17 +1470,16 @@ def prepare_workforce_schemes(form, files):
 
 
 def append_workforce_scheme_pages(doc, schemes, form):
-    """Insert fitter CAD schemes in the original Appendix 2 position (Section 7 materials)."""
+    """Insert every selected field scheme into section 7 of the final document."""
     if not schemes:
         return
-    # Section 7 of the unchanged form collects current schemes and acts. In the
-    # official PDF these schemes belong to Appendix 2, before Appendix 3 photos.
-    # Search only real appendix pages; the table of contents also mentions App. 3.
-    insertion_index = _actual_appendix_page_index(doc, 3, 'Фото дефектного участка')
-    if insertion_index is None:
-        insertion_index = _actual_appendix_page_index(doc, 4)
-    if insertion_index is None:
-        insertion_index = len(doc)
+    # Page 31 is the first attachment sheet (Appendix 6) in the source template.
+    # Insert the field-generated schemes immediately before that block so they
+    # physically belong to Section 7, not as unrelated pages after signatures.
+    insertion_index = next(
+        (index for index, page in enumerate(doc) if 'Приложение 6' in page.get_text()),
+        min(30, len(doc))
+    )
     report_number = val(form, 'report_number')
     report_address = val(form, 'address')
     page_width, page_height = 595.32, 841.92
@@ -1519,7 +1490,7 @@ def append_workforce_scheme_pages(doc, schemes, form):
             f'Заключение № {report_number} по результатам технического диагностирования внутридомового газового оборудования.',
             8.0, 1, 1.0)
         put(page, (42, 34, 553, 48), 'Адрес объекта: ' + report_address, 8.0, 1, 1.0)
-        heading = 'Приложение 2. Схема неразрушающего контроля' if offset == 0 else 'Приложение 2. Схема неразрушающего контроля (продолжение)'
+        heading = '7. Актуальные схемы, удостоверения и акты' if offset == 0 else '7. Актуальные схемы, удостоверения и акты (продолжение)'
         put(page, (42, 61, 553, 84), heading, 14.0, 1, 1.0, True)
         street = scheme.get('street') or 'Улица не указана'
         house = scheme.get('address') or '—'
@@ -1690,13 +1661,13 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
     rebuild_signoff_block(doc,form,39,page40=True)
     temp_photos, extra_photo_paths, photo_pages_to_remove=place_photos(doc,photo_paths)
     temp_materials, material_pages_to_remove=place_material_pages(doc,form,photo_paths)
-    has_scheme=bool(workforce_schemes) or any(bool(photo_paths.get(f'material_page_{n}')) for n in (16,17))
+    temp_extra_photos=append_extra_photo_pages(doc,extra_photo_paths,form)
+    has_scheme=any(bool(photo_paths.get(f'material_page_{n}')) for n in (16,17))
     has_photos=bool(_ordered_uploaded_photos(photo_paths))
     rebuild_toc_protocol_rows(doc,form)
     update_optional_appendix_contents(doc,has_scheme,has_photos)
     delete_optional_pages(doc,photo_pages_to_remove + material_pages_to_remove)
     append_workforce_scheme_pages(doc, workforce_schemes or [], form)
-    temp_extra_photos=append_extra_photo_pages(doc,extra_photo_paths,form)
     renumber_document_pages(doc)
     add_searchable_text_layer(doc)
     out=OUTPUT/'generated.pdf'
@@ -2165,7 +2136,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/','/index.html','/legacy','/legacy/'):
             data=PAGE.encode('utf-8'); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/health':
-            payload=json.dumps({'ok': True, 'release': APP_RELEASE, 'backendVersion': BACKEND_IMAGE_VERSION}).encode('utf-8'); self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload); return
+            data=b'{"ok":true,"release":"4.5.16","backendVersion":"5.3.9"}'; self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return

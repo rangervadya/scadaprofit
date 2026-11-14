@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DEFECTS,
   MAX_PHOTO_UPLOAD_BYTES,
@@ -9,11 +9,8 @@ import {
   UZT_SHARED_ROWS,
   VALVE_FIELDS,
 } from './schema';
-import { normalizeConclusionDraft, parseConclusionDraftJson } from './draftImport.mjs';
-import { mergeAcceptedWorkforceDefects } from './workforceDefects.mjs';
-import type { WorkforceDefectReport } from '../../lib/types';
 
-export type DefectRow = { enabled: boolean; location: string; text: string; recommendation: string; workforceReportId?: string; workforceTaskId?: string };
+export type DefectRow = { enabled: boolean; location: string; text: string; recommendation: string };
 export type ValveRow = { enabled: boolean; fields: Record<string, string> };
 export type MaterialEntry = { file: File | null; exclude: boolean };
 
@@ -30,8 +27,6 @@ export function emptyValves(): ValveRow[] {
 export function useConclusionForm(initialTask?: string | null) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [defects, setDefects] = useState<DefectRow[]>(emptyDefects);
-  const defectsRef = useRef<DefectRow[]>(emptyDefects());
-  defectsRef.current = defects;
   const [valves, setValves] = useState<ValveRow[]>(emptyValves);
   const [uztShared, setUztSharedRows] = useState(() => Array.from({ length: UZT_SHARED_ROWS }, () => ({ segment: '', diameter: '', thickness: '' })));
   const [uztFlat, setUztFlatRows] = useState(() => Array.from({ length: UZT_FLAT_ROWS }, () => ({ apartment: '', du25: '', du20: '', du15: '' })));
@@ -41,7 +36,6 @@ export function useConclusionForm(initialTask?: string | null) {
     Object.fromEntries(MATERIAL_PAGES.map(item => [item.page, { file: null, exclude: false }])),
   );
   const [confirmations, setConfirmations] = useState<Record<string, boolean>>({});
-  const [workforceDefectOverflow, setWorkforceDefectOverflow] = useState(0);
   const [restored, setRestored] = useState(false);
 
   useEffect(() => {
@@ -92,14 +86,6 @@ export function useConclusionForm(initialTask?: string | null) {
 
   const setDefect = useCallback((index: number, patch: Partial<DefectRow>) => {
     setDefects(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
-  }, []);
-
-  const applyWorkforceDefects = useCallback((reports: WorkforceDefectReport[], taskId: string) => {
-    const merged = mergeAcceptedWorkforceDefects(defectsRef.current, reports, taskId, DEFECTS.length);
-    defectsRef.current = merged.rows;
-    setDefects(merged.rows as DefectRow[]);
-    setWorkforceDefectOverflow(merged.overflow);
-    if (merged.imported > 0) setValues(currentValues => ({ ...currentValues, finding_status: 'defects' }));
   }, []);
 
   const setValve = useCallback((index: number, patch: Partial<ValveRow>) => {
@@ -196,28 +182,20 @@ export function useConclusionForm(initialTask?: string | null) {
   }, [values, defects, valves, uztShared, uztFlat, resource, confirmations]);
 
   const importDraft = useCallback((json: string) => {
-    const parsed = parseConclusionDraftJson(json);
-    const imported = normalizeConclusionDraft(parsed);
-    const importedDefects = imported.defects as DefectRow[];
-    defectsRef.current = importedDefects;
-    setValues(imported.values);
-    setDefects(importedDefects);
-    setValves(imported.valves as ValveRow[]);
-    setUztSharedRows(imported.uztShared);
-    setUztFlatRows(imported.uztFlat);
-    setResourceRows(imported.resource as typeof resource);
-    setConfirmations(imported.confirmations);
-    setMaterials(imported.materials);
-    setPhotos([]); // Local files are intentionally not embedded in JSON drafts.
-    setRestored(true);
-    return { importedCount: imported.importedCount, format: imported.format };
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') throw new Error('Файл не похож на сохранённый черновик.');
+    if (parsed.values && typeof parsed.values === 'object') setValues(parsed.values as Record<string, string>);
+    if (Array.isArray(parsed.defects)) setDefects(parsed.defects as DefectRow[]);
+    if (Array.isArray(parsed.valves)) setValves(parsed.valves as ValveRow[]);
+    if (Array.isArray(parsed.uztShared)) setUztSharedRows(parsed.uztShared as typeof uztShared);
+    if (Array.isArray(parsed.uztFlat)) setUztFlatRows(parsed.uztFlat as typeof uztFlat);
+    if (Array.isArray(parsed.resource)) setResourceRows(parsed.resource as typeof resource);
+    if (parsed.confirmations && typeof parsed.confirmations === 'object') setConfirmations(parsed.confirmations as Record<string, boolean>);
   }, []);
 
   const reset = useCallback(() => {
     setValues({});
-    const clearedDefects = emptyDefects();
-    defectsRef.current = clearedDefects;
-    setDefects(clearedDefects);
+    setDefects(emptyDefects());
     setValves(emptyValves());
     setUztSharedRows(Array.from({ length: UZT_SHARED_ROWS }, () => ({ segment: '', diameter: '', thickness: '' })));
     setUztFlatRows(Array.from({ length: UZT_FLAT_ROWS }, () => ({ apartment: '', du25: '', du20: '', du15: '' })));
@@ -225,7 +203,6 @@ export function useConclusionForm(initialTask?: string | null) {
     setPhotos([]);
     setMaterials(Object.fromEntries(MATERIAL_PAGES.map(item => [item.page, { file: null, exclude: false }])));
     setConfirmations({});
-    setWorkforceDefectOverflow(0);
     localStorage.removeItem(STORAGE_KEY);
   }, []);
 
@@ -238,8 +215,6 @@ export function useConclusionForm(initialTask?: string | null) {
     setFields,
     defects,
     setDefect,
-    applyWorkforceDefects,
-    workforceDefectOverflow,
     valves,
     setValve,
     uztShared,

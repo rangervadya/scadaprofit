@@ -2,7 +2,6 @@ import { useMemo, useRef, useState } from 'react';
 import { Icon } from '../../components/ui/Icon';
 import { Badge, Button, Field } from '../../components/ui';
 import type { ConclusionForm } from './useConclusionForm';
-import type { WorkforceDefectReport, WorkforceReport } from '../../lib/types';
 import {
   DEFECTS,
   MATERIAL_PAGES,
@@ -168,7 +167,6 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
             </div>
           </div>
         ) : null}
-        {section.id === 'calc' ? <UztTablesContent form={form} /> : null}
       </div>
     </section>
   );
@@ -187,22 +185,13 @@ export function DefectsSection({ form }: { form: ConclusionForm }) {
         </div>
       </header>
       <div className="form-section__body">
-        {form.defects.some(row => row.workforceReportId) ? (
-          <div className="alert alert--info">
-            <Icon name="check-circle" />
-            <span>
-              Описания из принятых отчётов слесарей автоматически перенесены в таблицу неисправностей раздела 6.1.
-              Проверьте формулировки и заполните рекомендации по устранению — слесарь их не назначает.
-            </span>
-          </div>
-        ) : null}
         {form.defects.map((row, index) => {
           const defect = DEFECTS[index];
           return (
             <div key={defect.id} className="stack stack--sm" style={{ padding: 14, border: '1px solid var(--line)', borderRadius: 10, background: row.enabled ? 'var(--brand-soft)' : '#fff' }}>
               <label className="check" style={{ fontWeight: 600 }}>
                 <input type="checkbox" checked={row.enabled} onChange={event => form.setDefect(index, { enabled: event.target.checked })} />
-                <span>Дефект {defect.id}{row.workforceReportId ? ' · из отчёта слесаря' : ''}</span>
+                <span>Дефект {defect.id}</span>
               </label>
               {row.enabled ? (
                 <>
@@ -284,77 +273,6 @@ export function ValvesSection({ form }: { form: ConclusionForm }) {
   );
 }
 
-export function UztTablesContent({ form }: { form: ConclusionForm }) {
-  const [tab, setTab] = useState<'shared' | 'flat' | 'resource'>('shared');
-  return (
-    <div className="stack stack--sm" id="uzt-tables" style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--line)' }}>
-      <div>
-        <h3>Таблицы УЗТ и расчёт ресурса</h3>
-        <p className="form-section__note">Для отсутствующих данных введите «н.д.».</p>
-      </div>
-        <div className="tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'shared'} className="tabs__tab" onClick={() => setTab('shared')}>Общие участки · {UZT_SHARED_ROWS}</button>
-          <button type="button" role="tab" aria-selected={tab === 'flat'} className="tabs__tab" onClick={() => setTab('flat')}>Жилые помещения · {UZT_FLAT_ROWS}</button>
-          <button type="button" role="tab" aria-selected={tab === 'resource'} className="tabs__tab" onClick={() => setTab('resource')}>Расчёт ресурса · {RESOURCE_ROWS}</button>
-        </div>
-
-        {tab === 'shared' ? (
-          <div className="table-wrap" style={{ maxHeight: 460 }}>
-            <table className="data-table">
-              <thead><tr><th className="row-num">№</th><th>Обозначение участка</th><th>Ду, мм</th><th>Толщина, мм</th></tr></thead>
-              <tbody>
-                {form.uztShared.map((row, index) => (
-                  <tr key={index}>
-                    <td className="row-num">{index + 1}</td>
-                    <td><input className="input table-input" value={row.segment} onChange={event => form.setUztShared(index, { segment: event.target.value })} placeholder="№ участка" /></td>
-                    <td><input className="input table-input" value={row.diameter} onChange={event => form.setUztShared(index, { diameter: event.target.value })} placeholder="н.д." /></td>
-                    <td><input className="input table-input" value={row.thickness} onChange={event => form.setUztShared(index, { thickness: event.target.value })} placeholder="н.д." /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-
-        {tab === 'flat' ? (
-          <div className="table-wrap" style={{ maxHeight: 460 }}>
-            <table className="data-table">
-              <thead><tr><th className="row-num">№</th><th>Квартира</th><th>Ду25</th><th>Ду20</th><th>Ду15</th></tr></thead>
-              <tbody>
-                {form.uztFlat.map((row, index) => (
-                  <tr key={index}>
-                    <td className="row-num">{index + 1}</td>
-                    <td><input className="input table-input" value={row.apartment} onChange={event => form.setUztFlat(index, { apartment: event.target.value })} placeholder="№ квартиры" /></td>
-                    <td><input className="input table-input" value={row.du25} onChange={event => form.setUztFlat(index, { du25: event.target.value })} placeholder="н.д." /></td>
-                    <td><input className="input table-input" value={row.du20} onChange={event => form.setUztFlat(index, { du20: event.target.value })} placeholder="н.д." /></td>
-                    <td><input className="input table-input" value={row.du15} onChange={event => form.setUztFlat(index, { du15: event.target.value })} placeholder="н.д." /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-
-        {tab === 'resource' ? (
-          <div className="grid grid--2">
-            {Array.from({ length: RESOURCE_ROWS }, (_, index) => (
-              <div key={index} className="stack stack--sm" style={{ padding: 12, border: '1px solid var(--line)', borderRadius: 10 }}>
-                <h4>Расчётная позиция {index + 1}</h4>
-                <div className="field-row">
-                  {RESOURCE_LABELS.map(item => (
-                    <Field key={item.key} label={item.label}>
-                      <input className="input input--sm" value={form.resource[index]?.[item.key] || ''} onChange={event => form.setResource(index, { [item.key]: event.target.value })} placeholder={item.placeholder} />
-                    </Field>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-    </div>
-  );
-}
-
 export function UztSection({ form }: { form: ConclusionForm }) {
   const [tab, setTab] = useState<'shared' | 'flat' | 'resource'>('shared');
   return (
@@ -431,8 +349,7 @@ export function UztSection({ form }: { form: ConclusionForm }) {
   );
 }
 
-
-export function PhotosSection({ form, workforceDefectReports = [] }: { form: ConclusionForm; workforceDefectReports?: WorkforceDefectReport[] }) {
+export function PhotosSection({ form }: { form: ConclusionForm }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const previews = useMemo(() => form.photos.map(file => ({ file, url: URL.createObjectURL(file) })), [form.photos]);
@@ -459,24 +376,6 @@ export function PhotosSection({ form, workforceDefectReports = [] }: { form: Con
         </div>
       </header>
       <div className="form-section__body">
-        {workforceDefectReports.length ? (
-          <div className="stack stack--sm">
-            <div className="row row--between">
-              <h3>Принятые фотографии дефектов из папки адреса</h3>
-              <Badge tone="success">{workforceDefectReports.reduce((sum, report) => sum + report.photos.length, 0)} фото</Badge>
-            </div>
-            <p className="field__hint">Эти фотографии уже привязаны к текущему заданию и автоматически попадут в Приложение 3 PDF/Word. Повторно загружать их не нужно.</p>
-            <div className="photo-grid">
-              {workforceDefectReports.flatMap(report => report.photos.map(photo => (
-                <div key={`${report.id}-${photo.id}`} className="photo-card">
-                  <div className="photo-card__preview"><img src={photo.url} alt={photo.originalName} loading="lazy" /></div>
-                  <span className="photo-card__name">{report.street}, д. {report.address} · {photo.originalName}</span>
-                  <span className="field__hint">Слесарь: {report.userName}</span>
-                </div>
-              )))}
-            </div>
-          </div>
-        ) : null}
         <div
           className={`dropzone ${over ? 'dropzone--over' : ''}`}
           onClick={() => inputRef.current?.click()}
@@ -519,7 +418,7 @@ export function PhotosSection({ form, workforceDefectReports = [] }: { form: Con
   );
 }
 
-export function MaterialsSection({ form, workforceSchemes = [] }: { form: ConclusionForm; workforceSchemes?: WorkforceReport[] }) {
+export function MaterialsSection({ form }: { form: ConclusionForm }) {
   return (
     <section className="card form-section" id="materials">
       <header className="form-section__head">
@@ -533,35 +432,6 @@ export function MaterialsSection({ form, workforceSchemes = [] }: { form: Conclu
         </div>
       </header>
       <div className="form-section__body">
-        {workforceSchemes.length ? (
-          <div className="stack stack--sm" style={{ marginBottom: 18 }}>
-            <div className="row row--between">
-              <h3>Схемы, принятые из папки адреса</h3>
-              <Badge tone="success">{workforceSchemes.length} CAD</Badge>
-            </div>
-            <p className="field__hint">Эти схемы автоматически добавляются в Приложение 2 «Схема неразрушающего контроля». Дополнительно загружать их в ручные слоты ниже не нужно.</p>
-            {workforceSchemes.map(report => (
-              <div className="list-item" key={report.id} style={{ alignItems: 'flex-start', gap: 14 }}>
-                {report.schemeSvgUrl ? (
-                  <a href={report.schemeSvgUrl} target="_blank" rel="noreferrer" aria-label={`Открыть CAD-схему ${report.street}, дом ${report.address}`} style={{ display: 'block', flex: '0 0 180px', maxWidth: '36%' }}>
-                    <img
-                      src={report.schemeSvgUrl}
-                      alt={`CAD-схема: ${report.street}, дом ${report.address}`}
-                      loading="lazy"
-                      style={{ display: 'block', width: '100%', maxHeight: 132, objectFit: 'contain', background: '#fff', border: '1px solid var(--line)', borderRadius: 8 }}
-                    />
-                  </a>
-                ) : null}
-                <div className="list-item__main">
-                  <span className="list-item__title">{report.street}, дом {report.address}</span>
-                  <span className="list-item__meta">{report.userName} · {report.schemeStatus || 'CAD готов'}</span>
-                  {report.note ? <span className="field__hint">{report.note}</span> : null}
-                </div>
-                <Badge tone="success">Принята</Badge>
-              </div>
-            ))}
-          </div>
-        ) : null}
         <div className="material-grid">
           {MATERIAL_PAGES.map(item => {
             const entry = form.materials[item.page] || { file: null, exclude: false };
@@ -613,18 +483,13 @@ export function MaterialsSection({ form, workforceSchemes = [] }: { form: Conclu
   );
 }
 
-export function SectionRenderer({ section, form, workforceDefectReports = [], workforceSchemes = [] }: {
-  section: SectionDef;
-  form: ConclusionForm;
-  workforceDefectReports?: WorkforceDefectReport[];
-  workforceSchemes?: WorkforceReport[];
-}) {
+export function SectionRenderer({ section, form }: { section: SectionDef; form: ConclusionForm }) {
   if (section.kind === 'fields') return <FieldsSection section={section} form={form} />;
   if (section.kind === 'defects') return <DefectsSection form={form} />;
   if (section.kind === 'valves') return <ValvesSection form={form} />;
   if (section.kind === 'uzt') return <UztSection form={form} />;
-  if (section.kind === 'photos') return <PhotosSection form={form} workforceDefectReports={workforceDefectReports} />;
-  if (section.kind === 'materials') return <MaterialsSection form={form} workforceSchemes={workforceSchemes} />;
+  if (section.kind === 'photos') return <PhotosSection form={form} />;
+  if (section.kind === 'materials') return <MaterialsSection form={form} />;
   return null;
 }
 

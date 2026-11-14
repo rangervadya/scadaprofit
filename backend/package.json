@@ -1,6 +1,6 @@
 {
   "name": "cad-reconstruction-engine",
-  "version": "4.5.21",
+  "version": "4.5.17",
   "private": true,
   "description": "Local hand-drawn fitter sketch to structured, editable VDGO engineering schematic and print-ready CAD sheet",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node --import ./api/moss-env-boot.js api/server.js",
-    "check": "node --check api/moss-env-boot.js && node --check api/server.js && node --check api/workforce-system.js && node --test ../tests/node/workforce-auth.test.js ../tests/node/workforce-contract.test.js ../tests/node/workforce-upload.test.js ../tests/node/workforce-planning.test.js ../tests/node/workforce-inbox-folders.test.js ../tests/node/conclusion-draft-import.test.js ../tests/node/conclusion-workforce-population.test.js ../tests/node/repository-layout.test.js && node --check api/manual-cad-core.js && node --check ../tests/fixtures/legacy-frontend/public/login.js && node --check ../tests/fixtures/legacy-frontend/public/workforce.js && node --check ../tests/fixtures/legacy-frontend/public/app.js && node --check ../tests/fixtures/legacy-frontend/public/manual-cad.js && node --check ../tests/fixtures/legacy-frontend/public/manual-cad-ink-trace.js && node --test ../tests/node/manual-cad.test.js ../tests/node/manual-cad-ink-trace.test.js && PYTHONPATH=./engine python -m py_compile engine/processor.py && PYTHONPATH=./engine python -m unittest discover -s ../tests/python -p \"test_*.py\""
+    "check": "node --check api/moss-env-boot.js && node --check api/server.js && node --check api/workforce-system.js && node --test ../tests/node/workforce-auth.test.js ../tests/node/workforce-contract.test.js ../tests/node/workforce-upload.test.js ../tests/node/workforce-planning.test.js ../tests/node/workforce-inbox-folders.test.js ../tests/node/repository-layout.test.js && node --check api/manual-cad-core.js && node --check ../tests/fixtures/legacy-frontend/public/login.js && node --check ../tests/fixtures/legacy-frontend/public/workforce.js && node --check ../tests/fixtures/legacy-frontend/public/app.js && node --check ../tests/fixtures/legacy-frontend/public/manual-cad.js && node --check ../tests/fixtures/legacy-frontend/public/manual-cad-ink-trace.js && node --test ../tests/node/manual-cad.test.js ../tests/node/manual-cad-ink-trace.test.js && PYTHONPATH=./engine python -m py_compile engine/processor.py && PYTHONPATH=./engine python -m unittest discover -s ../tests/python -p \"test_*.py\""
   },
   "dependencies": {
     "express": "^5.1.0",
