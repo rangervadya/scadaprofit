@@ -449,6 +449,17 @@ const limitHeavyRequests = rateLimit({
   legacyHeaders: false,
   message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' },
 });
+// Per-user quota: authenticated users are limited by account id rather than IP so
+// one busy office cannot starve another behind the same NAT/gateway. Falls back
+// to IP for anonymous requests.
+const heavyQuota = rateLimit({
+  windowMs: Number(process.env.HEAVY_QUOTA_WINDOW_MS || 60_000),
+  limit: Number(process.env.HEAVY_QUOTA_LIMIT || 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.user?.id ? `user:${req.user.id}` : `ip:${req.ip}`),
+  message: { error: 'Превышена квота на тяжёлые операции. Повторите попытку позже.' },
+});
 app.use(
   express.static(path.join(__dirname, '../../../frontend/public'), {
     maxAge: 0,
@@ -1405,7 +1416,7 @@ app.post('/api/library/buildings', validateBody(buildingSchema), async (req, res
 
 // Upload stores the original in the selected house and automatically queues
 // its reconstruction. The GPU queue serializes Qwen jobs to protect VRAM.
-app.post('/api/library/schemes/upload', limitHeavyRequests, upload.single('image'), async (req, res) => {
+app.post('/api/library/schemes/upload', limitHeavyRequests, heavyQuota, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
   const streetId = String(req.body?.streetId || '');
   const buildingId = String(req.body?.buildingId || '');
@@ -1540,7 +1551,7 @@ app.get('/api/library/schemes/:jobId/status', async (req, res) => {
   }
 });
 
-app.post('/api/library/schemes/:jobId/analyze', limitHeavyRequests, async (req, res) => {
+app.post('/api/library/schemes/:jobId/analyze', limitHeavyRequests, heavyQuota, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID схемы.' });
   try {
@@ -1959,7 +1970,7 @@ app.get('/api/readyz', async (_req, res) => {
   });
 });
 
-app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req, res) => {
+app.post('/api/analyze', limitHeavyRequests, heavyQuota, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Загрузите JPG, PNG, WEBP или TIFF.' });
 
   const streetId = String(req.body?.streetId || '');
@@ -2163,7 +2174,7 @@ app.post('/api/analyze', limitHeavyRequests, upload.single('image'), async (req,
 
 // Manual CAD editor API. This module only reads/writes DATA/.private/manual-cad;
 // it does not call, proxy, or modify any VDGO route, service, database, or file.
-app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, res) => {
+app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, heavyQuota, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
   let projectDir = null;
@@ -2284,7 +2295,7 @@ app.post('/api/manual-cad/import-job/:jobId', limitHeavyRequests, async (req, re
 // Source-only CAD fallback: a stored house photo can still be traced manually
 // even when OCR/Qwen failed before graph.json or prepared-input.png was written.
 // This route touches only the primary app's DATA/.private/manual-cad directory.
-app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, async (req, res) => {
+app.post('/api/manual-cad/import-source-job/:jobId', limitHeavyRequests, heavyQuota, async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
   let projectDir = null;
