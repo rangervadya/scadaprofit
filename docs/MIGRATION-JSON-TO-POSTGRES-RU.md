@@ -22,7 +22,7 @@
 | Manual CAD | `manual-cad/<id>/project.json` | **PostgreSQL** | `manual_cad_projects` (`jsonb`) |
 | Адресная библиотека | `address-library.json` | **PostgreSQL (`jsonb`)** | `address_library` (нормализация — позже) |
 | Задания/отчёты/дефекты | `workforce/workspace.json` | **PostgreSQL (`jsonb`)** | `workforce_workspace` (нормализация — позже) |
-| Метаданные схемы | `schemes/<jobId>.json` | JSON | `address_schemes` / `scheme_meta` |
+| Метаданные схемы | `schemes/<jobId>.json` | **PostgreSQL** | `scheme_meta` (`jsonb`) |
 | Архив | `output/archive_index.json` | JSON | `archive_entries` |
 | Граф/диагностика | `<jobId>/graph.json`, `diagnostics.json` | файлы | артефакт тома |
 | Фото/эскизы | `report-files/*` | файлы | том + метаданные в БД |
@@ -67,6 +67,14 @@
 - [x] `saveWorkspace` пишет в PG; файл не обновляется.
 - [x] Проверка: 2 задачи/1 отчёт из JSON, создание задачи → 3 в PG, mtime JSON unchanged; Playwright `/team`.
 - [ ] Нормализация в `workforce_tasks/reports/defect_reports` — отдельный этап.
+
+### Этап 4.1 — scheme meta (готово)
+
+- [x] `scheme_meta` (`job_id`, `status`, `data jsonb`).
+- [x] `scheme-meta-repo.js`: read/save.
+- [x] Backfill `.private/schemes/*.json`.
+- [x] `readSchemeMeta`/`writeSchemeMeta` работают через PG.
+- [x] Проверка: backfill 1 схемы, `POST .../analyze` → status `processing` в PG, mtime JSON unchanged.
 
 ### Этап 5 — archive / cleanup
 

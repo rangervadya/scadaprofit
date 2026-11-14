@@ -180,9 +180,9 @@
 ### Фаза 1 — архитектурный минимум (1–3 недели)
 
 - [~] **P1-1** PostgreSQL вместо JSON.
-  - **Готово**: `users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace` в PostgreSQL; JSON только one-time backfill; `AUTH_BACKEND=postgres` по умолчанию; Prisma-клиент генерируется в Docker.
-  - **Проверено**: auth, manual CAD, address library, workspace (backfill/read/create task, JSON mtime unchanged), Playwright CAD/Schemes/Team.
-  - **Осталось**: `scheme meta`, archive index; затем удалить JSON-код.
+  - **Готово**: `users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta` в PostgreSQL; JSON только one-time backfill; `AUTH_BACKEND=postgres` по умолчанию; Prisma-клиент генерируется в Docker.
+  - **Проверено**: auth, manual CAD, address library, workspace, scheme meta (backfill/read/write, JSON mtime unchanged), Playwright CAD/Schemes/Team.
+  - **Осталось**: archive index; затем удалить JSON-код.
 - [~] **P1-2** Сессии в PostgreSQL.
   - **Готово**: таблица `sessions`, cleanup, удаление при logout/reset/deactivate.
   - **Осталось**: CSRF, idle timeout, revoke-all, multi-instance cache.
@@ -306,5 +306,6 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - P1-1 (manual CAD cutover): `manual_cad_projects` (`jsonb`), backfill, list/create/save/preview; новый `project.json` не создаётся; Playwright CAD-список/редактор.
 - P1-1 (address library): `address_library` singleton (`jsonb`), backfill, read/save через PG; JSON mtime не меняется; Playwright `/schemes`.
 - P1-1 (workspace): `workforce_workspace` singleton (`jsonb`), backfill 2 tasks/1 report, создание задачи → PG; JSON mtime unchanged; Playwright `/team`.
+- P1-1 (scheme meta): `scheme_meta` (`jsonb`), backfill, read/write через PG; `analyze` → status `processing` в PG; JSON mtime unchanged.
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Остальные JSON-сущности: `address-library`, `workspace`, `scheme meta`, `manual-cad`, `archive_index` — следующий этап.

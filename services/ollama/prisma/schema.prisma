@@ -98,3 +98,14 @@ model WorkforceWorkspace {
 
   @@map("workforce_workspace")
 }
+
+model SchemeMeta {
+  jobId     String   @id @map("job_id") @db.Uuid
+  status    String   @db.VarChar(20)
+  data      Json
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([updatedAt])
+  @@map("scheme_meta")
+}

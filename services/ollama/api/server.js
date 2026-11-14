@@ -48,6 +48,7 @@ import {
   fetchAddressLibrary as fetchAddressLibraryPg,
   saveAddressLibrary as saveAddressLibraryPg,
 } from './address-library-repo.js';
+import { fetchSchemeMeta as fetchSchemeMetaPg, saveSchemeMeta as saveSchemeMetaPg } from './scheme-meta-repo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -891,14 +892,14 @@ function schemeMetaPath(jobId) {
   return path.join(SCHEME_META_DIR, `${jobId}.json`);
 }
 
-async function writeSchemeMeta(jobId, meta) {
+async function writeSchemeMetaFile(jobId, meta) {
   const target = schemeMetaPath(jobId);
   const temporary = `${target}.tmp-${randomUUID()}`;
   await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
   await rename(temporary, target);
 }
 
-async function readSchemeMeta(jobId) {
+async function readSchemeMetaFile(jobId) {
   try {
     return JSON.parse(await readFile(schemeMetaPath(jobId), 'utf8'));
   } catch (error) {
@@ -920,6 +921,41 @@ async function readSchemeMeta(jobId) {
         }
       : null;
   }
+}
+
+async function readSchemeMeta(jobId) {
+  if (postgresEnabled()) {
+    const stored = await fetchSchemeMetaPg(jobId);
+    if (stored) return stored;
+  }
+  return readSchemeMetaFile(jobId);
+}
+
+async function writeSchemeMeta(jobId, meta) {
+  if (postgresEnabled()) {
+    await saveSchemeMetaPg(jobId, meta);
+    return;
+  }
+  await writeSchemeMetaFile(jobId, meta);
+}
+
+async function backfillSchemeMeta() {
+  if (!postgresEnabled()) return;
+  const entries = await readdir(SCHEME_META_DIR, { withFileTypes: true }).catch(() => []);
+  let imported = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const jobId = entry.name.slice(0, -5);
+    if (!JOB_ID_PATTERN.test(jobId)) continue;
+    try {
+      const meta = JSON.parse(await readFile(path.join(SCHEME_META_DIR, entry.name), 'utf8'));
+      await saveSchemeMetaPg(jobId, meta);
+      imported += 1;
+    } catch {
+      /* ignore incomplete legacy scheme meta */
+    }
+  }
+  if (imported) logger.info({ count: imported }, 'Imported legacy scheme meta into PostgreSQL');
 }
 
 async function updateSchemeStatus(jobId, status, extra = {}) {
@@ -2520,6 +2556,7 @@ app.use((err, req, res, _next) => {
 
 await backfillManualCadProjects();
 await backfillAddressLibrary();
+await backfillSchemeMeta();
 const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   logger.info(
     {
