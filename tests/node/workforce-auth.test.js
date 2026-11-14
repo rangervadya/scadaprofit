@@ -75,3 +75,28 @@ test('request schemas reject malformed bodies and normalize valid ones', async (
   assert.equal(reviewSchema.safeParse({ action: 'confirm', targetId: 't1', rotation: 90 }).success, true);
   assert.equal(reviewSchema.safeParse({ action: '', targetId: 't1' }).success, false);
 });
+
+test('PostgreSQL mirror is a no-op when AUTH_BACKEND is not postgres', async () => {
+  const repo = await import('../../services/ollama/api/postgres-repo.js');
+  const old = process.env.AUTH_BACKEND;
+  delete process.env.AUTH_BACKEND;
+  try {
+    assert.equal(
+      await repo.mirrorUser({
+        id: '00000000-0000-0000-0000-000000000000',
+        username: 'x',
+        displayName: 'X',
+        role: 'fitter',
+        passwordHash: 'x',
+      }),
+      false,
+    );
+    assert.equal(await repo.mirrorSession({ tokenHash: 'x', userId: 'y', expiresAt: Date.now() + 1000 }), false);
+    assert.equal(await repo.deleteSession('x'), false);
+    assert.equal(await repo.deleteUserSessions('y'), false);
+    assert.deepEqual(await repo.fetchUsers(), []);
+  } finally {
+    if (old === undefined) delete process.env.AUTH_BACKEND;
+    else process.env.AUTH_BACKEND = old;
+  }
+});

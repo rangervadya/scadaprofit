@@ -80,6 +80,7 @@ Ollama/модель/Tesseract недоступны.
 | `MAX_CONCURRENT_PYTHON_JOBS` | Сколько Python-джоб одновременно; для одного GPU — 1. |
 | `SHUTDOWN_TIMEOUT_MS` | Сколько Node ждёт активные Python-джобы при SIGTERM. |
 | `DATABASE_URL` | PostgreSQL для Prisma/аудита; без него audit отключён. |
+| `AUTH_BACKEND` | `json` (default) или `postgres` — expand-phase dual-write users/sessions. |
 
 ## Сборка
 

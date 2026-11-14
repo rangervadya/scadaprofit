@@ -99,6 +99,8 @@ services:
       VDGO_HOST: 0.0.0.0
       VDGO_PORT: "8765"
       VDGO_DOCKER: "1"
+      AUTH_BACKEND: "${AUTH_BACKEND:-json}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://vdgo:change_me_vdgo_2026@vdgo-db:5432/vdgo}"
       DB_REQUIRED: "1"
       DB_WAIT_SECONDS: "60"
       LOG_LEVEL: "${VDGO_LOG_LEVEL:-info}"

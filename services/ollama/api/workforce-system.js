@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
+import { mirrorUser, mirrorSession, deleteSession, deleteUserSessions, fetchUsers } from './postgres-repo.js';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
@@ -228,15 +229,38 @@ export async function createWorkforceSystem({
   await atomicJson(sessionsPath, sessions);
   const saveUsers = () => atomicJson(usersPath, users);
   const saveSessions = () => atomicJson(sessionsPath, sessions);
+  if (!users.length) {
+    try {
+      const rows = await fetchUsers();
+      if (rows.length) {
+        users = rows;
+        await saveUsers();
+        log.info({ count: rows.length }, 'Hydrated users from PostgreSQL');
+      }
+    } catch (error) {
+      log.warn({ err: error }, 'Cannot hydrate users from PostgreSQL; keeping JSON store');
+    }
+  }
+  // Expand phase: keep the PostgreSQL mirror warm. mirrorUser/mirrorSession are
+  // no-ops when AUTH_BACKEND is not postgres.
+  await Promise.all(users.map((user) => mirrorUser(user)));
+  await Promise.all(sessions.map((session) => mirrorSession(session)));
   const sessionCleanup = setInterval(
     () => {
       const now = Date.now();
+      const expired = sessions.filter(
+        (item) =>
+          !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
+      );
       const before = sessions.length;
       sessions = sessions.filter(
         (item) =>
           Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false),
       );
-      if (sessions.length !== before) void saveSessions().catch(() => {});
+      if (sessions.length !== before) {
+        void saveSessions().catch(() => {});
+        void Promise.all(expired.map((item) => deleteSession(item.tokenHash)));
+      }
     },
     60 * 60 * 1000,
   );
@@ -297,13 +321,15 @@ export async function createWorkforceSystem({
   }
   async function sessionForUser(res, user) {
     const token = randomBytes(32).toString('base64url');
-    sessions.push({
+    const session = {
       tokenHash: tokenHash(token),
       userId: user.id,
       createdAt: new Date().toISOString(),
       expiresAt: Date.now() + SESSION_TTL_MS,
-    });
+    };
+    sessions.push(session);
     await saveSessions();
+    await mirrorSession(session);
     setSessionCookie(res, token, secureCookies);
   }
   function taskForClient(task) {
@@ -481,6 +507,7 @@ export async function createWorkforceSystem({
       };
       users.push(user);
       await saveUsers();
+      await mirrorUser(user);
       await sessionForUser(res, user);
       return res.status(201).json({ ok: true, user: publicUser(user) });
     } finally {
@@ -505,6 +532,7 @@ export async function createWorkforceSystem({
     const hash = token ? tokenHash(token) : '';
     sessions = sessions.filter((item) => item.tokenHash !== hash);
     await saveSessions();
+    await deleteSession(hash);
     clearSessionCookie(res, secureCookies);
     return res.json({ ok: true });
   });
@@ -1408,6 +1436,7 @@ export async function createWorkforceSystem({
       };
       users.push(user);
       await saveUsers();
+      await mirrorUser(user);
       req.log.info(
         { userId: user.id, role, username, generated: autoGenerate, createdBy: req.user.id },
         'Account created',
@@ -1434,6 +1463,8 @@ export async function createWorkforceSystem({
     // Revoke previous sessions so the new password takes effect immediately.
     sessions = sessions.filter((session) => session.userId !== user.id);
     await Promise.all([saveUsers(), saveSessions()]);
+    await mirrorUser(user);
+    await deleteUserSessions(user.id);
     req.log.warn(
       { userId: user.id, role: user.role, resetBy: req.user.id },
       'Password reset issued and sessions revoked',
@@ -1482,8 +1513,10 @@ export async function createWorkforceSystem({
     if (!active) {
       sessions = sessions.filter((session) => session.userId !== user.id);
       await saveSessions();
+      await deleteUserSessions(user.id);
     }
     await saveUsers();
+    await mirrorUser(user);
     return res.json({ ok: true, user: publicUser(user) });
   });
 

@@ -161,7 +161,10 @@
 
 ### Фаза 1 — архитектурный минимум (1–3 недели)
 
-- [ ] **P1-1** PostgreSQL для users/sessions/roles, tasks/reports/defects, address library, jobs, report_runs, audit; JSONB только для graph/document metadata; migration tool; индексы; пагинация.
+- [~] **P1-1** PostgreSQL для users/sessions/roles, tasks/reports/defects, address library, jobs, report_runs, audit; JSONB только для graph/document metadata; migration tool; индексы; пагинация.
+  - **Сделано (expand)**: Prisma-модели `User`/`Session`, миграция `20261114120000_init_users_sessions`, `postgres-repo.js`, dual-write из JSON, hydration пустого JSON из PostgreSQL, `AUTH_BACKEND=postgres`, `DATABASE_URL` в compose/env.
+  - **Проверено**: локальный PG `:55432` — setup/login/logout пишут/удаляют сессии; второй инстанс с пустым JSON подхватил пользователя из БД.
+  - **Осталось**: tasks/reports/defects/address library/jobs/audit, выключение JSON, migration/backfill, Prisma cutover.
 - [x] **P1-2** Сессии в БД: cleanup, rotation, revoke-all, idle timeout, CSRF.
   - **Сделано**: периодическая очистка просроченных сессий (`workforce-system.js`).
   - **Осталось**: таблица `sessions`, revoke-all, idle timeout, CSRF — после P1-1.
@@ -275,3 +278,5 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`),
 - Исправлен баг `res.sendFile` для report-files: `.private` в пути → 404; добавлен `dotfiles: 'allow'`.
 - P0-7 (TLS/дефолтный пароль) отложен по решению: приложение в разработке.
 - P1-13: добавлен `.github/workflows/ci.yml` (node + python), YAML валидирован локально.
+- P1-1 (expand): Prisma `User`/`Session` + миграция + dual-write + hydration; проверено на локальном PostgreSQL `:55432`.
+- `AUTH_BACKEND=postgres` — dev-переключатель; по умолчанию `json`, JSON остаётся источником правды.
