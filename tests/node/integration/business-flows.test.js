@@ -210,3 +210,30 @@ test('address library rejects invalid payloads', { skip }, async () => {
   });
   assert.ok([400, 422].includes(badBuilding.status), `expected 400/422, got ${badBuilding.status}`);
 });
+
+test('scheme upload requires an image and a valid address', { skip }, async () => {
+  // No file: 400.
+  const noFile = await admin.post('/api/library/schemes/upload', {
+    streetId: randomUUID(),
+    buildingId: randomUUID(),
+  });
+  assert.equal(noFile.status, 400);
+
+  // File but unknown address: 404.
+  const form = new FormData();
+  form.append('streetId', randomUUID());
+  form.append('buildingId', randomUUID());
+  form.append('image', new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: 'image/jpeg' }), 'scan.jpg');
+  const unknownAddress = await admin.post('/api/library/schemes/upload', form);
+  assert.equal(unknownAddress.status, 404);
+});
+
+test('scheme endpoints reject malformed job ids', { skip }, async () => {
+  for (const pathname of ['/api/library/schemes/not-a-uuid', '/api/library/schemes/not-a-uuid/status']) {
+    const response = await admin.get(pathname);
+    assert.equal(response.status, 400, `${pathname} must reject a malformed id`);
+  }
+
+  const analyze = await admin.post('/api/library/schemes/not-a-uuid/analyze', {});
+  assert.equal(analyze.status, 400);
+});
