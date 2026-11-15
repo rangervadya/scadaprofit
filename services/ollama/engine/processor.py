@@ -65,20 +65,6 @@ from image_preprocess import (  # noqa: F401
     prepare_document_image,
 )
 from logging_setup import configure_logging, emit_progress, get_logger
-from moss_ai import (
-    DEFAULT_MODEL as DEFAULT_MOSS_MODEL,
-)
-from moss_ai import (
-    moss_ocr_annotations,  # noqa: F401 - tests patch processor.moss_ocr_annotations
-    test_moss_ai,
-)
-from openrouter_ai import (
-    DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL,
-)
-from openrouter_ai import (
-    openrouter_ocr_annotations,  # noqa: F401 - tests patch processor.openrouter_ocr_annotations
-    test_openrouter_ai,
-)
 from PIL import Image, ImageOps
 from pipeline_diagnostics import build_pipeline_diagnostics
 from qwen_client import (  # noqa: F401
@@ -2227,24 +2213,6 @@ def ocr_annotations(
     status = {
         'provider': 'local-qwen+tesseract',
         'qwen': qwen_status,
-        'moss': {
-            'available': False,
-            'complete': False,
-            'disabled': True,
-            'provider': 'moss',
-            'annotations': 0,
-            'tiles': 0,
-            'skip_reason': 'Cloud OCR отключён: используется локальный режим Qwen + Tesseract.',
-        },
-        'openrouter': {
-            'available': False,
-            'complete': False,
-            'disabled': True,
-            'provider': 'openrouter',
-            'annotations': 0,
-            'tiles': 0,
-            'skip_reason': 'Cloud OCR отключён: используется локальный режим Qwen + Tesseract.',
-        },
         'tesseract': {
             'available': tesseract_error is None,
             'complete': tesseract_error is None,
@@ -2306,14 +2274,10 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     # even when the local VL model times out on handwriting.
     tesseract_available = bool(ocr_status.get('tesseract', {}).get('available'))
     ocr_complete = qwen_ocr_complete or tesseract_available
-    moss_pipe_status: dict[str, Any] | None = None
-    openrouter_pipe_enabled = False
-    openrouter_pipe_status: dict[str, Any] | None = None
     stage_started = time.perf_counter()
     _progress('PIPE', 'Local Ollama Qwen pipe-route trace started independently of OCR completeness')
     semantic_routes, route_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
     route_status['provider'] = 'ollama-qwen'
-    route_status['cloud_providers_disabled'] = True
     _progress(
         'PIPE',
         f'Local Qwen pipe-route trace completed: routes={len(semantic_routes)}; tiles={route_status.get("successful_tiles", 0)}/{route_status.get("tiles", 0)}',
@@ -2366,33 +2330,6 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
     )
-    # Legacy cloud fallback stays guarded off in local-only mode. Qwen proposals
-    # are already the only semantic route source in the production path.
-    if (
-        not primary_semantic_routes
-        and semantic_routes
-        and (
-            (route_status.get('provider') == 'moss' and moss_pipe_status and moss_pipe_status.get('available'))
-            or (
-                route_status.get('provider') == 'openrouter'
-                and openrouter_pipe_enabled
-                and openrouter_pipe_status
-                and openrouter_pipe_status.get('available')
-            )
-        )
-    ):
-        rejected_provider = str(route_status.get('provider'))
-        _progress('PIPE', f'{rejected_provider} routes did not pass source-ink validation; trying preserved local Qwen fallback')
-        local_routes, local_status = _qwen_semantic_routes(prepared_input_path, w, h, checkpoint_dir=checkpoint_dir)
-        if local_routes:
-            semantic_routes = semantic_routes + local_routes
-            local_status[f'{rejected_provider}_attempt'] = moss_pipe_status if rejected_provider == 'moss' else openrouter_pipe_status
-            local_status['fallback_used'] = True
-            local_status[f'{rejected_provider}_routes_rejected_by_ink_validation'] = len(semantic_routes) - len(local_routes)
-            route_status = local_status
-            primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
-                semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
-            )
     _progress('CAD', f'Graph construction in progress: segments={len(segments)} nodes={len(nodes)} edges={len(edges)}')
     primary_semantic_ids = {str(route.get('id')) for route in primary_semantic_routes}
     for route in semantic_routes:
@@ -2703,8 +2640,6 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
             'semantic_validation': semantic_validation,
             'primary_geometry_source': 'opencv-selected-graph+ink-validated-local-qwen',
             'qwen_annotations': len([a for a in annotations if a.get('source') == 'qwen3-vl']),
-            'moss_ocr_annotations': len([a for a in annotations if a.get('source') == 'moss-vl-ocr']),
-            'openrouter_ocr_annotations': len([a for a in annotations if a.get('source') == 'openrouter-vision-ocr']),
             'geometry_excluded_text_regions': len(_confirmed_text_boxes(annotations)),
             'tesseract_annotations': len([a for a in annotations if a.get('source') == 'tesseract']),
             'verified_annotations': len([a for a in annotations if a.get('verified') and a.get('text')]),
@@ -2823,10 +2758,6 @@ def main():
         default=None,
         help='Explicit clockwise page rotation in degrees; overrides unreliable handwriting orientation detection',
     )
-    ap.add_argument(
-        '--test-openrouter', action='store_true', help='Run an explicit OpenRouter OCR + multimodal vision smoke test on the source image'
-    )
-    ap.add_argument('--test-moss', action='store_true', help='Run an explicit MOSS OCR + multimodal vision smoke test on the source image')
     args = ap.parse_args()
     log.info(
         'Processor started',
@@ -2838,18 +2769,6 @@ def main():
             'logLevel': os.getenv('LOG_LEVEL', 'INFO'),
         },
     )
-    if args.test_moss:
-        result = test_moss_ai(args.input, os.getenv('MOSS_API_KEY', '').strip(), os.getenv('MOSS_MODEL', DEFAULT_MOSS_MODEL))
-        print(json.dumps(result, ensure_ascii=False))
-        return
-    if args.test_openrouter:
-        result = test_openrouter_ai(
-            args.input,
-            os.getenv('OPENROUTER_API_KEY', '').strip(),
-            os.getenv('OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL),
-        )
-        print(json.dumps(result, ensure_ascii=False))
-        return
     result = analyze(args.input, args.out, template_path=args.template, rotation_degrees=args.rotation)
     summary = result.get('summary') if isinstance(result, dict) else None
     log.info(
