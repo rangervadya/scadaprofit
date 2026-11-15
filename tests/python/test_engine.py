@@ -1252,9 +1252,9 @@ class GraphTests(unittest.TestCase):
             'required_margin': 5.37, 'relative_margin': 0.256,
             'reason': 'ambiguous_180_requires_stronger_ocr_margin',
         }
-        with patch('processor._detect_page_quad', return_value=None), \
-             patch('processor._detect_text_rotation', return_value=(0, 4.43, 1.11)), \
-             patch('processor._detect_text_rotation_fallback', return_value=fallback):
+        with patch('image_preprocess._detect_page_quad', return_value=None), \
+             patch('image_preprocess._detect_text_rotation', return_value=(0, 4.43, 1.11)), \
+             patch('image_preprocess._detect_text_rotation_fallback', return_value=fallback):
             prepared, diagnostics = processor.prepare_document_image(image)
         self.assertEqual(prepared.shape[:2], image.shape[:2])
         self.assertEqual(diagnostics['rotation_degrees'], 0)
@@ -1293,8 +1293,8 @@ class GraphTests(unittest.TestCase):
     def test_document_preparation_preserves_orientation_when_osd_evidence_is_weak(self):
         image = np.full((60, 120, 3), 255, np.uint8)
         cv2.line(image, (10, 15), (100, 15), (0, 0, 0), 2)
-        with patch('processor._detect_page_quad', return_value=None), \
-             patch('processor._detect_text_rotation', return_value=(0, 4.43, 1.11)):
+        with patch('image_preprocess._detect_page_quad', return_value=None), \
+             patch('image_preprocess._detect_text_rotation', return_value=(0, 4.43, 1.11)):
             prepared, diagnostics = processor.prepare_document_image(image)
         self.assertEqual(prepared.shape[:2], image.shape[:2])
         self.assertEqual(diagnostics['rotation_degrees'], 0)
