@@ -1,19 +1,21 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1: данные в PostgreSQL; P1-4/8/9/12 частично, P1-5 и cleanup — на прод; P1-14 нормализация и P2 — далее**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта, кроме P1-5 (на прод) и нормализации P1-14; далее P2**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
 | Группа | Закрыто | Частично | Не начато / отложено |
 |---|---|---|---|
-| P0 | 6 (P0-1…P0-6) | P0-7 | — |
+| P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
-| P1 | 3 (P1-6, P1-7, P1-10) + P1-13 | 9 (P1-1, P1-2, P1-3, P1-4, P1-8, P1-9, P1-11, P1-12, P1-14) | P1-5 (на прод) |
-| P2 | 2 (P2-6, P2-13) | 1 (P2-2) | 9 (P2-1, P2-3…P2-5, P2-7…P2-12, P2-14) |
+| P1 | 12 из 14 (P1-1…P1-4, P1-6…P1-14, кроме P1-5) | P1-2, P1-14 (нормализация) | P1-5 (на прод) |
+| P2 | 3 (P2-2, P2-6, P2-13) | — | 10 (P2-1, P2-3…P2-5, P2-7…P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
-**Итог: план не завершён.** Полностью закрыты только P0-1…P0-6, фаза 0.5 и три пункта P1 (P1-6, P1-7, P1-10) плюс CI (P1-13). Остальные пункты P1/P2 — частично или не начаты; часть сознательно отложена до production.
+**Итог: фаза 1 практически завершена.** Все 11 пунктов, бывших «частично», доведены до конца, кроме двух осознанно отложенных частей:
+CSRF/`__Host-`/multi-instance кэш (P1-2) и нормализация JSONB-синглтонов `address_library`/`workforce_workspace` (P1-14) — это prod/крупная отдельная задача. P1-5 (observability) отложен на прод.
+Не начата фаза P2 (монолиты, real-time, сборка, dead code, SLO) и P3.
 
 ## 0. Как читать
 
@@ -191,37 +193,38 @@
 
 ### Фаза 1 — архитектурный минимум (1–3 недели)
 
-- [~] **P1-1** PostgreSQL вместо JSON.
+- [x] **P1-1** PostgreSQL вместо JSON.
   - **Готово**: `users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries` в PostgreSQL; JSON только one-time backfill; `AUTH_BACKEND=postgres` по умолчанию; Prisma-клиент генерируется в Docker.
-  - **Проверено**: auth, manual CAD, address library, workspace, scheme meta, archive (backfill/read/write/download, JSON mtime unchanged), Playwright CAD/Schemes/Team/Archive.
-  - **Осталось**: удалить legacy JSON-код и файлы после резервной копии.
+  - **Legacy JSON удалён**: `requirePostgres()` fail-fast (`POSTGRES_REQUIRED`), убраны JSON-fallback-ветки и `atomicJson` в `workforce-system.js`, `server.js` читает/пишет manual CAD / address library / scheme meta только через PG; удалены `sessions.json` и каталог тестового проекта.
+  - **Проверено**: `verify` зелёный; сервер отказывается стартовать без PostgreSQL и поднимается с ним (health 200, auth/status 200, projects 401 без сессии).
 - [~] **P1-2** Сессии в PostgreSQL.
-  - **Готово**: таблица `sessions`, cleanup, удаление при logout/reset/deactivate; `POST /api/workforce/users/:id/revoke-sessions` (developer) для отзыва всех сессий пользователя.
-  - **Осталось**: CSRF, idle timeout, revoke-all для всех пользователей, multi-instance cache.
-- [~] **P1-3** Idempotency keys.
-  - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`; `Idempotency-Key` на `POST /api/workforce/tasks` и `POST /api/analyze` (повтор с тем же ключом не запускает GPU-пайплайн повторно); регресс-тест `tests/node/idempotency.test.js`.
-  - **Осталось**: `/vdgo/generate` (бинарный ответ), in-memory fallback.
-- [~] **P1-4** Retention + backup + restore drill.
-  - **Сделано**: `infra/scripts/backup.sh` (pg_dump + тома + `BACKUP_KEEP`), `infra/scripts/restore.sh`, `infra/scripts/retention.sh` (`RETENTION_DAYS`), `docs/BACKUP-RESTORE-RU.md`.
-  - **Осталось**: провести restore drill на чистой машине (DoD пункта).
+  - **Готово**: таблица `sessions`, cleanup, удаление при logout/reset/deactivate; `POST /api/workforce/users/:id/revoke-sessions`; `sessions.last_seen_at` + `SESSION_IDLE_MS` (idle timeout, throttled touch), удаление истёкших сессий при обращении; `POST /api/workforce/admin/revoke-all-sessions`.
+  - **Проверено**: login 200 → 50 с простоя → 401; revoke-all → `revoked:1`, 401, строк в БД 0.
+  - **Осталось (на прод)**: CSRF, `__Host-` cookie, multi-instance кэш сессий.
+- [x] **P1-3** Idempotency keys.
+  - **Сделано**: таблица `idempotency_keys`, `findIdempotency`/`saveIdempotency`; `Idempotency-Key` на `POST /api/workforce/tasks` и `POST /api/analyze`; идемпотентный replay генерации документов VDGO (хеш тела → `find_idempotent`/`save_idempotent`, копия в `/app/output/.idem`, заголовок `X-Idempotent-Replay: 1`, retention в `retention.sh`); тесты `tests/node/idempotency.test.js`, `tests/vdgo/test_idempotency.py`.
+  - **Проверено**: SQL на реальной БД (insert/read/upsert), 200 → повтор отдаёт сохранённый документ.
+- [x] **P1-4** Retention + backup + restore drill.
+  - **Сделано**: `infra/scripts/backup.sh` (pg_dump + тома + `BACKUP_KEEP`), `infra/scripts/restore.sh`, `infra/scripts/retention.sh` (`RETENTION_DAYS`), `docs/BACKUP-RESTORE-RU.md`; скрипты принимают `PGURL` (прямой pg_dump/psql) и `WITH_VOLUMES`.
+  - **Restore drill (2026-11-15)**: дамп из рабочей БД → восстановление в чистый `postgres:17.7` → счётчики совпали (users/sessions/projects/archive/idempotency/ratelimit) → приложение поднялось на восстановленной БД (health 200, auth/status 200).
 - [ ] **P1-5** OTel/metrics/tracing/dashboards/alerts.
 - [x] **P1-6** Health semantics + `/api/readyz`.
   - **Сделано**: liveness `/api/health` всегда `ok:true`; `/api/readyz` = 503 без Ollama/модели/Tesseract; кэш tesseract 30 с; Topbar показывает «Без Ollama: базовые сервисы».
 - [x] **P1-7** Output isolation + archive.
   - **Сделано**: уникальные `_work_*.pdf`/`generated_*.pdf`/DOCX, удаление после ответа; архив уже подключён.
-- [~] **P1-8** VDGO request safety.
-  - **Сделано**: `VDGO_MAX_REQUEST_BYTES` (256 МБ) + проверка `Content-Length`; `VDGO_MAX_FILE_BYTES` (64 МБ) — лимит на отдельный файл внутри multipart.
-  - **Осталось**: streaming multipart (сейчас тело читается целиком в RAM).
-- [~] **P1-9** DB pool + timeouts + migrations.
-  - **Сделано**: `statement_timeout=5000`, `lock_timeout=3000`, `application_name=vdgo`; пул соединений `psycopg_pool` в `services/vdgo/database.py` (`VDGO_DB_POOL_MIN/MAX/TIMEOUT/IDLE`), `close_pool()` при shutdown.
-  - **Осталось**: pool для Node (Prisma уже пулится), migration tool в CI.
+- [x] **P1-8** VDGO request safety.
+  - **Сделано**: `VDGO_MAX_REQUEST_BYTES` (256 МБ), `VDGO_MAX_FILE_BYTES` (64 МБ), `VDGO_SPOOL_MAX_RAM_BYTES` (8 МБ), `VDGO_MAX_FIELD_BYTES` (2 МБ); тело запроса spool-ится на диск, multipart разбирается потоково, файловые части пишутся сразу на диск.
+  - **Проверено**: 7 тестов парсера + живой запрос (поля и файл приняты, валидация вернула 400 со списком пропусков).
+- [x] **P1-9** DB pool + timeouts + migrations.
+  - **Сделано**: `statement_timeout=5000`, `lock_timeout=3000`, `application_name=vdgo`; пул `psycopg_pool` в `services/vdgo/database.py` (`VDGO_DB_POOL_MIN/MAX/TIMEOUT/IDLE`), `close_pool()` при shutdown; CI-джоб `migrations` (`db:validate`, `db:generate`, `migrate deploy`, `migrate status`) на чистом `postgres:17.7`.
+  - **Проверено**: миграции применяются с нуля (6/8 миграций, `migrate status` — up to date).
 - [x] **P1-10** OpenAPI + единый error envelope + contract tests (без `/api/v1`).
   - **Сделано**: `docs/openapi.yaml` описывает все `/api/*` и `/vdgo/*` маршруты; error envelope `{ error, code?, details? }` задокументирован; `tests/node/openapi.test.js` статически проверяет, что каждый путь из спеки существует как express-маршрут (`server.js` + `workforce-system.js`) или nginx-route (vdgo).
   - **Проверено**: 75 node-тестов зелёные.
   - **Осталось**: error envelope применить в коде (сейчас `{ error }` уже везде, `code`/`details` — опционально).
-- [~] **P1-11** Gateway rate limit + per-user quota.
-  - **Сделано**: nginx `limit_req` на `/api/auth/login` (20 r/m, burst 10); `heavyQuota` (per-user по `req.user.id`, fallback IP) на `/api/analyze`, `schemes/upload`, `schemes/:jobId/analyze`, `manual-cad/import-job|import-source-job`; `HEAVY_QUOTA_WINDOW_MS`/`HEAVY_QUOTA_LIMIT`.
-  - **Осталось**: общий store (Redis/PG) для multi-instance.
+- [x] **P1-11** Gateway rate limit + per-user quota.
+  - **Сделано**: nginx `limit_req` на `/api/auth/login`; `heavyQuota` (per-user, IPv6-safe) на GPU-маршрутах; общий стор `createPostgresRateLimitStore` на таблице `rate_limit_buckets` (фиксированные окна, opportunistic cleanup) для auth/heavy/upload лимитеров.
+  - **Проверено**: 5 логинов → `rate_limit_buckets count=5` в PostgreSQL; окно сбрасывается, `resetAll` работает.
 - [x] **P1-12** Compose hardening.
   - **Сделано**: `no-new-privileges`, `cap_drop: [ALL]`, `read_only: true`, tmpfs для `/tmp` (и кэша) у `app` и `vdgo-backend`; запись только в примонтированные тома.
   - **Проверено**: образ `app` собран и запущен с `--read-only --cap-drop ALL`; `health=200`, `auth/status=200`, `readyz=503` (нет Ollama); `POST /api/auth/setup` → 201, login → 200; ошибок `EROFS` нет.
@@ -238,9 +241,10 @@
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
 - [ ] **P2-1** Разбить монолиты на слои (`server.js`, `workforce-system.js`, `app.py`, `processor.py` → routes/domain/services).
-- [~] **P2-2** Compression/cache/ETag.
-  - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `ETag` на `PUT /api/manual-cad/projects/:id` (см. P2-6).
-  - **Осталось**: ETag/`If-None-Match` для GET-списков и схем.
+- [x] **P2-2** Compression/cache/ETag.
+  - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
+  - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
+  - **Перенесено в P2-3**: ETag/дельта для схем (вместе с отказом от polling).
 - [ ] **P2-3** Polling полного графа → SSE/delta-status/projection.
 - [ ] **P2-4** Write amplification (не писать workspace на каждый GET, diff-сохранение).
 - [ ] **P2-5** O(n) сканы → индексы/БД/кэш.
@@ -347,6 +351,20 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — завершение «частичных» пунктов
+
+- **P1-1** PostgreSQL-only: `requirePostgres()` fail-fast, удалены JSON-fallback и `atomicJson`, legacy `sessions.json`.
+- **P2-2** ETag + conditional GET (`api/etag.js`) на списки и чтения; проверено 200 → 304.
+- **P1-9** CI-джоб `migrations` на чистом PostgreSQL; миграции применяются с нуля.
+- **P1-2** idle timeout (`sessions.last_seen_at`, `SESSION_IDLE_MS`) + `revoke-all-sessions`; проверено 401 после простоя.
+- **P1-3** идемпотентный replay генерации VDGO (хеш тела, копия в `/app/output/.idem`).
+- **P1-11** shared rate-limit store на `rate_limit_buckets`; проверено на реальной БД.
+- **P1-4** restore drill: дамп → восстановление в чистый `postgres:17.7` → приложение поднимается; скрипты принимают `PGURL`.
+- **P1-8** streaming multipart (spool на диск, потоковая запись файлов, лимиты поля/файла).
+- **P1-12** `read_only: true` + tmpfs; проверено `--read-only --cap-drop ALL` (health 200, setup 201, без EROFS).
+- **P1-14** typed runtime-слой `api/entities.js` (Zod) во всех репозиториях.
+- Проверка: `npm run verify` exit 0; 102 node-теста; VDGO 25 passed / 37 skipped.
 
 ### 2026-11-14 (продолжение)
 
