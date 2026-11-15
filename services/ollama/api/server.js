@@ -16,8 +16,8 @@ import {
   renderManualCadSvg,
   renderManualCadDxf,
   isManualCadId,
-} from './manual-cad-core.js';
-import { createWorkforceSystem } from './workforce-system.js';
+} from './domain/manual-cad-core.js';
+import { createWorkforceSystem } from './services/workforce-system.js';
 import {
   validateBody,
   streetSchema,
@@ -25,7 +25,7 @@ import {
   manualProjectCreateSchema,
   connectionSchema,
   reviewSchema,
-} from './schemas.js';
+} from './validation/schemas.js';
 import {
   logger,
   jobLogger,
@@ -35,10 +35,10 @@ import {
   requestLogger,
   requestIdHeader,
   logRequestError,
-} from './logger.js';
-import { requirePostgres } from './db.js';
-import { sendJsonConditional } from './etag.js';
-import { createPostgresRateLimitStore } from './rate-limit-store.js';
+} from './lib/logger.js';
+import { requirePostgres } from './repositories/db.js';
+import { sendJsonConditional } from './lib/etag.js';
+import { createPostgresRateLimitStore } from './repositories/rate-limit-store.js';
 import {
   fetchManualProject,
   fetchManualProjects,
@@ -46,19 +46,22 @@ import {
   saveManualProjectIfRevision,
   findManualProjectBySourceJob,
   findManualProjectBySourceReport,
-} from './manual-cad-repo.js';
+} from './repositories/manual-cad-repo.js';
 import {
   fetchAddressLibrary as fetchAddressLibraryPg,
   saveAddressLibrary as saveAddressLibraryPg,
-} from './address-library-repo.js';
-import { fetchSchemeMeta as fetchSchemeMetaPg, saveSchemeMeta as saveSchemeMetaPg } from './scheme-meta-repo.js';
-import { findIdempotency, saveIdempotency } from './postgres-repo.js';
-import { appVersion } from './version.js';
-import { createTemplateStore } from './template-store.js';
-import { cleanLabel } from './text.js';
+} from './repositories/address-library-repo.js';
+import {
+  fetchSchemeMeta as fetchSchemeMetaPg,
+  saveSchemeMeta as saveSchemeMetaPg,
+} from './repositories/scheme-meta-repo.js';
+import { findIdempotency, saveIdempotency } from './repositories/postgres-repo.js';
+import { appVersion } from './lib/version.js';
+import { createTemplateStore } from './services/template-store.js';
+import { cleanLabel } from './domain/text.js';
 import { createTemplateRouter } from './routes/template-routes.js';
 import { createSettingsRouter } from './routes/settings-routes.js';
-import { createHealthChecks } from './health.js';
+import { createHealthChecks } from './services/health.js';
 import { createLibraryRouter } from './routes/library-routes.js';
 import { createSchemeRouter } from './routes/scheme-routes.js';
 import { createJobsRouter } from './routes/job-routes.js';
@@ -77,8 +80,8 @@ const BUILD_INFO = {
             '../engine/processor.py',
             '../engine/clean_layout.py',
             '../engine/drawing_template.py',
-            'manual-cad-core.js',
-            'workforce-system.js',
+            'domain/manual-cad-core.js',
+            'services/workforce-system.js',
             'server.js',
           ].map((name) => readFile(path.join(__dirname, name))),
         ),

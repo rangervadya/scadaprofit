@@ -14,7 +14,7 @@ test('one React frontend is the active UI; backend and document services stay se
     'compose.yaml',
     'services/ollama/package.json',
     'services/ollama/api/server.js',
-    'services/ollama/api/workforce-system.js',
+    'services/ollama/api/services/workforce-system.js',
     'services/ollama/engine/processor.py',
     'frontend/package.json',
     'frontend/package-lock.json',
@@ -39,7 +39,7 @@ test('one React frontend is the active UI; backend and document services stay se
   assert.match(spa, /redirect\(308, '\/vdgo\/'\)/);
   assert.match(server, /createSpaRouter/);
 
-  const auth = await read('services/ollama/api/workforce-system.js');
+  const auth = await read('services/ollama/api/services/workforce-system.js');
   assert.match(auth, /pathname\.startsWith\('\/vdgo\/'\)/);
   assert.match(auth, /redirect\('\/vdgo\/login'\)/);
 

@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 
 test('ratelimit store: implements the express-rate-limit store contract', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/rate-limit-store.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/repositories/rate-limit-store.js'), 'utf8');
   for (const method of ['init', 'increment', 'decrement', 'resetKey', 'resetAll', 'shutdown']) {
     assert.match(src, new RegExp(`async ${method}\\(`), `missing ${method}`);
   }
@@ -19,7 +19,7 @@ test('ratelimit store: implements the express-rate-limit store contract', async 
 });
 
 test('ratelimit store: counters are keyed by bucket and ident', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/rate-limit-store.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/repositories/rate-limit-store.js'), 'utf8');
   assert.match(src, /rate_limit_buckets/);
   assert.match(src, /bucket_ident/);
   assert.match(src, /ON CONFLICT \("bucket", "ident"\) DO UPDATE/);

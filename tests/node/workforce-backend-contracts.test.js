@@ -16,14 +16,14 @@ const ROOT = join(__dirname, '../..');
 const read = (relative) => readFile(join(ROOT, relative), 'utf8');
 
 test('multi-house dispatch deduplicates and caps the house list', async () => {
-  const src = await read('services/ollama/api/workforce-core.js');
+  const src = await read('services/ollama/api/domain/workforce-core.js');
   const body = src.slice(src.indexOf('export function parseHouseAddresses'));
   assert.match(body, /new Set\(\)/);
   assert.match(body, /if \(unique\.length > 100\)/);
 });
 
 test('folder transfer is atomic and rejects per-item conclusion transfers', async () => {
-  const core = await read('services/ollama/api/workforce-core.js');
+  const core = await read('services/ollama/api/domain/workforce-core.js');
   const inbox = await read('services/ollama/api/routes/workforce-inbox-routes.js');
   assert.match(core, /export function evaluateAddressFolder/);
   assert.match(inbox, /router\.post\('\/tasks\/:taskId\/conclusion'/);
@@ -31,7 +31,7 @@ test('folder transfer is atomic and rejects per-item conclusion transfers', asyn
 });
 
 test('folder transfer requires seen and accepted materials', async () => {
-  const src = await read('services/ollama/api/workforce-core.js');
+  const src = await read('services/ollama/api/domain/workforce-core.js');
   const start = src.indexOf('export function evaluateAddressFolder');
   assert.ok(start >= 0);
   const body = src.slice(start, start + 2000);
@@ -55,7 +55,7 @@ test('receiver role guards stay on the report and defect routes', async () => {
 });
 
 test('defect reports are stored separately from generated documents', async () => {
-  const src = await read('services/ollama/api/workforce-system.js');
+  const src = await read('services/ollama/api/services/workforce-system.js');
   assert.match(src, /defectReports/);
   assert.match(src, /workspace\.defectReports/);
 });

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 
-const src = await readFile(join(ROOT, 'services/ollama/api/workforce-serializers.js'), 'utf8');
+const src = await readFile(join(ROOT, 'services/ollama/api/domain/workforce-serializers.js'), 'utf8');
 const server = await readFile(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
 
 test('p2-5: serializers use lookup maps instead of per-item scans', () => {
@@ -43,7 +43,7 @@ test('p2-5: report serializers use the task and user maps', () => {
 });
 
 test('p2-5: lookups are invalidated on write', async () => {
-  const wf = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  const wf = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
   assert.match(src, /invalidate\(\)\s*\{/);
   // Both persistence helpers invalidate, so mutations cannot serve stale maps.
   const saveUsers = wf.slice(wf.indexOf('const saveUsers = async'), wf.indexOf('const saveUsers = async') + 200);

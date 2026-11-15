@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 const SERVER = readFileSync(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
-const WORKFORCE = readFileSync(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
-const REPO = readFileSync(join(ROOT, 'services/ollama/api/postgres-repo.js'), 'utf8');
+const WORKFORCE = readFileSync(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
+const REPO = readFileSync(join(ROOT, 'services/ollama/api/repositories/postgres-repo.js'), 'utf8');
 
 test('idempotency: postgres-repo экспортирует find/save', () => {
   assert.match(REPO, /export async function findIdempotency/);

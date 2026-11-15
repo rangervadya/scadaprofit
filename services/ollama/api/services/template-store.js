@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { logger } from './logger.js';
+import { logger } from '../lib/logger.js';
 
 const log = logger.child({ module: 'template-store' });
 

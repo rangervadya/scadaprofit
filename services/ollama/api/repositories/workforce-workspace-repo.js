@@ -1,5 +1,5 @@
 import { getPrismaClient, postgresEnabled } from './db.js';
-import { logger } from './logger.js';
+import { logger } from '../lib/logger.js';
 
 const log = logger.child({ module: 'workspace' });
 

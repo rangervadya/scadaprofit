@@ -10,14 +10,14 @@ import {
   renderProgressLine,
   shortJobId,
   REDACT_PATHS,
-} from '../../services/ollama/api/logger.js';
+} from '../../services/ollama/api/lib/logger.js';
 
 // pino lives in services/ollama/node_modules, so resolve it from the API package
 // instead of the repository root where the tests live.
-const requireFromApi = createRequire(new URL('../../services/ollama/api/logger.js', import.meta.url));
+const requireFromApi = createRequire(new URL('../../services/ollama/api/lib/logger.js', import.meta.url));
 const pino = requireFromApi('pino');
 
-const source = await readFile(new URL('../../services/ollama/api/logger.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../services/ollama/api/lib/logger.js', import.meta.url), 'utf8');
 
 function capture() {
   const lines = [];
@@ -121,7 +121,7 @@ test('error records keep the stack in a serialisable field', () => {
 });
 
 test('no service logs to the console object instead of the structured logger', async () => {
-  const files = ['server.js', 'workforce-system.js', 'moss-env-boot.js'];
+  const files = ['server.js', 'services/workforce-system.js', 'lib/moss-env-boot.js'];
   for (const file of files) {
     const body = await readFile(new URL(`../../services/ollama/api/${file}`, import.meta.url), 'utf8');
     assert.doesNotMatch(body, /console\.(log|info|warn|error|debug)\(/, `${file} still writes to console.*`);

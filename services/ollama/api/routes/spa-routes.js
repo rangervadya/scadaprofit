@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export function createSpaRouter({ publicDir } = {}) {
   const router = express.Router();
-  const spaRoot = publicDir || path.join(__dirname, '../../../frontend/public');
+  const spaRoot = publicDir || path.join(__dirname, '../../../../frontend/public');
 
   router.get('/vdgo', (_req, res) => res.redirect(308, '/vdgo/'));
   router.get(/^\/vdgo(?:\/.*)?$/, (_req, res) => {

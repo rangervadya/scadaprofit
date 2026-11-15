@@ -12,18 +12,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 const hasDb = Boolean(process.env.NORMALIZED_DB_TEST_URL);
 
-const lib = hasDb ? await import('../../services/ollama/api/address-library-repo.js') : null;
-const ws = hasDb ? await import('../../services/ollama/api/workforce-workspace-repo.js') : null;
+const lib = hasDb ? await import('../../services/ollama/api/repositories/address-library-repo.js') : null;
+const ws = hasDb ? await import('../../services/ollama/api/repositories/workforce-workspace-repo.js') : null;
 
 test('normalized: repos expose the same contract as before', async () => {
-  const libSrc = await readFile(join(ROOT, 'services/ollama/api/address-library-repo.js'), 'utf8');
+  const libSrc = await readFile(join(ROOT, 'services/ollama/api/repositories/address-library-repo.js'), 'utf8');
   assert.match(libSrc, /export async function fetchAddressLibrary/);
   assert.match(libSrc, /export async function saveAddressLibrary/);
   // Reads come from the normalized tables, not the JSONB singleton.
   assert.match(libSrc, /prisma\.addressStreet\.findMany/);
   assert.match(libSrc, /address_buildings|addressBuilding/);
 
-  const wsSrc = await readFile(join(ROOT, 'services/ollama/api/workforce-workspace-repo.js'), 'utf8');
+  const wsSrc = await readFile(join(ROOT, 'services/ollama/api/repositories/workforce-workspace-repo.js'), 'utf8');
   assert.match(wsSrc, /export async function fetchWorkspace/);
   assert.match(wsSrc, /export async function saveWorkspace/);
   assert.match(wsSrc, /prisma\.workforceTask\.findMany/);

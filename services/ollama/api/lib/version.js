@@ -21,7 +21,7 @@ export function appVersion() {
     return cached;
   }
   try {
-    cached = readFileSync(path.join(__dirname, '../../../VERSION'), 'utf8').trim();
+    cached = readFileSync(path.join(__dirname, '../../../../VERSION'), 'utf8').trim();
   } catch {
     cached = 'dev';
   }

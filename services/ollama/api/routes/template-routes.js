@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { rm } from 'node:fs/promises';
-import { templateExtensions } from '../template-store.js';
+import { templateExtensions } from '../services/template-store.js';
 
 /**
  * Template routes (P2-1): a single global style reference.

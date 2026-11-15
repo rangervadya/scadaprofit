@@ -1,7 +1,12 @@
 // Typed runtime layer for database rows (P1-14).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { manualProjectSchema, parseOrDefault, sessionSchema, userSchema } from '../../services/ollama/api/entities.js';
+import {
+  manualProjectSchema,
+  parseOrDefault,
+  sessionSchema,
+  userSchema,
+} from '../../services/ollama/api/validation/entities.js';
 
 const warnings = [];
 const log = { warn: (obj, msg) => warnings.push({ obj, msg }) };
@@ -51,20 +56,32 @@ test('manual project: revision defaults and extra fields survive', () => {
 
 test('repos validate rows on read', async () => {
   const { readFile } = await import('node:fs/promises');
-  const pg = await readFile(new URL('../../services/ollama/api/postgres-repo.js', import.meta.url), 'utf8');
+  const pg = await readFile(
+    new URL('../../services/ollama/api/repositories/postgres-repo.js', import.meta.url),
+    'utf8',
+  );
   assert.match(pg, /parseOrDefault\(\s*userSchema/);
   assert.match(pg, /parseOrDefault\(\s*sessionSchema/);
 
-  const lib = await readFile(new URL('../../services/ollama/api/address-library-repo.js', import.meta.url), 'utf8');
+  const lib = await readFile(
+    new URL('../../services/ollama/api/repositories/address-library-repo.js', import.meta.url),
+    'utf8',
+  );
   assert.match(lib, /prisma\.addressStreet\.findMany/);
 
-  const cad = await readFile(new URL('../../services/ollama/api/manual-cad-repo.js', import.meta.url), 'utf8');
+  const cad = await readFile(
+    new URL('../../services/ollama/api/repositories/manual-cad-repo.js', import.meta.url),
+    'utf8',
+  );
   assert.match(cad, /parseOrDefault\(manualProjectSchema/);
 });
 
 test('normalized repos read from tables instead of the JSONB singleton', async () => {
   const { readFile } = await import('node:fs/promises');
-  const ws = await readFile(new URL('../../services/ollama/api/workforce-workspace-repo.js', import.meta.url), 'utf8');
+  const ws = await readFile(
+    new URL('../../services/ollama/api/repositories/workforce-workspace-repo.js', import.meta.url),
+    'utf8',
+  );
   assert.match(ws, /prisma\.workforceTask\.findMany/);
   assert.doesNotMatch(ws, /parseOrDefault\(workspaceSchema/);
 });

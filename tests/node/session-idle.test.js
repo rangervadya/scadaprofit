@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const wfUrl = new URL('../../services/ollama/api/workforce-system.js', import.meta.url);
-const repoUrl = new URL('../../services/ollama/api/postgres-repo.js', import.meta.url);
+const wfUrl = new URL('../../services/ollama/api/services/workforce-system.js', import.meta.url);
+const repoUrl = new URL('../../services/ollama/api/repositories/postgres-repo.js', import.meta.url);
 const schemaUrl = new URL('../../services/ollama/prisma/schema.prisma', import.meta.url);
 
 test('idle: session freshness accounts for SESSION_IDLE_MS', async () => {

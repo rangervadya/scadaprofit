@@ -22,7 +22,7 @@ function routeBody(src, route) {
 }
 
 test('p2-4: GET /api/workforce/reports only writes when a status moved', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
   const body = routeBody(src, "routes.get('/api/workforce/reports'");
   assert.match(body, /if \(await refreshSchemeState\(report\)\) changed = true;/);
   // The save must be conditional: exactly one saveWorkspace call, guarded.
@@ -32,13 +32,13 @@ test('p2-4: GET /api/workforce/reports only writes when a status moved', async (
 });
 
 test('p2-4: refreshSchemeState reports whether anything changed', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
   assert.match(src, /const before = `\$\{report\.schemeStatus\}/);
   assert.match(src, /return before !== after;/);
 });
 
 test('p2-4: saveWorkspace skips writes when the snapshot is unchanged', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
   assert.match(src, /let lastWorkspaceSnapshot = null;/);
   assert.match(src, /const snapshot = JSON\.stringify\(workspace\);/);
   assert.match(src, /if \(snapshot === lastWorkspaceSnapshot\) return Promise\.resolve\(true\);/);
@@ -46,8 +46,8 @@ test('p2-4: saveWorkspace skips writes when the snapshot is unchanged', async ()
 });
 
 test('p2-4: legacy JSONB write-through is gone from the repositories', async () => {
-  const ws = await readFile(join(ROOT, 'services/ollama/api/workforce-workspace-repo.js'), 'utf8');
-  const lib = await readFile(join(ROOT, 'services/ollama/api/address-library-repo.js'), 'utf8');
+  const ws = await readFile(join(ROOT, 'services/ollama/api/repositories/workforce-workspace-repo.js'), 'utf8');
+  const lib = await readFile(join(ROOT, 'services/ollama/api/repositories/address-library-repo.js'), 'utf8');
   assert.doesNotMatch(ws, /tx\.workforceWorkspace\.upsert/);
   assert.doesNotMatch(lib, /tx\.addressLibrary\.upsert/);
   // The legacy models are no longer in the Prisma schema.

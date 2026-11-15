@@ -8,7 +8,7 @@ import {
   renderManualCadSvg,
   renderManualCadDxf,
   isManualCadId,
-} from '../../services/ollama/api/manual-cad-core.js';
+} from '../../services/ollama/api/domain/manual-cad-core.js';
 
 test('creates isolated manual CAD project defaults', () => {
   const project = createManualCadProject({ title: 'Подъезд 2' });

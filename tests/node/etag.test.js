@@ -1,7 +1,7 @@
 // Conditional GET / ETag (P2-2).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sendJsonConditional } from '../../services/ollama/api/etag.js';
+import { sendJsonConditional } from '../../services/ollama/api/lib/etag.js';
 
 function fakeReq(headers = {}) {
   return { headers };
@@ -66,7 +66,7 @@ test('etag: changed payload produces a different ETag', () => {
 
 test('etag: read endpoints use sendJsonConditional', async () => {
   const { readFile } = await import('node:fs/promises');
-  const wf = await readFile(new URL('../../services/ollama/api/workforce-system.js', import.meta.url), 'utf8');
+  const wf = await readFile(new URL('../../services/ollama/api/services/workforce-system.js', import.meta.url), 'utf8');
   const library = await readFile(
     new URL('../../services/ollama/api/routes/library-routes.js', import.meta.url),
     'utf8',

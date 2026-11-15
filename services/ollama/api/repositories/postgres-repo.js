@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getPrismaClient, postgresEnabled } from './db.js';
-import { parseOrDefault, sessionSchema, userSchema } from './entities.js';
-import { logger } from './logger.js';
+import { parseOrDefault, sessionSchema, userSchema } from '../validation/entities.js';
+import { logger } from '../lib/logger.js';
 
 const log = logger.child({ module: 'postgres' });
 

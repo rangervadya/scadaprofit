@@ -27,7 +27,7 @@ test('manual-cad: writeManualProjectIfRevision delegates to the PG repository', 
 });
 
 test('manual-cad: repo saveManualProjectIfRevision uses updateMany by revision', async () => {
-  const repo = await readFile(join(ROOT, 'services/ollama/api/manual-cad-repo.js'), 'utf8');
+  const repo = await readFile(join(ROOT, 'services/ollama/api/repositories/manual-cad-repo.js'), 'utf8');
   assert.match(repo, /export async function saveManualProjectIfRevision/);
   assert.match(repo, /revision: expected/);
   assert.match(repo, /result\.count === 1/);
@@ -38,12 +38,12 @@ test('manual-cad: JSON storage path removed, PostgreSQL required', async () => {
   assert.doesNotMatch(src, /readManualProject\(id\)[\s\S]{0,400}return await readManualProject\(/);
 
   // The JSON fallback is gone from the workforce system too.
-  const wf = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  const wf = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
   assert.match(wf, /requirePostgres\(\)/);
   assert.doesNotMatch(wf, /atomicJson/);
   assert.doesNotMatch(wf, /usePostgres/);
 
-  const db = await readFile(join(ROOT, 'services/ollama/api/db.js'), 'utf8');
+  const db = await readFile(join(ROOT, 'services/ollama/api/repositories/db.js'), 'utf8');
   assert.match(db, /export function requirePostgres/);
   assert.match(db, /POSTGRES_REQUIRED/);
 });

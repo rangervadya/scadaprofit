@@ -10,7 +10,7 @@ import {
   taskForClient,
   reportForClient,
   defectReportForClient,
-} from '../../services/ollama/api/workforce-serializers.js';
+} from '../../services/ollama/api/domain/workforce-serializers.js';
 
 const users = [
   { id: 'u1', displayName: 'Иван Петров', role: 'fitter' },

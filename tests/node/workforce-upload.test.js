@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { access, chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { persistUploadedFile } from '../../services/ollama/api/workforce-system.js';
+import { persistUploadedFile } from '../../services/ollama/api/services/workforce-system.js';
 
 const makeTempDir = async (base, prefix) => mkdtemp(path.join(base, prefix));
 
@@ -54,7 +54,7 @@ test('workforce report uploads use the cross-device-safe persistence helper', as
     await import('node:fs/promises')
   ).readFile(new URL('../../services/ollama/api/routes/workforce-submission-routes.js', import.meta.url), 'utf8');
   assert.match(source, /await persistUploadedFile\(file\.path, path\.join\(reportDir, fileName\)\)/);
-  const core = await readFile(new URL('../../services/ollama/api/workforce-core.js', import.meta.url), 'utf8');
+  const core = await readFile(new URL('../../services/ollama/api/domain/workforce-core.js', import.meta.url), 'utf8');
   const persistBody = core.slice(
     core.indexOf('export async function persistUploadedFile'),
     core.indexOf('export async function authenticateCredentials'),

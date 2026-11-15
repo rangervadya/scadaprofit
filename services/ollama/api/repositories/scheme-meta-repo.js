@@ -1,6 +1,6 @@
 import { getPrismaClient, postgresEnabled } from './db.js';
-import { parseOrDefault, schemeMetaSchema } from './entities.js';
-import { logger } from './logger.js';
+import { parseOrDefault, schemeMetaSchema } from '../validation/entities.js';
+import { logger } from '../lib/logger.js';
 
 const log = logger.child({ module: 'postgres' });
 

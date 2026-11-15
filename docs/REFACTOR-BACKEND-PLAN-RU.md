@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-монолиты разбиты, остался `processor.py`)**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-API разложен по слоям `domain/repositories/routes/services/validation/lib`, остался `processor.py`)**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
@@ -186,7 +186,7 @@
 
 ### Фаза 0.5 — typing & validation (сделано)
 
-- [x] **Zod** (`services/ollama/api/schemas.js`): login/setup, street/building, manual project create, connection/review; `validateBody` middleware; 422 + `details[]`.
+- [x] **Zod** (`services/ollama/api/validation/schemas.js`): login/setup, street/building, manual project create, connection/review; `validateBody` middleware; 422 + `details[]`.
 - [x] **Pydantic** (`services/vdgo/schemas.py`): `WorkforceScheme`/`WorkforceSchemesPayload`; `parse_workforce_schemes` до base64/PIL; тесты `tests/vdgo/test_schemas.py`.
 - [x] **Prisma** (`services/ollama/prisma/schema.prisma`): `ReportRun`, `User`, `Session`; `npm run db:validate`, `npm run db:generate`; **не подключён к runtime**, ждёт P1-1.
 - [x] **Тулинг**: ESLint 9 (`eslint.config.js`), Prettier 3 (`.prettierrc.json`), Ruff (`pyproject.toml`); скрипты `lint`, `format`, `typecheck`, `test`, `verify`; `make verify`.
@@ -232,7 +232,7 @@
   - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
   - **Осталось**: прогнать на GitHub, добавить build/scan.
 - [x] **P1-14** Normalized tables + typed runtime client.
-  - **Typed-слой**: `services/ollama/api/entities.js` — Zod-схемы (`user`, `session`, `manual_cad_project`, `scheme_meta`) + `parseOrDefault` (логирует и возвращает fallback, не роняя список); подключено в `postgres-repo` и `manual-cad-repo`; тест `tests/node/entities.test.js`.
+  - **Typed-слой**: `services/ollama/api/validation/entities.js` — Zod-схемы (`user`, `session`, `manual_cad_project`, `scheme_meta`) + `parseOrDefault` (логирует и возвращает fallback, не роняя список); подключено в `postgres-repo` и `manual-cad-repo`; тест `tests/node/entities.test.js`.
   - **Нормализация**: `address_library` JSONB → `address_streets` / `address_buildings` / `address_schemes`; `workforce_workspace` JSONB → `workforce_tasks` / `workforce_reports` / `workforce_defect_reports` (с индексами по `status`, `assignedTo`, `taskId`, `userId`, `submittedAt`). Миграция `20261116120000_normalize_address_and_workspace` создаёт таблицы и выполняет backfill.
   - **Репозитории**: `address-library-repo.js` и `workforce-workspace-repo.js` читают из нормализованных таблиц и собирают прежнюю форму ответа; запись — upsert + удаление исчезнувших в одной транзакции; legacy JSONB обновляется write-through для совместимости.
   - **Проверено**: backfill (streets=2, buildings=1, schemes=1, tasks=3, reports=1); round-trip без потерь; живой API (login → library/tasks/overview/reports 200, создание задачи → `workforce_tasks=4`, смена статуса → `house_visited`, идемпотентность); тесты `tests/node/normalized-repos.test.js`.
@@ -242,16 +242,16 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2355; в работе).
-  - **P2-1 progress**: JS-API разбит полностью (7 route-модулей + 3 доменных); `processor.py` — вынесен CAD-экспорт (SVG/DXF) в `engine/cad_export.py`, остаток — OCR/Qwen/CAD-пайплайн (нужен отдельный этап). `workforce-system.js` и `processor.py` — далее).
+- [x] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2355).
+  - **P2-1 progress**: JS-API разбит и разложен по слоям — `api/domain/` (чистая логика), `api/repositories/` (доступ к БД), `api/routes/` (HTTP), `api/services/` (use-cases), `api/validation/` (Zod-схемы), `api/lib/` (logger/version/etag/env), `server.js` — composition root. `processor.py` — вынесены CAD-экспорт, препроцессинг, геометрия, граф, Qwen-клиент; остаток — OCR-пайплайн (нужен отдельный этап).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
-  - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
+  - **Сделано (шаг 2)**: выделен блок шаблона — `api/services/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/domain/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
   - **Проверено**: `server.js` 2646 → 2515 строк; `verify` exit 0; 12/12 интеграционных; живой цикл шаблона (GET 200 null → upload 201 → GET 200 → DELETE 200 → null; `/file` 404 без файла).
   - **Сделано (шаг 3)**: выделен блок настроек — `api/routes/settings-routes.js` (openrouter/moss: `GET` → `disabled:true`, `PUT/DELETE/POST test` → 410 Gone); подключён через `app.use('/api', ...)`.
   - **Проверено**: `server.js` 2515 → 2489 строк; `verify` exit 0; 14/14 интеграционных.
   - **Баг, пойманный тестами**: `res.download` возвращал 500 на файл в `.private/template` — Express `dotfiles: 'deny'` (дефолт) блокирует скрытые сегменты пути. Исправлено `dotfiles: 'allow'` (имя уже проверено store).
-  - **Сделано (шаг 4)**: выделен блок health — `api/health.js` (`createHealthChecks`: `checkTesseract` с кэшем 30 с, `checkOllamaStatus`); в `server.js` осталась только инстанциация и деструктуризация.
+  - **Сделано (шаг 4)**: выделен блок health — `api/services/health.js` (`createHealthChecks`: `checkTesseract` с кэшем 30 с, `checkOllamaStatus`); в `server.js` осталась только инстанциация и деструктуризация.
   - **Проверено**: `server.js` 2489 → 2408 строк; `verify` exit 0; 14/14 интеграционных.
   - **Сделано (шаг 5)**: выделен блок улиц/домов — `api/routes/library-routes.js` (`GET /`, `POST /streets`, `POST /buildings`); смонтирован на `/api/library`. Маршруты схем (`upload`, `schemes/:jobId*`) остались в `server.js` (зависят от очереди анализа) — следующий шаг.
   - **Проверено**: `server.js` 2408 → 2373 строк; 16/16 интеграционных.
@@ -287,7 +287,7 @@
   - **Сделано**: из `app.Dockerfile` убраны `COPY tests/`, `frontend/src`, `compose.yaml`, `infra/*`; в образ попадает только собранный SPA. Тесты остаются в CI (`node`, `python`), добавлена job `image`, которая собирает образ и проверяет отсутствие `/app/tests` и `/app/frontend/src`.
   - **Проверено**: образ собран и запущен (health 200, readyz 503 без Ollama, `/vdgo/` 200, JS-ассет 200); `tests/` и `frontend/src` в образе отсутствуют.
 - [x] **P2-9** Версии/docs drift.
-  - **Сделано**: `VERSION` — единственный источник; `services/ollama/api/version.js` (`appVersion()`, учитывает `APP_RELEASE`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION` как fallback; `frontend/package.json` и оба lock-файла синхронизированы на `4.5.17`.
+  - **Сделано**: `VERSION` — единственный источник; `services/ollama/api/lib/version.js` (`appVersion()`, учитывает `APP_RELEASE`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION` как fallback; `frontend/package.json` и оба lock-файла синхронизированы на `4.5.17`.
   - **Проверено**: `tests/node/version.test.js` (5 тестов) — версии совпадают, хардкод-лейблов в коде нет.
 - [x] **P2-10** Удалить dead code (JS-часть).
   - **Сделано**: удалены `services/ollama/engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок; пайплайн полностью на Python). `engine/` больше не содержит JS.
@@ -394,6 +394,21 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
 
+### 2026-11-15 — P2-1 шаг 18: слоистая структура `services/ollama/api/`
+
+- Плоская свалка из 23 файлов разложена по слоям:
+  - `api/domain/` — чистая логика без I/O: `manual-cad-core.js`, `workforce-core.js`, `workforce-serializers.js`, `text.js`.
+  - `api/repositories/` — доступ к данным: `db.js`, `postgres-repo.js`, `manual-cad-repo.js`, `address-library-repo.js`, `workforce-workspace-repo.js`, `scheme-meta-repo.js`, `rate-limit-store.js`.
+  - `api/routes/` — HTTP-слой (12 route-модулей, без изменений по составу).
+  - `api/services/` — use-cases: `workforce-system.js`, `template-store.js`, `health.js`.
+  - `api/validation/` — Zod-схемы: `schemas.js`, `entities.js`.
+  - `api/lib/` — инфраструктура: `logger.js`, `version.js`, `etag.js`, `moss-env-boot.js`.
+  - `api/server.js` — composition root (сборка приложения, монтирование роутеров, python-оркестрация).
+- Импорты переписаны скриптом по карте старых путей; `server.js` и `routes/template-routes.js` — вручную.
+- Обновлены: `package.json` (`start`, `test:node`), пути в 13 тестовых файлах, `logging.test.js` (список файлов для проверки console.*), fingerprint-список `BUILD_INFO` в `server.js`.
+- **Попутно исправлен баг**: `routes/spa-routes.js` и `lib/version.js` использовали `__dirname`-относительные пути, которые не учитывали переезд; `spa-routes.js` вдобавок указывал на несуществующий `services/frontend/public` (было сломано и до переезда). Пути исправлены (`../../../../frontend/public`, `../../../../VERSION`).
+- **Проверено**: `npm run verify` exit 0 (node 102, python 201, vdgo 62); интеграционные 21/21 на БД `vdgo_itest`; живой запуск сервера с `AUTH_BACKEND=postgres` (started → SIGTERM → shutdown complete).
+
 ### 2026-11-15 — P2-1 шаг 13: вынесен CAD-экспорт из processor.py
 
 - `engine/cad_export.py` (470 строк) — `build_clean_svg`, `build_dxf`, `_cad_edge_chains`, `_clean_cad_points`, `_sheet_layout`, `_semantic_route_chains`, `_annotation_export_kind`, `_primary_semantic_chains`.
@@ -432,8 +447,8 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 
 ### 2026-11-15 — P2-1 шаг 10: разбит workforce-system.js
 
-- `api/workforce-core.js` (199 строк) — чистые хелперы: роли, имена, текст, cookie, хеш пароля (`salt:hex` — формат сохранён), `persistUploadedFile` (staging + rename, EXDEV-safe), `parseHouseAddresses`, `evaluateAddressFolder`.
-- `api/workforce-serializers.js` (147 строк) — `buildLookups`, `createLookupCache` (инвалидация при записи), `taskForClient`, `reportForClient`, `defectReportForClient`; вынесены дословно.
+- `api/domain/workforce-core.js` (199 строк) — чистые хелперы: роли, имена, текст, cookie, хеш пароля (`salt:hex` — формат сохранён), `persistUploadedFile` (staging + rename, EXDEV-safe), `parseHouseAddresses`, `evaluateAddressFolder`.
+- `api/domain/workforce-serializers.js` (147 строк) — `buildLookups`, `createLookupCache` (инвалидация при записи), `taskForClient`, `reportForClient`, `defectReportForClient`; вынесены дословно.
 - `workforce-system.js` 1748 → 1497 строк; реэкспортирует helpers для существующих импортёров.
 - Новые тесты: `tests/node/workforce-serializers.test.js` (5) — чистые функции без сервера; обновлены `lookup-indexes`, `workforce-backend-contracts`, `workforce-upload`.
 - Проверено: 102 node-теста, 18/18 интеграционных, `verify` exit 0.
@@ -480,7 +495,7 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 
 ### 2026-11-15 — P2-1 шаг 4: выделен health-check
 
-- `api/health.js` — `createHealthChecks()`: `checkTesseract` (кэш 30 с), `checkOllamaStatus` (tells/model), `modelName`. Логика перенесена без изменений.
+- `api/services/health.js` — `createHealthChecks()`: `checkTesseract` (кэш 30 с), `checkOllamaStatus` (tells/model), `modelName`. Логика перенесена без изменений.
 - `server.js`: `const { checkOllamaStatus, checkTesseractCached } = createHealthChecks();`; удалены локальные `checkTesseract`, `checkOllamaStatus`, `tesseractStatusCache` (2489 → 2408 строк).
 - Проверено: `verify` exit 0; 14/14 интеграционных.
 
@@ -494,9 +509,9 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 
 ### 2026-11-15 — P2-1 шаг 2: выделен блок шаблона
 
-- `api/template-store.js` — домен: `readMeta/saveMeta/remove/toPublic/replaceTemplate/filePath/absolutePath/ensureDir`; валидация `storageName`, атомарная запись (tmp + rename).
+- `api/services/template-store.js` — домен: `readMeta/saveMeta/remove/toPublic/replaceTemplate/filePath/absolutePath/ensureDir`; валидация `storageName`, атомарная запись (tmp + rename).
 - `api/routes/template-routes.js` — 4 HTTP-маршрута (`GET /`, `GET /file`, `POST /`, `DELETE /`), зависимости инжектируются, multer создаётся внутри.
-- `api/text.js` — `cleanLabel`; устранено дублирование (было объявлено и в `server.js`, и инжектилось в store).
+- `api/domain/text.js` — `cleanLabel`; устранено дублирование (было объявлено и в `server.js`, и инжектилось в store).
 - `server.js` 2646 → 2515 строк; `readTemplateMeta` оставлен тонкой обёрткой (используется `pinTemplateReference` и `readyz`).
 - Проверено: `verify` exit 0; 12/12 интеграционных; живой цикл (GET null → upload 201 → GET → DELETE → null).
 
@@ -527,7 +542,7 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 
 ### 2026-11-15 — быстрый батч P2/P3
 
-- **P2-9**: `VERSION` — единственный источник версии; `services/ollama/api/version.js` (`appVersion()`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION`; `frontend/package.json` и lock-файлы синхронизированы (4.5.13 → 4.5.17); `tests/node/version.test.js`.
+- **P2-9**: `VERSION` — единственный источник версии; `services/ollama/api/lib/version.js` (`appVersion()`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION`; `frontend/package.json` и lock-файлы синхронизированы (4.5.13 → 4.5.17); `tests/node/version.test.js`.
 - **P3-5**: `.DS_Store` удалён из репо и игнорируется; убран устаревший `archive_index.json`; удалены `generated.pdf`, `_work.pdf`, `_regression_upload.png`; `storage_path` в архиве стал относительным.
 - **P2-10**: удалены `engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок, пайплайн на Python).
 - **P2-7**: `app.Dockerfile` переведён на `npm ci` (frontend + app), копируются lock-файлы.
@@ -554,7 +569,7 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 ### 2026-11-15 — завершение «частичных» пунктов
 
 - **P1-1** PostgreSQL-only: `requirePostgres()` fail-fast, удалены JSON-fallback и `atomicJson`, legacy `sessions.json`.
-- **P2-2** ETag + conditional GET (`api/etag.js`) на списки и чтения; проверено 200 → 304.
+- **P2-2** ETag + conditional GET (`api/lib/etag.js`) на списки и чтения; проверено 200 → 304.
 - **P1-9** CI-джоб `migrations` на чистом PostgreSQL; миграции применяются с нуля.
 - **P1-2** idle timeout (`sessions.last_seen_at`, `SESSION_IDLE_MS`) + `revoke-all-sessions`; проверено 401 после простоя.
 - **P1-3** идемпотентный replay генерации VDGO (хеш тела, копия в `/app/output/.idem`).
@@ -562,7 +577,7 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - **P1-4** restore drill: дамп → восстановление в чистый `postgres:17.7` → приложение поднимается; скрипты принимают `PGURL`.
 - **P1-8** streaming multipart (spool на диск, потоковая запись файлов, лимиты поля/файла).
 - **P1-12** `read_only: true` + tmpfs; проверено `--read-only --cap-drop ALL` (health 200, setup 201, без EROFS).
-- **P1-14** typed runtime-слой `api/entities.js` (Zod) во всех репозиториях.
+- **P1-14** typed runtime-слой `api/validation/entities.js` (Zod) во всех репозиториях.
 - Проверка: `npm run verify` exit 0; 102 node-теста; VDGO 25 passed / 37 skipped.
 
 ### 2026-11-14 (продолжение)

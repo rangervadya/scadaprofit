@@ -75,7 +75,7 @@ test('openapi: /api/* пути присутствуют в маршрутах п
   };
   const files = [
     'services/ollama/api/server.js',
-    'services/ollama/api/workforce-system.js',
+    'services/ollama/api/services/workforce-system.js',
     ...readdirSync(join(ROOT, 'services/ollama/api/routes'))
       .filter((name) => name.endsWith('.js'))
       .map((name) => `services/ollama/api/routes/${name}`),

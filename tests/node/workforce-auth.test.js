@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hashPassword, verifyPassword, authenticateCredentials } from '../../services/ollama/api/workforce-system.js';
+import {
+  hashPassword,
+  verifyPassword,
+  authenticateCredentials,
+} from '../../services/ollama/api/services/workforce-system.js';
 
 test('password hashes are salted and cannot be used as plain-text credentials', async () => {
   const first = await hashPassword('A-very-strong-Password-1');
@@ -46,7 +50,7 @@ test('login accepts only a matching existing username and password', async () =>
 
 test('request schemas reject malformed bodies and normalize valid ones', async () => {
   const { loginSchema, setupSchema, streetSchema, buildingSchema, connectionSchema, reviewSchema } =
-    await import('../../services/ollama/api/schemas.js');
+    await import('../../services/ollama/api/validation/schemas.js');
 
   assert.equal(loginSchema.safeParse({ username: '  ivan.petrov  ', password: 'secret' }).success, true);
   assert.equal(loginSchema.safeParse({ username: '', password: 'secret' }).success, false);
@@ -77,7 +81,7 @@ test('request schemas reject malformed bodies and normalize valid ones', async (
 });
 
 test('PostgreSQL mirror is a no-op when AUTH_BACKEND is not postgres', async () => {
-  const repo = await import('../../services/ollama/api/postgres-repo.js');
+  const repo = await import('../../services/ollama/api/repositories/postgres-repo.js');
   const old = process.env.AUTH_BACKEND;
   delete process.env.AUTH_BACKEND;
   try {

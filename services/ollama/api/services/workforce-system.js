@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
-import { logger } from './logger.js';
-import { validateBody, loginSchema, setupSchema } from './schemas.js';
-import { requirePostgres } from './db.js';
-import { sendJsonConditional } from './etag.js';
-import { appVersion } from './version.js';
+import { logger } from '../lib/logger.js';
+import { validateBody, loginSchema, setupSchema } from '../validation/schemas.js';
+import { requirePostgres } from '../repositories/db.js';
+import { sendJsonConditional } from '../lib/etag.js';
+import { appVersion } from '../lib/version.js';
 import {
   mirrorUser,
   mirrorSession,
@@ -17,19 +17,22 @@ import {
   saveIdempotency,
   touchSession,
   deleteAllSessions,
-} from './postgres-repo.js';
-import { fetchWorkspace as fetchWorkspacePg, saveWorkspace as saveWorkspacePg } from './workforce-workspace-repo.js';
-import { createUserAdminRouter } from './routes/workforce-user-routes.js';
-import { createAuthRouter } from './routes/workforce-auth-routes.js';
-import { createTaskRouter } from './routes/workforce-task-routes.js';
-import { createInboxRouter } from './routes/workforce-inbox-routes.js';
-import { createSubmissionRouter } from './routes/workforce-submission-routes.js';
+} from '../repositories/postgres-repo.js';
+import {
+  fetchWorkspace as fetchWorkspacePg,
+  saveWorkspace as saveWorkspacePg,
+} from '../repositories/workforce-workspace-repo.js';
+import { createUserAdminRouter } from '../routes/workforce-user-routes.js';
+import { createAuthRouter } from '../routes/workforce-auth-routes.js';
+import { createTaskRouter } from '../routes/workforce-task-routes.js';
+import { createInboxRouter } from '../routes/workforce-inbox-routes.js';
+import { createSubmissionRouter } from '../routes/workforce-submission-routes.js';
 import {
   createLookupCache,
   taskForClient as taskForClientWith,
   reportForClient as reportForClientWith,
   defectReportForClient as defectReportForClientWith,
-} from './workforce-serializers.js';
+} from '../domain/workforce-serializers.js';
 
 import {
   SESSION_COOKIE,
@@ -52,7 +55,7 @@ import {
   authenticateCredentials,
   parseHouseAddresses,
   evaluateAddressFolder,
-} from './workforce-core.js';
+} from '../domain/workforce-core.js';
 
 // Re-exported for existing importers (tests, server.js).
 export {
