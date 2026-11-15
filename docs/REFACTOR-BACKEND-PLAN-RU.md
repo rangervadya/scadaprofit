@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-API разложен по слоям `domain/repositories/routes/services/validation/lib`, остался `processor.py`)**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-API по слоям `domain/repositories/routes/services/validation/lib`, engine — пакет `core/ocr/model/export/symbols`; остаток — разбивка `processor.py`)**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 10 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-1 (остаток `processor.py`), P2-7 (SBOM) | 3 (P2-3, P2-12, P2-14) |
+| P2 | 11 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-1 (остаток `processor.py`), P2-7 (SBOM) | 3 (P2-3, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -149,7 +149,7 @@
 | P2-7 | Воспроизводимость сборки | `app.Dockerfile:31-33` `npm install` без lock; `ollama:latest`; ranges в vdgo req | `npm ci`, lock, digest, `--require-hashes`, SBOM |
 | P2-8 | Runtime image с тестами | `app.Dockerfile:49-56` | вынести тесты в CI, не копировать в runtime |
 | P2-9 | Версии/docs drift | `VERSION 4.5.17`, `frontend 4.5.13`, changelog «31 тест» | single source version, changelog automation |
-| P2-10 | Dead code | `engine/graph.js`, `strokes.js`, `prompts.js`, `moss_ai.py`, `openrouter_ai.py`, legacy UI | удалить/изолировать |
+| P2-10 | Dead code | `engine/graph.js`, `strokes.js`, `prompts.js`, `moss_ai.py`, `openrouter_ai.py`, legacy UI | ✅ удалено |
 | P2-11 | Source-string тесты | `repository-layout.test.js` | поведенческие тесты |
 | P2-12 | Нет SLO/нагрузочных тестов | — | SLO, k6/Locust, capacity model |
 
@@ -242,8 +242,8 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [x] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2355).
-  - **P2-1 progress**: JS-API разбит и разложен по слоям — `api/domain/` (чистая логика), `api/repositories/` (доступ к БД), `api/routes/` (HTTP), `api/services/` (use-cases), `api/validation/` (Zod-схемы), `api/lib/` (logger/version/etag/env), `server.js` — composition root. `processor.py` — вынесены CAD-экспорт, препроцессинг, геометрия, граф, Qwen-клиент; остаток — OCR-пайплайн (нужен отдельный этап).
+- [x] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2788).
+  - **P2-1 progress**: JS-API разложен по слоям — `api/domain/` (чистая логика), `api/repositories/` (доступ к БД), `api/routes/` (HTTP), `api/services/` (use-cases), `api/validation/` (Zod-схемы), `api/lib/` (logger/version/etag/env), `server.js` — composition root. Python-движок — пакет `engine` с подпакетами `core/ocr/model/export/symbols` (см. шаг 19); остаток — разбивка `processor.py` (OCR-пайплайн, 2788 строк).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/services/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/domain/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -289,9 +289,10 @@
 - [x] **P2-9** Версии/docs drift.
   - **Сделано**: `VERSION` — единственный источник; `services/ollama/api/lib/version.js` (`appVersion()`, учитывает `APP_RELEASE`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION` как fallback; `frontend/package.json` и оба lock-файла синхронизированы на `4.5.17`.
   - **Проверено**: `tests/node/version.test.js` (5 тестов) — версии совпадают, хардкод-лейблов в коде нет.
-- [x] **P2-10** Удалить dead code (JS-часть).
-  - **Сделано**: удалены `services/ollama/engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок; пайплайн полностью на Python). `engine/` больше не содержит JS.
-  - **Осталось (отдельно)**: проверить `moss_ai.py`, `openrouter_ai.py`, legacy UI-ассеты.
+- [x] **P2-10** Удалить dead code.
+  - **Сделано (JS)**: удалены `services/ollama/engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок; пайплайн полностью на Python). `engine/` больше не содержит JS.
+  - **Сделано (Python, 2026-11-15)**: удалены `mask_processor.py` (968 строк, дубль функциональности — `zhang_suen_skeleton` уже есть в `centerline_vectorization`), `cad_renderer.py` (221, вытеснен `cad_export.py`), `evaluate_examples.py` (59, 0 ссылок); облачные AI-провайдеры `moss_ai.py` (943) и `openrouter_ai.py` (353) вместе с wiring в `processor.py` и 4 тестами (`test_moss_ai`, `test_moss_priority`, `test_openrouter_ai`, `test_openrouter_priority`) — в пайплайне они уже были выключены (`disabled: True`, `moss_pipe_status` всегда `None`, ветка fallback недостижима, оставались только CLI-флаги `--test-moss`/`--test-openrouter`).
+  - **Проверено**: 199 → 166 python-тестов (минус 33 облачных), `verify` exit 0; терпимая классификация источников в `segment_geometry` сохранена для внешних масок.
 - [x] **P2-11** Source-string тесты → поведенческие (legacy UI удалён).
   - **Сделано**: удалён мёртвый legacy UI `tests/fixtures/legacy-frontend/` (524K, приложением не отдаётся, заменён React-SPA) вместе с тестами, которые проверяли его HTML/JS строками (`workforce-contract`, `workforce-inbox-folders`, `workforce-planning`, `manual-cad-ink-trace`); 4 python-теста `BrowserExportRegressionTests` удалены; backend-контракты сохранены в `tests/node/workforce-backend-contracts.test.js`; обновлены `package.json`, `eslint.config.js`, `repository-layout.test.js`.
   - **Проверено**: `npm run verify` exit 0; 97 node-тестов; 195 python; 62 vdgo.
@@ -393,6 +394,25 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 19: `engine/` стал пакетом со слоями
+
+- `services/ollama/engine/` — 24 плоских модуля, импортировавшихся через `sys.path`, преобразованы в пакет `engine` с запуском `python -m engine.processor`:
+  - `core/` — `geometry.py` (был `segment_geometry`, 880), `centerline_vectorization`, `reference_vectorization`, `logging_setup`, `analysis_state`.
+  - `ocr/` — `qwen_client`, `image_preprocess`.
+  - `model/` — `clean_layout`, `structured_model`, `engineering_validation`, `pipeline_diagnostics`, `drawing_template`, `drawing_quality`.
+  - `export/` — `cad_export`, `cad_graph`, `clean_export`, `cad_overlay`, `pdf_export`, `topology_reconstruction`.
+  - `symbols/` — `cad_symbols`, `symbol_recognition`, `recognition_channels`, `annotation_linking`.
+- Внутрипакетные импорты стали абсолютными (`from engine.core... import ...`). `processor.py` остаётся единственной точкой входа и сохраняет реэкспорты, которые патчат тесты.
+- Изменения запуска: `server.js` спавнит `[-m, engine.processor]` с `cwd=services/ollama`; `BUILD_INFO` fingerprint указывает на новые пути (`model/clean_layout.py`, `model/drawing_template.py`); `package.json` `test:python` = `compileall -q engine` + `PYTHONPATH=. unittest`, `test:vdgo` больше не требует `PYTHONPATH`.
+- Тесты: `tests/python/*` импортируют `engine.*` и вставляют `services/ollama` в `sys.path`; патчи переведены на `engine.ocr.qwen_client`, `engine.core.geometry`, `engine.processor` и т.д.
+- **Проверено**: `verify` exit 0 (166 python, 62 vdgo, 102 node); интеграционные 21/21; реальный прогон `python -m engine.processor --input sketch.png --out /tmp/...` сгенерировал DXF/SVG/overlay.
+
+### 2026-11-15 — P2-10: удалён мёртвый код и отключённые облачные AI
+
+- Удалено 2485 строк: `mask_processor.py` (968), `moss_ai.py` (943), `openrouter_ai.py` (353), `cad_renderer.py` (221), `evaluate_examples.py` (59) и 4 теста облачных провайдеров.
+- Облачная обвязка в `processor.py`: импорты, `moss`/`openrouter` блоки в `ocr_status`, мёртвая ветка fallback (`moss_pipe_status` всегда `None`), CLI-флаги `--test-moss`/`--test-openrouter`, счётчики диагностики.
+- Python-тесты 199 → 166; `verify` exit 0.
 
 ### 2026-11-15 — P2-1 шаг 18: слоистая структура `services/ollama/api/`
 
