@@ -47,11 +47,13 @@ model Session {
   userId     String   @map("user_id") @db.Uuid
   tokenHash  String   @unique @map("token_hash") @db.VarChar(128)
   expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([lastSeenAt])
   @@map("sessions")
 }
 

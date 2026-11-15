@@ -15,12 +15,18 @@ import {
   fetchSessions,
   findIdempotency,
   saveIdempotency,
+  touchSession,
+  deleteAllSessions,
 } from './postgres-repo.js';
 import { fetchWorkspace as fetchWorkspacePg, saveWorkspace as saveWorkspacePg } from './workforce-workspace-repo.js';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = 'profit_session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Idle timeout: a session dies after this period without any request (P1-2).
+const SESSION_IDLE_MS = Number(process.env.SESSION_IDLE_MS || 12 * 60 * 60 * 1000);
+// Do not write last_seen_at on every request; one write per minute is enough.
+const SESSION_TOUCH_THROTTLE_MS = 60 * 1000;
 const ROLE_NAMES = {
   fitter: 'Слесарь',
   receiver: 'Приёмщик',
@@ -275,13 +281,16 @@ export async function createWorkforceSystem({
   delete workspace.locations;
   if (hadLegacyLocations) await saveWorkspacePg(workspace);
 
+  const sessionIsLive = (item, at) => {
+    if (!(Number(item.expiresAt) > at)) return false;
+    // SESSION_IDLE_MS <= 0 disables the idle check (absolute TTL only).
+    if (SESSION_IDLE_MS > 0 && at - Number(item.lastSeenAt || item.createdAt || 0) > SESSION_IDLE_MS) return false;
+    return users.some((user) => user.id === item.userId && user.active !== false);
+  };
+
   const now = Date.now();
-  const expiredAtBoot = sessions.filter(
-    (item) => !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
-  );
-  sessions = sessions.filter(
-    (item) => Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false),
-  );
+  const expiredAtBoot = sessions.filter((item) => !sessionIsLive(item, now));
+  sessions = sessions.filter((item) => sessionIsLive(item, now));
   if (expiredAtBoot.length) await Promise.all(expiredAtBoot.map((item) => deleteSession(item.tokenHash)));
   const saveUsers = async () => {
     await Promise.all(users.map((user) => mirrorUser(user)));
@@ -291,16 +300,10 @@ export async function createWorkforceSystem({
   };
   const sessionCleanup = setInterval(
     () => {
-      const now = Date.now();
-      const expired = sessions.filter(
-        (item) =>
-          !(Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false)),
-      );
+      const at = Date.now();
+      const expired = sessions.filter((item) => !sessionIsLive(item, at));
       const before = sessions.length;
-      sessions = sessions.filter(
-        (item) =>
-          Number(item.expiresAt) > now && users.some((user) => user.id === item.userId && user.active !== false),
-      );
+      sessions = sessions.filter((item) => sessionIsLive(item, at));
       if (sessions.length !== before) {
         void saveSessions().catch(() => {});
         void Promise.all(expired.map((item) => deleteSession(item.tokenHash)));
@@ -347,10 +350,26 @@ export async function createWorkforceSystem({
     const token = cookieValue(req.headers.cookie, SESSION_COOKIE);
     if (!token) return null;
     const hash = tokenHash(token);
-    const session = sessions.find((item) => item.tokenHash === hash && Number(item.expiresAt) > Date.now());
-    if (!session) return null;
+    const now = Date.now();
+    const known = sessions.find((item) => item.tokenHash === hash);
+    if (!known) return null;
+    if (!sessionIsLive(known, now)) {
+      // Expired or idle: drop it immediately so the row does not linger until
+      // the hourly sweep.
+      sessions = sessions.filter((item) => item.tokenHash !== hash);
+      void deleteSession(hash).catch(() => {});
+      void saveSessions().catch(() => {});
+      return null;
+    }
+    const session = known;
     const user = users.find((item) => item.id === session.userId && item.active !== false);
-    return user || null;
+    if (!user) return null;
+    // Throttled activity update: at most one DB write per session per minute.
+    if (now - Number(session.lastSeenAt || 0) > SESSION_TOUCH_THROTTLE_MS) {
+      session.lastSeenAt = now;
+      void touchSession(hash, now).catch(() => {});
+    }
+    return user;
   }
   function requireRoles(req, res, roles) {
     if (!req.user) {
@@ -365,11 +384,13 @@ export async function createWorkforceSystem({
   }
   async function sessionForUser(res, user) {
     const token = randomBytes(32).toString('base64url');
+    const now = Date.now();
     const session = {
       tokenHash: tokenHash(token),
       userId: user.id,
-      createdAt: new Date().toISOString(),
-      expiresAt: Date.now() + SESSION_TTL_MS,
+      createdAt: new Date(now).toISOString(),
+      lastSeenAt: now,
+      expiresAt: now + SESSION_TTL_MS,
     };
     sessions.push(session);
     await saveSessions();
@@ -1587,6 +1608,17 @@ export async function createWorkforceSystem({
       'All sessions revoked for user',
     );
     return res.json({ ok: true, revoked: before - sessions.length });
+  });
+
+  routes.post('/api/workforce/admin/revoke-all-sessions', async (req, res) => {
+    if (!requireRoles(req, res, ['developer'])) return;
+    const before = sessions.length;
+    const revoked = sessions.map((item) => item.tokenHash);
+    sessions = [];
+    await deleteAllSessions();
+    await Promise.all(revoked.map((hash) => deleteSession(hash)));
+    req.log.warn({ revoked: before, by: req.user.id }, 'All sessions revoked globally');
+    return res.json({ ok: true, revoked: before });
   });
 
   routes.get('/api/workforce/admin/diagnostics', (req, res) => {

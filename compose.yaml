@@ -58,6 +58,7 @@ services:
       PYTHON_JOB_TIMEOUT_MS: "5400000"
       MAX_CONCURRENT_PYTHON_JOBS: "${MAX_CONCURRENT_PYTHON_JOBS:-1}"
       SHUTDOWN_TIMEOUT_MS: "${SHUTDOWN_TIMEOUT_MS:-20000}"
+      SESSION_IDLE_MS: "${SESSION_IDLE_MS:-43200000}"
       DATA_DIR: "/data/cad-reconstruction-jobs"
       AUTH_BACKEND: "${AUTH_BACKEND:-postgres}"
       DATABASE_URL: "${DATABASE_URL:-postgresql://vdgo:change_me_vdgo_2026@vdgo-db:5432/vdgo}"

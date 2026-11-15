@@ -454,6 +454,23 @@ paths:
                   revoked: { type: integer }
         "404": { description: Не найден }
 
+  /api/workforce/admin/revoke-all-sessions:
+    post:
+      tags: [workforce]
+      summary: Отозвать все сессии (глобальный logout, developer)
+      responses:
+        "200":
+          description: Все сессии отозваны
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean }
+                  revoked: { type: integer }
+        "403": { description: Недостаточно прав }
+
   /api/workforce/admin/diagnostics:
     get:
       tags: [workforce]

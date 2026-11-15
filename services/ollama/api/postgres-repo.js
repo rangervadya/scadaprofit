@@ -26,6 +26,7 @@ function sessionRow(session) {
     userId: session.userId,
     tokenHash: session.tokenHash,
     expiresAt: new Date(Number(session.expiresAt)),
+    lastSeenAt: new Date(Number(session.lastSeenAt || Date.now())),
     createdAt: new Date(session.createdAt || Date.now()),
   };
 }
@@ -64,7 +65,7 @@ export async function mirrorSession(session) {
     await prisma.session.upsert({
       where: { id: row.id },
       create: row,
-      update: { expiresAt: row.expiresAt },
+      update: { expiresAt: row.expiresAt, lastSeenAt: row.lastSeenAt },
     });
     return true;
   } catch (error) {
@@ -86,13 +87,26 @@ export async function deleteSession(tokenHash) {
 }
 
 export async function deleteUserSessions(userId) {
-  if (!postgresEnabled() || !userId) return false;
+  if (!postgresEnabled()) return false;
   try {
     const prisma = await getPrismaClient();
     await prisma.session.deleteMany({ where: { userId } });
     return true;
   } catch (error) {
     log.warn({ err: error, userId }, 'Cannot delete mirrored user sessions');
+    return false;
+  }
+}
+
+/** Revoke every session (global logout). */
+export async function deleteAllSessions() {
+  if (!postgresEnabled()) return false;
+  try {
+    const prisma = await getPrismaClient();
+    await prisma.session.deleteMany({});
+    return true;
+  } catch (error) {
+    log.warn({ err: error }, 'Cannot delete all mirrored sessions');
     return false;
   }
 }
@@ -171,6 +185,24 @@ export async function fetchSessions() {
     tokenHash: row.tokenHash,
     userId: row.userId,
     createdAt: row.createdAt.toISOString(),
+    lastSeenAt: (row.lastSeenAt || row.createdAt).getTime(),
     expiresAt: row.expiresAt.getTime(),
   }));
+}
+
+/**
+ * Update the activity timestamp of a session. Called on authenticated requests
+ * so idle sessions can be expired (P1-2). Throttled by the caller to avoid a
+ * write on every poll.
+ */
+export async function touchSession(tokenHash, when = Date.now()) {
+  if (!postgresEnabled() || !tokenHash) return false;
+  try {
+    const prisma = await getPrismaClient();
+    await prisma.session.updateMany({ where: { tokenHash }, data: { lastSeenAt: new Date(Number(when)) } });
+    return true;
+  } catch (error) {
+    log.warn({ err: error }, 'Cannot touch session');
+    return false;
+  }
 }
