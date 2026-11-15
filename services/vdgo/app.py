@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -1714,6 +1715,19 @@ MAX_REQUEST_BYTES = int(os.environ.get('VDGO_MAX_REQUEST_BYTES', str(256 * 1024 
 # Per-file cap inside a multipart request. A single huge image must not exhaust
 # RAM even when the total request stays under MAX_REQUEST_BYTES.
 MAX_FILE_BYTES = int(os.environ.get('VDGO_MAX_FILE_BYTES', str(64 * 1024 * 1024)))
+# Streaming multipart (P1-8): body chunks and per-field cap. The body is spooled
+# to RAM up to SPOOL_MAX_RAM_BYTES and to disk beyond that.
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+SPOOL_MAX_RAM_BYTES = int(os.environ.get('VDGO_SPOOL_MAX_RAM_BYTES', str(8 * 1024 * 1024)))
+MAX_FIELD_BYTES = int(os.environ.get('VDGO_MAX_FIELD_BYTES', str(2 * 1024 * 1024)))
+
+
+def _multipart_boundary(content_type: str) -> bytes:
+    """Extract the multipart boundary from a Content-Type header."""
+    match = re.search(r'boundary="?([^";]+)"?', content_type or '')
+    if not match:
+        raise ValueError('Не удалось определить границу multipart-запроса.')
+    return ('--' + match.group(1)).encode()
 
 
 def is_structured_payload_field(key):
@@ -2236,43 +2250,179 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {'error':'Не удалось прочитать файл архива.'})
             return
         self.send_error(404)
-    def parse_form(self):
-        n=int(self.headers.get('Content-Length','0'))
-        if n>MAX_REQUEST_BYTES:
-            raise ValueError(f'Общий размер запроса превышает {MAX_REQUEST_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображений и повторите попытку.')
-        raw=self.rfile.read(n); ctype=self.headers.get('Content-Type','')
-        # Keep the raw body hash for idempotent replay (P1-3).
-        self._request_hash = hashlib.sha256(raw).hexdigest()
-        form={}; files={}
-        if ctype.startswith('multipart/form-data'):
-            msg=BytesParser(policy=default).parsebytes(b'Content-Type: '+ctype.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+raw)
-            for part in msg.iter_parts():
-                name=part.get_param('name',header='content-disposition')
-                if not name: continue
-                if is_structured_payload_field(name):
-                    name = 'workforce_schemes_json'
-                filename=part.get_filename()
-                if filename:
-                    data=part.get_payload(decode=True) or b''
-                    if not data: continue
-                    if len(data)>MAX_FILE_BYTES:
-                        raise ValueError(f'Файл "{Path(filename).name}" превышает {MAX_FILE_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображения.')
-                    safe=re.sub(r'[^A-Za-z0-9._-]+','_',Path(filename).name)
-                    dst=UPLOADS/(uuid.uuid4().hex+'_'+safe); dst.write_bytes(data); files[name]=str(dst)
+    def _spool_body(self) -> "tempfile.SpooledTemporaryFile[bytes]":
+        """Read the request body into a spooled temp file (RAM then disk).
+
+        Streaming the body to disk keeps peak memory bounded by the chunk size
+        instead of the whole upload (P1-8). The SHA-256 is computed on the fly
+        for idempotent replay.
+        """
+        total = int(self.headers.get('Content-Length', '0') or 0)
+        if total > MAX_REQUEST_BYTES:
+            raise ValueError(
+                f'Общий размер запроса превышает {MAX_REQUEST_BYTES // (1024 * 1024)} МБ. '
+                'Уменьшите размер изображений и повторите попытку.'
+            )
+        spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_RAM_BYTES)
+        digest = hashlib.sha256()
+        remaining = total
+        while remaining > 0:
+            chunk = self.rfile.read(min(UPLOAD_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            spool.write(chunk)
+            remaining -= len(chunk)
+        self._request_hash = digest.hexdigest()
+        spool.seek(0)
+        return spool
+
+    def _parse_multipart_streaming(self, boundary: bytes):
+        """Parse multipart/form-data without holding the whole body in RAM.
+
+        File parts are streamed straight to disk; text fields are capped so a
+        huge "field" cannot exhaust memory. Part headers are interpreted by the
+        email parser so filename*/charset semantics stay correct.
+        """
+        form = {}
+        files = {}
+        body = self._spool_body()
+        delim = boundary
+        end_delim = boundary + b'--'
+        pending = b''
+        part_name = None
+        part_filename = None
+        part_charset = None
+        dest = None
+        written = 0
+        field_size = 0
+
+        def is_delim(line: bytes) -> bool:
+            stripped = line.rstrip(b'\r\n')
+            return stripped == delim or stripped == end_delim
+
+        def finish_part() -> None:
+            nonlocal pending, part_name, part_filename, part_charset, dest
+            nonlocal written, field_size
+            # The CRLF immediately before a boundary belongs to the delimiter
+            # framing, not to the part data.
+            if pending.endswith(b'\r\n'):
+                pending = pending[:-2]
+            if dest is not None:
+                dest.write(pending)
+                dest.close()
+                dest = None
+            elif part_name is not None:
+                payload = pending
+                charset = part_charset or 'utf-8'
+                try:
+                    form[part_name] = payload.decode(charset)
+                except (LookupError, UnicodeDecodeError):
+                    form[part_name] = payload.decode('utf-8', errors='replace')
+            pending = b''
+            part_name = None
+            part_filename = None
+            part_charset = None
+            written = 0
+            field_size = 0
+
+        # Skip the preamble up to the first boundary line.
+        saw_boundary = False
+        while True:
+            line = body.readline()
+            if not line:
+                break
+            if is_delim(line):
+                saw_boundary = True
+                break
+            if len(line) > 64 * 1024:
+                raise ValueError('Некорректный multipart-запрос.')
+        if not saw_boundary:
+            raise ValueError('Пустой multipart-запрос.')
+
+        while True:
+            # Read the part headers (terminated by a blank line).
+            header_lines = []
+            while True:
+                line = body.readline()
+                if not line or line in (b'\r\n', b'\n'):
+                    break
+                header_lines.append(line)
+            if not header_lines:
+                break
+
+            part = BytesParser(policy=default).parsebytes(b'MIME-Version: 1.0\r\n' + b''.join(header_lines) + b'\r\n')
+            part_name = part.get_param('name', header='content-disposition')
+            part_filename = part.get_filename()
+            part_charset = part.get_content_charset() or 'utf-8'
+            if is_structured_payload_field(part_name or ''):
+                part_name = 'workforce_schemes_json'
+            if part_filename:
+                safe = re.sub(r'[^A-Za-z0-9._-]+', '_', Path(part_filename).name)
+                dest = (UPLOADS / (uuid.uuid4().hex + '_' + safe)).open('wb')
+                files[part_name or 'file'] = str(dest.name)
+            else:
+                dest = None
+            pending = b''
+            written = 0
+            field_size = 0
+
+            # Stream the part body until the next boundary line.
+            while True:
+                line = body.readline()
+                if not line or is_delim(line):
+                    break
+                if dest is not None:
+                    if pending:
+                        dest.write(pending)
+                        written += len(pending)
+                    if written > MAX_FILE_BYTES:
+                        dest.close()
+                        dest = None
+                        raise ValueError(
+                            f'Файл "{Path(part_filename or "file").name}" превышает '
+                            f'{MAX_FILE_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображения.'
+                        )
                 else:
-                    # Multipart text fields from browsers often omit an explicit charset.
-                    # Decode UTF-8 explicitly so Cyrillic values are never silently replaced by ��.
-                    payload=part.get_payload(decode=True) or b''
-                    charset=part.get_content_charset() or 'utf-8'
-                    try:
-                        form[name]=payload.decode(charset)
-                    except (LookupError, UnicodeDecodeError):
-                        form[name]=payload.decode('utf-8',errors='replace')
+                    field_size += len(pending)
+                    if field_size > MAX_FIELD_BYTES:
+                        raise ValueError('Слишком большое текстовое поле в форме.')
+                pending = line
+
+            field_size += len(pending)
+            if dest is None and field_size > MAX_FIELD_BYTES:
+                raise ValueError('Слишком большое текстовое поле в форме.')
+            if dest is not None:
+                written += len(pending)
+                if written > MAX_FILE_BYTES:
+                    dest.close()
+                    dest = None
+                    raise ValueError(
+                        f'Файл "{Path(part_filename or "file").name}" превышает '
+                        f'{MAX_FILE_BYTES // (1024 * 1024)} МБ. Уменьшите размер изображения.'
+                    )
+
+            finish_part()
+            if line and line.rstrip(b'\r\n') == end_delim:
+                break
+
+        body.close()
+        return form, files
+
+    def parse_form(self):
+        ctype = self.headers.get('Content-Type', '')
+        if ctype.startswith('multipart/form-data'):
+            boundary = _multipart_boundary(ctype)
+            form, files = self._parse_multipart_streaming(boundary)
         else:
-            form={k:v[0] for k,v in parse_qs(raw.decode('utf-8'),keep_blank_values=True).items()}
+            body = self._spool_body()
+            raw = body.read()
+            body.close()
+            form = {k: v[0] for k, v in parse_qs(raw.decode('utf-8'), keep_blank_values=True).items()}
+            files = {}
         normalize_structured_form_field_names(form)
         normalize_form_dates(form)
-        return form,files
+        return form, files
     def do_POST(self):
         self._started_at = time.perf_counter()
         if self.path not in ('/generate','/generate_docx','/preview'):
