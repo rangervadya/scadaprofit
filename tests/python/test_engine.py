@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "services/ollama" / "engine"
 sys.path.insert(0, str(BACKEND))
 import processor
+import segment_geometry
 from annotation_linking import link_annotations
 from cad_symbols import assign_symbol_type, symbol_primitives
 from centerline_vectorization import build_centerline_trace, zhang_suen_thinning
@@ -632,7 +633,7 @@ class GraphTests(unittest.TestCase):
         # Nearby endpoints on parallel rows are not valid continuations. The
         # support of each endpoint is sampled once, and no gap pixels need to
         # be sampled after the tangent test rejects those pairs.
-        with patch('processor._sample_line_support', wraps=processor._sample_line_support) as sample:
+        with patch('segment_geometry._sample_line_support', wraps=segment_geometry._sample_line_support) as sample:
             _nodes, edges, _ = processor.endpoint_clusters(segments, radius=4.5, ink=ink)
         self.assertEqual(len(edges), len(segments))
         self.assertEqual(sample.call_count, len(segments) * 2)
