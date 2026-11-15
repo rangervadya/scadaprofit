@@ -12,9 +12,9 @@
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:validate": "prisma validate --schema prisma/schema.prisma",
     "test:node": "node --check api/lib/moss-env-boot.js && node --check api/lib/logger.js && node --check api/server.js && node --check api/services/workforce-system.js && node --check api/validation/schemas.js && node --test ../../tests/node/logging.test.js ../../tests/node/frontend-resilience.test.js ../../tests/node/workforce-auth.test.js ../../tests/node/workforce-backend-contracts.test.js ../../tests/node/workforce-upload.test.js ../../tests/node/repository-layout.test.js && node --check api/domain/manual-cad-core.js && node --test ../../tests/node/manual-cad.test.js",
-    "test:python": "PYTHONPATH=./engine python -m py_compile engine/processor.py && PYTHONPATH=./engine python -m unittest discover -s ../../tests/python -p \"test_*.py\"",
+    "test:python": "python -m compileall -q engine && PYTHONPATH=. python -m unittest discover -s ../../tests/python -p \"test_*.py\"",
     "test": "npm run test:node && npm run test:python",
-    "test:vdgo": "PYTHONPATH=./engine python -m unittest discover -s ../../tests/vdgo -p \"test_*.py\"",
+    "test:vdgo": "python -m unittest discover -s ../../tests/vdgo -p \"test_*.py\"",
     "test:integration": "node --test --test-concurrency=1 ../../tests/node/integration/api.test.js ../../tests/node/integration/business-flows.test.js",
     "db:deploy:test": "prisma migrate deploy --schema prisma/schema.prisma"
   },

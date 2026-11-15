@@ -78,8 +78,8 @@ const BUILD_INFO = {
         await Promise.all(
           [
             '../engine/processor.py',
-            '../engine/clean_layout.py',
-            '../engine/drawing_template.py',
+            '../engine/model/clean_layout.py',
+            '../engine/model/drawing_template.py',
             'domain/manual-cad-core.js',
             'services/workforce-system.js',
             'server.js',
@@ -93,6 +93,10 @@ const app = express();
 if (process.env.TRUST_GATEWAY_PROXY === '1') app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.MASK_PYTHON || '/opt/venv/bin/python';
+// The engine is a package (engine.processor); run it as a module so its
+// intra-package absolute imports resolve. cwd is services/ollama.
+const ENGINE_ROOT = path.join(__dirname, '..');
+const ENGINE_MODULE = ['-m', 'engine.processor'];
 const DATA = process.env.DATA_DIR || path.join(os.tmpdir(), 'cad-reconstruction-jobs');
 const UPLOAD_DIR = path.join(os.tmpdir(), 'cad-reconstruction-uploads');
 // Hidden metadata directory is inside the named cad_jobs volume, but is not
@@ -212,6 +216,8 @@ function runPythonStreaming(
     const child = spawn(PYTHON, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // Required for `python -m engine.processor`: the package lives here.
+      cwd: ENGINE_ROOT,
       env: env ? { ...process.env, ...env } : process.env,
     });
     activePythonChildren.add(child);
@@ -888,7 +894,7 @@ async function runStoredSchemeAnalysis(jobId) {
   const sourcePath = path.join(jobDir, path.basename(meta.sourceName));
   const progressPath = path.join(jobDir, 'progress.log');
   const templatePath = await pinTemplateReference(jobDir);
-  const processorArgs = [path.join(__dirname, '../engine/processor.py'), '--input', sourcePath, '--out', jobDir];
+  const processorArgs = [...ENGINE_MODULE, '--input', sourcePath, '--out', jobDir];
   if (templatePath) processorArgs.push('--template', templatePath);
   if (meta.rotationDegrees != null && [0, 90, 180, 270].includes(Number(meta.rotationDegrees)))
     processorArgs.push('--rotation', String(Number(meta.rotationDegrees)));
@@ -1316,7 +1322,7 @@ app.post('/api/analyze', limitHeavyRequests, heavyQuota, upload.single('image'),
 
     const progressPath = path.join(jobDir, 'progress.log');
     const templatePath = await pinTemplateReference(jobDir);
-    const processorArgs = [path.join(__dirname, '../engine/processor.py'), '--input', sourcePath, '--out', jobDir];
+    const processorArgs = [...ENGINE_MODULE, '--input', sourcePath, '--out', jobDir];
     if (templatePath) processorArgs.push('--template', templatePath);
     const requestedRotation = String(req.body?.rotationDegrees ?? 'auto');
     if (['0', '90', '180', '270'].includes(requestedRotation)) processorArgs.push('--rotation', requestedRotation);

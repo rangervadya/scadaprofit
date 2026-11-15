@@ -19,13 +19,30 @@ from typing import Any
 
 import cv2
 import numpy as np
-import qwen_client
+from PIL import Image, ImageOps
+
+import engine.ocr.qwen_client as qwen_client
 
 # CAD export moved to cad_export.py (P2-1); re-exported so existing imports of
 # `processor.build_clean_svg` and the tests that patch `processor.*` keep working.
-from analysis_state import set_analysis_hard_deadline
-from annotation_linking import link_annotations
-from cad_export import (  # noqa: F401
+from engine.core.analysis_state import set_analysis_hard_deadline
+from engine.core.centerline_vectorization import build_centerline_trace
+from engine.core.geometry import (  # noqa: F401
+    _confirmed_text_boxes,
+    _expanded_text_box,
+    _merge_aligned_duplicate,
+    _same_ink_band,
+    _sample_line_support,
+    _segment_inside_text_box,
+    _segment_text_box_metrics,
+    _segment_text_mask_metrics,
+    _text_region_mask,
+    endpoint_clusters,
+    extract_segments,
+)
+from engine.core.logging_setup import configure_logging, emit_progress, get_logger
+from engine.core.reference_vectorization import build_reference_trace
+from engine.export.cad_export import (  # noqa: F401
     _annotation_export_kind,
     _cad_edge_chains,
     _clean_cad_points,
@@ -35,22 +52,23 @@ from cad_export import (  # noqa: F401
     build_clean_svg,
     build_dxf,
 )
-from cad_graph import (  # noqa: F401
+from engine.export.cad_graph import (  # noqa: F401
     _build_join_candidates,
     _point_to_segment_distance,
     detect_crossings,
     select_primary_cad_edges,
     validate_primary_semantic_routes,
 )
-from cad_overlay import render_cad_alignment_overlay
-from cad_symbols import catalog_manifest
-from centerline_vectorization import build_centerline_trace
-from clean_export import build_layout_dxf, build_layout_svg
-from clean_layout import build_clean_layout
-from drawing_quality import validate_clean_layout
-from drawing_template import build_drawing_template
-from engineering_validation import validate_engineering_model
-from image_preprocess import (  # noqa: F401
+from engine.export.cad_overlay import render_cad_alignment_overlay
+from engine.export.clean_export import build_layout_dxf, build_layout_svg
+from engine.export.topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
+from engine.model.clean_layout import build_clean_layout
+from engine.model.drawing_quality import validate_clean_layout
+from engine.model.drawing_template import build_drawing_template
+from engine.model.engineering_validation import validate_engineering_model
+from engine.model.pipeline_diagnostics import build_pipeline_diagnostics
+from engine.model.structured_model import build_document_model
+from engine.ocr.image_preprocess import (  # noqa: F401
     _detect_page_quad,
     _detect_text_rotation,
     _detect_text_rotation_fallback,
@@ -64,10 +82,7 @@ from image_preprocess import (  # noqa: F401
     normalize_document,
     prepare_document_image,
 )
-from logging_setup import configure_logging, emit_progress, get_logger
-from PIL import Image, ImageOps
-from pipeline_diagnostics import build_pipeline_diagnostics
-from qwen_client import (  # noqa: F401
+from engine.ocr.qwen_client import (  # noqa: F401
     CHECKPOINT_VERSION,
     _analysis_has_qwen_budget,
     _annotation_items_from_response,
@@ -84,23 +99,9 @@ from qwen_client import (  # noqa: F401
     _tile_checkpoint_path,
     _tile_checkpoint_signature,
 )
-from recognition_channels import split_recognition_channels
-from reference_vectorization import build_reference_trace
-from segment_geometry import (  # noqa: F401
-    _confirmed_text_boxes,
-    _expanded_text_box,
-    _merge_aligned_duplicate,
-    _same_ink_band,
-    _sample_line_support,
-    _segment_inside_text_box,
-    _segment_text_box_metrics,
-    _segment_text_mask_metrics,
-    _text_region_mask,
-    endpoint_clusters,
-    extract_segments,
-)
-from structured_model import build_document_model
-from topology_reconstruction import attach_pipes_to_symbols, split_segments_at_endpoint_junctions
+from engine.symbols.annotation_linking import link_annotations
+from engine.symbols.cad_symbols import catalog_manifest
+from engine.symbols.recognition_channels import split_recognition_channels
 
 configure_logging()
 log = get_logger('processor')

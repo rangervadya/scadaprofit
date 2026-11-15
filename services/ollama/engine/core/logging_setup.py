@@ -9,6 +9,7 @@ string `msg` is treated as a structured event (and rendered back into the
 compact `[STAGE] message` text that progress.log has always shown); any other
 line is forwarded verbatim, so third-party warnings and tracebacks keep working.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,12 +36,33 @@ _LEVELS = {
 
 # Attributes every LogRecord already carries; anything else passed through
 # `extra=` is a user field and belongs in the JSON payload.
-_RESERVED = frozenset({
-    'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
-    'module', 'exc_info', 'exc_text', 'stack_info', 'lineno', 'funcName',
-    'created', 'msecs', 'relativeCreated', 'thread', 'threadName',
-    'processName', 'process', 'taskName', 'message', 'asctime',
-})
+_RESERVED = frozenset(
+    {
+        'name',
+        'msg',
+        'args',
+        'levelname',
+        'levelno',
+        'pathname',
+        'filename',
+        'module',
+        'exc_info',
+        'exc_text',
+        'stack_info',
+        'lineno',
+        'funcName',
+        'created',
+        'msecs',
+        'relativeCreated',
+        'thread',
+        'threadName',
+        'processName',
+        'process',
+        'taskName',
+        'message',
+        'asctime',
+    }
+)
 
 _STAGE_RE = re.compile(r'[^A-Za-z0-9_-]')
 _WHITESPACE_RE = re.compile(r'[\r\n]+')
@@ -57,8 +79,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            'ts': time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(record.created))
-            + f'.{int(record.msecs):03d}Z',
+            'ts': time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(record.created)) + f'.{int(record.msecs):03d}Z',
             'level': record.levelname.lower(),
             'logger': record.name,
             'msg': record.getMessage(),

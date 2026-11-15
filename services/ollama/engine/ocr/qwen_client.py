@@ -21,9 +21,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from analysis_state import get_analysis_hard_deadline
-from logging_setup import get_logger
 from PIL import Image
+
+from engine.core.analysis_state import get_analysis_hard_deadline
+from engine.core.logging_setup import get_logger
 
 log = get_logger('processor.qwen')
 

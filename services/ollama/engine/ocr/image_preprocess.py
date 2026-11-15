@@ -13,10 +13,12 @@ from typing import Any
 
 import cv2
 import numpy as np
-from logging_setup import get_logger
 from PIL import Image, ImageOps
 
+from engine.core.logging_setup import get_logger
+
 log = get_logger('processor.preprocess')
+
 
 def load_image(path: str) -> np.ndarray:
     pil = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
@@ -78,6 +80,7 @@ def _detect_text_rotation(bgr: np.ndarray) -> tuple[int, float, float]:
     min_script = max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0')))
     try:
         import pytesseract
+
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         result = pytesseract.image_to_osd(Image.fromarray(rgb), config='--psm 0')
         rotate_match = re.search(r'Rotate:\s*(0|90|180|270)', result)
@@ -126,8 +129,7 @@ def _detect_text_rotation_fallback(bgr: np.ndarray) -> dict[str, Any] | None:
             gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
             try:
                 data = pytesseract.image_to_data(
-                    Image.fromarray(gray), lang=lang, config='--oem 1 --psm 11',
-                    output_type=Output.DICT, timeout=timeout
+                    Image.fromarray(gray), lang=lang, config='--oem 1 --psm 11', output_type=Output.DICT, timeout=timeout
                 )
                 score = 0.0
                 accepted_tokens = 0
@@ -168,16 +170,22 @@ def _detect_text_rotation_fallback(bgr: np.ndarray) -> dict[str, Any] | None:
         return {
             'accepted': bool(accepted),
             'rotation_degrees': best_angle if accepted else None,
-            'scores': scores, 'candidates': diagnostics,
-            'winner_score': round(best_score, 2), 'runner_up_score': round(second_score, 2),
+            'scores': scores,
+            'candidates': diagnostics,
+            'winner_score': round(best_score, 2),
+            'runner_up_score': round(second_score, 2),
             'required_margin': round(required_gap, 2),
             'relative_margin': round(relative_margin, 4),
-            'minimum_180_relative_margin': min_180_margin, 'reason': reason,
+            'minimum_180_relative_margin': min_180_margin,
+            'reason': reason,
         }
     except Exception as error:
         return {
-            'accepted': False, 'rotation_degrees': None, 'scores': {},
-            'candidates': {}, 'reason': f'fallback_unavailable:{type(error).__name__}',
+            'accepted': False,
+            'rotation_degrees': None,
+            'scores': {},
+            'candidates': {},
+            'reason': f'fallback_unavailable:{type(error).__name__}',
         }
 
 
@@ -189,8 +197,9 @@ def _estimate_document_skew(bgr: np.ndarray) -> dict[str, Any]:
     min_dimension = min(h, w)
     min_length = max(36, int(min_dimension * 0.035))
     threshold = max(24, int(min_dimension * 0.018))
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 1800.0, threshold=threshold,
-                            minLineLength=min_length, maxLineGap=max(10, int(min_dimension * 0.012)))
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 1800.0, threshold=threshold, minLineLength=min_length, maxLineGap=max(10, int(min_dimension * 0.012))
+    )
     horizontal: list[tuple[float, float]] = []
     vertical: list[tuple[float, float]] = []
     if lines is not None:
@@ -208,6 +217,7 @@ def _estimate_document_skew(bgr: np.ndarray) -> dict[str, Any]:
                     horizontal.append((horizontal_offset, length))
                 else:
                     vertical.append((horizontal_offset, length))
+
     def weighted_median(values: list[tuple[float, float]]) -> float:
         ranked = sorted(values, key=lambda item: item[0])
         half = sum(weight for _, weight in ranked) / 2.0
@@ -217,27 +227,36 @@ def _estimate_document_skew(bgr: np.ndarray) -> dict[str, Any]:
             if accumulated >= half:
                 return value
         return ranked[-1][0]
+
     min_total_length = max(150.0, math.hypot(w, h) * 0.10)
     if len(horizontal) < 2 or len(vertical) < 2:
-        return {"accepted": False, "angle_degrees": 0.0, "horizontal_lines": len(horizontal),
-                "vertical_lines": len(vertical), "reason": "insufficient_two_axis_evidence"}
+        return {
+            'accepted': False,
+            'angle_degrees': 0.0,
+            'horizontal_lines': len(horizontal),
+            'vertical_lines': len(vertical),
+            'reason': 'insufficient_two_axis_evidence',
+        }
     h_angle = weighted_median(horizontal)
     v_angle = weighted_median(vertical)
     combined = weighted_median(horizontal + vertical)
     deviations = [abs(value - combined) for value, _ in horizontal + vertical]
     total_length = sum(length for _, length in horizontal + vertical)
     max_angle = max(0.25, min(4.0, float(os.getenv('DESKEW_MAX_ANGLE_DEG', '2.5'))))
-    consistent = (abs(h_angle - v_angle) <= 0.85 and
-                  float(np.median(deviations)) <= 0.55 and
-                  max(deviations, default=0.0) <= 1.35)
-    accepted = (consistent and total_length >= min_total_length and
-                0.30 <= abs(combined) <= max_angle)
-    return {"accepted": bool(accepted), "angle_degrees": round(combined, 3) if accepted else 0.0,
-            "horizontal_lines": len(horizontal), "vertical_lines": len(vertical),
-            "horizontal_angle": round(h_angle, 3), "vertical_angle": round(v_angle, 3),
-            "median_deviation": round(float(np.median(deviations)), 3) if deviations else 0.0,
-            "evidence_length_px": round(total_length, 1), "minimum_evidence_length_px": round(min_total_length, 1),
-            "reason": "consistent_two_axis_evidence" if accepted else "weak_or_inconsistent_skew_evidence"}
+    consistent = abs(h_angle - v_angle) <= 0.85 and float(np.median(deviations)) <= 0.55 and max(deviations, default=0.0) <= 1.35
+    accepted = consistent and total_length >= min_total_length and 0.30 <= abs(combined) <= max_angle
+    return {
+        'accepted': bool(accepted),
+        'angle_degrees': round(combined, 3) if accepted else 0.0,
+        'horizontal_lines': len(horizontal),
+        'vertical_lines': len(vertical),
+        'horizontal_angle': round(h_angle, 3),
+        'vertical_angle': round(v_angle, 3),
+        'median_deviation': round(float(np.median(deviations)), 3) if deviations else 0.0,
+        'evidence_length_px': round(total_length, 1),
+        'minimum_evidence_length_px': round(min_total_length, 1),
+        'reason': 'consistent_two_axis_evidence' if accepted else 'weak_or_inconsistent_skew_evidence',
+    }
 
 
 def _rotate_expand(bgr: np.ndarray, angle_degrees: float) -> np.ndarray:
@@ -250,8 +269,7 @@ def _rotate_expand(bgr: np.ndarray, angle_degrees: float) -> np.ndarray:
     new_h = int(math.ceil(h * math.cos(radians) + w * math.sin(radians)))
     matrix[0, 2] += new_w / 2.0 - centre[0]
     matrix[1, 2] += new_h / 2.0 - centre[1]
-    return cv2.warpAffine(bgr, matrix, (new_w, new_h), flags=cv2.INTER_CUBIC,
-                          borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
+    return cv2.warpAffine(bgr, matrix, (new_w, new_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
 
 
 def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
@@ -286,22 +304,24 @@ def prepare_document_image(bgr: np.ndarray, rotation_degrees: int | None = None)
         prepared = cv2.rotate(prepared, rotate_codes[rotation_degrees])
     skew_diagnostics = _estimate_document_skew(prepared)
     deskew_applied = False
-    if skew_diagnostics.get("accepted"):
-        prepared = _rotate_expand(prepared, float(skew_diagnostics["angle_degrees"]))
+    if skew_diagnostics.get('accepted'):
+        prepared = _rotate_expand(prepared, float(skew_diagnostics['angle_degrees']))
         deskew_applied = True
     return prepared, {
-        "original_width": original_w, "original_height": original_h,
-        "page_quad_detected": quad is not None,
-        "perspective_corrected": quad is not None,
-        "rotation_degrees": rotation_degrees,
-        "orientation_confidence": round(float(orientation_confidence), 2),
-        "script_confidence": round(float(script_confidence), 2),
-        "orientation_min_confidence": max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0'))),
-        "script_min_confidence": max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0'))),
-        "orientation_decision": orientation_decision,
-        "orientation_fallback": rotation_diagnostics,
-        "deskew": {**skew_diagnostics, "applied": deskew_applied},
-        "prepared_width": int(prepared.shape[1]), "prepared_height": int(prepared.shape[0]),
+        'original_width': original_w,
+        'original_height': original_h,
+        'page_quad_detected': quad is not None,
+        'perspective_corrected': quad is not None,
+        'rotation_degrees': rotation_degrees,
+        'orientation_confidence': round(float(orientation_confidence), 2),
+        'script_confidence': round(float(script_confidence), 2),
+        'orientation_min_confidence': max(0.0, float(os.getenv('OSD_MIN_ORIENTATION_CONFIDENCE', '8.0'))),
+        'script_min_confidence': max(0.0, float(os.getenv('OSD_MIN_SCRIPT_CONFIDENCE', '2.0'))),
+        'orientation_decision': orientation_decision,
+        'orientation_fallback': rotation_diagnostics,
+        'deskew': {**skew_diagnostics, 'applied': deskew_applied},
+        'prepared_width': int(prepared.shape[1]),
+        'prepared_height': int(prepared.shape[0]),
     }
 
 
@@ -318,7 +338,7 @@ def normalize_document(bgr: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
     p1, p99 = np.percentile(norm, [1, 99])
     if p99 > p1 + 10:
         norm = np.clip((norm.astype(np.float32) - p1) * (255.0 / (p99 - p1)), 0, 255).astype(np.uint8)
-    return norm, {"background_kernel": int(k), "contrast_p01": float(p1), "contrast_p99": float(p99)}
+    return norm, {'background_kernel': int(k), 'contrast_p01': float(p1), 'contrast_p99': float(p99)}
 
 
 def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, Any]:
@@ -340,9 +360,12 @@ def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, Any]:
         block_size -= 1
     if block_size >= 3:
         adaptive = cv2.adaptiveThreshold(
-            norm_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, block_size,
-            max(4, min(12, int(os.getenv("ADAPTIVE_INK_C", "8"))))
+            norm_gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            block_size,
+            max(4, min(12, int(os.getenv('ADAPTIVE_INK_C', '8')))),
         )
         faint = cv2.bitwise_and(adaptive, (norm_gray < 226).astype(np.uint8) * 255)
         faint = cv2.bitwise_and(faint, cv2.bitwise_not(dark))
@@ -359,15 +382,13 @@ def make_ink_layers(bgr: np.ndarray, norm_gray: np.ndarray) -> dict[str, Any]:
         if stats[component, cv2.CC_STAT_AREA] >= min_area:
             filtered[labels == component] = 255
     return {
-        "blue": cv2.bitwise_and(blue, filtered),
-        "dark": cv2.bitwise_and(dark, filtered),
-        "faint": cv2.bitwise_and(faint, filtered),
-        "combined": filtered,
-        "adaptive_block_size": block_size,
+        'blue': cv2.bitwise_and(blue, filtered),
+        'dark': cv2.bitwise_and(dark, filtered),
+        'faint': cv2.bitwise_and(faint, filtered),
+        'combined': filtered,
+        'adaptive_block_size': block_size,
     }
 
 
 def make_ink_mask(bgr: np.ndarray, norm_gray: np.ndarray) -> np.ndarray:
-    return make_ink_layers(bgr, norm_gray)["combined"]
-
-
+    return make_ink_layers(bgr, norm_gray)['combined']

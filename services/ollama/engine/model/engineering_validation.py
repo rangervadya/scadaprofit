@@ -1,4 +1,5 @@
 """Engineering consistency checks for the editable reconstruction model."""
+
 from __future__ import annotations
 
 import math
@@ -7,9 +8,9 @@ from copy import deepcopy
 from typing import Any
 
 
-def _interior_segment_intersection(a: list[float], b: list[float],
-                                  c: list[float], d: list[float],
-                                  epsilon: float = 0.035) -> tuple[float, float] | None:
+def _interior_segment_intersection(
+    a: list[float], b: list[float], c: list[float], d: list[float], epsilon: float = 0.035
+) -> tuple[float, float] | None:
     """Return a proper interior intersection; endpoint contacts are topology nodes."""
     ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
     cx, cy, dx, dy = float(c[0]), float(c[1]), float(d[0]), float(d[1])
@@ -39,9 +40,16 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
     findings: list[dict[str, Any]] = []
 
     def add(code: str, severity: str, targets: list[str], message: str) -> None:
-        findings.append({"id": f"F{len(findings) + 1}", "code": code, "severity": severity,
-                         "targetIds": [item for item in targets if item], "message": message,
-                         "status": "open"})
+        findings.append(
+            {
+                'id': f'F{len(findings) + 1}',
+                'code': code,
+                'severity': severity,
+                'targetIds': [item for item in targets if item],
+                'message': message,
+                'status': 'open',
+            }
+        )
 
     nodes = {str(item.get('id')): item for item in updated.get('nodes', []) if item.get('id')}
     pipes = [item for item in updated.get('pipes', []) if item.get('state') == 'primary']
@@ -67,7 +75,12 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
             reverse_key = tuple(reversed(key))
             canonical = min(key, reverse_key)
             if canonical in geometry_keys:
-                add('duplicate_pipe_geometry', 'warning', [pipe_id, geometry_keys[canonical]], 'Обнаружены две геометрически совпадающие трассы.')
+                add(
+                    'duplicate_pipe_geometry',
+                    'warning',
+                    [pipe_id, geometry_keys[canonical]],
+                    'Обнаружены две геометрически совпадающие трассы.',
+                )
             else:
                 geometry_keys[canonical] = pipe_id
         except (TypeError, ValueError, IndexError):
@@ -83,13 +96,16 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
                 position = node.get('position') if node else None
                 if isinstance(position, (list, tuple)) and len(position) >= 2:
                     try:
-                        gap = math.dist([float(endpoint[0]), float(endpoint[1])],
-                                        [float(position[0]), float(position[1])])
+                        gap = math.dist([float(endpoint[0]), float(endpoint[1])], [float(position[0]), float(position[1])])
                     except (TypeError, ValueError, IndexError):
                         continue
                     if gap > 8.0:
-                        add('pipe_endpoint_mismatch', 'review', [pipe_id, node_id],
-                            f'Геометрия трубы не доходит до узла ({side}); расхождение {gap:.1f} px. Проверьте соединение.')
+                        add(
+                            'pipe_endpoint_mismatch',
+                            'review',
+                            [pipe_id, node_id],
+                            f'Геометрия трубы не доходит до узла ({side}); расхождение {gap:.1f} px. Проверьте соединение.',
+                        )
         if start in incidence:
             incidence[start] += 1
         if end in incidence:
@@ -107,14 +123,13 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
         left_geometry = left.get('geometry') or []
         if not left_box or len(left_geometry) < 2:
             continue
-        for right in pipes[left_index + 1:]:
+        for right in pipes[left_index + 1 :]:
             right_id = str(right.get('id') or '')
             right_box = pipe_boxes.get(right_id)
             right_geometry = right.get('geometry') or []
             if not right_box or len(right_geometry) < 2:
                 continue
-            if (left_box[2] < right_box[0] or right_box[2] < left_box[0] or
-                    left_box[3] < right_box[1] or right_box[3] < left_box[1]):
+            if left_box[2] < right_box[0] or right_box[2] < left_box[0] or left_box[3] < right_box[1] or right_box[3] < left_box[1]:
                 continue
             found = False
             for a, b in zip(left_geometry, left_geometry[1:]):
@@ -128,8 +143,12 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
                 pair = tuple(sorted((left_id, right_id)))
                 if pair not in crossing_pairs:
                     crossing_pairs.add(pair)
-                    add('unmodeled_pipe_crossing', 'review', [left_id, right_id],
-                        'Две трассы пересекаются внутри сегментов, но не имеют общего узла. Проверьте: соединение это или переход без соединения.')
+                    add(
+                        'unmodeled_pipe_crossing',
+                        'review',
+                        [left_id, right_id],
+                        'Две трассы пересекаются внутри сегментов, но не имеют общего узла. Проверьте: соединение это или переход без соединения.',
+                    )
 
     for node_id, count in incidence.items():
         node = nodes[node_id]
@@ -180,8 +199,7 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
             continue
         missing = [item.get('portId') for item in symbol.get('connections', []) if not item.get('nodeId')]
         if missing or not symbol.get('connections'):
-            add('unconnected_symbol', 'warning', [str(symbol.get('id') or '')],
-                'Условное обозначение имеет неподключённые точки.')
+            add('unconnected_symbol', 'warning', [str(symbol.get('id') or '')], 'Условное обозначение имеет неподключённые точки.')
 
     pipe_ids = {str(pipe.get('id')) for pipe in pipes}
     for dimension in updated.get('dimensions', []):
@@ -193,13 +211,21 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
             except (TypeError, ValueError):
                 dimension_value = 0.0
             if not math.isfinite(dimension_value) or dimension_value <= 0:
-                add('invalid_dimension_value', 'error', [str(dimension.get('id') or '')], 'Размер должен иметь положительное числовое значение.')
+                add(
+                    'invalid_dimension_value',
+                    'error',
+                    [str(dimension.get('id') or '')],
+                    'Размер должен иметь положительное числовое значение.',
+                )
         if not target:
-            add('unassigned_dimension', 'warning', [str(dimension.get('id') or '')],
-                'Размер не назначен участку трубопровода.')
+            add('unassigned_dimension', 'warning', [str(dimension.get('id') or '')], 'Размер не назначен участку трубопровода.')
         elif target not in pipe_ids:
-            add('invalid_dimension_target', 'error', [str(dimension.get('id') or ''), target],
-                'Размер ссылается на отсутствующий или неподтверждённый участок.')
+            add(
+                'invalid_dimension_target',
+                'error',
+                [str(dimension.get('id') or ''), target],
+                'Размер ссылается на отсутствующий или неподтверждённый участок.',
+            )
 
     number_labels: dict[str, list[str]] = {}
     for label in updated.get('labels', []):
@@ -211,13 +237,15 @@ def validate_engineering_model(model: dict[str, Any]) -> tuple[dict[str, Any], d
         if len(label_ids) > 1:
             add('duplicate_number', 'warning', label_ids, f'Номер {value} встречается несколько раз.')
 
-    counts = {severity: sum(1 for item in findings if item['severity'] == severity)
-              for severity in ('error', 'warning', 'review')}
+    counts = {severity: sum(1 for item in findings if item['severity'] == severity) for severity in ('error', 'warning', 'review')}
     updated['validationFindings'] = findings
-    updated['status'] = 'needs_review' if findings or any(
-        task.get('status') == 'open' for task in updated.get('reviewTasks', [])
-    ) else 'confirmed'
+    updated['status'] = (
+        'needs_review' if findings or any(task.get('status') == 'open' for task in updated.get('reviewTasks', [])) else 'confirmed'
+    )
     return updated, {
         'status': 'failed' if counts['error'] else ('needs_review' if findings else 'passed'),
-        'counts': counts, 'networkComponents': len(components), 'unmodeledCrossings': len(crossing_pairs), 'findings': findings,
+        'counts': counts,
+        'networkComponents': len(components),
+        'unmodeledCrossings': len(crossing_pairs),
+        'findings': findings,
     }

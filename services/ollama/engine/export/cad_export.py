@@ -52,7 +52,6 @@ def _semantic_route_chains(semantic_routes: list[dict[str, Any]] | None) -> list
     return result
 
 
-
 def _annotation_export_kind(annotation: dict[str, Any]) -> str | None:
     """Return VERIFIED_TEXT or TEXT_REVIEW for visible OCR content."""
     text = re.sub(r'\s+', ' ', str(annotation.get('text') or '')).strip()
@@ -72,9 +71,12 @@ def _annotation_export_kind(annotation: dict[str, Any]) -> str | None:
 
 
 def _primary_semantic_chains(primary_routes: list[dict[str, Any]] | None) -> list[list[list[float]]]:
-    return [route['points'] for route in (primary_routes or [])
-            if isinstance(route, dict) and route.get('include', True)
-            and isinstance(route.get('points'), list) and len(route['points']) >= 2]
+    return [
+        route['points']
+        for route in (primary_routes or [])
+        if isinstance(route, dict) and route.get('include', True) and isinstance(route.get('points'), list) and len(route['points']) >= 2
+    ]
+
 
 def _cad_edge_chains(edges: list[dict[str, Any]]) -> list[list[list[float]]]:
     """Join degree-two graph edges into clean editable CAD polylines."""
@@ -125,7 +127,6 @@ def _cad_edge_chains(edges: list[dict[str, Any]]) -> list[list[list[float]]]:
         if edge['id'] not in visited:
             trace(edge['from'], edge)
     return chains
-
 
 
 def _clean_cad_points(points: list[list[float]]) -> list[list[float]]:
@@ -198,20 +199,26 @@ def _clean_cad_points(points: list[list[float]]) -> list[list[float]]:
                 max_distance, split = distance, index
         if max_distance <= tolerance:
             return [values[0], values[-1]]
-        return rdp(values[:split + 1])[:-1] + rdp(values[split:])
+        return rdp(values[: split + 1])[:-1] + rdp(values[split:])
 
     return [[round(x, 1), round(y, 1)] for x, y in rdp(simplified)]
 
 
-
-
-
-def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict],title='Трубопроводная схема', semantic_routes: list[dict[str, Any]] | None = None, semantic_status: dict[str, Any] | None = None, primary_semantic_routes: list[dict[str, Any]] | None = None) -> str:
+def build_clean_svg(
+    width: int,
+    height: int,
+    edges: list[dict],
+    annotations: list[dict],
+    title='Трубопроводная схема',
+    semantic_routes: list[dict[str, Any]] | None = None,
+    semantic_status: dict[str, Any] | None = None,
+    primary_semantic_routes: list[dict[str, Any]] | None = None,
+) -> str:
     """Create a clean A3 CAD sheet: uniform linework and editable OCR text."""
     pagew, pageh = 1200, 850
     scale, tx, ty = _sheet_layout(width, height)
     line_width = max(0.18, 0.62 / max(scale, 0.001))
-    out=[
+    out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 {pagew} {pageh}">',
         '<rect width="1200" height="850" fill="#fff"/>',
         '<g fill="none" stroke="#15191d" stroke-width="1.0">',
@@ -225,7 +232,7 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         '<text x="40" y="68" font-family="Arial,sans-serif" font-size="7.5" fill="#555e66">АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ · ИСХОДНЫЙ МАСШТАБ НЕ КАЛИБРОВАН</text>',
         '<text x="1022" y="44" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ФОРМАТ</text>',
         '<text x="1022" y="61" font-family="Arial,sans-serif" font-size="10" font-weight="bold" fill="#15191d">A3 · ЛИСТ 1/1</text>',
-        f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})" fill="none" stroke="#15191d" stroke-width="{line_width:.4f}" stroke-linecap="round" stroke-linejoin="round">'
+        f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})" fill="none" stroke="#15191d" stroke-width="{line_width:.4f}" stroke-linecap="round" stroke-linejoin="round">',
     ]
     # The primary drawing must not depend on a vision model's incomplete or
     # geometrically degenerate route list. Use the detector graph after its
@@ -234,28 +241,32 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
     clean_chains = _cad_edge_chains(edges)
     semantic_primary_chains = _primary_semantic_chains(primary_semantic_routes)
     for chain in clean_chains + semantic_primary_chains:
-        pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
+        pts = ' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
         out.append(f'<polyline points="{pts}"/>')
     out.append('</g>')
     # Preserve every non-primary detector fragment on an explicit dashed layer.
     # This does not claim that review fragments are connected pipe geometry.
-    review_chains = _cad_edge_chains([
-        {**edge, 'cad_include': True}
-        for edge in edges
-        if not edge.get('cad_include', edge.get('component_role') == 'line_structure')
-        and edge.get('cad_reason') != 'text-or-annotation'
-        and edge.get('component_role') != 'text_or_annotation'
-        and edge.get('suggested_role') != 'text_or_dimension'
-    ])
+    review_chains = _cad_edge_chains(
+        [
+            {**edge, 'cad_include': True}
+            for edge in edges
+            if not edge.get('cad_include', edge.get('component_role') == 'line_structure')
+            and edge.get('cad_reason') != 'text-or-annotation'
+            and edge.get('component_role') != 'text_or_annotation'
+            and edge.get('suggested_role') != 'text_or_dimension'
+        ]
+    )
     if review_chains:
-        out.append(f'<g data-layer="DETAIL_REVIEW" fill="none" stroke="#85919a" stroke-width="{max(0.14, line_width * 0.78):.4f}" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">')
+        out.append(
+            f'<g data-layer="DETAIL_REVIEW" fill="none" stroke="#85919a" stroke-width="{max(0.14, line_width * 0.78):.4f}" stroke-dasharray="5 4" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">'
+        )
         for chain in review_chains:
-            pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
+            pts = ' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
             out.append(f'<polyline points="{pts}"/>')
         out.append('</g>')
     primary_route_ids = {str(route.get('id')) for route in (primary_semantic_routes or [])}
     qwen_review_chains: list[list[list[float]]] = []
-    for route in (semantic_routes or []):
+    for route in semantic_routes or []:
         if not isinstance(route, dict) or str(route.get('id')) in primary_route_ids:
             continue
         # Even routes that Qwen itself marked uncertain/not-included are shown
@@ -287,17 +298,25 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         display_route = {**route, 'points': valid_points, 'include': True, 'confidence': max(35.0, confidence)}
         qwen_review_chains.extend(_semantic_route_chains([display_route]))
     if qwen_review_chains:
-        out.append(f'<g data-layer="QWEN_REVIEW" fill="none" stroke="#9a7caf" stroke-width="{max(0.13, line_width * 0.72):.4f}" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">')
+        out.append(
+            f'<g data-layer="QWEN_REVIEW" fill="none" stroke="#9a7caf" stroke-width="{max(0.13, line_width * 0.72):.4f}" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round" transform="translate({tx:.3f} {ty:.3f}) scale({scale:.7f})">'
+        )
         for chain in qwen_review_chains:
-            pts=' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
+            pts = ' '.join(f'{float(point[0]):.2f},{float(point[1]):.2f}' for point in chain)
             out.append(f'<polyline points="{pts}"/>')
         out.append('</g>')
     if not clean_chains and not semantic_primary_chains:
-        out.append('<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ</text>')
+        out.append(
+            '<text x="600" y="404" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#a45f2a">НЕ НАЙДЕНЫ ОСНОВНЫЕ ГЕОМЕТРИЧЕСКИЕ ЛИНИИ</text>'
+        )
         detail = (semantic_status or {}).get('error') or 'Проверьте исходное изображение и параметры выделения геометрии.'
         hint = (semantic_status or {}).get('hint') or 'Результаты Qwen сохранены отдельно для проверки.'
-        out.append(f'<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(detail)[:150])}</text>')
-        out.append(f'<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(hint)[:150])}</text>')
+        out.append(
+            f'<text x="600" y="426" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(detail)[:150])}</text>'
+        )
+        out.append(
+            f'<text x="600" y="442" text-anchor="middle" font-family="Arial,sans-serif" font-size="7.5" fill="#6b747a">{xml_escape(str(hint)[:150])}</text>'
+        )
 
     # OCR output is rendered as editable typography without a rectangular
     # backplate; a thin white text stroke preserves legibility over linework.
@@ -305,18 +324,20 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         export_kind = _annotation_export_kind(annotation)
         if not export_kind:
             continue
-        box=annotation.get('bbox') or {}
+        box = annotation.get('bbox') or {}
         # Row-level OCR annotations (e.g. a numbered table row) carry a bbox
         # for the whole row. Centre anchoring shifts every value toward the
         # middle of the row; keep the transcript anchored at its true left edge.
-        x=tx+float(box.get('x',0))*scale
-        y=ty+(float(box.get('y',0))+float(box.get('h',0)))*scale
-        label=str(annotation['text'])
-        label_width=max(24.0, min(220.0, len(label)*4.8+8.0))
+        x = tx + float(box.get('x', 0)) * scale
+        y = ty + (float(box.get('y', 0)) + float(box.get('h', 0))) * scale
+        label = str(annotation['text'])
+        label_width = max(24.0, min(220.0, len(label) * 4.8 + 8.0))
         text_color = '#15191d' if export_kind == 'VERIFIED_TEXT' else '#8b6334'
         font_size = 8 if export_kind == 'VERIFIED_TEXT' else 7
         font_weight = '600' if export_kind == 'VERIFIED_TEXT' else '400'
-        out.append(f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y+1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" font-weight="{font_weight}" text-anchor="start" fill="{text_color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">{xml_escape(label)}</text>')
+        out.append(
+            f'<text data-layer="{export_kind}" x="{x:.2f}" y="{y + 1.0:.2f}" font-family="Arial,sans-serif" font-size="{font_size}" font-weight="{font_weight}" text-anchor="start" fill="{text_color}" style="paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round">{xml_escape(label)}</text>'
+        )
 
     out += [
         '<text x="40" y="783" font-family="Arial,sans-serif" font-size="8" font-weight="bold" fill="#15191d">ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ</text>',
@@ -325,15 +346,23 @@ def build_clean_svg(width:int,height:int,edges:list[dict],annotations:list[dict]
         '<text x="850" y="783" font-family="Arial,sans-serif" font-size="7" fill="#5b646b">ТИП ДОКУМЕНТА</text>',
         '<text x="850" y="801" font-family="Arial,sans-serif" font-size="9" font-weight="bold" fill="#15191d">СХЕМА ТРУБОПРОВОДА</text>',
         '<text x="850" y="816" font-family="Arial,sans-serif" font-size="7" fill="#505960">МАСШТАБ: НЕ ОПРЕДЕЛЁН · СТАТУС: ПРОВЕРИТЬ</text>',
-        '</svg>'
+        '</svg>',
     ]
     return '\n'.join(out)
 
-def xml_escape(s:str)->str:
-    return str(s).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
+
+def xml_escape(s: str) -> str:
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], semantic_routes: list[dict[str, Any]] | None = None, primary_semantic_routes: list[dict[str, Any]] | None = None) -> str:
+def build_dxf(
+    width: int,
+    height: int,
+    edges: list[dict],
+    annotations: list[dict],
+    semantic_routes: list[dict[str, Any]] | None = None,
+    primary_semantic_routes: list[dict[str, Any]] | None = None,
+) -> str:
     """Export the same A3 sheet layout to AutoCAD-compatible millimetre units."""
     pagew, pageh = 1200.0, 850.0
     scale, tx, ty = _sheet_layout(width, height)
@@ -346,45 +375,165 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
         value = re.sub(r'[\r\n\x00]+', ' ', str(text or '')).strip()[:240]
         if not value:
             return []
-        return ['0','TEXT','100','AcDbEntity','8',layer,'100','AcDbText',
-                '10',f'{x:.3f}','20',f'{y:.3f}','30','0',
-                '40',f'{height_mm:.3f}','1',value]
+        return [
+            '0',
+            'TEXT',
+            '100',
+            'AcDbEntity',
+            '8',
+            layer,
+            '100',
+            'AcDbText',
+            '10',
+            f'{x:.3f}',
+            '20',
+            f'{y:.3f}',
+            '30',
+            '0',
+            '40',
+            f'{height_mm:.3f}',
+            '1',
+            value,
+        ]
 
     def dxf_polyline(layer, points, closed=False, lineweight=13):
         if len(points) < 2:
             return []
-        out=['0','LWPOLYLINE','100','AcDbEntity','8',layer,'100','AcDbPolyline',
-             '370',str(lineweight),'90',str(len(points)),'70','1' if closed else '0']
+        out = [
+            '0',
+            'LWPOLYLINE',
+            '100',
+            'AcDbEntity',
+            '8',
+            layer,
+            '100',
+            'AcDbPolyline',
+            '370',
+            str(lineweight),
+            '90',
+            str(len(points)),
+            '70',
+            '1' if closed else '0',
+        ]
         for point in points:
-            x,y=page_to_mm(point)
-            out += ['10',f'{x:.3f}','20',f'{y:.3f}']
+            x, y = page_to_mm(point)
+            out += ['10', f'{x:.3f}', '20', f'{y:.3f}']
         return out
 
-    d=['0','SECTION','2','HEADER','9','$ACADVER','1','AC1021',
-       '9','$INSUNITS','70','4','0','ENDSEC',
-       '0','SECTION','2','TABLES',
-       '0','TABLE','2','LTYPE','5','5','330','0','100','AcDbSymbolTable','70','1',
-       '0','LTYPE','5','14','330','5','100','AcDbSymbolTableRecord','100','AcDbLinetypeTableRecord',
-       '2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
-       '0','ENDTAB',
-       '0','TABLE','2','LAYER','5','2','330','0','100','AcDbSymbolTable','70','7']
-    for handle, (name, colour, lineweight, flags) in enumerate([
-        ('SHEET',7,13,0),('PIPE_MAIN',7,13,0),('DETAIL_REVIEW',8,9,1),('QWEN_REVIEW',30,9,1),('VERIFIED_TEXT',7,13,0),('TEXT_REVIEW',30,9,1),('NOTES',8,9,0)
-    ], start=32):
-        d += ['0','LAYER','5',format(handle,'X'),'330','2','100','AcDbSymbolTableRecord',
-              '100','AcDbLayerTableRecord','2',name,'70',str(flags),'62',str(colour),'6','CONTINUOUS','370',str(lineweight)]
-    d += ['0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES']
+    d = [
+        '0',
+        'SECTION',
+        '2',
+        'HEADER',
+        '9',
+        '$ACADVER',
+        '1',
+        'AC1021',
+        '9',
+        '$INSUNITS',
+        '70',
+        '4',
+        '0',
+        'ENDSEC',
+        '0',
+        'SECTION',
+        '2',
+        'TABLES',
+        '0',
+        'TABLE',
+        '2',
+        'LTYPE',
+        '5',
+        '5',
+        '330',
+        '0',
+        '100',
+        'AcDbSymbolTable',
+        '70',
+        '1',
+        '0',
+        'LTYPE',
+        '5',
+        '14',
+        '330',
+        '5',
+        '100',
+        'AcDbSymbolTableRecord',
+        '100',
+        'AcDbLinetypeTableRecord',
+        '2',
+        'CONTINUOUS',
+        '70',
+        '0',
+        '3',
+        'Solid line',
+        '72',
+        '65',
+        '73',
+        '0',
+        '40',
+        '0.0',
+        '0',
+        'ENDTAB',
+        '0',
+        'TABLE',
+        '2',
+        'LAYER',
+        '5',
+        '2',
+        '330',
+        '0',
+        '100',
+        'AcDbSymbolTable',
+        '70',
+        '7',
+    ]
+    for handle, (name, colour, lineweight, flags) in enumerate(
+        [
+            ('SHEET', 7, 13, 0),
+            ('PIPE_MAIN', 7, 13, 0),
+            ('DETAIL_REVIEW', 8, 9, 1),
+            ('QWEN_REVIEW', 30, 9, 1),
+            ('VERIFIED_TEXT', 7, 13, 0),
+            ('TEXT_REVIEW', 30, 9, 1),
+            ('NOTES', 8, 9, 0),
+        ],
+        start=32,
+    ):
+        d += [
+            '0',
+            'LAYER',
+            '5',
+            format(handle, 'X'),
+            '330',
+            '2',
+            '100',
+            'AcDbSymbolTableRecord',
+            '100',
+            'AcDbLayerTableRecord',
+            '2',
+            name,
+            '70',
+            str(flags),
+            '62',
+            str(colour),
+            '6',
+            'CONTINUOUS',
+            '370',
+            str(lineweight),
+        ]
+    d += ['0', 'ENDTAB', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES']
 
     # A3 frame, title rules and simple technical title block.
-    d += dxf_polyline('SHEET',[(24,24),(1176,24),(1176,826),(24,826)],True)
-    d += dxf_polyline('SHEET',[(36,78),(1164,78)])
-    d += dxf_polyline('SHEET',[(36,88),(1164,88)])
-    d += dxf_polyline('SHEET',[(36,740),(1164,740)])
-    d += dxf_polyline('SHEET',[(24,760),(1176,760)])
-    d += dxf_polyline('SHEET',[(830,760),(830,826)])
-    d += dxf_polyline('SHEET',[(36,88),(1164,88),(1164,740),(36,740)],True,9)
-    d += dxf_polyline('SHEET',[(1010,32),(1164,32),(1164,66),(1010,66)],True,9)
-    d += dxf_polyline('SHEET',[(1010,49),(1164,49)],False,9)
+    d += dxf_polyline('SHEET', [(24, 24), (1176, 24), (1176, 826), (24, 826)], True)
+    d += dxf_polyline('SHEET', [(36, 78), (1164, 78)])
+    d += dxf_polyline('SHEET', [(36, 88), (1164, 88)])
+    d += dxf_polyline('SHEET', [(36, 740), (1164, 740)])
+    d += dxf_polyline('SHEET', [(24, 760), (1176, 760)])
+    d += dxf_polyline('SHEET', [(830, 760), (830, 826)])
+    d += dxf_polyline('SHEET', [(36, 88), (1164, 88), (1164, 740), (36, 740)], True, 9)
+    d += dxf_polyline('SHEET', [(1010, 32), (1164, 32), (1164, 66), (1010, 66)], True, 9)
+    d += dxf_polyline('SHEET', [(1010, 49), (1164, 49)], False, 9)
 
     # Primary CAD geometry comes from the selected OpenCV topology graph. This
     # selection already suppresses short symbol strokes and retains coherent
@@ -392,8 +541,8 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
     clean_chains = _cad_edge_chains(edges)
     semantic_primary_chains = _primary_semantic_chains(primary_semantic_routes)
     for chain in clean_chains + semantic_primary_chains:
-        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain]
-        d += dxf_polyline('PIPE_MAIN',page_points,False,13)
+        page_points = [(tx + float(point[0]) * scale, ty + float(point[1]) * scale) for point in chain]
+        d += dxf_polyline('PIPE_MAIN', page_points, False, 13)
 
     # Keep rejected/ambiguous detector fragments on a frozen layer.
     for edge in edges:
@@ -401,14 +550,14 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
             continue
         geometry = edge.get('geometry') or []
         if len(geometry) >= 2:
-            page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in geometry]
-            d += dxf_polyline('DETAIL_REVIEW',page_points,False,9)
+            page_points = [(tx + float(point[0]) * scale, ty + float(point[1]) * scale) for point in geometry]
+            d += dxf_polyline('DETAIL_REVIEW', page_points, False, 9)
 
     # Semantic traces from Qwen are useful diagnostics, but are not trusted as
     # primary geometry until their coordinates and coverage are validated.
     # They are therefore preserved on a separate frozen layer.
     primary_ids = {str(route.get('id')) for route in (primary_semantic_routes or [])}
-    for route in (semantic_routes or []):
+    for route in semantic_routes or []:
         if not isinstance(route, dict) or str(route.get('id')) in primary_ids:
             continue
         try:
@@ -438,33 +587,46 @@ def build_dxf(width:int,height:int,edges:list[dict],annotations:list[dict], sema
         chain = _semantic_route_chains([display_route])
         if not chain:
             continue
-        page_points=[(tx+float(point[0])*scale,ty+float(point[1])*scale) for point in chain[0]]
-        d += dxf_polyline('QWEN_REVIEW',page_points,False,9)
+        page_points = [(tx + float(point[0]) * scale, ty + float(point[1]) * scale) for point in chain[0]]
+        d += dxf_polyline('QWEN_REVIEW', page_points, False, 9)
 
     for annotation in annotations:
         export_kind = _annotation_export_kind(annotation)
         if not export_kind:
             continue
-        box=annotation.get('bbox') or {}
+        box = annotation.get('bbox') or {}
         # DXF TEXT defaults to left/baseline alignment. Keep the insertion
         # point at the source bbox left edge; subtracting an estimated string
         # width was moving left-column digits toward the centre of the sheet.
-        px=tx+float(box.get('x',0))*scale
-        py=ty+(float(box.get('y',0))+float(box.get('h',0)))*scale
-        x,y=page_to_mm((px,py))
-        text=str(annotation['text'])
-        d += dxf_text(export_kind,text,x,y,3.0 if export_kind == 'VERIFIED_TEXT' else 2.7)
+        px = tx + float(box.get('x', 0)) * scale
+        py = ty + (float(box.get('y', 0)) + float(box.get('h', 0))) * scale
+        x, y = page_to_mm((px, py))
+        text = str(annotation['text'])
+        d += dxf_text(export_kind, text, x, y, 3.0 if export_kind == 'VERIFIED_TEXT' else 2.7)
 
-    d += dxf_text('NOTES','ТРУБОПРОВОДНАЯ СХЕМА',page_to_mm((40,52))[0],page_to_mm((40,52))[1],5.6)
-    d += dxf_text('NOTES','АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН',page_to_mm((40,68))[0],page_to_mm((40,68))[1],2.6)
-    d += dxf_text('NOTES','ФОРМАТ',page_to_mm((1022,44))[0],page_to_mm((1022,44))[1],2.4)
-    d += dxf_text('NOTES','A3 - ЛИСТ 1/1',page_to_mm((1022,61))[0],page_to_mm((1022,61))[1],3.3)
-    d += dxf_text('NOTES','ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ',page_to_mm((40,783))[0],page_to_mm((40,783))[1],2.8)
-    d += dxf_text('NOTES','OCR LABELS EXPORTED AS EDITABLE CAD TEXT; PIPE GEOMETRY IS ON A SEPARATE LAYER.',page_to_mm((40,801))[0],page_to_mm((40,801))[1],2.2)
-    d += dxf_text('NOTES','VERIFY CONNECTIONS AND DIMENSIONS AGAINST THE ORIGINAL BEFORE CONSTRUCTION.',page_to_mm((40,816))[0],page_to_mm((40,816))[1],2.2)
-    d += dxf_text('NOTES','ТИП ДОКУМЕНТА',page_to_mm((850,783))[0],page_to_mm((850,783))[1],2.3)
-    d += dxf_text('NOTES','СХЕМА ТРУБОПРОВОДА',page_to_mm((850,801))[0],page_to_mm((850,801))[1],3.0)
-    d += dxf_text('NOTES','МАСШТАБ: НЕ ОПРЕДЕЛЁН - СТАТУС: ПРОВЕРИТЬ',page_to_mm((850,816))[0],page_to_mm((850,816))[1],2.1)
-    d += ['0','ENDSEC','0','EOF']
-    return '\n'.join(d)+'\n'
-
+    d += dxf_text('NOTES', 'ТРУБОПРОВОДНАЯ СХЕМА', page_to_mm((40, 52))[0], page_to_mm((40, 52))[1], 5.6)
+    d += dxf_text(
+        'NOTES', 'АВТОМАТИЧЕСКАЯ ВЕКТОРНАЯ РЕКОНСТРУКЦИЯ - МАСШТАБ НЕ КАЛИБРОВАН', page_to_mm((40, 68))[0], page_to_mm((40, 68))[1], 2.6
+    )
+    d += dxf_text('NOTES', 'ФОРМАТ', page_to_mm((1022, 44))[0], page_to_mm((1022, 44))[1], 2.4)
+    d += dxf_text('NOTES', 'A3 - ЛИСТ 1/1', page_to_mm((1022, 61))[0], page_to_mm((1022, 61))[1], 3.3)
+    d += dxf_text('NOTES', 'ОБОЗНАЧЕНИЯ И ПРИМЕЧАНИЯ', page_to_mm((40, 783))[0], page_to_mm((40, 783))[1], 2.8)
+    d += dxf_text(
+        'NOTES',
+        'OCR LABELS EXPORTED AS EDITABLE CAD TEXT; PIPE GEOMETRY IS ON A SEPARATE LAYER.',
+        page_to_mm((40, 801))[0],
+        page_to_mm((40, 801))[1],
+        2.2,
+    )
+    d += dxf_text(
+        'NOTES',
+        'VERIFY CONNECTIONS AND DIMENSIONS AGAINST THE ORIGINAL BEFORE CONSTRUCTION.',
+        page_to_mm((40, 816))[0],
+        page_to_mm((40, 816))[1],
+        2.2,
+    )
+    d += dxf_text('NOTES', 'ТИП ДОКУМЕНТА', page_to_mm((850, 783))[0], page_to_mm((850, 783))[1], 2.3)
+    d += dxf_text('NOTES', 'СХЕМА ТРУБОПРОВОДА', page_to_mm((850, 801))[0], page_to_mm((850, 801))[1], 3.0)
+    d += dxf_text('NOTES', 'МАСШТАБ: НЕ ОПРЕДЕЛЁН - СТАТУС: ПРОВЕРИТЬ', page_to_mm((850, 816))[0], page_to_mm((850, 816))[1], 2.1)
+    d += ['0', 'ENDSEC', '0', 'EOF']
+    return '\n'.join(d) + '\n'

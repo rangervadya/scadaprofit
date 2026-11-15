@@ -1,4 +1,5 @@
 """Conservative association of OCR labels and dimensions with CAD objects."""
+
 from __future__ import annotations
 
 import math
@@ -30,20 +31,22 @@ def _distance_to_pipe(point: tuple[float, float], pipe: dict[str, Any]) -> float
     return min(distances, default=float('inf'))
 
 
-def _segments_intersect(a: tuple[float, float], b: tuple[float, float],
-                       c: tuple[float, float], d: tuple[float, float]) -> bool:
+def _segments_intersect(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]) -> bool:
     def orient(p, q, r):
         return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
     def on_segment(p, q, r):
-        return (min(p[0], r[0]) - 1e-8 <= q[0] <= max(p[0], r[0]) + 1e-8 and
-                min(p[1], r[1]) - 1e-8 <= q[1] <= max(p[1], r[1]) + 1e-8)
+        return min(p[0], r[0]) - 1e-8 <= q[0] <= max(p[0], r[0]) + 1e-8 and min(p[1], r[1]) - 1e-8 <= q[1] <= max(p[1], r[1]) + 1e-8
+
     o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
-    if ((o1 > 0 > o2 or o2 > 0 > o1) and (o3 > 0 > o4 or o4 > 0 > o3)):
+    if (o1 > 0 > o2 or o2 > 0 > o1) and (o3 > 0 > o4 or o4 > 0 > o3):
         return True
-    return ((abs(o1) <= 1e-8 and on_segment(a, c, b)) or
-            (abs(o2) <= 1e-8 and on_segment(a, d, b)) or
-            (abs(o3) <= 1e-8 and on_segment(c, a, d)) or
-            (abs(o4) <= 1e-8 and on_segment(c, b, d)))
+    return (
+        (abs(o1) <= 1e-8 and on_segment(a, c, b))
+        or (abs(o2) <= 1e-8 and on_segment(a, d, b))
+        or (abs(o3) <= 1e-8 and on_segment(c, a, d))
+        or (abs(o4) <= 1e-8 and on_segment(c, b, d))
+    )
 
 
 def _distance_box_to_pipe(box: dict[str, Any], pipe: dict[str, Any]) -> float:
@@ -74,6 +77,7 @@ def _distance_box_to_pipe(box: dict[str, Any], pipe: dict[str, Any]) -> float:
             best = min(best, math.hypot(dx, dy))
         best = min(best, *(_point_segment_distance(corner, [a[0], a[1]], [b[0], b[1]]) for corner in corners))
     return best
+
 
 def _distance_to_box(point: tuple[float, float], box: dict[str, Any]) -> float:
     try:

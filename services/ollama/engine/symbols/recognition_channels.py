@@ -1,29 +1,30 @@
 """Separate detector output into pipe, symbol, text and dimension channels."""
+
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from symbol_recognition import suggest_symbol_types
+from engine.symbols.symbol_recognition import suggest_symbol_types
 
 _DIAMETER_RE = re.compile(
-    r"^(?:(?:DN|DU|ДН|ДУ)\s*[-:]?\s*|[Ø⌀ФфDДd]\s*=?\s*|диаметр\s*[:=]?\s*)(\d+(?:[.,]\d+)?)\s*(?:мм|mm)?$",
+    r'^(?:(?:DN|DU|ДН|ДУ)\s*[-:]?\s*|[Ø⌀ФфDДd]\s*=?\s*|диаметр\s*[:=]?\s*)(\d+(?:[.,]\d+)?)\s*(?:мм|mm)?$',
     re.IGNORECASE,
 )
 _LENGTH_RE = re.compile(
-    r"^(?:(?:L|ДЛИНА)\s*[:=]?\s*)?(\d+(?:[.,]\d+)?)\s*(мм|mm|см|cm|м|m)?$",
+    r'^(?:(?:L|ДЛИНА)\s*[:=]?\s*)?(\d+(?:[.,]\d+)?)\s*(мм|mm|см|cm|м|m)?$',
     re.IGNORECASE,
 )
-_NUMBER_RE = re.compile(r"^\d{2,6}(?:[.,]\d{1,3})?$")
+_NUMBER_RE = re.compile(r'^\d{2,6}(?:[.,]\d{1,3})?$')
 
 
 def _dimension_value(text: str) -> tuple[str, float] | None:
     """Parse common Russian/metric dimension notations into millimetres."""
-    compact = re.sub(r"\s+", " ", str(text or "").strip())
-    compact = compact.replace("−", "-").replace("–", "-")
+    compact = re.sub(r'\s+', ' ', str(text or '').strip())
+    compact = compact.replace('−', '-').replace('–', '-')
     diameter = _DIAMETER_RE.fullmatch(compact)
     if diameter:
-        return "diameter", float(diameter.group(1).replace(',', '.'))
+        return 'diameter', float(diameter.group(1).replace(',', '.'))
     length = _LENGTH_RE.fullmatch(compact)
     if not length:
         return None
@@ -31,18 +32,22 @@ def _dimension_value(text: str) -> tuple[str, float] | None:
     if not raw_unit and not _NUMBER_RE.fullmatch(compact):
         return None
     value = float(raw_number.replace(',', '.'))
-    unit = (raw_unit or "мм").lower()
-    if unit in {"м", "m"}:
+    unit = (raw_unit or 'мм').lower()
+    if unit in {'м', 'm'}:
         value *= 1000.0
-    elif unit in {"см", "cm"}:
+    elif unit in {'см', 'cm'}:
         value *= 10.0
-    return ("length", value) if value > 0 else None
+    return ('length', value) if value > 0 else None
 
 
-def split_recognition_channels(width: int, height: int, components: list[dict[str, Any]],
-                               edges: list[dict[str, Any]],
-                               annotations: list[dict[str, Any]],
-                               ink_mask: Any | None = None) -> dict[str, Any]:
+def split_recognition_channels(
+    width: int,
+    height: int,
+    components: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    annotations: list[dict[str, Any]],
+    ink_mask: Any | None = None,
+) -> dict[str, Any]:
     """Produce conservative candidates without assigning engineering semantics."""
     edges_by_component: dict[str, list[str]] = {}
     for edge in edges:
@@ -72,24 +77,26 @@ def split_recognition_channels(width: int, height: int, components: list[dict[st
         suggestions = suggest_symbol_types(ink_mask, bbox) if ink_mask is not None else []
         best_score = float(suggestions[0]['score']) if suggestions else 0.0
         second_score = float(suggestions[1]['score']) if len(suggestions) > 1 else 0.0
-        symbols.append({
-            'id': f'S{len(symbols) + 1}',
-            'visualClass': 'template_match_candidate' if best_score >= 0.48 else 'unknown_compact_mark',
-            'suggestedTypes': suggestions,
-            'suggestionConfidence': round(best_score, 3),
-            'suggestionMargin': round(best_score - second_score, 3),
-            'autoClassified': False,
-            'bbox': bbox,
-            'sourceComponentId': str(component.get('id') or ''),
-            'sourceEdgeIds': [item for item in edges_by_component.get(str(component.get('id') or ''), []) if item],
-            'confidence': round(confidence, 3),
-            'state': 'review',
-        })
+        symbols.append(
+            {
+                'id': f'S{len(symbols) + 1}',
+                'visualClass': 'template_match_candidate' if best_score >= 0.48 else 'unknown_compact_mark',
+                'suggestedTypes': suggestions,
+                'suggestionConfidence': round(best_score, 3),
+                'suggestionMargin': round(best_score - second_score, 3),
+                'autoClassified': False,
+                'bbox': bbox,
+                'sourceComponentId': str(component.get('id') or ''),
+                'sourceEdgeIds': [item for item in edges_by_component.get(str(component.get('id') or ''), []) if item],
+                'confidence': round(confidence, 3),
+                'state': 'review',
+            }
+        )
 
     dimensions = []
     text_items = []
     for annotation in annotations:
-        text = re.sub(r"\s+", " ", str(annotation.get('text') or '')).strip()
+        text = re.sub(r'\s+', ' ', str(annotation.get('text') or '')).strip()
         if not text:
             continue
         parsed = _dimension_value(text)
@@ -100,14 +107,21 @@ def split_recognition_channels(width: int, height: int, components: list[dict[st
         confidence = float(annotation.get('confidence', 0) or 0)
         if 0 <= confidence <= 1:
             confidence *= 100
-        dimensions.append({
-            'id': f'D{len(dimensions) + 1}', 'kind': kind, 'value': value,
-            'rawText': text, 'unit': 'mm', 'dimensionUnit': 'mm',
-            'sourceAnnotationId': str(annotation.get('id') or ''),
-            'bbox': dict(annotation.get('bbox') or {}), 'targetId': None,
-            'confidence': round(max(0.0, min(1.0, confidence / 100.0)), 3),
-            'state': 'review',
-        })
+        dimensions.append(
+            {
+                'id': f'D{len(dimensions) + 1}',
+                'kind': kind,
+                'value': value,
+                'rawText': text,
+                'unit': 'mm',
+                'dimensionUnit': 'mm',
+                'sourceAnnotationId': str(annotation.get('id') or ''),
+                'bbox': dict(annotation.get('bbox') or {}),
+                'targetId': None,
+                'confidence': round(max(0.0, min(1.0, confidence / 100.0)), 3),
+                'state': 'review',
+            }
+        )
 
     return {
         'pipes': [str(edge.get('id')) for edge in edges if edge.get('cad_include')],
@@ -116,7 +130,8 @@ def split_recognition_channels(width: int, height: int, components: list[dict[st
         'textAnnotationIds': [item for item in text_items if item],
         'summary': {
             'primaryPipes': sum(1 for edge in edges if edge.get('cad_include')),
-            'symbolCandidates': len(symbols), 'dimensionCandidates': len(dimensions),
+            'symbolCandidates': len(symbols),
+            'dimensionCandidates': len(dimensions),
             'textAnnotations': len(text_items),
         },
     }

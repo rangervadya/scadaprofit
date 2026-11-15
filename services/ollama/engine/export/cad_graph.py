@@ -11,11 +11,13 @@ from typing import Any
 
 import cv2
 import numpy as np
-from segment_geometry import _sample_line_support, _segment_text_mask_metrics
+
+from engine.core.geometry import _sample_line_support, _segment_text_mask_metrics
 
 
-def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
-                             min_dimension: int, image_size: tuple[int, int] | None = None) -> dict[str, int]:
+def select_primary_cad_edges(
+    nodes: list[dict[str, Any]], edges: list[dict[str, Any]], min_dimension: int, image_size: tuple[int, int] | None = None
+) -> dict[str, int]:
     """Select coherent route paths for the clean CAD sheet.
 
     The detector graph deliberately keeps every reviewable segment.  The clean
@@ -85,8 +87,11 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                 break
             current, edge_index = nxt, next_options[0]
         return {
-            'edges': path_edges, 'start': start_node, 'end': terminal,
-            'length': total, 'closed': closed,
+            'edges': path_edges,
+            'start': start_node,
+            'end': terminal,
+            'length': total,
+            'closed': closed,
         }
 
     # Begin at terminals and junctions.  Degree-two nodes are transparent and
@@ -177,13 +182,16 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                     va = np.array(ga[-1], dtype=float) - np.array(ga[0], dtype=float)
                     vb = np.array(gb[-1], dtype=float) - np.array(gb[0], dtype=float)
                     na, nb = np.linalg.norm(va), np.linalg.norm(vb)
-                    if na > 0 and nb > 0 and abs(float(np.dot(va/na, vb/nb))) < 0.90:
+                    if na > 0 and nb > 0 and abs(float(np.dot(va / na, vb / nb))) < 0.90:
                         path_turns += 1
             ambiguous_route_candidate = (
-                len(path_edges) >= 2 and total >= max(24.0, float(min_dimension) * 0.027)
+                len(path_edges) >= 2
+                and total >= max(24.0, float(min_dimension) * 0.027)
                 and path_extent >= max(18.0, float(min_dimension) * 0.020)
-                and path_support >= 0.27 and path_overlap < 0.16
-                and path_turns <= 7 and max(start_degree, end_degree) <= 5
+                and path_support >= 0.27
+                and path_overlap < 0.16
+                and path_turns <= 7
+                and max(start_degree, end_degree) <= 5
             )
             keep = ambiguous_route_candidate
             reason = 'ambiguous-but-connected-route' if keep else 'ambiguous-component'
@@ -214,8 +222,11 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                 and not has_text_crossing
             )
             keep = total >= junction_stub or (continuation and total >= min_path) or supported_branch
-            reason = ('supported-short-branch' if supported_branch and total < junction_stub
-                      else ('branch-route' if keep else 'short-symbol-stub'))
+            reason = (
+                'supported-short-branch'
+                if supported_branch and total < junction_stub
+                else ('branch-route' if keep else 'short-symbol-stub')
+            )
         else:
             keep = total >= min_path
             reason = 'coherent-route' if keep else 'short-fragment'
@@ -286,13 +297,11 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                 continue
             xs = [float(point[0]) for point in points]
             ys = [float(point[1]) for point in points]
-            along_vertical_border = (
-                (max(xs) <= margin or min(xs) >= image_width - 1 - margin)
-                and max(ys) - min(ys) >= max(20.0, image_height * 0.03)
+            along_vertical_border = (max(xs) <= margin or min(xs) >= image_width - 1 - margin) and max(ys) - min(ys) >= max(
+                20.0, image_height * 0.03
             )
-            along_horizontal_border = (
-                (max(ys) <= margin or min(ys) >= image_height - 1 - margin)
-                and max(xs) - min(xs) >= max(20.0, image_width * 0.03)
+            along_horizontal_border = (max(ys) <= margin or min(ys) >= image_height - 1 - margin) and max(xs) - min(xs) >= max(
+                20.0, image_width * 0.03
             )
             if along_vertical_border or along_horizontal_border:
                 edge['cad_include'] = False
@@ -318,27 +327,41 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
     }
 
 
-def detect_crossings(segments: list[dict[str,Any]], max_crossings=250):
-    crossings=[]
-    def cross(a,b):
-        x1,y1,x2,y2=a['x1'],a['y1'],a['x2'],a['y2']; x3,y3,x4,y4=b['x1'],b['y1'],b['x2'],b['y2']
-        den=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4)
-        if abs(den)<1e-6:return None
-        t=((x1-x3)*(y3-y4)-(y1-y3)*(x3-x4))/den
-        u=-((x1-x2)*(y1-y3)-(y1-y2)*(x1-x3))/den
-        if 0.03<t<0.97 and 0.03<u<0.97:
-            return (x1+t*(x2-x1), y1+t*(y2-y1))
+def detect_crossings(segments: list[dict[str, Any]], max_crossings=250):
+    crossings = []
+
+    def cross(a, b):
+        x1, y1, x2, y2 = a['x1'], a['y1'], a['x2'], a['y2']
+        x3, y3, x4, y4 = b['x1'], b['y1'], b['x2'], b['y2']
+        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(den) < 1e-6:
+            return None
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+        if 0.03 < t < 0.97 and 0.03 < u < 0.97:
+            return (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
         return None
+
     # spatially broad but bounded pair list
-    for i,a in enumerate(segments):
-        if len(crossings)>=max_crossings: break
-        for j in range(i+1,min(len(segments),i+100)):
-            b=segments[j]
-            if abs(((a['angle']-b['angle']+90)%180)-90)<18: continue
-            p=cross(a,b)
-            if p: crossings.append({"id":f"X{len(crossings)+1}","x":round(p[0],1),"y":round(p[1],1),
-                                    "segments":[i+1,j+1],"status":"needs_review",
-                                    "message":"Пересечение не считается соединением автоматически"})
+    for i, a in enumerate(segments):
+        if len(crossings) >= max_crossings:
+            break
+        for j in range(i + 1, min(len(segments), i + 100)):
+            b = segments[j]
+            if abs(((a['angle'] - b['angle'] + 90) % 180) - 90) < 18:
+                continue
+            p = cross(a, b)
+            if p:
+                crossings.append(
+                    {
+                        'id': f'X{len(crossings) + 1}',
+                        'x': round(p[0], 1),
+                        'y': round(p[1], 1),
+                        'segments': [i + 1, j + 1],
+                        'status': 'needs_review',
+                        'message': 'Пересечение не считается соединением автоматически',
+                    }
+                )
     return crossings
 
 
@@ -352,10 +375,13 @@ def _point_to_segment_distance(point: tuple[float, float], a: list[float], b: li
     return math.hypot(px - (float(a[0]) + t * dx), py - (float(a[1]) + t * dy))
 
 
-def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | None,
-                                     ink: np.ndarray, text_mask: np.ndarray,
-                                     primary_edges: list[dict[str, Any]],
-                                     min_dimension: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def validate_primary_semantic_routes(
+    semantic_routes: list[dict[str, Any]] | None,
+    ink: np.ndarray,
+    text_mask: np.ndarray,
+    primary_edges: list[dict[str, Any]],
+    min_dimension: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Validate Qwen route segments independently against source ink and OCR masks.
 
     Earlier builds rejected an entire polyline when one of its segments touched
@@ -385,17 +411,14 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
         for a, b in zip(points, points[1:]):
             length = math.dist(a, b)
             count = max(2, int(length / 4.0) + 1)
-            samples.extend((a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
-                           for t in np.linspace(0.0, 1.0, count))
+            samples.extend((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t) for t in np.linspace(0.0, 1.0, count))
         if not graph_segments or not samples:
             return 0.0
-        hits = sum(1 for point in samples if any(
-            _point_to_segment_distance(point, a, b) <= 5.5 for a, b in graph_segments
-        ))
+        hits = sum(1 for point in samples if any(_point_to_segment_distance(point, a, b) <= 5.5 for a, b in graph_segments))
         return hits / len(samples)
 
     for index, route in enumerate(semantic_routes or []):
-        diag: dict[str, Any] = {'id': str(route.get('id') or f'Q{index+1}') if isinstance(route, dict) else f'Q{index+1}'}
+        diag: dict[str, Any] = {'id': str(route.get('id') or f'Q{index + 1}') if isinstance(route, dict) else f'Q{index + 1}'}
         if not isinstance(route, dict) or route.get('include') is False:
             bump('not-included')
             diag.update({'decision': 'reject', 'reason': 'not-included'})
@@ -445,7 +468,8 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
             length = math.dist(a, b)
             if length < min_piece_length:
                 if len(current) >= 2:
-                    kept_fragments.append(current); current = []
+                    kept_fragments.append(current)
+                    current = []
                 rejected_segment_reasons.append('short-segment')
                 continue
             overlap, through = _segment_text_mask_metrics((a[0], a[1], b[0], b[1]), text_mask, ink_dilated)
@@ -454,14 +478,16 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
             # strong two-sided continuation demonstrates an actual pipe.
             if overlap >= 0.08 and not through:
                 if len(current) >= 2:
-                    kept_fragments.append(current); current = []
+                    kept_fragments.append(current)
+                    current = []
                 rejected_segment_reasons.append('text-overlap')
                 continue
             # Model confidence cannot substitute for visible ink along the route.
             support_floor = 0.70
             if support < support_floor:
                 if len(current) >= 2:
-                    kept_fragments.append(current); current = []
+                    kept_fragments.append(current)
+                    current = []
                 rejected_segment_reasons.append('weak-source-ink')
                 continue
             if current and math.dist(current[-1], a) <= 2.5:
@@ -497,22 +523,33 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
             # or more continuous centreline than the detector graph.
             if duplicate >= 0.90:
                 bump('opencv-duplicate')
-                fragment_diagnostics.append({'length': round(length, 1), 'support': round(support, 3),
-                                             'duplicate': round(duplicate, 3), 'decision': 'duplicate'})
+                fragment_diagnostics.append(
+                    {'length': round(length, 1), 'support': round(support, 3), 'duplicate': round(duplicate, 3), 'decision': 'duplicate'}
+                )
                 continue
-            accepted.append({
-                'id': str(route.get('id') or f'QPRIMARY{index+1}') + (f'_{frag_index}' if len(kept_fragments) > 1 else ''),
-                'points': fragment, 'confidence': confidence,
-                'ink_support': round(support, 3),
-                'text_overlap': round(text_ratio, 3),
-                'opencv_duplicate_ratio': round(duplicate, 3),
-                'include': True, 'source': 'qwen3-vl-validated',
-                'split_from_text_or_weak_segment': bool(rejected_segment_reasons),
-            })
+            accepted.append(
+                {
+                    'id': str(route.get('id') or f'QPRIMARY{index + 1}') + (f'_{frag_index}' if len(kept_fragments) > 1 else ''),
+                    'points': fragment,
+                    'confidence': confidence,
+                    'ink_support': round(support, 3),
+                    'text_overlap': round(text_ratio, 3),
+                    'opencv_duplicate_ratio': round(duplicate, 3),
+                    'include': True,
+                    'source': 'qwen3-vl-validated',
+                    'split_from_text_or_weak_segment': bool(rejected_segment_reasons),
+                }
+            )
             promoted_for_route += 1
-            fragment_diagnostics.append({'length': round(length, 1), 'support': round(support, 3),
-                                         'text_overlap': round(text_ratio, 3),
-                                         'duplicate': round(duplicate, 3), 'decision': 'accept'})
+            fragment_diagnostics.append(
+                {
+                    'length': round(length, 1),
+                    'support': round(support, 3),
+                    'text_overlap': round(text_ratio, 3),
+                    'duplicate': round(duplicate, 3),
+                    'decision': 'accept',
+                }
+            )
         if promoted_for_route:
             bump('accepted')
             decision, reason = 'accept', 'ink-supported-fragment'
@@ -521,10 +558,15 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
                 bump(reason_item)
             decision = 'reject'
             reason = rejected_segment_reasons[0] if rejected_segment_reasons else 'no-valid-fragment'
-        diag.update({'decision': decision, 'reason': reason,
-                     'rejected_segments': rejected_segment_reasons,
-                     'accepted_fragments': promoted_for_route,
-                     'fragments': fragment_diagnostics})
+        diag.update(
+            {
+                'decision': decision,
+                'reason': reason,
+                'rejected_segments': rejected_segment_reasons,
+                'accepted_fragments': promoted_for_route,
+                'fragments': fragment_diagnostics,
+            }
+        )
         route_diagnostics.append(diag)
 
     return accepted, {
@@ -539,9 +581,13 @@ def validate_primary_semantic_routes(semantic_routes: list[dict[str, Any]] | Non
     }
 
 
-def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
-                           min_gap: float = 4.5, max_gap: float = 45.0,
-                           image_size: tuple[int, int] | None = None) -> list[dict[str, Any]]:
+def _build_join_candidates(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    min_gap: float = 4.5,
+    max_gap: float = 45.0,
+    image_size: tuple[int, int] | None = None,
+) -> list[dict[str, Any]]:
     """Return review-only endpoint continuation proposals.
 
     Unlike the former implementation, this diagnostic considers both
@@ -593,8 +639,7 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
             return None
         return endpoint_array, vector / norm, geometry, polyline_length(geometry)
 
-    def endpoint_hits_polyline(point: np.ndarray, geometry: list[list[float]],
-                               tolerance: float = 4.0) -> bool:
+    def endpoint_hits_polyline(point: np.ndarray, geometry: list[list[float]], tolerance: float = 4.0) -> bool:
         for a_raw, b_raw in zip(geometry, geometry[1:]):
             a = np.array(a_raw, dtype=float)
             b = np.array(b_raw, dtype=float)
@@ -610,8 +655,7 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
                 return True
         return False
 
-    open_nodes = [node for node in nodes
-                  if int(node.get('degree', 0)) == 1 and str(node.get('id')) in edge_at]
+    open_nodes = [node for node in nodes if int(node.get('degree', 0)) == 1 and str(node.get('id')) in edge_at]
     endpoints = []
     for node in open_nodes:
         node_id = str(node['id'])
@@ -624,26 +668,28 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
         # (e.g. 14-24 px) remain eligible for review.
         if edge_length < 8.0:
             continue
-        endpoints.append({
-            'node_id': node_id,
-            'edge': edge,
-            'point': point,
-            'inward': inward,
-            'geometry': edge_geometry,
-            'length': edge_length,
-            'role': str(edge.get('component_role') or 'ambiguous'),
-            'reason': str(edge.get('cad_reason') or ''),
-            'ink_support': float(edge.get('ink_support', 0.0) or 0.0),
-            'ocr_overlap': float(edge.get('ocr_overlap', 0.0) or 0.0),
-            'text_crossing': bool(edge.get('text_crossing')),
-        })
+        endpoints.append(
+            {
+                'node_id': node_id,
+                'edge': edge,
+                'point': point,
+                'inward': inward,
+                'geometry': edge_geometry,
+                'length': edge_length,
+                'role': str(edge.get('component_role') or 'ambiguous'),
+                'reason': str(edge.get('cad_reason') or ''),
+                'ink_support': float(edge.get('ink_support', 0.0) or 0.0),
+                'ocr_overlap': float(edge.get('ocr_overlap', 0.0) or 0.0),
+                'text_crossing': bool(edge.get('text_crossing')),
+            }
+        )
 
     raw_candidates: list[dict[str, Any]] = []
     width = int(image_size[0]) if image_size else None
     height = int(image_size[1]) if image_size else None
     for index, a in enumerate(endpoints):
         edge_a = a['edge']
-        for b in endpoints[index + 1:]:
+        for b in endpoints[index + 1 :]:
             edge_b = b['edge']
             if str(edge_a.get('id')) == str(edge_b.get('id')):
                 continue
@@ -677,10 +723,11 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
             if lateral > 8.0:
                 continue
 
-            near_border = bool(width and height and any(
-                min(point[0], point[1], width - point[0], height - point[1]) < 5.0
-                for point in (a['point'], b['point'])
-            ))
+            near_border = bool(
+                width
+                and height
+                and any(min(point[0], point[1], width - point[0], height - point[1]) < 5.0 for point in (a['point'], b['point']))
+            )
             min_ink = min(a['ink_support'], b['ink_support'])
             max_ocr = max(a['ocr_overlap'], b['ocr_overlap'])
             flags = []
@@ -703,43 +750,58 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
             # and OCR proximity are kept visible for human review.
             ink_score = min(1.0, min_ink / 0.65)
             score = 100.0 * (
-                0.38 * max(0.0, min(1.0, alignment)) +
-                0.24 * max(0.0, min(1.0, -tangent_dot)) +
-                0.18 * max(0.0, 1.0 - lateral / 8.0) +
-                0.20 * ink_score
+                0.38 * max(0.0, min(1.0, alignment))
+                + 0.24 * max(0.0, min(1.0, -tangent_dot))
+                + 0.18 * max(0.0, 1.0 - lateral / 8.0)
+                + 0.20 * ink_score
             )
             high_priority = (
-                a['role'] == 'line_structure' and b['role'] == 'line_structure' and
-                min_ink >= 0.50 and max_ocr < 0.15 and
-                not a['text_crossing'] and not b['text_crossing'] and
-                not near_border and distance <= 20.0 and lateral <= 4.5 and
-                alignment >= 0.92 and tangent_dot <= -0.94
+                a['role'] == 'line_structure'
+                and b['role'] == 'line_structure'
+                and min_ink >= 0.50
+                and max_ocr < 0.15
+                and not a['text_crossing']
+                and not b['text_crossing']
+                and not near_border
+                and distance <= 20.0
+                and lateral <= 4.5
+                and alignment >= 0.92
+                and tangent_dot <= -0.94
             )
-            raw_candidates.append({
-                'from': a['node_id'], 'to': b['node_id'],
-                'from_edge': str(edge_a.get('id')), 'to_edge': str(edge_b.get('id')),
-                'from_component': component_a, 'to_component': component_b,
-                'from_role': a['role'], 'to_role': b['role'],
-                'from_reason': a['reason'], 'to_reason': b['reason'],
-                'distance': round(distance, 1),
-                'lateral_offset_px': round(lateral, 1),
-                'alignment': round(alignment, 3),
-                'tangent_alignment': round(-tangent_dot, 3),
-                'from_edge_length': round(a['length'], 1),
-                'to_edge_length': round(b['length'], 1),
-                'from_ink_support': round(a['ink_support'], 3),
-                'to_ink_support': round(b['ink_support'], 3),
-                'from_ocr_overlap': round(a['ocr_overlap'], 3),
-                'to_ocr_overlap': round(b['ocr_overlap'], 3),
-                'review_flags': flags,
-                'near_image_border': near_border,
-                'score': round(score, 1),
-                'priority': 'high' if high_priority else 'review',
-                'status': 'needs_review',
-                'message': ('Геометрически сильный кандидат; перед добавлением проверь исходный чертёж.'
-                            if high_priority else
-                            'Неоднозначный кандидат; требуется визуальная проверка перед соединением.'),
-            })
+            raw_candidates.append(
+                {
+                    'from': a['node_id'],
+                    'to': b['node_id'],
+                    'from_edge': str(edge_a.get('id')),
+                    'to_edge': str(edge_b.get('id')),
+                    'from_component': component_a,
+                    'to_component': component_b,
+                    'from_role': a['role'],
+                    'to_role': b['role'],
+                    'from_reason': a['reason'],
+                    'to_reason': b['reason'],
+                    'distance': round(distance, 1),
+                    'lateral_offset_px': round(lateral, 1),
+                    'alignment': round(alignment, 3),
+                    'tangent_alignment': round(-tangent_dot, 3),
+                    'from_edge_length': round(a['length'], 1),
+                    'to_edge_length': round(b['length'], 1),
+                    'from_ink_support': round(a['ink_support'], 3),
+                    'to_ink_support': round(b['ink_support'], 3),
+                    'from_ocr_overlap': round(a['ocr_overlap'], 3),
+                    'to_ocr_overlap': round(b['ocr_overlap'], 3),
+                    'review_flags': flags,
+                    'near_image_border': near_border,
+                    'score': round(score, 1),
+                    'priority': 'high' if high_priority else 'review',
+                    'status': 'needs_review',
+                    'message': (
+                        'Геометрически сильный кандидат; перед добавлением проверь исходный чертёж.'
+                        if high_priority
+                        else 'Неоднозначный кандидат; требуется визуальная проверка перед соединением.'
+                    ),
+                }
+            )
 
     # One terminal may have several plausible partners. Keep the alternatives
     # but mark every affected candidate so the UI cannot imply a unique answer.
@@ -748,8 +810,7 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
         alternatives[candidate['from']] = alternatives.get(candidate['from'], 0) + 1
         alternatives[candidate['to']] = alternatives.get(candidate['to'], 0) + 1
     for candidate in raw_candidates:
-        conflicts = [node_id for node_id in (candidate['from'], candidate['to'])
-                     if alternatives.get(node_id, 0) > 1]
+        conflicts = [node_id for node_id in (candidate['from'], candidate['to']) if alternatives.get(node_id, 0) > 1]
         candidate['conflicting_nodes'] = conflicts
         candidate['has_alternatives'] = bool(conflicts)
         if conflicts:
@@ -757,11 +818,8 @@ def _build_join_candidates(nodes: list[dict[str, Any]], edges: list[dict[str, An
             candidate['review_flags'].append('competing_candidate')
             candidate['message'] = 'У одного из концов есть альтернативные пары; выбери только после визуальной проверки.'
 
-    raw_candidates.sort(key=lambda item: (
-        item['priority'] != 'high', -item['score'], item['distance']
-    ))
+    raw_candidates.sort(key=lambda item: (item['priority'] != 'high', -item['score'], item['distance']))
     candidates = raw_candidates[:200]
     for index, candidate in enumerate(candidates, 1):
         candidate['id'] = f'J{index}'
     return candidates
-

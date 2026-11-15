@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "services" / "ollama" / "engine"))
+sys.path.insert(0, str(ROOT / 'services' / 'ollama'))
 
-import cad_export  # noqa: E402
-import processor  # noqa: E402
+import engine.export.cad_export as cad_export  # noqa: E402
+import engine.processor as processor  # noqa: E402
 
 
 class CadExportModuleTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class CadExportModuleTests(unittest.TestCase):
             '_annotation_export_kind',
             '_primary_semantic_chains',
         ]:
-            self.assertTrue(hasattr(cad_export, name), f"cad_export.{name} is missing")
+            self.assertTrue(hasattr(cad_export, name), f'cad_export.{name} is missing')
 
     def test_processor_reexports_the_export_api(self):
         for name in [
@@ -39,7 +39,7 @@ class CadExportModuleTests(unittest.TestCase):
             '_cad_edge_chains',
             '_clean_cad_points',
         ]:
-            self.assertIs(getattr(processor, name), getattr(cad_export, name), f"processor.{name} not re-exported")
+            self.assertIs(getattr(processor, name), getattr(cad_export, name), f'processor.{name} not re-exported')
 
     def test_build_clean_svg_produces_an_svg_document(self):
         edges = [

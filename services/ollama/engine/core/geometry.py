@@ -13,14 +13,13 @@ import cv2
 import numpy as np
 
 
-def angle_deg(seg: tuple[float,float,float,float]) -> float:
-    x1,y1,x2,y2 = seg
-    return math.degrees(math.atan2(y2-y1, x2-x1)) % 180
+def angle_deg(seg: tuple[float, float, float, float]) -> float:
+    x1, y1, x2, y2 = seg
+    return math.degrees(math.atan2(y2 - y1, x2 - x1)) % 180
 
 
-def seg_length(seg: tuple[float,float,float,float]) -> float:
-    return math.hypot(seg[2]-seg[0], seg[3]-seg[1])
-
+def seg_length(seg: tuple[float, float, float, float]) -> float:
+    return math.hypot(seg[2] - seg[0], seg[3] - seg[1])
 
 
 def _sample_line_support(ink_dilated: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> float:
@@ -32,9 +31,15 @@ def _sample_line_support(ink_dilated: np.ndarray, x1: float, y1: float, x2: floa
     return float(np.mean(ink_dilated[ys, xs] > 0))
 
 
-def _same_ink_band(a: dict[str, Any], b: dict[str, Any], ink: np.ndarray,
-                   origin: tuple[float, float], direction: tuple[float, float],
-                   normal: tuple[float, float], overlap_interval: tuple[float, float]) -> bool:
+def _same_ink_band(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    ink: np.ndarray,
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+    normal: tuple[float, float],
+    overlap_interval: tuple[float, float],
+) -> bool:
     """True when both detections lie inside one continuous thick pen stroke."""
     ax, ay = origin
     ux, uy = direction
@@ -65,14 +70,14 @@ def _same_ink_band(a: dict[str, Any], b: dict[str, Any], ink: np.ndarray,
         hits = np.flatnonzero(occupied)
         if hits.size:
             first, last = int(hits[0]), int(hits[-1])
-            if not np.any(~occupied[first:last + 1]):
+            if not np.any(~occupied[first : last + 1]):
                 valid_sections += 1
     return valid_sections / max(1, len(samples)) >= 0.78
 
 
-def _merge_aligned_duplicate(a: dict[str, Any], b: dict[str, Any], ink: np.ndarray,
-                             ink_dilated: np.ndarray, continuity_gap: float,
-                             offset_tolerance: float = 2.8) -> dict[str, Any] | None:
+def _merge_aligned_duplicate(
+    a: dict[str, Any], b: dict[str, Any], ink: np.ndarray, ink_dilated: np.ndarray, continuity_gap: float, offset_tolerance: float = 2.8
+) -> dict[str, Any] | None:
     """Merge repeated LSD/Hough detections without collapsing separate parallel lines."""
     angle_delta = abs(((a['angle'] - b['angle'] + 90) % 180) - 90)
     length_a = float(a.get('length') or math.hypot(a['x2'] - a['x1'], a['y2'] - a['y1']))
@@ -135,17 +140,25 @@ def _merge_aligned_duplicate(a: dict[str, Any], b: dict[str, Any], ink: np.ndarr
     x2, y2 = ax + ux * hi + nx * centre_offset, ay + uy * hi + ny * centre_offset
     preferred = max((a, b), key=lambda item: (item.get('support', 0), item.get('source') == 'LSD'))
     merged = dict(preferred)
-    merged.update({
-        'x1': float(x1), 'y1': float(y1), 'x2': float(x2), 'y2': float(y2),
-        'length': float(math.hypot(x2 - x1, y2 - y1)),
-        'support': max(float(a.get('support', 0)), float(b.get('support', 0))),
-        'angle': angle_deg((x1, y1, x2, y2)),
-        'source': preferred.get('source', 'LSD'),
-        'detectors': sorted(set((a.get('detectors') or [a.get('source')]) + (b.get('detectors') or [b.get('source')]))),
-        'ocr_overlap': max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))),
-        'suggested_role': 'text_or_dimension' if max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))) >= 0.16 and not (a.get('text_crossing') or b.get('text_crossing')) else 'line_candidate',
-        'text_crossing': bool(a.get('text_crossing') or b.get('text_crossing')),
-    })
+    merged.update(
+        {
+            'x1': float(x1),
+            'y1': float(y1),
+            'x2': float(x2),
+            'y2': float(y2),
+            'length': float(math.hypot(x2 - x1, y2 - y1)),
+            'support': max(float(a.get('support', 0)), float(b.get('support', 0))),
+            'angle': angle_deg((x1, y1, x2, y2)),
+            'source': preferred.get('source', 'LSD'),
+            'detectors': sorted(set((a.get('detectors') or [a.get('source')]) + (b.get('detectors') or [b.get('source')]))),
+            'ocr_overlap': max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))),
+            'suggested_role': 'text_or_dimension'
+            if max(float(a.get('ocr_overlap', 0)), float(b.get('ocr_overlap', 0))) >= 0.16
+            and not (a.get('text_crossing') or b.get('text_crossing'))
+            else 'line_candidate',
+            'text_crossing': bool(a.get('text_crossing') or b.get('text_crossing')),
+        }
+    )
     return merged
 
 
@@ -157,8 +170,7 @@ def _expanded_text_box(box: dict[str, Any]) -> tuple[float, float, float, float]
     return x - pad_x, y - pad_y, x + bw + pad_x, y + bh + pad_y
 
 
-def _segment_text_box_metrics(seg: tuple[float, float, float, float], box: dict[str, Any],
-                              ink_dilated: np.ndarray) -> tuple[float, bool]:
+def _segment_text_box_metrics(seg: tuple[float, float, float, float], box: dict[str, Any], ink_dilated: np.ndarray) -> tuple[float, bool]:
     """Measure segment overlap with a padded text box and detect a real through-line.
 
     A route crossing a label is preserved only when the source ink continues
@@ -212,17 +224,13 @@ def _segment_text_box_metrics(seg: tuple[float, float, float, float], box: dict[
 
     left_support = side_support(-1.0)
     right_support = side_support(1.0)
-    through = (
-        length >= max(42.0, math.hypot(bw, bh) * 1.45)
-        and coverage >= 0.16
-        and left_support >= 0.66
-        and right_support >= 0.66
-    )
+    through = length >= max(42.0, math.hypot(bw, bh) * 1.45) and coverage >= 0.16 and left_support >= 0.66 and right_support >= 0.66
     return coverage, through
 
 
-def _segment_text_mask_metrics(seg: tuple[float, float, float, float], text_mask: np.ndarray,
-                               ink_dilated: np.ndarray) -> tuple[float, bool]:
+def _segment_text_mask_metrics(
+    seg: tuple[float, float, float, float], text_mask: np.ndarray, ink_dilated: np.ndarray
+) -> tuple[float, bool]:
     """Measure overlap with the union of all OCR regions and detect a true through-line.
 
     This catches a handwritten word split into several OCR boxes. A candidate
@@ -279,8 +287,7 @@ def _segment_text_mask_metrics(seg: tuple[float, float, float, float], text_mask
     return coverage, through
 
 
-def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[str, Any],
-                             ink_dilated: np.ndarray) -> bool:
+def _segment_inside_text_box(seg: tuple[float, float, float, float], box: dict[str, Any], ink_dilated: np.ndarray) -> bool:
     """True for a text stroke; false for a pipe demonstrably continuing through text."""
     coverage, through = _segment_text_box_metrics(seg, box, ink_dilated)
     return coverage >= 0.16 and not through
@@ -341,6 +348,7 @@ def _text_region_mask(shape: tuple[int, int], annotations: list[dict[str, Any]] 
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
     return mask
 
+
 def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     h, w = gray.shape[:2]
     min_dim = min(w, h)
@@ -362,7 +370,9 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
                 raw.append((x1, y1, x2, y2, 'LSD', length))
 
     hp = cv2.HoughLinesP(
-        ink, 1, np.pi / 180,
+        ink,
+        1,
+        np.pi / 180,
         threshold=max(16, int(min_dim * 0.020)),
         minLineLength=min_hough_len,
         maxLineGap=max(4, int(min_dim * 0.007)),
@@ -392,13 +402,21 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
         support = _sample_line_support(ink_dilated, x1, y1, x2, y2)
         if support < 0.15:
             continue
-        candidates.append({
-            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'source': source,
-            'length': length, 'support': support, 'angle': angle_deg(seg),
-            'ocr_overlap': round(overlap, 3),
-            'text_crossing': bool(through_text),
-            'suggested_role': 'text_or_dimension' if overlap >= 0.16 and not through_text else 'line_candidate',
-        })
+        candidates.append(
+            {
+                'x1': x1,
+                'y1': y1,
+                'x2': x2,
+                'y2': y2,
+                'source': source,
+                'length': length,
+                'support': support,
+                'angle': angle_deg(seg),
+                'ocr_overlap': round(overlap, 3),
+                'text_crossing': bool(through_text),
+                'suggested_role': 'text_or_dimension' if overlap >= 0.16 and not through_text else 'line_candidate',
+            }
+        )
 
     # Merge duplicate detections from LSD/Hough, but do not merge parallel
     # neighbour strokes that can represent separate pipe borders.
@@ -417,8 +435,10 @@ def extract_segments(gray: np.ndarray, ink: np.ndarray, annotations: list[dict[s
     kept.sort(key=lambda item: item['length'], reverse=True)
     return kept[:2400]
 
-def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
-                      ink: np.ndarray | None = None, text_mask: np.ndarray | None = None):
+
+def endpoint_clusters(
+    segments: list[dict[str, Any]], radius: float = 4.5, ink: np.ndarray | None = None, text_mask: np.ndarray | None = None
+):
     """Build a route graph, snap close ends and bridge only strict collinear gaps.
 
     Intersections in the middle of strokes are never unioned. A small gap is
@@ -467,11 +487,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
     # With source pixels available, allow a slightly larger detector gap, but
     # only the same strict tangent + undilated-ink continuity checks can join it.
     # Without source pixels keep the old, shorter geometry-only limit.
-    gap_radius = (
-        max(radius + 1.0, min(48.0, radius * 10.5))
-        if ink is not None else
-        max(radius + 1.0, min(12.0, radius * 2.5))
-    )
+    gap_radius = max(radius + 1.0, min(48.0, radius * 10.5)) if ink is not None else max(radius + 1.0, min(12.0, radius * 2.5))
     ink_for_gap = cv2.dilate(ink, np.ones((5, 5), np.uint8), iterations=1) if ink is not None else None
     gap_cell = max(1, int(math.ceil(gap_radius)))
     gap_buckets: dict[tuple[int, int], list[int]] = {}
@@ -493,8 +509,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             inward_vector_cache[endpoint_index] = None
             return None
         if ink_for_gap is not None:
-            support = _sample_line_support(ink_for_gap, float(seg['x1']), float(seg['y1']),
-                                           float(seg['x2']), float(seg['y2']))
+            support = _sample_line_support(ink_for_gap, float(seg['x1']), float(seg['y1']), float(seg['x2']), float(seg['y2']))
             if support < 0.20:
                 inward_vector_cache[endpoint_index] = None
                 return None
@@ -577,11 +592,16 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         x = float(np.mean([item[2] for item in items]))
         y = float(np.mean([item[3] for item in items]))
         node_id = f'N{group_index + 1}'
-        nodes.append({
-            'id': node_id, 'x': round(x, 2), 'y': round(y, 2),
-            'degree': len(items), 'review': len(items) == 1,
-            'auto_joined_collinear': root in root_auto,
-        })
+        nodes.append(
+            {
+                'id': node_id,
+                'x': round(x, 2),
+                'y': round(y, 2),
+                'degree': len(items),
+                'review': len(items) == 1,
+                'auto_joined_collinear': root in root_auto,
+            }
+        )
         for item in items:
             endpoint_to_node[(item[0], item[1])] = node_id
 
@@ -601,20 +621,28 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             [round(float(segment['x2']), 2), round(float(segment['y2']), 2)],
         ]
         auto_join = bool(node_by_id[node_a]['auto_joined_collinear'] or node_by_id[node_b]['auto_joined_collinear'])
-        edges.append({
-            'id': f'E{len(edges) + 1}', 'from': node_a, 'to': node_b,
-            'source': 'candidate',
-            'confidence': round(min(0.99, 0.45 + 0.45 * float(segment.get('support', 0.0)) + min(float(segment.get('length', 0.0)) / 800, 0.12)), 2),
-            'ink_support': round(float(segment.get('support', 0.0)), 3),
-            'geometry': snapped, 'raw_geometry': raw_geometry,
-            'review': True, 'detector': segment.get('source', 'LSD'),
-            'source_segment_index': index,
-            'ocr_overlap': float(segment.get('ocr_overlap', 0.0)),
-            'text_crossing': bool(segment.get('text_crossing', False)),
-            'suggested_role': segment.get('suggested_role', 'line_candidate'),
-            'auto_joined_gap': auto_join,
-            'continuation_candidate': auto_join,
-        })
+        edges.append(
+            {
+                'id': f'E{len(edges) + 1}',
+                'from': node_a,
+                'to': node_b,
+                'source': 'candidate',
+                'confidence': round(
+                    min(0.99, 0.45 + 0.45 * float(segment.get('support', 0.0)) + min(float(segment.get('length', 0.0)) / 800, 0.12)), 2
+                ),
+                'ink_support': round(float(segment.get('support', 0.0)), 3),
+                'geometry': snapped,
+                'raw_geometry': raw_geometry,
+                'review': True,
+                'detector': segment.get('source', 'LSD'),
+                'source_segment_index': index,
+                'ocr_overlap': float(segment.get('ocr_overlap', 0.0)),
+                'text_crossing': bool(segment.get('text_crossing', False)),
+                'suggested_role': segment.get('suggested_role', 'line_candidate'),
+                'auto_joined_gap': auto_join,
+                'continuation_candidate': auto_join,
+            }
+        )
 
     adjacency: dict[str, list[int]] = {}
     for index, edge in enumerate(edges):
@@ -680,16 +708,13 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         # unexplained overlap remains a text/annotation warning.
         overlap_weight = sum(
             edge_lengths[index] * float(edge.get('ocr_overlap', 0.0))
-            for index, edge in enumerate(comp_edges) if not edge.get('text_crossing')
+            for index, edge in enumerate(comp_edges)
+            if not edge.get('text_crossing')
         )
         unexplained_ocr_overlap = overlap_weight / max(total, 1.0)
-        text_crossing_length = sum(
-            edge_lengths[index] for index, edge in enumerate(comp_edges) if edge.get('text_crossing')
-        )
+        text_crossing_length = sum(edge_lengths[index] for index, edge in enumerate(comp_edges) if edge.get('text_crossing'))
         text_crossing_ratio = text_crossing_length / max(total, 1.0)
-        mean_ink_support = float(np.mean([
-            float(edge.get('ink_support', 0.0) or 0.0) for edge in comp_edges
-        ])) if comp_edges else 0.0
+        mean_ink_support = float(np.mean([float(edge.get('ink_support', 0.0) or 0.0) for edge in comp_edges])) if comp_edges else 0.0
         max_edge_ocr_overlap = max(
             (float(edge.get('ocr_overlap', 0.0) or 0.0) for edge in comp_edges),
             default=0.0,
@@ -698,21 +723,26 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         # Text can sometimes form long, connected strokes. Use graph shape and
         # text-box overlap together; bounding-box elongation alone is not proof
         # that a component is a pipe.
-        text_crossing_suspect = (
-            text_crossing_ratio >= 0.42
-            and (turn_density >= 1.2 or edge_density >= 1.65 or max_degree >= 3)
-        )
+        text_crossing_suspect = text_crossing_ratio >= 0.42 and (turn_density >= 1.2 or edge_density >= 1.65 or max_degree >= 3)
         coherent_route = (
-            len(comp_edges) >= 2 and extent >= 48.0 and total >= 54.0
-            and average_length >= 12.0 and max_degree <= 5
-            and edge_density <= 4.10 and turn_density <= 4.6
+            len(comp_edges) >= 2
+            and extent >= 48.0
+            and total >= 54.0
+            and average_length >= 12.0
+            and max_degree <= 5
+            and edge_density <= 4.10
+            and turn_density <= 4.6
             and unexplained_ocr_overlap < 0.17
             and not text_crossing_suspect
         )
         branch_route = (
-            len(comp_edges) >= 3 and branch_nodes >= 1 and total >= 68.0
-            and average_length >= 10.0 and max_degree <= 5
-            and edge_density <= 4.35 and turn_density <= 5.0
+            len(comp_edges) >= 3
+            and branch_nodes >= 1
+            and total >= 68.0
+            and average_length >= 10.0
+            and max_degree <= 5
+            and edge_density <= 4.35
+            and turn_density <= 5.0
             and unexplained_ocr_overlap < 0.16
             and not text_crossing_suspect
         )
@@ -720,16 +750,24 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         # edges. Accept a modestly connected route when its geometry is
         # elongated, moderately sparse, and not inside OCR regions.
         connected_line_candidate = (
-            len(comp_edges) >= 2 and extent >= 34.0 and total >= 38.0
-            and average_length >= 7.0 and max_degree <= 5
-            and edge_density <= 5.2 and turn_density <= 7.0
+            len(comp_edges) >= 2
+            and extent >= 34.0
+            and total >= 38.0
+            and average_length >= 7.0
+            and max_degree <= 5
+            and edge_density <= 5.2
+            and turn_density <= 7.0
             and unexplained_ocr_overlap < 0.14
             and text_crossing_ratio < 0.28
         )
         elbow_route_candidate = (
-            len(comp_edges) >= 3 and extent >= 26.0 and total >= 42.0
-            and average_length >= 7.0 and max_degree <= 5
-            and branch_nodes <= 4 and edge_density <= 5.4
+            len(comp_edges) >= 3
+            and extent >= 26.0
+            and total >= 42.0
+            and average_length >= 7.0
+            and max_degree <= 5
+            and branch_nodes <= 4
+            and edge_density <= 5.4
             and turn_density <= 7.2
             and unexplained_ocr_overlap < 0.12
             and text_crossing_ratio < 0.24
@@ -741,10 +779,15 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         # support alone: isolated dimensions and page borders cannot satisfy the
         # topology/branch-count requirements.
         topology_network_candidate = (
-            len(comp_edges) >= 8 and extent >= 28.0 and total >= 135.0
-            and average_length >= 12.0 and 2 <= branch_nodes <= 7
-            and max_degree <= 8 and edge_density <= 5.6
-            and turn_density <= 1.35 and mean_ink_support >= 0.40
+            len(comp_edges) >= 8
+            and extent >= 28.0
+            and total >= 135.0
+            and average_length >= 12.0
+            and 2 <= branch_nodes <= 7
+            and max_degree <= 8
+            and edge_density <= 5.6
+            and turn_density <= 1.35
+            and mean_ink_support >= 0.40
             and unexplained_ocr_overlap < 0.10
             and max_edge_ocr_overlap < 0.18
             and text_crossing_ratio < 0.12
@@ -753,10 +796,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         text_like = (
             unexplained_ocr_overlap >= 0.16
             or (text_crossing_suspect and not branch_route)
-            or (
-                len(comp_edges) >= 3 and average_length < 15.0
-                and short_edge_ratio >= 0.55 and turn_density >= 1.5
-            )
+            or (len(comp_edges) >= 3 and average_length < 15.0 and short_edge_ratio >= 0.55 and turn_density >= 1.5)
         )
         # A dense symbol veto is relaxed only for a connected/elbow route that
         # also has multiple branches, enough total geometry, low turning and
@@ -764,13 +804,17 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         # merely because they happened to pass a loose connected-route test.
         dense_route_exemption = (
             (connected_line_candidate or elbow_route_candidate)
-            and len(comp_edges) >= 6 and total >= 90.0
-            and branch_nodes >= 1 and average_length >= 12.0
-            and turn_density <= 1.25 and max_edge_ocr_overlap < 0.08
+            and len(comp_edges) >= 6
+            and total >= 90.0
+            and branch_nodes >= 1
+            and average_length >= 12.0
+            and turn_density <= 1.25
+            and max_edge_ocr_overlap < 0.08
             and text_crossing_ratio < 0.12
         )
         dense_symbol_cluster = (
-            len(comp_edges) >= 4 and average_length < 20.0
+            len(comp_edges) >= 4
+            and average_length < 20.0
             and edge_density >= 1.85
             and (max_degree >= 4 or turn_density >= 2.0)
             and not (dense_route_exemption or topology_network_candidate)
@@ -781,8 +825,7 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
         elif dense_symbol_cluster:
             # Keep dense handwritten/symbol groups out of the clean pipe layer.
             role = 'ambiguous'
-        elif (coherent_route or branch_route or connected_line_candidate
-              or elbow_route_candidate or topology_network_candidate):
+        elif coherent_route or branch_route or connected_line_candidate or elbow_route_candidate or topology_network_candidate:
             role = 'line_structure'
         else:
             role = 'ambiguous'
@@ -793,27 +836,33 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
             edge['component_role'] = role
             edge['topology_network_candidate'] = bool(topology_network_candidate)
             edge['dense_route_exemption'] = bool(dense_route_exemption)
-        component_summaries.append({
-            'id': component_id, 'role': role, 'edge_count': len(comp_edges),
-            'total_length': round(total, 1),
-            'bbox': {'x': round(min(xs), 1) if xs else 0, 'y': round(min(ys), 1) if ys else 0,
-                     'w': round(dx, 1), 'h': round(dy, 1)},
-            'ocr_overlap_ratio': round(unexplained_ocr_overlap, 3),
-            'text_crossing_ratio': round(text_crossing_ratio, 3),
-            'average_edge_length': round(average_length, 1),
-            'max_node_degree': max_degree, 'branch_nodes': branch_nodes,
-            'edge_density': round(edge_density, 2), 'turn_density': round(turn_density, 2),
-            'elongation': round(elongation, 2),
-            'mean_ink_support': round(mean_ink_support, 3),
-            'max_edge_ocr_overlap': round(max_edge_ocr_overlap, 3),
-            'short_edge_ratio': round(short_edge_ratio, 3),
-            'coherent_route': coherent_route, 'branch_route': branch_route,
-            'connected_line_candidate': connected_line_candidate,
-            'elbow_route_candidate': elbow_route_candidate,
-            'topology_network_candidate': topology_network_candidate,
-            'dense_route_exemption': dense_route_exemption,
-            'text_crossing_suspect': text_crossing_suspect,
-        })
+        component_summaries.append(
+            {
+                'id': component_id,
+                'role': role,
+                'edge_count': len(comp_edges),
+                'total_length': round(total, 1),
+                'bbox': {'x': round(min(xs), 1) if xs else 0, 'y': round(min(ys), 1) if ys else 0, 'w': round(dx, 1), 'h': round(dy, 1)},
+                'ocr_overlap_ratio': round(unexplained_ocr_overlap, 3),
+                'text_crossing_ratio': round(text_crossing_ratio, 3),
+                'average_edge_length': round(average_length, 1),
+                'max_node_degree': max_degree,
+                'branch_nodes': branch_nodes,
+                'edge_density': round(edge_density, 2),
+                'turn_density': round(turn_density, 2),
+                'elongation': round(elongation, 2),
+                'mean_ink_support': round(mean_ink_support, 3),
+                'max_edge_ocr_overlap': round(max_edge_ocr_overlap, 3),
+                'short_edge_ratio': round(short_edge_ratio, 3),
+                'coherent_route': coherent_route,
+                'branch_route': branch_route,
+                'connected_line_candidate': connected_line_candidate,
+                'elbow_route_candidate': elbow_route_candidate,
+                'topology_network_candidate': topology_network_candidate,
+                'dense_route_exemption': dense_route_exemption,
+                'text_crossing_suspect': text_crossing_suspect,
+            }
+        )
 
     # Promote only small, non-text, coaxial fragments that point into a robust
     # primary component. This is deliberately stricter than the old 28 px rule.
