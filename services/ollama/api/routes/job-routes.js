@@ -22,7 +22,7 @@ export function createJobsRouter({
 }) {
   const router = express.Router();
 
-  router.get('/api/jobs/:jobId/graph', async (req, res) => {
+  router.get('/:jobId/graph', async (req, res) => {
     const { jobId } = req.params;
     if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
 
@@ -42,7 +42,7 @@ export function createJobsRouter({
     }
   });
 
-  router.post('/api/jobs/:jobId/connections', validateBody(connectionSchema), async (req, res) => {
+  router.post('/:jobId/connections', validateBody(connectionSchema), async (req, res) => {
     const { jobId } = req.params;
     if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
 
@@ -172,7 +172,7 @@ export function createJobsRouter({
     }
   });
 
-  router.post('/api/jobs/:jobId/review', validateBody(reviewSchema), async (req, res) => {
+  router.post('/:jobId/review', validateBody(reviewSchema), async (req, res) => {
     const { jobId } = req.params;
     if (!JOB_ID_PATTERN.test(jobId)) return res.status(400).json({ error: 'Некорректный ID задания.' });
     const action = String(req.body?.action || '').trim();

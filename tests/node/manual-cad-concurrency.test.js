@@ -10,9 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 
 test('manual-cad: PUT rejects a stale revision (409 REVISION_CONFLICT)', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
-  const start = src.indexOf("app.put('/api/manual-cad/projects/:id'");
-  assert.ok(start >= 0, 'missing PUT /api/manual-cad/projects/:id');
+  const src = await readFile(join(ROOT, 'services/ollama/api/routes/manual-cad-routes.js'), 'utf8');
+  const start = src.indexOf("router.put('/projects/:id'");
+  assert.ok(start >= 0, 'missing PUT /projects/:id');
   const body = src.slice(start, start + 2000);
   assert.match(body, /If-Match/);
   assert.match(body, /REVISION_CONFLICT/);

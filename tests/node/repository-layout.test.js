@@ -32,9 +32,12 @@ test('one React frontend is the active UI; backend and document services stay se
   for (const relative of required) await access(file(relative));
 
   const server = await read('services/ollama/api/server.js');
-  assert.match(server, /frontend\/public/);
-  assert.match(server, /frontend\/public\/vdgo/);
-  assert.match(server, /redirect\(308, '\/vdgo\/'\)/);
+  // SPA serving moved to routes/spa-routes.js in the P2-1 split.
+  const spa = await read('services/ollama/api/routes/spa-routes.js');
+  assert.match(spa, /frontend\/public/);
+  assert.match(spa, /frontend\/public\/vdgo/);
+  assert.match(spa, /redirect\(308, '\/vdgo\/'\)/);
+  assert.match(server, /createSpaRouter/);
 
   const auth = await read('services/ollama/api/workforce-system.js');
   assert.match(auth, /pathname\.startsWith\('\/vdgo\/'\)/);

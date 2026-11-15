@@ -2,7 +2,7 @@
 // Не требует запущенного сервера — проверяет статически по исходникам.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,17 +34,18 @@ function extractPaths(text) {
 function collectRoutesFrom(src, prefix = '') {
   // Сопоставляем маршруты вида routes.post('/api/auth/setup', ...) и
   // app.get('/api/...') — оба варианта.
+  //
+  // Route modules declare paths relative to their mount point ('/streets'),
+  // server.js declares absolute ones ('/api/health'). When a prefix is given,
+  // always join it, otherwise keep the path as-is.
   const routes = new Set();
   for (const m of src.matchAll(/(?:app|routes|router)\.(get|post|put|delete|patch)\(\s*[`'"]([^`'"]+)[`'"]/g)) {
     const method = m[1].toUpperCase();
-    const full = m[2].startsWith('/') ? m[2] : prefix + m[2];
+    let full = prefix ? `${prefix}${m[2]}`.replace(/\/+/g, '/') : m[2];
+    if (full.length > 1) full = full.replace(/\/+$/, '');
     routes.add(`${method} ${full}`);
   }
   return routes;
-}
-
-function collectServerRoutes(src) {
-  return collectRoutesFrom(src);
 }
 
 test('openapi: файл существует и содержит пути', () => {
@@ -58,16 +59,38 @@ test('openapi: файл существует и содержит пути', () =
   }
 });
 
-test('openapi: /api/* пути присутствуют в server.js', () => {
-  const serverSrc = readFileSync(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
-  const workforceSrc = readFileSync(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
-  const routes = new Set([...collectServerRoutes(serverSrc), ...collectRoutesFrom(workforceSrc)]);
+test('openapi: /api/* пути присутствуют в маршрутах приложения', () => {
+  // Routes live in server.js (health/analyze) and api/routes/*.js after P2-1.
+  // Mount prefix per route module (matches app.use in server.js).
+  const mounts = {
+    'server.js': '',
+    'workforce-system.js': '',
+    'template-routes.js': '/api/template',
+    'settings-routes.js': '/api',
+    'library-routes.js': '/api/library',
+    'scheme-routes.js': '/api/library/schemes',
+    'job-routes.js': '/api/jobs',
+    'manual-cad-routes.js': '/api/manual-cad',
+    'spa-routes.js': '',
+  };
+  const files = [
+    'services/ollama/api/server.js',
+    'services/ollama/api/workforce-system.js',
+    ...readdirSync(join(ROOT, 'services/ollama/api/routes'))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => `services/ollama/api/routes/${name}`),
+  ];
+  const routes = new Set();
+  for (const file of files) {
+    const base = file.split('/').pop();
+    const prefix = mounts[base] ?? '';
+    for (const route of collectRoutesFrom(readFileSync(join(ROOT, file), 'utf8'), prefix)) routes.add(route);
+  }
+
   const openapi = readFileSync(OPENAPI, 'utf8');
   const paths = extractPaths(openapi).filter((p) => p.startsWith('/api/'));
 
   for (const p of paths) {
-    // /api/analyze — проксируется в vdgo-backend, не обрабатывается server.js напрямую
-    if (p === '/api/analyze') continue;
     const expressPath = p.replace(/\{([^}]+)\}/g, (_, name) => `:${name}`);
     const found = [...routes].some((r) => r.endsWith(` ${expressPath}`));
     assert.ok(found, `путь ${p} из openapi не найден как маршрут (ожидалось ${expressPath})`);

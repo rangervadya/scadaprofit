@@ -242,7 +242,7 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои.
+- [~] **P2-1** Разбить монолиты на слои (`server.js` разбит; `workforce-system.js` и `processor.py` — далее).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -261,7 +261,10 @@
   - **Проверено**: `server.js` 2207 → 1989 строк (−657 от исходного); 18/18 интеграционных.
   - **Сделано (шаг 8)**: выделен блок manual-cad — `api/routes/manual-cad-routes.js` (11 маршрутов: import-job / import-source-job / import-workforce-report, projects CRUD, source/preview/export); инжектируются все зависимости.
   - **Проверено**: `server.js` 1989 → 1588 строк (−1058 от исходного, −40%); 21/21 manual-cad тест; 18/18 интеграционных.
-  - **Осталось**: analyze (1 маршрут); после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
+  - **Сделано (шаг 9)**: выделен SPA-fallback — `api/routes/spa-routes.js` (`/vdgo`, `/vdgo/*`, redirect на SPA).
+  - **Итог разбивки `server.js`**: 2646 → 1579 строк (−40%). Структура: `server.js` — composition root (health, readyz, analyze, python-оркестрация, монтирование), `routes/*.js` — 7 модулей HTTP (template, settings, library, schemes, jobs, manual-cad, spa), `template-store.js` / `health.js` / `text.js` — домен и утилиты.
+  - **Проверено**: 97 node-тестов; 18/18 интеграционных; VDGO 62; `verify` exit 0.
+  - **Осталось (сознательно)**: вынести analyze + python-оркестрацию (`runPythonStreaming`) — тесно связаны, вынос рискован без отдельного слоя; `workforce-system.js` (33 маршрута) — следующий кандидат; `processor.py` (5062 строки) — отдельно.
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
@@ -389,6 +392,17 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 9: SPA-роуты + итог по server.js
+
+- `api/routes/spa-routes.js` — `/vdgo`, `/vdgo/*`, redirect неизвестных маршрутов на SPA.
+- **`server.js`: 2646 → 1579 строк (−40%)** от исходного. Итоговая структура:
+  - `server.js` — composition root: middleware, health/readyz, analyze, python-оркестрация, монтирование роутеров;
+  - `routes/{template,settings,library,scheme,job,manual-cad,spa}-routes.js` — 7 HTTP-модулей;
+  - `template-store.js`, `health.js`, `text.js` — домен и утилиты.
+- Обновлены source-string тесты: `openapi` (собирает маршруты из всех модулей с учётом mount-префиксов), `etag`, `manual-cad-concurrency`, `repository-layout`.
+- **Исправлен баг**: `Set.prototype.add(...set)` добавляет один элемент, а не разворачивает — в `openapi.test.js` заменили на `for...of`.
+- Проверено: 97 node-тестов, 18/18 интеграционных, VDGO 62, `verify` exit 0.
 
 ### 2026-11-15 — P2-1 шаг 8: выделен блок manual-cad
 
