@@ -13,9 +13,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "services/ollama" / "engine"
 sys.path.insert(0, str(BACKEND))
-import processor
-import qwen_client
 import analysis_state
+import processor
 import segment_geometry
 from annotation_linking import link_annotations
 from cad_symbols import assign_symbol_type, symbol_primitives
