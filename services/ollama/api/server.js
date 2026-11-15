@@ -59,6 +59,7 @@ import { cleanLabel } from './text.js';
 import { createTemplateRouter } from './routes/template-routes.js';
 import { createSettingsRouter } from './routes/settings-routes.js';
 import { createHealthChecks } from './health.js';
+import { createLibraryRouter } from './routes/library-routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -780,7 +781,12 @@ async function backfillAddressLibrary() {
 let addressLibraryWriteQueue = Promise.resolve();
 function updateAddressLibrary(mutator) {
   const task = addressLibraryWriteQueue.then(async () => {
-    const library = await readAddressLibrary();
+    // A fresh instance has no library yet; start from an empty document instead
+    // of crashing on `null.streets`.
+    const stored = await readAddressLibrary();
+    const library = stored && typeof stored === 'object' ? stored : { schemaVersion: 1, streets: [], buildings: [] };
+    if (!Array.isArray(library.streets)) library.streets = [];
+    if (!Array.isArray(library.buildings)) library.buildings = [];
     const result = await mutator(library);
     await saveAddressLibrary(library);
     return result;
@@ -1119,62 +1125,20 @@ function nextManualEdgeId(edges) {
 
 app.use('/api/template', createTemplateRouter({ store: templateStore, uploadDir: UPLOAD_DIR, limitHeavyRequests }));
 
-app.get('/api/library', async (req, res) => {
-  try {
-    const library = await readAddressLibrary();
-    return sendJsonConditional(req, res, { ok: true, library });
-  } catch (error) {
-    req.log.error({ err: error }, 'Cannot read address library');
-    return res.status(500).json({ error: 'Не удалось прочитать папки объектов.' });
-  }
-});
-
-app.post('/api/library/streets', validateBody(streetSchema), async (req, res) => {
-  const name = cleanLabel(req.body?.name, 100);
-  if (!name) return res.status(400).json({ error: 'Укажи название улицы.' });
-  try {
-    const street = await updateAddressLibrary((library) => {
-      if (library.streets.some((item) => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
-        const error = new Error('Такая улица уже есть в папках.');
-        error.status = 409;
-        throw error;
-      }
-      const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), buildings: [] };
-      library.streets.push(created);
-      return created;
-    });
-    return res.status(201).json({ ok: true, street });
-  } catch (error) {
-    return res.status(error.status || 500).json({ error: error.message || 'Не удалось создать улицу.' });
-  }
-});
-
-app.post('/api/library/buildings', validateBody(buildingSchema), async (req, res) => {
-  const streetId = String(req.body?.streetId || '');
-  const name = cleanLabel(req.body?.name, 80);
-  if (!UUID_PATTERN.test(streetId) || !name) return res.status(400).json({ error: 'Выбери улицу и укажи номер дома.' });
-  try {
-    const building = await updateAddressLibrary((library) => {
-      const street = library.streets.find((item) => item.id === streetId);
-      if (!street) {
-        const error = new Error('Улица не найдена. Обнови список папок.');
-        error.status = 404;
-        throw error;
-      }
-      if (street.buildings.some((item) => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
-        const error = new Error('Такой дом уже есть в этой улице.');
-        error.status = 409;
-        throw error;
-      }
-      const created = { id: randomUUID(), name, createdAt: new Date().toISOString(), schemes: [] };
-      street.buildings.push(created);
-      return created;
-    });
-    return res.status(201).json({ ok: true, building });
-  } catch (error) {
-    return res.status(error.status || 500).json({ error: error.message || 'Не удалось создать дом.' });
-  }
-});
+// Address library routes (routes/library-routes.js): streets and buildings.
+app.use(
+  '/api/library',
+  createLibraryRouter({
+    readAddressLibrary,
+    updateAddressLibrary,
+    validateBody,
+    streetSchema,
+    buildingSchema,
+    cleanLabel,
+    sendJsonConditional,
+    UUID_PATTERN,
+  }),
+);
 
 // Upload stores the original in the selected house and automatically queues
 // its reconstruction. The GPU queue serializes Qwen jobs to protect VRAM.

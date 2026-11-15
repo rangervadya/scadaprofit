@@ -168,3 +168,45 @@ test('report listing is conditional and stable across polls', { skip }, async ()
   });
   assert.equal(second.status, 304, 'unchanged report list must return 304');
 });
+
+test('address library: create street and building, reject duplicates', { skip }, async () => {
+  const streetName = `Улица ${randomUUID().slice(0, 6)}`;
+  const houseName = String(1 + Math.floor(Math.random() * 90));
+
+  const street = await admin.post('/api/library/streets', { name: streetName });
+  assert.equal(street.status, 201, street.text);
+  assert.equal(street.body.street.name, streetName);
+
+  const duplicateStreet = await admin.post('/api/library/streets', { name: streetName });
+  assert.equal(duplicateStreet.status, 409, 'duplicate street must be rejected');
+
+  const building = await admin.post('/api/library/buildings', {
+    streetId: street.body.street.id,
+    name: houseName,
+  });
+  assert.equal(building.status, 201, building.text);
+  assert.equal(building.body.building.name, houseName);
+
+  const duplicateBuilding = await admin.post('/api/library/buildings', {
+    streetId: street.body.street.id,
+    name: houseName,
+  });
+  assert.equal(duplicateBuilding.status, 409, 'duplicate building must be rejected');
+
+  const library = await admin.get('/api/library');
+  assert.equal(library.status, 200);
+  const found = library.body.library.streets.find((item) => item.id === street.body.street.id);
+  assert.ok(found, 'created street must be listed');
+  assert.ok(found.buildings.some((item) => item.id === building.body.building.id));
+});
+
+test('address library rejects invalid payloads', { skip }, async () => {
+  const missingName = await admin.post('/api/library/streets', {});
+  assert.ok([400, 422].includes(missingName.status), `expected 400/422, got ${missingName.status}`);
+
+  const badBuilding = await admin.post('/api/library/buildings', {
+    streetId: 'not-a-uuid',
+    name: '1',
+  });
+  assert.ok([400, 422].includes(badBuilding.status), `expected 400/422, got ${badBuilding.status}`);
+});
