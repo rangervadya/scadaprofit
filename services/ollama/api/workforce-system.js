@@ -20,6 +20,7 @@ import {
 } from './postgres-repo.js';
 import { fetchWorkspace as fetchWorkspacePg, saveWorkspace as saveWorkspacePg } from './workforce-workspace-repo.js';
 import { createUserAdminRouter } from './routes/workforce-user-routes.js';
+import { createAuthRouter } from './routes/workforce-auth-routes.js';
 import {
   createLookupCache,
   taskForClient as taskForClientWith,
@@ -359,71 +360,38 @@ export async function createWorkforceSystem({
 
   const routes = (await import('express')).Router();
 
-  routes.get('/api/auth/status', (_req, res) => res.json({ ok: true, setupRequired: users.length === 0 }));
-  routes.post('/api/auth/setup', validateBody(setupSchema), async (req, res) => {
-    if (users.length || setupInProgress)
-      return res
-        .status(409)
-        .json({ error: 'Первоначальная настройка уже выполняется или завершена. Войди под аккаунтом разработчика.' });
-    const username = cleanText(req.body?.username, 48).toLowerCase();
-    const displayName = cleanText(req.body?.displayName, 100);
-    const password = String(req.body?.password || '');
-    if (!/^[a-z0-9._-]{3,48}$/.test(username))
-      return res
-        .status(400)
-        .json({ error: 'Логин: от 3 до 48 символов, латиница, цифры, точка, дефис или подчёркивание.' });
-    if (password.length < 10 || password.length > 200)
-      return res.status(400).json({ error: 'Пароль должен содержать от 10 до 200 символов.' });
-    if (!displayName) return res.status(400).json({ error: 'Укажи имя разработчика.' });
-    setupInProgress = true;
-    try {
-      if (users.length) return res.status(409).json({ error: 'Первоначальная настройка уже завершена.' });
-      const user = {
-        id: randomUUID(),
-        username,
-        displayName,
-        role: 'developer',
-        passwordHash: await hashPassword(password),
-        active: true,
-        createdAt: new Date().toISOString(),
-      };
-      users.push(user);
-      await saveUsers();
-      await sessionForUser(res, user);
-      return res.status(201).json({ ok: true, user: publicUser(user) });
-    } finally {
-      setupInProgress = false;
-    }
-  });
-  routes.post('/api/auth/login', validateBody(loginSchema), async (req, res) => {
-    const user = await authenticateCredentials(users, req.body?.username, req.body?.password);
-    if (!user) {
-      req.log.warn(
-        { username: cleanText(req.body?.username, 48), requestId: req.id },
-        'Rejected login: unknown user or wrong password',
-      );
-      return res.status(401).json({ error: 'Неверный логин или пароль.' });
-    }
-    await sessionForUser(res, user);
-    req.log.info({ userId: user.id, role: user.role }, 'User signed in');
-    return res.json({ ok: true, user: publicUser(user) });
-  });
-  routes.post('/api/auth/logout', async (req, res) => {
-    const token = cookieValue(req.headers.cookie, SESSION_COOKIE);
-    const hash = token ? tokenHash(token) : '';
-    sessions = sessions.filter((item) => item.tokenHash !== hash);
-    await saveSessions();
-    await deleteSession(hash);
-    clearSessionCookie(res, secureCookies);
-    return res.json({ ok: true });
-  });
-  routes.get('/api/auth/me', (req, res) => {
-    const user = getCurrentUser(req);
-    if (!user) return res.status(401).json({ error: 'Войди в аккаунт.' });
-    return res.json({ ok: true, user: publicUser(user) });
-  });
-
-  routes.get('/api/auth/check-vdgo', (_req, res) => res.sendStatus(204));
+  // Auth routes (routes/workforce-auth-routes.js).
+  routes.use(
+    '/api',
+    createAuthRouter({
+      getUsers: () => users,
+      getSessions: () => sessions,
+      setSessions: (next) => {
+        sessions = next;
+      },
+      saveUsers,
+      saveSessions,
+      cleanText,
+      hashPassword,
+      publicUser,
+      authenticateCredentials,
+      tokenHash,
+      cookieValue,
+      clearSessionCookie,
+      deleteSession,
+      validateBody,
+      setupSchema,
+      loginSchema,
+      SESSION_COOKIE,
+      sessionForUser,
+      getCurrentUser,
+      isSetupInProgress: () => setupInProgress,
+      setSetupInProgress: (value) => {
+        setupInProgress = value;
+      },
+      secureCookies,
+    }),
+  );
 
   routes.get('/api/workforce/tasks', (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Требуется войти.' });
