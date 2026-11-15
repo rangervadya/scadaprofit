@@ -1001,16 +1001,20 @@ test('SVG and DXF preserve label size, alignment and rotation on both sheet styl
 });
 
 test('manual CAD import handlers do not reference an out-of-scope jobId', async () => {
-  const source = await readFile(new URL('../../services/ollama/api/server.js', import.meta.url), 'utf8');
+  // Routes live in api/routes/manual-cad-routes.js after the P2-1 split.
+  const source = await readFile(
+    new URL('../../services/ollama/api/routes/manual-cad-routes.js', import.meta.url),
+    'utf8',
+  );
   const sourceOnly = source.slice(
-    source.indexOf("app.post('/api/manual-cad/import-source-job/"),
-    source.indexOf("app.post('/api/manual-cad/import-workforce-report/"),
+    source.indexOf("router.post('/import-source-job/"),
+    source.indexOf("router.post('/import-workforce-report/"),
   );
   assert.ok(sourceOnly.length > 0, 'import-source-job route must exist');
   assert.doesNotMatch(sourceOnly, /shortJobId\(jobId\)/);
   const workforceOnly = source.slice(
-    source.indexOf("app.post('/api/manual-cad/import-workforce-report/"),
-    source.indexOf("app.get('/api/manual-cad/projects'"),
+    source.indexOf("router.post('/import-workforce-report/"),
+    source.indexOf("router.get('/projects'"),
   );
   assert.ok(workforceOnly.length > 0, 'import-workforce-report route must exist');
   assert.doesNotMatch(workforceOnly, /jobId: shortJobId\(jobId\)/);
