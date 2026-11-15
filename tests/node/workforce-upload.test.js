@@ -54,9 +54,10 @@ test('workforce report uploads use the cross-device-safe persistence helper', as
     await import('node:fs/promises')
   ).readFile(new URL('../../services/ollama/api/workforce-system.js', import.meta.url), 'utf8');
   assert.match(source, /await persistUploadedFile\(file\.path, path\.join\(reportDir, fileName\)\)/);
-  const persistBody = source.slice(
-    source.indexOf('export async function persistUploadedFile'),
-    source.indexOf('export async function createWorkforceSystem'),
+  const core = await readFile(new URL('../../services/ollama/api/workforce-core.js', import.meta.url), 'utf8');
+  const persistBody = core.slice(
+    core.indexOf('export async function persistUploadedFile'),
+    core.indexOf('export async function authenticateCredentials'),
   );
   assert.match(persistBody, /await copyFile\(sourcePath, stagingPath\)/);
   assert.match(persistBody, /await rename\(stagingPath, destinationPath\)/);

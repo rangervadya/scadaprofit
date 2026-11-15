@@ -1,7 +1,6 @@
 import path from 'node:path';
-import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
-import { mkdir, readFile, copyFile, chmod, rename, rm } from 'node:fs/promises';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
 import { requirePostgres } from './db.js';
@@ -20,183 +19,59 @@ import {
   deleteAllSessions,
 } from './postgres-repo.js';
 import { fetchWorkspace as fetchWorkspacePg, saveWorkspace as saveWorkspacePg } from './workforce-workspace-repo.js';
+import {
+  createLookupCache,
+  taskForClient as taskForClientWith,
+  reportForClient as reportForClientWith,
+  defectReportForClient as defectReportForClientWith,
+} from './workforce-serializers.js';
 
-const scrypt = promisify(scryptCallback);
-const SESSION_COOKIE = 'profit_session';
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-// Idle timeout: a session dies after this period without any request (P1-2).
-const SESSION_IDLE_MS = Number(process.env.SESSION_IDLE_MS || 12 * 60 * 60 * 1000);
-// Do not write last_seen_at on every request; one write per minute is enough.
-const SESSION_TOUCH_THROTTLE_MS = 60 * 1000;
-const ROLE_NAMES = {
-  fitter: 'Слесарь',
-  receiver: 'Приёмщик',
-  supervisor: 'Руководитель',
-  developer: 'Разработчик',
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+  SESSION_IDLE_MS,
+  SESSION_TOUCH_THROTTLE_MS,
+  ROLE_NAMES,
+  VALID_ROLES,
+  cleanText,
+  splitHumanName,
+  publicUser,
+  tokenHash,
+  validIsoDate,
+  cookieValue,
+  setSessionCookie,
+  clearSessionCookie,
+  hashPassword,
+  verifyPassword,
+  persistUploadedFile,
+  authenticateCredentials,
+  parseHouseAddresses,
+  evaluateAddressFolder,
+} from './workforce-core.js';
+
+// Re-exported for existing importers (tests, server.js).
+export {
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+  SESSION_IDLE_MS,
+  SESSION_TOUCH_THROTTLE_MS,
+  ROLE_NAMES,
+  VALID_ROLES,
+  cleanText,
+  splitHumanName,
+  publicUser,
+  tokenHash,
+  validIsoDate,
+  cookieValue,
+  setSessionCookie,
+  clearSessionCookie,
+  hashPassword,
+  verifyPassword,
+  persistUploadedFile,
+  authenticateCredentials,
+  parseHouseAddresses,
+  evaluateAddressFolder,
 };
-const VALID_ROLES = new Set(Object.keys(ROLE_NAMES));
-
-function cleanText(value, max = 240) {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
-}
-function splitHumanName(value) {
-  const parts = cleanText(value, 100).split(' ').filter(Boolean);
-  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') };
-}
-function publicUser(user) {
-  if (!user) return null;
-  const parsedName = splitHumanName(user.displayName);
-  return {
-    id: user.id,
-    username: user.username,
-    displayName: user.displayName,
-    firstName: user.firstName || parsedName.firstName,
-    lastName: user.lastName || parsedName.lastName,
-    role: user.role,
-    roleName: ROLE_NAMES[user.role] || user.role,
-    active: user.active !== false,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt || null,
-  };
-}
-function tokenHash(token) {
-  return createHash('sha256').update(String(token)).digest('hex');
-}
-function validIsoDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
-}
-export function parseHouseAddresses(value, fallbackAddress = '') {
-  let candidates = Array.isArray(value)
-    ? value
-    : value === undefined || value === null
-      ? []
-      : String(value).split(/[\r\n;]+/);
-  if (!candidates.some((item) => String(item ?? '').trim()) && fallbackAddress) candidates = [fallbackAddress];
-
-  const unique = [];
-  const seen = new Set();
-  for (const candidate of candidates) {
-    const address = cleanText(candidate, 120);
-    if (!address) continue;
-    const key = address.toLocaleLowerCase('ru-RU');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(address);
-    if (unique.length > 100) throw new RangeError('За одно назначение можно добавить не более 100 домов.');
-  }
-  return unique;
-}
-
-/** Evaluate whether every live item in one address folder is ready for a single conclusion transfer. */
-export function evaluateAddressFolder({ schemes = [], defects = [], userId = null } = {}) {
-  const liveSchemes = (Array.isArray(schemes) ? schemes : []).filter((item) => item?.status !== 'superseded');
-  const liveDefects = (Array.isArray(defects) ? defects : []).filter((item) => item?.status !== 'superseded');
-  const items = [...liveSchemes, ...liveDefects];
-  const allAccepted = items.length > 0 && items.every((item) => item.status === 'accepted');
-  const schemesReady = liveSchemes.every(
-    (item) =>
-      item.schemeJobId &&
-      (item.schemeStatus === 'completed' || (item.schemeStatus === 'failed' && item.schemePartialGraphReady === true)),
-  );
-  const photosReady = liveDefects.every((item) => Array.isArray(item.photos) && item.photos.length > 0);
-  const unseenCount = userId
-    ? items.filter((item) => !(Array.isArray(item.seenBy) && item.seenBy.includes(userId))).length
-    : 0;
-  return {
-    items,
-    schemes: liveSchemes,
-    defects: liveDefects,
-    allAccepted,
-    schemesReady,
-    photosReady,
-    unseenCount,
-    ready: allAccepted && schemesReady && photosReady && unseenCount === 0,
-  };
-}
-function cookieValue(header, name) {
-  const prefix = `${name}=`;
-  for (const part of String(header || '').split(';')) {
-    const item = part.trim();
-    if (item.startsWith(prefix)) {
-      try {
-        return decodeURIComponent(item.slice(prefix.length));
-      } catch {
-        return '';
-      }
-    }
-  }
-  return '';
-}
-function setSessionCookie(res, token, secure) {
-  const flags = [
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-  ];
-  if (secure) flags.push('Secure');
-  res.setHeader('Set-Cookie', flags.join('; '));
-}
-function clearSessionCookie(res, secure) {
-  const flags = [`${SESSION_COOKIE}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
-  if (secure) flags.push('Secure');
-  res.setHeader('Set-Cookie', flags.join('; '));
-}
-export async function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  const derived = await scrypt(String(password), salt, 64);
-  return `${salt}:${Buffer.from(derived).toString('hex')}`;
-}
-export async function verifyPassword(password, stored) {
-  const [salt, expectedHex] = String(stored || '').split(':');
-  if (!salt || !/^[a-f0-9]{128}$/i.test(expectedHex || '')) return false;
-  const actual = Buffer.from(await scrypt(String(password), salt, 64));
-  const expected = Buffer.from(expectedHex, 'hex');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-/**
- * Persist a Multer temporary upload in the private data directory. Multer's
- * default temp directory may be mounted on a different filesystem from the
- * persistent /data volume, so renaming the upload directly can fail with
- * EXDEV. Copy to a unique staging file beside the destination, then rename
- * within that filesystem (atomic there). The source is removed only after
- * the destination has been committed.
- */
-export async function persistUploadedFile(sourcePath, destinationPath) {
-  const destinationDir = path.dirname(destinationPath);
-  const stagingPath = path.join(destinationDir, `.${path.basename(destinationPath)}.${randomUUID()}.uploading`);
-  await mkdir(destinationDir, { recursive: true, mode: 0o700 });
-  try {
-    await copyFile(sourcePath, stagingPath);
-    await chmod(stagingPath, 0o600);
-    // Both paths are on the destination filesystem, avoiding cross-device rename.
-    await rename(stagingPath, destinationPath);
-  } catch (error) {
-    await rm(stagingPath, { force: true }).catch(() => {});
-    throw error;
-  }
-  // A cleanup failure must not turn a successfully saved report into an error.
-  await rm(sourcePath, { force: true }).catch(() => {});
-  return destinationPath;
-}
-
-// The same credential check is used by the login endpoint and tested directly.
-export async function authenticateCredentials(users, username, password) {
-  const normalizedUsername = cleanText(username, 48).toLowerCase();
-  const user = (Array.isArray(users) ? users : []).find(
-    (item) => String(item?.username || '').toLowerCase() === normalizedUsername && item.active !== false,
-  );
-  if (!user || !(await verifyPassword(String(password || ''), user.passwordHash))) return null;
-  return user;
-}
 
 export async function createWorkforceSystem({
   dataDir,
@@ -300,42 +175,13 @@ export async function createWorkforceSystem({
    * users/tasks/reports per item, so serializing a list was O(n^2). The maps are
    * built once per change and each serializer is then O(1) per entity.
    */
-  function buildLookups() {
-    const usersById = new Map();
-    for (const user of users) usersById.set(user.id, user);
-    const tasksById = new Map();
-    const reportsByTask = new Map();
-    const defectsByTask = new Map();
-    for (const task of workspace.tasks) tasksById.set(task.id, task);
-    for (const report of workspace.reports) {
-      const key = report.taskId || '';
-      const bucket = reportsByTask.get(key);
-      if (bucket) bucket.push(report);
-      else reportsByTask.set(key, [report]);
-    }
-    for (const defect of workspace.defectReports) {
-      const key = defect.taskId || '';
-      const bucket = defectsByTask.get(key);
-      if (bucket) bucket.push(defect);
-      else defectsByTask.set(key, [defect]);
-    }
-    return { usersById, tasksById, reportsByTask, defectsByTask };
-  }
-
-  let lookups = buildLookups();
-  // Any mutation of users/workspace invalidates the maps; they are rebuilt on
-  // the next read instead of on every write.
-  let lookupsDirty = false;
-  function invalidateLookups() {
-    lookupsDirty = true;
-  }
-  function getLookups() {
-    if (lookupsDirty) {
-      lookups = buildLookups();
-      lookupsDirty = false;
-    }
-    return lookups;
-  }
+  // Lookup cache + serializers live in workforce-serializers.js (P2-1).
+  const lookupCache = createLookupCache(users, workspace);
+  // Thin wrappers keep the existing call sites (no lookups argument) unchanged.
+  const taskForClient = (task) => taskForClientWith(task, lookupCache.get());
+  const reportForClient = (report) => reportForClientWith(report, lookupCache.get());
+  const defectReportForClient = (report) => defectReportForClientWith(report, lookupCache.get());
+  const invalidateLookups = () => lookupCache.invalidate();
 
   const saveUsers = async () => {
     invalidateLookups();
@@ -461,103 +307,6 @@ export async function createWorkforceSystem({
     await saveSessions();
     setSessionCookie(res, token, secureCookies);
   }
-  function taskForClient(task) {
-    const { usersById, reportsByTask, defectsByTask } = getLookups();
-    const assignee = usersById.get(task.assignedTo);
-    const taskReports = reportsByTask.get(task.id) || [];
-    const latestReport =
-      [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
-    const taskDefectReports = defectsByTask.get(task.id) || [];
-    return {
-      ...task,
-      assignedName: assignee?.displayName || task.assignedName || 'Не назначен',
-      reportsCount: taskReports.length,
-      defectReportsCount: taskDefectReports.length,
-      defectReports: taskDefectReports.map(defectReportForClient),
-      events: Array.isArray(task.events) ? task.events : [],
-      lastReviewComment: latestReport?.reviewComment || '',
-      lastReportStatus: latestReport?.status || null,
-      lastReviewedAt: latestReport?.reviewedAt || null,
-    };
-  }
-  function reportForClient(report) {
-    const { tasksById, usersById } = getLookups();
-    const task = tasksById.get(report.taskId);
-    const author = usersById.get(report.userId);
-    return {
-      id: report.id,
-      taskId: report.taskId,
-      taskTitle: task?.title || report.taskTitle || 'Задание',
-      street: task?.street || report.street || '',
-      address: task?.address || report.address || '',
-      scheduledDate: task?.scheduledDate || null,
-      assignedName: task?.assignedName || null,
-      userId: report.userId,
-      userName: author?.displayName || report.userName || 'Сотрудник',
-      note: report.note,
-      status: report.status,
-      reviewComment: report.reviewComment || '',
-      submittedAt: report.submittedAt,
-      reviewedAt: report.reviewedAt || null,
-      schemeJobId: report.schemeJobId || null,
-      manualCadProjectId: report.manualCadProjectId || null,
-      schemeStatus: report.schemeStatus || 'queued',
-      schemeError: report.schemeError || '',
-      schemeCompletedAt: report.schemeCompletedAt || null,
-      schemePartialGraphReady: Boolean(report.schemePartialGraphReady),
-      seen: false,
-      conclusionAddedAt: report.conclusionAddedAt || null,
-      photos: (report.photos || []).map((file) => ({
-        id: file.id,
-        originalName: file.originalName,
-        size: file.size,
-        url: `/api/workforce/reports/${report.id}/files/${file.id}`,
-        kind: file.kind,
-      })),
-      sketch: report.sketch
-        ? {
-            id: report.sketch.id,
-            originalName: report.sketch.originalName,
-            size: report.sketch.size,
-            url: `/api/workforce/reports/${report.id}/files/${report.sketch.id}`,
-            kind: report.sketch.kind,
-          }
-        : null,
-    };
-  }
-
-  function defectReportForClient(report) {
-    const { tasksById, usersById } = getLookups();
-    const task = tasksById.get(report.taskId);
-    const author = usersById.get(report.userId);
-    return {
-      id: report.id,
-      taskId: report.taskId,
-      taskTitle: task?.title || report.taskTitle || 'Задание',
-      street: task?.street || report.street || '',
-      address: task?.address || report.address || '',
-      scheduledDate: task?.scheduledDate || null,
-      assignedName: task?.assignedName || null,
-      userId: report.userId,
-      userName: author?.displayName || report.userName || 'Сотрудник',
-      note: report.note || '',
-      status: report.status || 'pending_review',
-      reviewComment: report.reviewComment || '',
-      submittedAt: report.submittedAt,
-      reviewedAt: report.reviewedAt || null,
-      reviewedByName: usersById.get(report.reviewedBy)?.displayName || null,
-      conclusionAddedAt: report.conclusionAddedAt || null,
-      seen: false,
-      photos: (report.photos || []).map((file) => ({
-        id: file.id,
-        originalName: file.originalName,
-        size: file.size,
-        mimeType: file.mimeType,
-        url: `/api/workforce/defects/${encodeURIComponent(report.id)}/files/${encodeURIComponent(file.id)}`,
-      })),
-    };
-  }
-
   async function authMiddleware(req, res, next) {
     const pathname = req.path;
     const authPublic = ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/api/auth/logout'];

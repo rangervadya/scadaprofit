@@ -16,21 +16,22 @@ const ROOT = join(__dirname, '../..');
 const read = (relative) => readFile(join(ROOT, relative), 'utf8');
 
 test('multi-house dispatch deduplicates and caps the house list', async () => {
-  const src = await read('services/ollama/api/workforce-system.js');
+  const src = await read('services/ollama/api/workforce-core.js');
   const body = src.slice(src.indexOf('export function parseHouseAddresses'));
   assert.match(body, /new Set\(\)/);
   assert.match(body, /if \(unique\.length > 100\)/);
 });
 
 test('folder transfer is atomic and rejects per-item conclusion transfers', async () => {
+  const core = await read('services/ollama/api/workforce-core.js');
   const src = await read('services/ollama/api/workforce-system.js');
-  assert.match(src, /export function evaluateAddressFolder/);
+  assert.match(core, /export function evaluateAddressFolder/);
   assert.match(src, /routes\.post\('\/api\/workforce\/tasks\/:taskId\/conclusion'/);
   assert.match(src, /report\.conclusionFolderId = task\.id/);
 });
 
 test('folder transfer requires seen and accepted materials', async () => {
-  const src = await read('services/ollama/api/workforce-system.js');
+  const src = await read('services/ollama/api/workforce-core.js');
   const start = src.indexOf('export function evaluateAddressFolder');
   assert.ok(start >= 0);
   const body = src.slice(start, start + 2000);

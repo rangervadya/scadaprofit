@@ -242,7 +242,7 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои (`server.js` разбит; `workforce-system.js` и `processor.py` — далее).
+- [~] **P2-1** Разбить монолиты на слои (`server.js` и `workforce-system.js` разбиты; `processor.py` — далее). `workforce-system.js` и `processor.py` — далее).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -392,6 +392,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 10: разбит workforce-system.js
+
+- `api/workforce-core.js` (199 строк) — чистые хелперы: роли, имена, текст, cookie, хеш пароля (`salt:hex` — формат сохранён), `persistUploadedFile` (staging + rename, EXDEV-safe), `parseHouseAddresses`, `evaluateAddressFolder`.
+- `api/workforce-serializers.js` (147 строк) — `buildLookups`, `createLookupCache` (инвалидация при записи), `taskForClient`, `reportForClient`, `defectReportForClient`; вынесены дословно.
+- `workforce-system.js` 1748 → 1497 строк; реэкспортирует helpers для существующих импортёров.
+- Новые тесты: `tests/node/workforce-serializers.test.js` (5) — чистые функции без сервера; обновлены `lookup-indexes`, `workforce-backend-contracts`, `workforce-upload`.
+- Проверено: 102 node-теста, 18/18 интеграционных, `verify` exit 0.
+- **Осталось**: вынести 33 маршрута из `workforce-system.js` в `routes/workforce-*.js` (требует инжекта контекста: users/sessions/workspace/lookups); `processor.py` (5062 строки) — отдельно.
 
 ### 2026-11-15 — P2-1 шаг 9: SPA-роуты + итог по server.js
 

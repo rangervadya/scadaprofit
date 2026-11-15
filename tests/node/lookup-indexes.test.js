@@ -12,16 +12,19 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 
-const src = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+const src = await readFile(join(ROOT, 'services/ollama/api/workforce-serializers.js'), 'utf8');
 const server = await readFile(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
 
 test('p2-5: serializers use lookup maps instead of per-item scans', () => {
-  assert.match(src, /function buildLookups\(\)/);
+  assert.match(src, /export function buildLookups\(users, workspace\)/);
   assert.match(src, /const usersById = new Map\(\)/);
   assert.match(src, /const reportsByTask = new Map\(\)/);
   assert.match(src, /const defectsByTask = new Map\(\)/);
 
-  const taskBody = src.slice(src.indexOf('function taskForClient'), src.indexOf('function reportForClient'));
+  const taskBody = src.slice(
+    src.indexOf('export function taskForClient'),
+    src.indexOf('export function reportForClient'),
+  );
   assert.doesNotMatch(taskBody, /users\.find\(/);
   assert.doesNotMatch(taskBody, /workspace\.reports\.filter\(/);
   assert.doesNotMatch(taskBody, /workspace\.defectReports\.filter\(/);
@@ -30,7 +33,7 @@ test('p2-5: serializers use lookup maps instead of per-item scans', () => {
 });
 
 test('p2-5: report serializers use the task and user maps', () => {
-  for (const fn of ['function reportForClient', 'function defectReportForClient']) {
+  for (const fn of ['export function reportForClient', 'export function defectReportForClient']) {
     const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 1200);
     assert.doesNotMatch(body, /workspace\.tasks\.find\(/, `${fn} still scans tasks`);
     assert.doesNotMatch(body, /users\.find\(/, `${fn} still scans users`);
@@ -39,16 +42,13 @@ test('p2-5: report serializers use the task and user maps', () => {
   }
 });
 
-test('p2-5: lookups are invalidated on write', () => {
-  assert.match(src, /function invalidateLookups\(\)/);
-  assert.match(src, /invalidateLookups\(\);/);
+test('p2-5: lookups are invalidated on write', async () => {
+  const wf = await readFile(join(ROOT, 'services/ollama/api/workforce-system.js'), 'utf8');
+  assert.match(src, /invalidate\(\)\s*\{/);
   // Both persistence helpers invalidate, so mutations cannot serve stale maps.
-  const saveUsers = src.slice(src.indexOf('const saveUsers = async'), src.indexOf('const saveUsers = async') + 200);
+  const saveUsers = wf.slice(wf.indexOf('const saveUsers = async'), wf.indexOf('const saveUsers = async') + 200);
   assert.match(saveUsers, /invalidateLookups\(\)/);
-  const saveWs = src.slice(
-    src.indexOf('const saveWorkspace = () =>'),
-    src.indexOf('const saveWorkspace = () =>') + 400,
-  );
+  const saveWs = wf.slice(wf.indexOf('const saveWorkspace = () =>'), wf.indexOf('const saveWorkspace = () =>') + 400);
   assert.match(saveWs, /invalidateLookups\(\)/);
 });
 
