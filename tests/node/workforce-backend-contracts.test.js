@@ -24,10 +24,10 @@ test('multi-house dispatch deduplicates and caps the house list', async () => {
 
 test('folder transfer is atomic and rejects per-item conclusion transfers', async () => {
   const core = await read('services/ollama/api/workforce-core.js');
-  const src = await read('services/ollama/api/workforce-system.js');
+  const inbox = await read('services/ollama/api/routes/workforce-inbox-routes.js');
   assert.match(core, /export function evaluateAddressFolder/);
-  assert.match(src, /routes\.post\('\/api\/workforce\/tasks\/:taskId\/conclusion'/);
-  assert.match(src, /report\.conclusionFolderId = task\.id/);
+  assert.match(inbox, /router\.post\('\/tasks\/:taskId\/conclusion'/);
+  assert.match(inbox, /report\.conclusionFolderId = task\.id/);
 });
 
 test('folder transfer requires seen and accepted materials', async () => {
@@ -50,8 +50,8 @@ test('password reset issues a one-time password and revokes sessions', async () 
 });
 
 test('receiver role guards stay on the report and defect routes', async () => {
-  const src = await read('services/ollama/api/workforce-system.js');
-  assert.match(src, /requireRoles\(req, res, \['receiver', 'supervisor', 'developer'\]\)/);
+  const inbox = await read('services/ollama/api/routes/workforce-inbox-routes.js');
+  assert.match(inbox, /requireRoles\(req, res, \['receiver', 'supervisor', 'developer'\]\)/);
 });
 
 test('defect reports are stored separately from generated documents', async () => {
