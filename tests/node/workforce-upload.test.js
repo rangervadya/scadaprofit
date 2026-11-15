@@ -52,7 +52,7 @@ test('persistUploadedFile safely stores a Multer upload across filesystem bounda
 test('workforce report uploads use the cross-device-safe persistence helper', async () => {
   const source = await (
     await import('node:fs/promises')
-  ).readFile(new URL('../../services/ollama/api/workforce-system.js', import.meta.url), 'utf8');
+  ).readFile(new URL('../../services/ollama/api/routes/workforce-submission-routes.js', import.meta.url), 'utf8');
   assert.match(source, /await persistUploadedFile\(file\.path, path\.join\(reportDir, fileName\)\)/);
   const core = await readFile(new URL('../../services/ollama/api/workforce-core.js', import.meta.url), 'utf8');
   const persistBody = core.slice(
