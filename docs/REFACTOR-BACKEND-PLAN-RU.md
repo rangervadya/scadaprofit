@@ -257,7 +257,9 @@
   - **Баг, пойманный тестами**: `updateAddressLibrary` падал на пустой библиотеке (`null.streets`) — создание первой улицы на чистой БД возвращало 500. Теперь стартует с пустого документа.
   - **Сделано (шаг 6)**: выделен блок схем — `api/routes/scheme-routes.js` (`POST /upload`, `GET /:jobId`, `GET /:jobId/status`, `POST /:jobId/analyze`, `POST /:jobId`); смонтирован на `/api/library/schemes`; инжектируются очередь анализа, `findScheme`, meta-репозиторий.
   - **Проверено**: `server.js` 2373 → 2207 строк; 18/18 интеграционных (добавлены: загрузка без файла → 400, неизвестный адрес → 404, битый jobId → 400).
-  - **Осталось**: jobs (graph/connections/review); manual-cad (10 маршрутов); analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
+  - **Сделано (шаг 7)**: выделен блок jobs — `api/routes/job-routes.js` (`GET /:jobId/graph`, `POST /:jobId/connections`, `POST /:jobId/review`); инжектятся `attachJobUrls`, `nextManualEdgeId`, `cleanLabel`, схемы.
+  - **Проверено**: `server.js` 2207 → 1989 строк (−657 от исходного); 18/18 интеграционных.
+  - **Осталось**: manual-cad (10 маршрутов); analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
@@ -385,6 +387,12 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 7: выделен блок jobs
+
+- `api/routes/job-routes.js` — `GET /:jobId/graph`, `POST /:jobId/connections`, `POST /:jobId/review`; мутация графа и хелперы инжектируются.
+- Смонтирован на `/api/jobs`; `server.js` 2207 → 1989 строк.
+- Проверено: 18/18 интеграционных, `verify` exit 0.
 
 ### 2026-11-15 — P2-1 шаг 6: выделен блок схем
 
