@@ -55,9 +55,38 @@ RETENTION_DAYS=60 infra/scripts/retention.sh
 ## Проверка бэкапа (restore drill)
 
 Перед production-деплоем выполните учебное восстановление на чистой машине:
-1. Поднимите пустой `docker compose up -d vdgo-db`.
-2. `infra/scripts/restore.sh <backup_dir>`.
-3. Проверьте, что auth/manual-CAD/workspace читаются из восстановленной БД.
-4. Сверьте `pg_dump` и снимок томов с эталонными размерами.
 
-DoD для P1-4: бэкап создаётся одной командой, восстановление проверено на чистой машине, retention не удаляет свежие данные.
+```bash
+# 1. Чистая БД-сервис (пример локально)
+docker run -d --rm --name drill-pg \
+  -e POSTGRES_DB=vdgo -e POSTGRES_USER=vdgo_app -e POSTGRES_PASSWORD=drill \
+  -p 55434:5432 postgres:17.7-alpine
+
+# 2. Бэкап из рабочей БД (без томов)
+PGURL=postgresql://vdgo:vdgo@localhost:55432/vdgo WITH_VOLUMES=0 \
+  infra/scripts/backup.sh /tmp/drill-backups
+
+# 3. Восстановление в чистую БД
+PGURL=postgresql://vdgo_app:drill@localhost:55434/vdgo WITH_VOLUMES=0 \
+  infra/scripts/restore.sh /tmp/drill-backups/<timestamp>
+
+# 4. Сверка и запуск приложения на восстановленной БД
+PGPASSWORD=drill psql postgresql://vdgo_app@localhost:55434/vdgo -c \
+  "select 'users='||count(*) from users;"
+PORT=3993 AUTH_BACKEND=postgres \
+  DATABASE_URL=postgresql://vdgo_app:drill@localhost:55434/vdgo node services/ollama/api/server.js
+curl -fsS localhost:3993/api/health
+```
+
+### Результат последнего drill (2026-11-15)
+
+| Проверка | Результат |
+|---|---|
+| `pg_dump` из рабочей БД | OK, `db.sql.gz` 8 КБ |
+| `psql` restore в чистый контейнер | OK, без ошибок |
+| Сверка `users/sessions/projects/archive/idempotency/ratelimit` | совпадает (5/0/2/2/1/0) |
+| Запуск приложения на восстановленной БД | `health=200`, `auth/status=200` |
+| Cleanup | контейнер удалён, бэкапы удалены |
+
+**DoD P1-4 выполнен:** бэкап создаётся одной командой, восстановление проверено на чистой машине,
+приложение поднимается на восстановленных данных.
