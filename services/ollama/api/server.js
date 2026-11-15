@@ -38,6 +38,7 @@ import {
 } from './logger.js';
 import { requirePostgres } from './db.js';
 import { sendJsonConditional } from './etag.js';
+import { createPostgresRateLimitStore } from './rate-limit-store.js';
 import {
   fetchManualProject,
   fetchManualProjects,
@@ -436,11 +437,19 @@ app.use(
 app.use(express.json({ limit: '15mb' }));
 // Session and role checks run before static pages, uploaded job files and API routes.
 app.use(workforceSystem.authMiddleware);
+// Shared counters so several API instances enforce one quota (P1-11).
+const authStore = createPostgresRateLimitStore({ bucket: 'auth', windowMs: 15 * 60_000, prefix: 'ip:' });
+const heavyStore = createPostgresRateLimitStore({
+  bucket: 'heavy',
+  windowMs: Number(process.env.HEAVY_QUOTA_WINDOW_MS || 60_000),
+});
+const uploadStore = createPostgresRateLimitStore({ bucket: 'upload', windowMs: 60_000 });
 const authRateLimit = rateLimit({
   windowMs: 15 * 60_000,
   limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  store: authStore,
   message: { error: 'Слишком много попыток входа. Повторите позже.' },
 });
 app.use('/api/auth/login', authRateLimit);
@@ -450,6 +459,7 @@ const limitHeavyRequests = rateLimit({
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  store: uploadStore,
   message: { error: 'Слишком много запросов на загрузку или обработку. Повторите попытку через минуту.' },
 });
 // Per-user quota: authenticated users are limited by account id rather than IP so
@@ -460,6 +470,7 @@ const heavyQuota = rateLimit({
   limit: Number(process.env.HEAVY_QUOTA_LIMIT || 30),
   standardHeaders: true,
   legacyHeaders: false,
+  store: heavyStore,
   keyGenerator: (req) => {
     if (req.user?.id) return `user:${req.user.id}`;
     // express-rate-limit v8 requires this helper for correct IPv6 handling.
@@ -467,6 +478,17 @@ const heavyQuota = rateLimit({
   },
   message: { error: 'Превышена квота на тяжёлые операции. Повторите попытку позже.' },
 });
+// Opportunistic prune of stale rate-limit windows (P1-11).
+const rateLimitCleanup = setInterval(
+  () => {
+    void authStore.cleanup();
+    void heavyStore.cleanup();
+    void uploadStore.cleanup();
+  },
+  60 * 60 * 1000,
+);
+rateLimitCleanup.unref();
+
 app.use(
   express.static(path.join(__dirname, '../../../frontend/public'), {
     maxAge: 0,

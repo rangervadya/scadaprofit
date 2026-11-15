@@ -57,6 +57,18 @@ model Session {
   @@map("sessions")
 }
 
+model RateLimitBucket {
+  bucket      String   @db.VarChar(64)
+  ident       String   @db.VarChar(255)
+  windowStart DateTime @map("window_start") @db.Timestamptz(6)
+  count       Int      @default(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([bucket, ident])
+  @@index([windowStart])
+  @@map("rate_limit_buckets")
+}
+
 model IdempotencyKey {
   id        String   @id @db.Uuid
   key       String   @db.VarChar(200)
