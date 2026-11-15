@@ -36,6 +36,39 @@ jobs:
       - run: npm --prefix services/ollama run test:python
       - run: npm --prefix services/ollama run test:vdgo
 
+  # End-to-end API flows against a real server and PostgreSQL.
+  # This is the safety net for the monolith split (P2-1).
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_DB: vdgo_itest
+          POSTGRES_USER: vdgo_app
+          POSTGRES_PASSWORD: vdgo_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vdgo_app -d vdgo_itest"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      INTEGRATION: '1'
+      INTEGRATION_DATABASE_URL: postgresql://vdgo_app:vdgo_ci@localhost:5432/vdgo_itest
+      DATABASE_URL: postgresql://vdgo_app:vdgo_ci@localhost:5432/vdgo_itest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/ollama/package-lock.json
+      - run: npm --prefix services/ollama ci
+      - run: npm --prefix services/ollama exec -- prisma migrate deploy --schema prisma/schema.prisma
+      - run: npm --prefix services/ollama run test:integration
+
   # Runtime image must not carry tests or frontend sources (P2-8).
   image:
     runs-on: ubuntu-latest

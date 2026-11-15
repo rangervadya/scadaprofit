@@ -242,12 +242,16 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [ ] **P2-1** Разбить монолиты на слои (`server.js`, `workforce-system.js`, `app.py`, `processor.py` → routes/domain/services).
+- [~] **P2-1** Разбить монолиты на слои.
+  - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
+  - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
+  - **Осталось**: вынести роуты/домен из `server.js` (41 маршрут), затем `workforce-system.js` (33 маршрута); `processor.py` отдельно. (`server.js`, `workforce-system.js`, `app.py`, `processor.py` → routes/domain/services).
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
   - **Перенесено в P2-3**: ETag/дельта для схем (вместе с отказом от polling).
 - [ ] **P2-3** Polling полного графа → SSE/delta-status/projection.
+  - **Решение**: не требуется. Система на 10–25 сотрудников; опрос идёт только когда есть активные схемы (SchemesPage) или граф не готов (SchemeDetailPage), ~1–2 rps. SSE добавит сложность (реестр подписчиков, `proxy_buffering off`, pub/sub при multi-instance) без выигрыша. Пересмотреть, если появятся сотни одновременных пользователей.
 - [x] **P2-4** Write amplification.
   - **Сделано**: `refreshSchemeState` возвращает факт изменения; `GET /api/workforce/reports` пишет только когда статус схемы реально сдвинулся; `saveWorkspace` сравнивает JSON-снапшот и пропускает запись без изменений; убран write-through legacy JSONB из обоих репозиториев и удалены модели `AddressLibrary`/`WorkforceWorkspace` из Prisma-схемы.
   - **Проверено**: 10 опросов `/api/workforce/reports` → `n_tup_upd` без изменений (delta=0); изменение статуса → `updated_at` растёт; тест `tests/node/write-amplification.test.js`.
@@ -272,6 +276,7 @@
   - **Сделано**: удалён мёртвый legacy UI `tests/fixtures/legacy-frontend/` (524K, приложением не отдаётся, заменён React-SPA) вместе с тестами, которые проверяли его HTML/JS строками (`workforce-contract`, `workforce-inbox-folders`, `workforce-planning`, `manual-cad-ink-trace`); 4 python-теста `BrowserExportRegressionTests` удалены; backend-контракты сохранены в `tests/node/workforce-backend-contracts.test.js`; обновлены `package.json`, `eslint.config.js`, `repository-layout.test.js`.
   - **Проверено**: `npm run verify` exit 0; 97 node-тестов; 195 python; 62 vdgo.
 - [ ] **P2-12** SLO + нагрузочные тесты (k6/Locust, capacity model).
+  - **Решение**: не требуется для 10–25 пользователей. Достаточно smoke-проверки «N одновременных логинов не падают», если понадобится.
 - [x] **P2-13** ADR/runbook/DR.
   - **Сделано**: `docs/adr/0001-postgres-system-of-record.md`, `docs/adr/0002-no-api-versioning.md`, `docs/runbook.md` (запуск, verify, backup/restore, retention, аварии, отложенное до прода).
 
@@ -368,6 +373,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 1: интеграционные тесты (сетка безопасности)
+
+- `tests/node/helpers/integration-harness.js`: поднимает реальный API на эфемерном порту против БД `vdgo_itest`, cookie-aware клиент, `ensureAdmin()` для чистой/настроенной БД.
+- `tests/node/integration/api.test.js` (5) + `business-flows.test.js` (7): health/readyz, анонимный доступ 401, login/me/logout, создание сотрудника, дубликат 409, multi-house dispatch (одна группа), lifecycle start→visit, 404 на неизвестный id, ETag→304.
+- CI job `integration` с `postgres:17.7`; скрипты `test:integration`, `db:deploy:test`.
+- Исправлен баг: `resumeStoredAnalysisQueue` падал на пустой БД (`library.streets` у null) — приложение не стартовало с чистой БД.
+- Решения по нагрузке: P2-3 (SSE) и P2-12 (нагрузочные тесты) помечены как «не требуется» для 10–25 пользователей.
+- Проверено: 12/12 интеграционных, повторный прогон на «грязной» БД тоже 12/12; `npm run verify` exit 0.
 
 ### 2026-11-15 — P2-11: dead legacy UI removed
 

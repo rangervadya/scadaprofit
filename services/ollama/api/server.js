@@ -1087,7 +1087,8 @@ async function resumeStoredAnalysisQueue() {
   try {
     const library = await readAddressLibrary();
     const interrupted = [];
-    for (const street of library.streets || []) {
+    // A fresh instance has no library yet (empty database); nothing to resume.
+    for (const street of library?.streets || []) {
       for (const building of street.buildings || []) {
         for (const scheme of building.schemes || []) {
           if (!['queued', 'processing'].includes(String(scheme.status || ''))) continue;
