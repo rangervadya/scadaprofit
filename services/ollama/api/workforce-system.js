@@ -293,7 +293,52 @@ export async function createWorkforceSystem({
   const expiredAtBoot = sessions.filter((item) => !sessionIsLive(item, now));
   sessions = sessions.filter((item) => sessionIsLive(item, now));
   if (expiredAtBoot.length) await Promise.all(expiredAtBoot.map((item) => deleteSession(item.tokenHash)));
+  /**
+   * Lookup indexes for the client serializers (P2-5).
+   *
+   * `taskForClient`, `reportForClient` and `defectReportForClient` used to scan
+   * users/tasks/reports per item, so serializing a list was O(n^2). The maps are
+   * built once per change and each serializer is then O(1) per entity.
+   */
+  function buildLookups() {
+    const usersById = new Map();
+    for (const user of users) usersById.set(user.id, user);
+    const tasksById = new Map();
+    const reportsByTask = new Map();
+    const defectsByTask = new Map();
+    for (const task of workspace.tasks) tasksById.set(task.id, task);
+    for (const report of workspace.reports) {
+      const key = report.taskId || '';
+      const bucket = reportsByTask.get(key);
+      if (bucket) bucket.push(report);
+      else reportsByTask.set(key, [report]);
+    }
+    for (const defect of workspace.defectReports) {
+      const key = defect.taskId || '';
+      const bucket = defectsByTask.get(key);
+      if (bucket) bucket.push(defect);
+      else defectsByTask.set(key, [defect]);
+    }
+    return { usersById, tasksById, reportsByTask, defectsByTask };
+  }
+
+  let lookups = buildLookups();
+  // Any mutation of users/workspace invalidates the maps; they are rebuilt on
+  // the next read instead of on every write.
+  let lookupsDirty = false;
+  function invalidateLookups() {
+    lookupsDirty = true;
+  }
+  function getLookups() {
+    if (lookupsDirty) {
+      lookups = buildLookups();
+      lookupsDirty = false;
+    }
+    return lookups;
+  }
+
   const saveUsers = async () => {
+    invalidateLookups();
     await Promise.all(users.map((user) => mirrorUser(user)));
   };
   const saveSessions = async () => {
@@ -325,6 +370,9 @@ export async function createWorkforceSystem({
    */
   const saveWorkspace = () => {
     const snapshot = JSON.stringify(workspace);
+    // Serialize-lookup maps are derived from the workspace; drop them so the next
+    // read rebuilds against the new state (P2-5).
+    invalidateLookups();
     if (snapshot === lastWorkspaceSnapshot) return Promise.resolve(true);
     const pending = workspaceWrite.then(async () => {
       const result = await saveWorkspacePg(workspace);
@@ -414,11 +462,12 @@ export async function createWorkforceSystem({
     setSessionCookie(res, token, secureCookies);
   }
   function taskForClient(task) {
-    const assignee = users.find((user) => user.id === task.assignedTo);
-    const taskReports = workspace.reports.filter((report) => report.taskId === task.id);
+    const { usersById, reportsByTask, defectsByTask } = getLookups();
+    const assignee = usersById.get(task.assignedTo);
+    const taskReports = reportsByTask.get(task.id) || [];
     const latestReport =
       [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
-    const taskDefectReports = workspace.defectReports.filter((report) => report.taskId === task.id);
+    const taskDefectReports = defectsByTask.get(task.id) || [];
     return {
       ...task,
       assignedName: assignee?.displayName || task.assignedName || 'Не назначен',
@@ -432,8 +481,9 @@ export async function createWorkforceSystem({
     };
   }
   function reportForClient(report) {
-    const task = workspace.tasks.find((item) => item.id === report.taskId);
-    const author = users.find((user) => user.id === report.userId);
+    const { tasksById, usersById } = getLookups();
+    const task = tasksById.get(report.taskId);
+    const author = usersById.get(report.userId);
     return {
       id: report.id,
       taskId: report.taskId,
@@ -477,8 +527,9 @@ export async function createWorkforceSystem({
   }
 
   function defectReportForClient(report) {
-    const task = workspace.tasks.find((item) => item.id === report.taskId);
-    const author = users.find((user) => user.id === report.userId);
+    const { tasksById, usersById } = getLookups();
+    const task = tasksById.get(report.taskId);
+    const author = usersById.get(report.userId);
     return {
       id: report.id,
       taskId: report.taskId,
@@ -494,7 +545,7 @@ export async function createWorkforceSystem({
       reviewComment: report.reviewComment || '',
       submittedAt: report.submittedAt,
       reviewedAt: report.reviewedAt || null,
-      reviewedByName: users.find((user) => user.id === report.reviewedBy)?.displayName || null,
+      reviewedByName: usersById.get(report.reviewedBy)?.displayName || null,
       conclusionAddedAt: report.conclusionAddedAt || null,
       seen: false,
       photos: (report.photos || []).map((file) => ({

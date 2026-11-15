@@ -830,6 +830,35 @@ async function saveAddressLibrary(library) {
   await saveAddressLibraryPg(library);
 }
 
+/**
+ * In-memory index of `jobId -> { streetId, buildingId }` for one library
+ * snapshot (P2-5). `findScheme` used to walk every street/building/scheme on
+ * each of its six call sites; the index answers a lookup in O(1) and is rebuilt
+ * only when the library object changes.
+ */
+let schemeIndexSource = null;
+let schemeIndex = new Map();
+
+function buildSchemeIndex(library) {
+  const index = new Map();
+  for (const street of library.streets || []) {
+    for (const building of street.buildings || []) {
+      for (const scheme of building.schemes || []) {
+        if (scheme?.jobId) index.set(scheme.jobId, { streetId: street.id, buildingId: building.id });
+      }
+    }
+  }
+  return index;
+}
+
+function getSchemeIndex(library) {
+  if (schemeIndexSource !== library) {
+    schemeIndexSource = library;
+    schemeIndex = buildSchemeIndex(library);
+  }
+  return schemeIndex;
+}
+
 async function backfillAddressLibrary() {
   const stored = await fetchAddressLibraryPg();
   if (stored) return;
@@ -871,6 +900,14 @@ function addSchemeToBuilding(library, street, building, scheme) {
 }
 
 function findScheme(library, jobId) {
+  const hit = getSchemeIndex(library).get(jobId);
+  if (hit) {
+    const street = library.streets.find((item) => item.id === hit.streetId);
+    const building = street?.buildings.find((item) => item.id === hit.buildingId);
+    const scheme = building?.schemes.find((item) => item.jobId === jobId);
+    if (scheme) return { street, building, scheme };
+  }
+  // Fallback for a stale index (e.g. the library was mutated in place).
   for (const street of library.streets) {
     for (const building of street.buildings) {
       const scheme = building.schemes.find((item) => item.jobId === jobId);

@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 7 (P2-2, P2-4, P2-6, P2-8, P2-9, P2-10, P2-13) | P2-7 (SBOM) | 6 (P2-1, P2-3, P2-5, P2-11, P2-12, P2-14) |
+| P2 | 8 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-13) | P2-7 (SBOM) | 5 (P2-1, P2-3, P2-11, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -251,7 +251,9 @@
 - [x] **P2-4** Write amplification.
   - **Сделано**: `refreshSchemeState` возвращает факт изменения; `GET /api/workforce/reports` пишет только когда статус схемы реально сдвинулся; `saveWorkspace` сравнивает JSON-снапшот и пропускает запись без изменений; убран write-through legacy JSONB из обоих репозиториев и удалены модели `AddressLibrary`/`WorkforceWorkspace` из Prisma-схемы.
   - **Проверено**: 10 опросов `/api/workforce/reports` → `n_tup_upd` без изменений (delta=0); изменение статуса → `updated_at` растёт; тест `tests/node/write-amplification.test.js`.
-- [ ] **P2-5** O(n) сканы → индексы/БД/кэш.
+- [x] **P2-5** O(n) сканы → индексы.
+  - **Сделано**: `buildLookups()` строит `usersById`, `tasksById`, `reportsByTask`, `defectsByTask`; `taskForClient`/`reportForClient`/`defectReportForClient` работают за O(1) на сущность вместо O(n) на элемент; кэш инвалидируется в `saveUsers`/`saveWorkspace`. `findScheme` использует индекс `jobId → {streetId, buildingId}` с fallback-сканом.
+  - **Проверено**: `tests/node/lookup-indexes.test.js`; API отдаёт те же данные (tasks 3, reports 1, все поля на месте).
 - [x] **P2-6** Optimistic concurrency для manual CAD.
   - **Сделано**: `If-Match: "<rev>"` / `body.expectedRevision`; атомарный `updateMany ... where revision = expected`; 409 `REVISION_CONFLICT`; `ETag` в ответе; фронт показывает «изменил другой редактор»; исправлена бесконечная рекурсия `readManualProject` в JSON-режиме; тест `tests/node/manual-cad-concurrency.test.js`.
 - [~] **P2-7** Воспроизводимость сборки.
@@ -364,6 +366,13 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-5: lookup indexes
+
+- `buildLookups()` в `workforce-system.js`: `usersById`, `tasksById`, `reportsByTask`, `defectsByTask`; сериализаторы тратят O(1) на сущность вместо O(n) (было O(n²) на список).
+- Инвалидация в `saveUsers`/`saveWorkspace`.
+- `server.js`: `buildSchemeIndex`/`getSchemeIndex`, `findScheme` отвечает по индексу `jobId` (6 вызовов), fallback-скан оставлен.
+- Проверено: `tests/node/lookup-indexes.test.js`; API отдаёт идентичные данные.
 
 ### 2026-11-15 — быстрый батч P2/P3
 
