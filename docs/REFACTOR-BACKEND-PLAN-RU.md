@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 закрыта, кроме P1-5 (на прод); далее P2**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-монолиты разбиты, остался `processor.py`)**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
@@ -242,7 +242,7 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои (`server.js` и `workforce-system.js` разбиты; `processor.py` — далее). `workforce-system.js` и `processor.py` — далее).
+- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563; `processor.py` 5062 — далее). `workforce-system.js` и `processor.py` — далее).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -392,6 +392,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 12: завершён вынос workforce (итог)
+
+- `api/routes/workforce-inbox-routes.js` (439) — defects, reports, conclusion, `tasks/:taskId/conclusion`, overview; `refreshSchemeState` переехал вместе с ними.
+- `api/routes/workforce-submission-routes.js` (287) — два multipart-маршрута (sketch, defect photos).
+- **`workforce-system.js`: 1748 → 563 строк (−68%)**; в файле остались только factory: состояние, бут-импорт legacy JSON, поиск-кэш, save-функции, `getCurrentUser`/`requireRoles`/`authMiddleware`, монтирование 5 роутеров.
+- Итоговая структура workforce: `workforce-core.js` (199), `workforce-serializers.js` (147), `routes/workforce-{auth,task,inbox,submission,user}-routes.js` (110/183/439/287/223), `workforce-system.js` (563).
+- Проверено: 102 node-теста, 21/21 интеграционных, `verify` exit 0.
+- **Осталось от P2-1**: `processor.py` (5062 строки) — отдельная задача.
 
 ### 2026-11-15 — P2-1 шаг 11: вынесены admin-маршруты workforce
 
