@@ -147,12 +147,6 @@ export async function saveWorkspace(workspace) {
     const staleDefects = await tx.workforceDefectReport.findMany({ select: { id: true } });
     const staleDefectIds = staleDefects.map((row) => row.id).filter((id) => !defectIds.has(id));
     if (staleDefectIds.length) await tx.workforceDefectReport.deleteMany({ where: { id: { in: staleDefectIds } } });
-
-    await tx.workforceWorkspace.upsert({
-      where: { id: 1 },
-      create: { id: 1, data: { tasks, reports, defectReports } },
-      update: { data: { tasks, reports, defectReports } },
-    });
   });
 
   log.debug({ tasks: tasks.length, reports: reports.length, defects: defectReports.length }, 'Workspace saved');

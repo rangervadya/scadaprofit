@@ -96,15 +96,6 @@ model ManualCadProject {
   @@map("manual_cad_projects")
 }
 
-model AddressLibrary {
-  id            Int      @id
-  schemaVersion Int      @map("schema_version")
-  data          Json
-  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("address_library")
-}
-
 /// Normalized address library (P1-14): replaces the address_library JSONB
 /// singleton so streets/buildings/schemes can be queried by key.
 model AddressStreet {
@@ -150,14 +141,6 @@ model AddressScheme {
   @@index([buildingId])
   @@index([status])
   @@map("address_schemes")
-}
-
-model WorkforceWorkspace {
-  id        Int      @id
-  data      Json
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("workforce_workspace")
 }
 
 /// Normalized workforce tasks (P1-14): replaces the workforce_workspace JSONB

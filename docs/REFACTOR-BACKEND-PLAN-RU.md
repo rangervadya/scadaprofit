@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 3 (P2-2, P2-6, P2-13) | — | 10 (P2-1, P2-3…P2-5, P2-7…P2-12, P2-14) |
+| P2 | 4 (P2-2, P2-4, P2-6, P2-13) | — | 9 (P2-1, P2-3, P2-5, P2-7…P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -248,7 +248,9 @@
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
   - **Перенесено в P2-3**: ETag/дельта для схем (вместе с отказом от polling).
 - [ ] **P2-3** Polling полного графа → SSE/delta-status/projection.
-- [ ] **P2-4** Write amplification (не писать workspace на каждый GET, diff-сохранение).
+- [x] **P2-4** Write amplification.
+  - **Сделано**: `refreshSchemeState` возвращает факт изменения; `GET /api/workforce/reports` пишет только когда статус схемы реально сдвинулся; `saveWorkspace` сравнивает JSON-снапшот и пропускает запись без изменений; убран write-through legacy JSONB из обоих репозиториев и удалены модели `AddressLibrary`/`WorkforceWorkspace` из Prisma-схемы.
+  - **Проверено**: 10 опросов `/api/workforce/reports` → `n_tup_upd` без изменений (delta=0); изменение статуса → `updated_at` растёт; тест `tests/node/write-amplification.test.js`.
 - [ ] **P2-5** O(n) сканы → индексы/БД/кэш.
 - [x] **P2-6** Optimistic concurrency для manual CAD.
   - **Сделано**: `If-Match: "<rev>"` / `body.expectedRevision`; атомарный `updateMany ... where revision = expected`; 409 `REVISION_CONFLICT`; `ETag` в ответе; фронт показывает «изменил другой редактор»; исправлена бесконечная рекурсия `readManualProject` в JSON-режиме; тест `tests/node/manual-cad-concurrency.test.js`.
@@ -353,6 +355,14 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-4: write amplification
+
+- `refreshSchemeState` возвращает, изменилось ли что-то; `GET /api/workforce/reports` пишет только при реальном изменении статуса.
+- `saveWorkspace` сравнивает JSON-снапшот workspace и пропускает запись, если ничего не изменилось.
+- Убран write-through legacy JSONB (`tx.workforceWorkspace.upsert`, `tx.addressLibrary.upsert`) — вдвое меньше записей на каждую мутацию.
+- Модели `AddressLibrary`/`WorkforceWorkspace` удалены из `prisma/schema.prisma` (таблицы остались в БД как архив).
+- Проверено: 10 опросов reports → 0 записей (`n_tup_upd` delta=0); изменение статуса → `updated_at` растёт; `tests/node/write-amplification.test.js`.
 
 ### 2026-11-15 — P1-14: нормализация данных
 

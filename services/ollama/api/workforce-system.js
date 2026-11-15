@@ -313,11 +313,27 @@ export async function createWorkforceSystem({
   );
   sessionCleanup.unref();
   let workspaceWrite = Promise.resolve();
+  let lastWorkspaceSnapshot = null;
   let setupInProgress = false;
   let accountCreationInProgress = false;
+  /**
+   * Persist the workspace, skipping the write when nothing changed since the
+   * last successful save (P2-4). Several endpoints call this on paths that do
+   * not mutate data (polling, diagnostics), and every write is a transaction
+   * across the normalized tables.
+   */
   const saveWorkspace = () => {
-    const pending = workspaceWrite.then(() => saveWorkspacePg(workspace));
-    workspaceWrite = pending.catch(() => {});
+    const snapshot = JSON.stringify(workspace);
+    if (snapshot === lastWorkspaceSnapshot) return Promise.resolve(true);
+    const pending = workspaceWrite.then(async () => {
+      const result = await saveWorkspacePg(workspace);
+      lastWorkspaceSnapshot = snapshot;
+      return result;
+    });
+    workspaceWrite = pending.then(
+      () => undefined,
+      () => undefined,
+    );
     return pending;
   };
 
@@ -1088,8 +1104,13 @@ export async function createWorkforceSystem({
     });
   });
 
+  /**
+   * Refresh a report's CAD status. Returns true when anything actually changed,
+   * so callers can skip a workspace write on a poll that found nothing new.
+   */
   async function refreshSchemeState(report) {
-    if (!report?.schemeJobId || typeof getSketchStatus !== 'function') return;
+    if (!report?.schemeJobId || typeof getSketchStatus !== 'function') return false;
+    const before = `${report.schemeStatus}|${report.schemeError}|${report.schemeCompletedAt}|${report.schemePartialGraphReady}|${report.status}`;
     try {
       const state = await getSketchStatus(report.schemeJobId);
       if (state?.status) report.schemeStatus = state.status;
@@ -1114,12 +1135,18 @@ export async function createWorkforceSystem({
         'Failed to refresh CAD scheme status',
       );
     }
+    const after = `${report.schemeStatus}|${report.schemeError}|${report.schemeCompletedAt}|${report.schemePartialGraphReady}|${report.status}`;
+    return before !== after;
   }
 
   routes.get('/api/workforce/reports', async (req, res) => {
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
-    for (const report of workspace.reports) await refreshSchemeState(report);
-    await saveWorkspace();
+    let changed = false;
+    for (const report of workspace.reports) {
+      if (await refreshSchemeState(report)) changed = true;
+    }
+    // Only persist when a scheme status actually moved: this endpoint is polled.
+    if (changed) await saveWorkspace();
     const reports = workspace.reports
       .filter(
         (report) =>

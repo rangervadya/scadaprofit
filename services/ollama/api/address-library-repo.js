@@ -135,14 +135,6 @@ export async function saveAddressLibrary(library) {
     const staleStreets = await tx.addressStreet.findMany({ select: { id: true } });
     const staleStreetIds = staleStreets.map((row) => row.id).filter((id) => !keepStreets.has(id));
     if (staleStreetIds.length) await tx.addressStreet.deleteMany({ where: { id: { in: staleStreetIds } } });
-
-    // Keep the legacy singleton marker in sync so tools that still look for it
-    // (e.g. a partially rolled-back instance) do not see a stale payload.
-    await tx.addressLibrary.upsert({
-      where: { id: 1 },
-      create: { id: 1, schemaVersion: 1, data: library ?? {} },
-      update: { schemaVersion: 1, data: library ?? {} },
-    });
   });
 
   log.debug({ streets: streets.length }, 'Address library saved to normalized tables');
