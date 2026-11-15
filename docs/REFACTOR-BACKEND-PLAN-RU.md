@@ -228,9 +228,10 @@
 - [x] **P1-13** CI.
   - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
   - **Осталось**: прогнать на GitHub, добавить build/scan.
-- [~] **P1-14** Prisma cutover.
-  - **Готово**: state-данные переведены на PostgreSQL через Prisma/репозитории (users, sessions, manual CAD, address library, workspace, scheme meta, archive).
-  - **Осталось**: нормализованные таблицы вместо jsonb для address/workspace, typed client в runtime, expand-contract без JSON fallback.
+- [~] **P1-14** Typed runtime client.
+  - **Сделано**: `services/ollama/api/entities.js` — Zod-схемы строк БД (`user`, `session`, `workspace`, `address_library`, `scheme_meta`, `manual_cad_project`) + `parseOrDefault` (логирует и возвращает fallback, не роняя список); подключено во всех репозиториях (`postgres-repo`, `workforce-workspace-repo`, `address-library-repo`, `scheme-meta-repo`, `manual-cad-repo`); тест `tests/node/entities.test.js`.
+  - **Проверено**: реальные данные читаются через typed-слой (users=5, sessions=0, tasks=3, streets=2).
+  - **Осталось (крупное, отдельной задачей)**: нормализованные таблицы вместо JSONB-синглтонов `address_library` и `workforce_workspace` (реляционные запросы по улицам/домам/заданиям).
 
 ### Фаза 2 — качество и производительность (1–2 месяца)
 

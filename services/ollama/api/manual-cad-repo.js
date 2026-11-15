@@ -1,7 +1,15 @@
 import { getPrismaClient, postgresEnabled } from './db.js';
+import { manualProjectSchema, parseOrDefault } from './entities.js';
+import { logger } from './logger.js';
+
+const log = logger.child({ module: 'postgres' });
 
 function rowToProject(row) {
-  return row?.data && typeof row.data === 'object' ? row.data : null;
+  return parseOrDefault(manualProjectSchema, row?.data, {
+    label: 'manual_cad_project',
+    fallback: null,
+    log,
+  });
 }
 
 export async function fetchManualProject(id) {

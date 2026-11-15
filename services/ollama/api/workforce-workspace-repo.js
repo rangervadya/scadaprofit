@@ -1,4 +1,8 @@
 import { getPrismaClient, postgresEnabled } from './db.js';
+import { parseOrDefault, workspaceSchema } from './entities.js';
+import { logger } from './logger.js';
+
+const log = logger.child({ module: 'postgres' });
 
 const SINGLETON_ID = 1;
 
@@ -6,7 +10,11 @@ export async function fetchWorkspace() {
   if (!postgresEnabled()) return null;
   const prisma = await getPrismaClient();
   const row = await prisma.workforceWorkspace.findUnique({ where: { id: SINGLETON_ID } });
-  return row?.data && typeof row.data === 'object' ? row.data : null;
+  return parseOrDefault(workspaceSchema, row?.data, {
+    label: 'workforce_workspace',
+    fallback: null,
+    log,
+  });
 }
 
 export async function saveWorkspace(workspace) {

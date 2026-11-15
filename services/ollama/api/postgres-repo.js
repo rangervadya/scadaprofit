@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getPrismaClient, postgresEnabled } from './db.js';
+import { parseOrDefault, sessionSchema, userSchema } from './entities.js';
 import { logger } from './logger.js';
 
 const log = logger.child({ module: 'postgres' });
@@ -115,18 +116,26 @@ export async function fetchUsers() {
   if (!postgresEnabled()) return [];
   const prisma = await getPrismaClient();
   const rows = await prisma.user.findMany({ orderBy: { createdAt: 'asc' } });
-  return rows.map((row) => ({
-    id: row.id,
-    username: row.username,
-    displayName: row.displayName,
-    firstName: row.firstName || undefined,
-    lastName: row.lastName || undefined,
-    role: row.role,
-    passwordHash: row.passwordHash,
-    active: row.active,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  }));
+  return rows
+    .map((row) =>
+      parseOrDefault(
+        userSchema,
+        {
+          id: row.id,
+          username: row.username,
+          displayName: row.displayName,
+          firstName: row.firstName || undefined,
+          lastName: row.lastName || undefined,
+          role: row.role,
+          passwordHash: row.passwordHash,
+          active: row.active,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+        },
+        { label: 'user', fallback: null, log },
+      ),
+    )
+    .filter(Boolean);
 }
 
 export async function countUsers() {
@@ -181,13 +190,21 @@ export async function fetchSessions() {
   if (!postgresEnabled()) return [];
   const prisma = await getPrismaClient();
   const rows = await prisma.session.findMany({ orderBy: { createdAt: 'asc' } });
-  return rows.map((row) => ({
-    tokenHash: row.tokenHash,
-    userId: row.userId,
-    createdAt: row.createdAt.toISOString(),
-    lastSeenAt: (row.lastSeenAt || row.createdAt).getTime(),
-    expiresAt: row.expiresAt.getTime(),
-  }));
+  return rows
+    .map((row) =>
+      parseOrDefault(
+        sessionSchema,
+        {
+          tokenHash: row.tokenHash,
+          userId: row.userId,
+          createdAt: row.createdAt.toISOString(),
+          lastSeenAt: (row.lastSeenAt || row.createdAt).getTime(),
+          expiresAt: row.expiresAt.getTime(),
+        },
+        { label: 'session', fallback: null, log },
+      ),
+    )
+    .filter(Boolean);
 }
 
 /**
