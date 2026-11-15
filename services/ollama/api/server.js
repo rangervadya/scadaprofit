@@ -58,6 +58,7 @@ import { createTemplateStore } from './template-store.js';
 import { cleanLabel } from './text.js';
 import { createTemplateRouter } from './routes/template-routes.js';
 import { createSettingsRouter } from './routes/settings-routes.js';
+import { createHealthChecks } from './health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -152,46 +153,6 @@ function localRecognitionPythonEnvironment() {
     OPENROUTER_PIPE_ENABLED: '0',
     RECOGNITION_MODE: 'local-qwen-tesseract',
   };
-}
-
-function checkTesseract() {
-  return new Promise((resolve) => {
-    let output = '';
-    let settled = false;
-    let timer = null;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const child = spawn('tesseract', ['--list-langs'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    child.stdout.on('data', (chunk) => {
-      output += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk.toString();
-    });
-    child.on('error', (error) =>
-      finish({ available: false, languages: [], error: String(error.message || error).slice(0, 180) }),
-    );
-    child.on('close', (code) => {
-      const languages = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => /^[a-z]{3}$/.test(line));
-      finish({
-        available: code === 0,
-        languages,
-        russianEnglishReady: code === 0 && languages.includes('rus') && languages.includes('eng'),
-        error: code === 0 ? null : `tesseract --list-langs завершился с кодом ${code}`,
-      });
-    });
-    timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish({ available: false, languages: [], error: 'Проверка Tesseract превысила 4 секунды.' });
-    }, 4000);
-  });
 }
 
 // Analyses are intentionally queued one at a time: the target GTX 1060 has
@@ -1643,50 +1604,8 @@ app.post('/api/jobs/:jobId/review', validateBody(reviewSchema), async (req, res)
 
 // Cloud provider settings routes (routes/settings-routes.js): intentionally disabled.
 app.use('/api', createSettingsRouter());
-
-let tesseractStatusCache = { checkedAt: 0, value: null };
-
-async function checkTesseractCached(maxAgeMs = 30_000) {
-  const now = Date.now();
-  if (tesseractStatusCache.value && now - tesseractStatusCache.checkedAt < maxAgeMs) {
-    return tesseractStatusCache.value;
-  }
-  const value = await checkTesseract();
-  tesseractStatusCache = { checkedAt: now, value };
-  return value;
-}
-
-async function checkOllamaStatus() {
-  const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
-  const tagsUrl =
-    process.env.OLLAMA_TAGS_URL ||
-    (process.env.OLLAMA_CHAT_URL || 'http://127.0.0.1:11434/api/chat').replace(/\/api\/chat\/?$/, '/api/tags');
-
-  const ollama = { reachable: false, modelInstalled: false, model: qwenModel, error: null, hint: null };
-  try {
-    const response = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(3500) });
-    if (!response.ok) throw new Error(`Ollama API вернула HTTP ${response.status}`);
-    const data = await response.json();
-    const models = Array.isArray(data.models) ? data.models : [];
-    const names = models.map((item) => String(item.name || item.model || '')).filter(Boolean);
-    ollama.reachable = true;
-    ollama.models = names;
-    ollama.modelInstalled = names.some(
-      (name) =>
-        name === qwenModel ||
-        name === `${qwenModel}:latest` ||
-        name.replace(/:latest$/, '') === qwenModel.replace(/:latest$/, ''),
-    );
-    if (!ollama.modelInstalled) {
-      ollama.error = `Модель ${qwenModel} не найдена. Установлены: ${names.join(', ') || 'нет моделей'}.`;
-      ollama.hint = `Выполните: docker compose exec ollama ollama pull ${qwenModel}`;
-    }
-  } catch (error) {
-    ollama.error = String(error?.message || error).slice(0, 240);
-    ollama.hint = 'Проверьте, что Ollama запущена и доступна по OLLAMA_TAGS_URL из контейнера app.';
-  }
-  return ollama;
-}
+const healthChecks = createHealthChecks();
+const { checkOllamaStatus, checkTesseractCached } = healthChecks;
 
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';

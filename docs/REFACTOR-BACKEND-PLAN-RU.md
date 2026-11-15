@@ -250,7 +250,9 @@
   - **Сделано (шаг 3)**: выделен блок настроек — `api/routes/settings-routes.js` (openrouter/moss: `GET` → `disabled:true`, `PUT/DELETE/POST test` → 410 Gone); подключён через `app.use('/api', ...)`.
   - **Проверено**: `server.js` 2515 → 2489 строк; `verify` exit 0; 14/14 интеграционных.
   - **Баг, пойманный тестами**: `res.download` возвращал 500 на файл в `.private/template` — Express `dotfiles: 'deny'` (дефолт) блокирует скрытые сегменты пути. Исправлено `dotfiles: 'allow'` (имя уже проверено store).
-  - **Осталось**: address library / schemes / jobs / manual-cad / health / analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
+  - **Сделано (шаг 4)**: выделен блок health — `api/health.js` (`createHealthChecks`: `checkTesseract` с кэшем 30 с, `checkOllamaStatus`); в `server.js` осталась только инстанциация и деструктуризация.
+  - **Проверено**: `server.js` 2489 → 2408 строк; `verify` exit 0; 14/14 интеграционных.
+  - **Осталось**: address library / schemes / jobs / manual-cad / analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
@@ -378,6 +380,12 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 4: выделен health-check
+
+- `api/health.js` — `createHealthChecks()`: `checkTesseract` (кэш 30 с), `checkOllamaStatus` (tells/model), `modelName`. Логика перенесена без изменений.
+- `server.js`: `const { checkOllamaStatus, checkTesseractCached } = createHealthChecks();`; удалены локальные `checkTesseract`, `checkOllamaStatus`, `tesseractStatusCache` (2489 → 2408 строк).
+- Проверено: `verify` exit 0; 14/14 интеграционных.
 
 ### 2026-11-15 — P2-1 шаг 3: выделен блок настроек
 
