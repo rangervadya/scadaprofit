@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 закрыта; P2 в работе (P2-1: JS-API по слоям `domain/repositories/routes/services/validation/lib`, engine — пакет `core/ocr/model/export/symbols`; остаток — разбивка `processor.py`)**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта; P2 в работе (P2-1 закрыт: JS-API по слоям, engine — пакет `core/ocr/routing/model/export/symbols`, `processor.py` 5062→685 строк)**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 11 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-1 (остаток `processor.py`), P2-7 (SBOM) | 3 (P2-3, P2-12, P2-14) |
+| P2 | 12 (P2-1, P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-7 (SBOM) | 3 (P2-3, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -140,7 +140,7 @@
 
 | ID | Проблема | Evidence | Что делать |
 |---|---|---|---|
-| P2-1 | Монолиты 1000–5000 строк | `server.js`, `workforce-system.js`, `app.py`, `processor.py` | routes/domain/services, zod, central error handler |
+| P2-1 | Монолиты 1000–5000 строк | `server.js`, `workforce-system.js`, `app.py`, `processor.py` | ✅ слои + пакеты |
 | P2-2 | Нет compression/cache | `server.js:341-346`, нет gzip | immutable cache, gzip/brotli, ETag |
 | P2-3 | Polling полного графа | `SchemeDetailPage.tsx:70`, `server.js:1147-1169` | SSE/WebSocket, delta-status, projection |
 | P2-4 | Write amplification | `workforce-system.js:729-737` | не писать workspace на каждый GET, diff-сохранение |
@@ -242,8 +242,8 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [x] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2788).
-  - **P2-1 progress**: JS-API разложен по слоям — `api/domain/` (чистая логика), `api/repositories/` (доступ к БД), `api/routes/` (HTTP), `api/services/` (use-cases), `api/validation/` (Zod-схемы), `api/lib/` (logger/version/etag/env), `server.js` — composition root. Python-движок — пакет `engine` с подпакетами `core/ocr/model/export/symbols` (см. шаг 19); остаток — разбивка `processor.py` (OCR-пайплайн, 2788 строк).
+- [x] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→685).
+  - **P2-1 progress**: JS-API разложен по слоям — `api/domain/` (чистая логика), `api/repositories/` (доступ к БД), `api/routes/` (HTTP), `api/services/` (use-cases), `api/validation/` (Zod-схемы), `api/lib/` (logger/version/etag/env), `server.js` — composition root. Python-движок — пакет `engine` с подпакетами `core/ocr/routing/model/export/symbols` (шаги 19–20); `processor.py` сведён к `analyze()` + `main()` (685 строк).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/services/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/domain/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -394,6 +394,18 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 20: разбит `processor.py`
+
+- `processor.py` 2789 → 685 строк. Вынесено:
+  - `ocr/pipeline.py` (696) — `_qwen_annotations`, `ocr_annotations`, `_tesseract_failed_ocr_tiles`, `_qwen_stage_is_complete`, `_boxes_overlap`.
+  - `ocr/handwriting.py` (875) — поиск рукописных блоков, разбиение нумерованного списка на строки, парное чтение строк.
+  - `ocr/schemas.py` (126) — JSON-схемы ответов OCR/PIPE (`format_schema` для Ollama).
+  - `routing/semantic.py` (473) — `_qwen_semantic_routes`, `_semantic_error_hint`, `PIPE_RESPONSE_SCHEMA`.
+  - `core/runtime.py` (44) — `progress()`, `atomic_write_text()`.
+  - `core/ink.py` (50) — `_annotate_edge_ink_color`.
+- В `processor.py` остались `analyze()` (504), `main()` (35) и реэкспорты имён, которые патчат тесты: `processor._qwen_call`, `processor.ocr_annotations`, `processor._qwen_semantic_routes`, `processor._run_handwritten_block_ocr`, `processor.*_SCHEMA`, `processor.Image`, `processor._progress`, `processor._atomic_write_text`.
+- **Проверено**: `verify` exit 0 (166 python, 62 vdgo, 102 node); интеграционные 21/21; реальный прогон `python -m engine.processor` по-прежнему выдаёт DXF/SVG/overlay.
 
 ### 2026-11-15 — P2-1 шаг 19: `engine/` стал пакетом со слоями
 
