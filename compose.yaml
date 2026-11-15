@@ -95,8 +95,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     tmpfs:
-      - /tmp:size=256m
+      - /tmp:size=256m,mode=1777
+      - /app/node_modules/.cache:size=64m
 
   vdgo-backend:
     build:
@@ -132,8 +134,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     tmpfs:
-      - /tmp:size=512m
+      - /tmp:size=512m,mode=1777
     restart: unless-stopped
     depends_on:
       vdgo-db:
