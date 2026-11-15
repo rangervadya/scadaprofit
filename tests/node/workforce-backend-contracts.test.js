@@ -40,10 +40,10 @@ test('folder transfer requires seen and accepted materials', async () => {
 });
 
 test('password reset issues a one-time password and revokes sessions', async () => {
-  const src = await read('services/ollama/api/workforce-system.js');
-  const start = src.indexOf("routes.post('/api/workforce/users/:id/reset-password'");
+  const src = await read('services/ollama/api/routes/workforce-user-routes.js');
+  const start = src.indexOf("router.post('/users/:id/reset-password'");
   assert.ok(start >= 0);
-  const body = src.slice(start, start + 900);
+  const body = src.slice(start, start + 1400);
   assert.match(body, /randomBytes\(15\)/);
   assert.match(body, /deleteUserSessions\(user\.id\)/);
   assert.match(body, /requireRoles\(req, res, \['supervisor', 'developer'\]\)/);

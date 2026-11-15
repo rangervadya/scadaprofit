@@ -237,3 +237,58 @@ test('scheme endpoints reject malformed job ids', { skip }, async () => {
   const analyze = await admin.post('/api/library/schemes/not-a-uuid/analyze', {});
   assert.equal(analyze.status, 400);
 });
+
+test('admin diagnostics reports live counters', { skip }, async () => {
+  const response = await admin.get('/api/workforce/admin/diagnostics');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(typeof response.body.users, 'number');
+  assert.equal(typeof response.body.tasks, 'number');
+  assert.equal(typeof response.body.version, 'string');
+  assert.equal(response.body.gpsTracking, false);
+});
+
+test('reset-password issues credentials and revokes the user sessions', { skip }, async () => {
+  const fitter = await createFitter('fitter', 'Reset');
+  const fitterClient = createClient(server.baseUrl);
+  const login = await fitterClient.post('/api/auth/login', {
+    username: fitter.username,
+    password: fitter.password,
+  });
+  assert.equal(login.status, 200);
+  assert.equal((await fitterClient.get('/api/auth/me')).status, 200);
+
+  const reset = await admin.post(`/api/workforce/users/${fitter.id}/reset-password`, {});
+  assert.equal(reset.status, 200, reset.text);
+  assert.equal(reset.body.ok, true);
+  assert.ok(reset.body.credentials.password, 'new password must be returned');
+  assert.notEqual(reset.body.credentials.password, fitter.password);
+
+  // Old session is gone.
+  assert.equal((await fitterClient.get('/api/auth/me')).status, 401);
+
+  // New password works.
+  const relogin = createClient(server.baseUrl);
+  const ok = await relogin.post('/api/auth/login', {
+    username: fitter.username,
+    password: reset.body.credentials.password,
+  });
+  assert.equal(ok.status, 200);
+});
+
+test('revoke-all-sessions logs out every active session', { skip }, async () => {
+  const fitter = await createFitter('fitter', 'Revoke');
+  const a = createClient(server.baseUrl);
+  const b = createClient(server.baseUrl);
+  for (const client of [a, b]) {
+    const login = await client.post('/api/auth/login', { username: fitter.username, password: fitter.password });
+    assert.equal(login.status, 200);
+  }
+
+  const revoked = await admin.post('/api/workforce/admin/revoke-all-sessions', {});
+  assert.equal(revoked.status, 200, revoked.text);
+  assert.ok(revoked.body.revoked >= 1);
+
+  assert.equal((await a.get('/api/auth/me')).status, 401);
+  assert.equal((await b.get('/api/auth/me')).status, 401);
+});

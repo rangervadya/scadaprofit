@@ -393,6 +393,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
 
+### 2026-11-15 — P2-1 шаг 11: вынесены admin-маршруты workforce
+
+- `api/routes/workforce-user-routes.js` — 7 маршрутов: `GET/POST /users`, `POST /users/:id/reset-password`, `PATCH /users/:id`, `POST /users/:id/revoke-sessions`, `POST /admin/revoke-all-sessions`, `GET /admin/diagnostics`.
+- Состояние передаётся через аксессоры (`getUsers/getSessions/setSessions/getWorkspace`), т.к. массивы переназначаются при мутации; `makeLogin` остался в `workforce-system.js` и инжектится.
+- `workforce-system.js` 1497 → 1348 строк.
+- Новые интеграционные тесты (3): diagnostics, reset-password (с проверкой отзыва сессии и входа с новым паролем), revoke-all (обе сессии инвалидированы).
+- Проверено: 21/21 интеграционных, 102 node-теста, `verify` exit 0.
+- **Осталось**: вынести оставшиеся 26 маршрутов (auth, tasks, reports, defects, conclusion) — тот же подход; `processor.py` — отдельно.
+
 ### 2026-11-15 — P2-1 шаг 10: разбит workforce-system.js
 
 - `api/workforce-core.js` (199 строк) — чистые хелперы: роли, имена, текст, cookie, хеш пароля (`salt:hex` — формат сохранён), `persistUploadedFile` (staging + rename, EXDEV-safe), `parseHouseAddresses`, `evaluateAddressFolder`.
@@ -400,7 +409,7 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - `workforce-system.js` 1748 → 1497 строк; реэкспортирует helpers для существующих импортёров.
 - Новые тесты: `tests/node/workforce-serializers.test.js` (5) — чистые функции без сервера; обновлены `lookup-indexes`, `workforce-backend-contracts`, `workforce-upload`.
 - Проверено: 102 node-теста, 18/18 интеграционных, `verify` exit 0.
-- **Осталось**: вынести 33 маршрута из `workforce-system.js` в `routes/workforce-*.js` (требует инжекта контекста: users/sessions/workspace/lookups); `processor.py` (5062 строки) — отдельно.
+- **Осталось**: вынести оставшиеся 26 маршрутов из `workforce-system.js` в `routes/workforce-*.js` (auth, tasks, reports, defects, conclusion); `processor.py` (5062 строки) — отдельно.
 
 ### 2026-11-15 — P2-1 шаг 9: SPA-роуты + итог по server.js
 
