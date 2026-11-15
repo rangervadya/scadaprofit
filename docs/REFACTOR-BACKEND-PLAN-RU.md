@@ -247,7 +247,10 @@
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
   - **Проверено**: `server.js` 2646 → 2515 строк; `verify` exit 0; 12/12 интеграционных; живой цикл шаблона (GET 200 null → upload 201 → GET 200 → DELETE 200 → null; `/file` 404 без файла).
-  - **Осталось**: settings (P2-1), затем address library / schemes / jobs / manual-cad / health / analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
+  - **Сделано (шаг 3)**: выделен блок настроек — `api/routes/settings-routes.js` (openrouter/moss: `GET` → `disabled:true`, `PUT/DELETE/POST test` → 410 Gone); подключён через `app.use('/api', ...)`.
+  - **Проверено**: `server.js` 2515 → 2489 строк; `verify` exit 0; 14/14 интеграционных.
+  - **Баг, пойманный тестами**: `res.download` возвращал 500 на файл в `.private/template` — Express `dotfiles: 'deny'` (дефолт) блокирует скрытые сегменты пути. Исправлено `dotfiles: 'allow'` (имя уже проверено store).
+  - **Осталось**: address library / schemes / jobs / manual-cad / health / analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
@@ -375,6 +378,14 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 3: выделен блок настроек
+
+- `api/routes/settings-routes.js` — openrouter/moss: `GET` → `{disabled:true}`, `PUT`/`DELETE`/`POST test` → 410 Gone (облачные провайдеры отключены, локальная связка Qwen3-VL + Tesseract).
+- `app.use('/api', createSettingsRouter())`; удалён inline-код из `server.js` (2515 → 2489 строк).
+- Новые интеграционные тесты: `cloud provider settings` (GET 200 disabled, PUT 410), `template endpoints` (GET/upload/download/delete).
+- **Исправлен баг**: `res.download` отдавал 500 на файл в `.private/template` — Express по умолчанию `dotfiles: 'deny'`; добавлен `{ dotfiles: 'allow' }`. Это проявилось только в интеграционном тесте (unit-тесты проверяли строки).
+- Проверено: 14/14 интеграционных, `verify` exit 0.
 
 ### 2026-11-15 — P2-1 шаг 2: выделен блок шаблона
 

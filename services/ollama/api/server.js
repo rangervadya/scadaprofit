@@ -57,6 +57,7 @@ import { appVersion } from './version.js';
 import { createTemplateStore } from './template-store.js';
 import { cleanLabel } from './text.js';
 import { createTemplateRouter } from './routes/template-routes.js';
+import { createSettingsRouter } from './routes/settings-routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -1640,35 +1641,8 @@ app.post('/api/jobs/:jobId/review', validateBody(reviewSchema), async (req, res)
   }
 });
 
-// Backward-compatible status routes: cloud integrations are intentionally disabled.
-const cloudProviderDisabled = (_req, res) =>
-  res.status(410).json({
-    ok: false,
-    disabled: true,
-    error: 'Облачные AI-провайдеры отключены. Используется локальная связка Qwen3-VL + Tesseract.',
-  });
-app.get('/api/openrouter-settings', (_req, res) =>
-  res.json({
-    ok: true,
-    disabled: true,
-    openrouter: { configured: false, enabled: false },
-    local: { mode: 'Qwen3-VL + Tesseract' },
-  }),
-);
-app.put('/api/openrouter-settings', cloudProviderDisabled);
-app.delete('/api/openrouter-settings', cloudProviderDisabled);
-app.post('/api/openrouter-settings/test', cloudProviderDisabled);
-app.get('/api/moss-settings', (_req, res) =>
-  res.json({
-    ok: true,
-    disabled: true,
-    moss: { configured: false, enabled: false },
-    local: { mode: 'Qwen3-VL + Tesseract' },
-  }),
-);
-app.put('/api/moss-settings', cloudProviderDisabled);
-app.delete('/api/moss-settings', cloudProviderDisabled);
-app.post('/api/moss-settings/test', cloudProviderDisabled);
+// Cloud provider settings routes (routes/settings-routes.js): intentionally disabled.
+app.use('/api', createSettingsRouter());
 
 let tesseractStatusCache = { checkedAt: 0, value: null };
 

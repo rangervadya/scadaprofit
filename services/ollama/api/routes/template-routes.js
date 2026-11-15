@@ -40,8 +40,9 @@ export function createTemplateRouter({ store, uploadDir, limitHeavyRequests }) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       // Always download reference files, including SVG, rather than rendering user content inline.
-      res.setHeader('Content-Type', 'application/octet-stream');
-      return res.download(found.absolute, found.meta.originalName, (error) => {
+      // dotfiles: 'allow' — the file lives under .private/template; the store already
+      // validated the name, so this is not user-controlled traversal.
+      return res.download(found.absolute, found.meta.originalName, { dotfiles: 'allow' }, (error) => {
         if (error && !res.headersSent) {
           res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
         }

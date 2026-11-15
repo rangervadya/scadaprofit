@@ -95,3 +95,63 @@ test('logout invalidates the session', { skip }, async () => {
   const me = await client.get('/api/auth/me');
   assert.equal(me.status, 401);
 });
+
+test('cloud provider settings report disabled and reject writes', { skip }, async () => {
+  const client = createClient(server.baseUrl);
+  await client.post('/api/auth/login', {
+    username: process.env.INTEGRATION_ADMIN_USER || 'integration-admin',
+    password: process.env.INTEGRATION_ADMIN_PASSWORD || 'integration-password-123',
+  });
+
+  const openrouter = await client.get('/api/openrouter-settings');
+  assert.equal(openrouter.status, 200);
+  assert.equal(openrouter.body.disabled, true);
+  assert.equal(openrouter.body.openrouter.configured, false);
+
+  const moss = await client.get('/api/moss-settings');
+  assert.equal(moss.status, 200);
+  assert.equal(moss.body.disabled, true);
+
+  for (const pathname of ['/api/openrouter-settings', '/api/moss-settings']) {
+    const put = await client.put(pathname, {});
+    assert.equal(put.status, 410, `${pathname} PUT must be 410 Gone`);
+    assert.equal(put.body.disabled, true);
+  }
+});
+
+test('template endpoints work end to end', { skip }, async () => {
+  const client = createClient(server.baseUrl);
+  await client.post('/api/auth/login', {
+    username: process.env.INTEGRATION_ADMIN_USER || 'integration-admin',
+    password: process.env.INTEGRATION_ADMIN_PASSWORD || 'integration-password-123',
+  });
+
+  const initial = await client.get('/api/template');
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.ok, true);
+
+  // Clean slate: remove any template left by a previous run.
+  await client.delete('/api/template', {});
+
+  const missingFile = await client.get('/api/template/file');
+  assert.equal(missingFile.status, 404);
+
+  const form = new FormData();
+  form.append('template', new Blob(['%PDF-1.4 integration template'], { type: 'application/pdf' }), 'tpl.pdf');
+  const upload = await client.post('/api/template', form);
+  assert.equal(upload.status, 201);
+  assert.equal(upload.body.template.originalName, 'tpl.pdf');
+
+  const after = await client.get('/api/template');
+  assert.equal(after.status, 200);
+  assert.equal(after.body.template.originalName, 'tpl.pdf');
+
+  const file = await client.get('/api/template/file');
+  assert.equal(file.status, 200);
+
+  const removed = await client.delete('/api/template', {});
+  assert.equal(removed.status, 200);
+
+  const final = await client.get('/api/template');
+  assert.equal(final.body.template, null);
+});
