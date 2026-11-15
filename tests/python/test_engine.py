@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "services/ollama" / "engine"
 sys.path.insert(0, str(BACKEND))
 import processor
+import qwen_client
+import analysis_state
 import segment_geometry
 from annotation_linking import link_annotations
 from cad_symbols import assign_symbol_type, symbol_primitives
@@ -488,16 +490,16 @@ class GraphTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             image_path = Path(temp) / "source.png"
             PILImage.new("RGB", (1000, 800), "white").save(image_path)
-            previous_deadline = processor._ANALYSIS_HARD_DEADLINE
+            previous_deadline = analysis_state.ANALYSIS_HARD_DEADLINE
             try:
-                processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600
+                analysis_state.ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600
                 env = {
                     "QWEN_OCR_TILE_GRID": "2", "QWEN_OCR_TIMEOUT": "20",
                     "QWEN_TILE_RETRY_BUDGET": "0", "QWEN_RETRY_BACKOFF_SECONDS": "0",
                     "OLLAMA_CHAT_URL": "http://ollama.test/api/chat",
                 }
                 with patch.dict(os.environ, env, clear=False), \
-                     patch("processor._qwen_call", side_effect=TimeoutError("synthetic timeout")), \
+                     patch("qwen_client._qwen_call", side_effect=TimeoutError("synthetic timeout")), \
                      patch("processor._run_handwritten_block_ocr") as block_ocr:
                     _, status = processor._qwen_annotations(str(image_path), 1000, 800)
                 self.assertFalse(status["complete"])
@@ -505,7 +507,7 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(status["block_passes"], 0)
                 block_ocr.assert_not_called()
             finally:
-                processor._ANALYSIS_HARD_DEADLINE = previous_deadline
+                analysis_state.ANALYSIS_HARD_DEADLINE = previous_deadline
 
     def test_pipeline_diagnostics_reports_quality_gates_and_artifacts(self):
         with TemporaryDirectory() as temporary:
@@ -938,7 +940,7 @@ class GraphTests(unittest.TestCase):
                 def __exit__(self, *_args): return False
                 def read(self): return json.dumps(response_body).encode('utf-8')
             with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "2000", "QWEN_OCR_TILE_GRID": "1", "QWEN_OCR_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
-                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                 patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 annotations, status = processor._qwen_annotations(str(image_path), 4000, 2000)
             self.assertTrue(status["available"])
             self.assertEqual(annotations[0]["bbox"], {"x": 200, "y": 160, "w": 120, "h": 40})
@@ -1010,7 +1012,7 @@ class GraphTests(unittest.TestCase):
             with patch.dict(os.environ, {"QWEN_MAX_IMAGE_EDGE": "1200", "QWEN_OCR_TILE_GRID": "2",
                 "QWEN_OCR_UPSCALE": "2", "QWEN_OCR_TIMEOUT": "20",
                 "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
-                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as request_mock:
+                 patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()) as request_mock:
                 annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
             self.assertTrue(status['available'])
             self.assertEqual(status['successful_tiles'], 4)
@@ -1032,7 +1034,7 @@ class GraphTests(unittest.TestCase):
                 'QWEN_PIPE_TILE_OVERLAP': '0.14', 'QWEN_PIPE_MAX_IMAGE_EDGE': '2000',
                 'QWEN_PIPE_TRACE_TIMEOUT': '30', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
                 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', side_effect=fake_qwen_call):
+            }, clear=False), patch('qwen_client._qwen_call', side_effect=fake_qwen_call):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertEqual(len(calls), 4)
             self.assertEqual(status['tiles'], 4)
@@ -1067,7 +1069,7 @@ class GraphTests(unittest.TestCase):
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct',
             }
             with patch.dict(os.environ, env, clear=False), \
-                 patch('processor._qwen_call', side_effect=fake_qwen_call):
+                 patch('qwen_client._qwen_call', side_effect=fake_qwen_call):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
 
             self.assertEqual(routes, [], 'Invalid Qwen coordinates must never become page-border polylines')
@@ -1093,7 +1095,7 @@ class GraphTests(unittest.TestCase):
             with patch.dict(os.environ, {'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_UPSCALE': '1',
                 'QWEN_MAX_IMAGE_EDGE': '1200', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
                 'QWEN_MODEL': 'qwen3-vl:4b-instruct'}, clear=False), \
-                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                 patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
             self.assertEqual(annotations, [])
             self.assertTrue(status['available'])
@@ -1119,7 +1121,7 @@ class GraphTests(unittest.TestCase):
                 def read(self): return json.dumps(response_body).encode('utf-8')
             with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
                 "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}), \
-                 patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                 patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 4000, 2000)
             self.assertTrue(status['available'])
             self.assertEqual(len(routes), 1)
@@ -1139,7 +1141,7 @@ class GraphTests(unittest.TestCase):
                 def __exit__(self, *_args): return False
                 def read(self): return json.dumps(response_body).encode('utf-8')
             with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
-                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertEqual(len(routes), 1)
             self.assertEqual(routes[0]['confidence'], 60)
@@ -1158,7 +1160,7 @@ class GraphTests(unittest.TestCase):
                 def __exit__(self, *_args): return False
                 def read(self): return json.dumps(response_body).encode('utf-8')
             with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
-                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertEqual(len(routes), 1)
             self.assertEqual(routes[0]['points'], [[100.0, 100.0], [800.0, 100.0]])
@@ -1174,7 +1176,7 @@ class GraphTests(unittest.TestCase):
                 def __exit__(self, *_args): return False
                 def read(self): return json.dumps(response_body).encode('utf-8')
             with patch.dict(os.environ, {"QWEN_PIPE_MAX_IMAGE_EDGE": "2000", "QWEN_PIPE_TRACE_TIMEOUT": "20",
-                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+                "OLLAMA_CHAT_URL": "http://ollama.test/api/chat", "QWEN_MODEL": "qwen3-vl:4b"}, clear=False),                  patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertEqual(routes, [])
             self.assertTrue(status['available'])
@@ -1189,7 +1191,7 @@ class GraphTests(unittest.TestCase):
             PILImage.new('RGB', (1000, 800), 'white').save(image_path)
             with patch.dict(os.environ, {"QWEN_PIPE_TRACE_TIMEOUT": "20", "OLLAMA_CHAT_URL": "http://ollama.test/api/chat",
                 "QWEN_MODEL": "qwen3-vl:4b"}, clear=False), \
-                 patch('processor.urllib.request.urlopen', side_effect=RuntimeError("Ollama HTTP 404: model 'qwen3-vl:4b' not found")):
+                 patch('qwen_client.urllib.request.urlopen', side_effect=RuntimeError("Ollama HTTP 404: model 'qwen3-vl:4b' not found")):
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertEqual(routes, [])
             self.assertFalse(status['available'])
@@ -1517,7 +1519,7 @@ class GraphTests(unittest.TestCase):
                 'QWEN_OCR_TILE_GRID': '1', 'QWEN_OCR_MAX_TOKENS': '700',
                 'QWEN_OCR_TIMEOUT': '180', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
                 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
+            }, clear=False), patch('qwen_client._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
                 annotations, status = processor._qwen_annotations(str(image_path), 1000, 800)
             self.assertTrue(status['available'])
             self.assertEqual(call.call_args.kwargs['num_predict'], 700)
@@ -1531,7 +1533,7 @@ class GraphTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 'QWEN_PIPE_MAX_TOKENS': '1200', 'QWEN_PIPE_TRACE_TIMEOUT': '240',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', return_value=(response, 1.0, (1000, 800))) as call:
+            }, clear=False), patch('qwen_client._qwen_call', return_value=(response, 1.0, (1000, 800))) as call:
                 routes, status = processor._qwen_semantic_routes(str(image_path), 1000, 800)
             self.assertTrue(status['available'])
             self.assertEqual(len(routes), 1)
@@ -1552,7 +1554,7 @@ class GraphTests(unittest.TestCase):
             return original_save(self, fp, *args, **kwargs)
         diagnostics = {}
         with patch('processor.Image.Image.save', new=capture_save), \
-             patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+             patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
             processor._qwen_call(image, 'return json', url='http://ollama.test/api/chat',
                                   model='qwen3-vl:4b-instruct', timeout=10, max_edge=64, num_predict=777,
                                   diagnostics=diagnostics)
@@ -1573,7 +1575,7 @@ class GraphTests(unittest.TestCase):
                 return json.dumps({'message': {'content': '{"annotations":['}}).encode('utf-8')
         from PIL import Image as PILImage
         diagnostics = {}
-        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()):
+        with patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()):
             with self.assertRaises(ValueError):
                 processor._qwen_call(PILImage.new('RGB', (24, 24), 'white'), 'return json',
                     url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
@@ -1592,7 +1594,7 @@ class GraphTests(unittest.TestCase):
                 'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
                 'QWEN_MAX_IMAGE_EDGE': '1200', 'QWEN_PIPE_MAX_IMAGE_EDGE': '1200',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
+            }, clear=False), patch('qwen_client._qwen_call', return_value=({'annotations': []}, 1.0, (1000, 800))) as call:
                 processor._qwen_annotations(str(image_path), 1000, 800)
                 ocr_kwargs = call.call_args.kwargs
                 self.assertEqual(ocr_kwargs['num_predict'], 2048)
@@ -1604,7 +1606,7 @@ class GraphTests(unittest.TestCase):
                 'QWEN_PIPE_TILE_GRID': '1', 'QWEN_PIPE_UPSCALE': '1', 'QWEN_PIPE_MAX_TOKENS': '2048',
                 'QWEN_PIPE_MAX_IMAGE_EDGE': '1200', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
                 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
-            }, clear=False), patch('processor._qwen_call', return_value=({'routes': []}, 1.0, (1000, 800))) as call:
+            }, clear=False), patch('qwen_client._qwen_call', return_value=({'routes': []}, 1.0, (1000, 800))) as call:
                 processor._qwen_semantic_routes(str(image_path), 1000, 800)
                 pipe_kwargs = call.call_args.kwargs
                 self.assertEqual(pipe_kwargs['num_predict'], 2048)
@@ -1628,7 +1630,7 @@ class GraphTests(unittest.TestCase):
         image = PILImage.new('RGB', (32, 24), 'white')
         diagnostics = {}
         schema = {'type': 'object', 'properties': {'routes': {'type': 'array'}}, 'required': ['routes']}
-        with patch('processor.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+        with patch('qwen_client.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
             processor._qwen_call(image, 'return JSON routes', url='http://ollama.test/api/chat',
                                   model='qwen3-vl:4b-instruct', timeout=10, max_edge=64,
                                   num_predict=2048, diagnostics=diagnostics, format_schema=schema)
@@ -1739,7 +1741,7 @@ class Recovery431RegressionTests(unittest.TestCase):
             {'text': '1) Линия подачи (0405)', 'bbox': {'x': 10, 'y': 15, 'w': 138, 'h': 24}, 'confidence': 72},
             {'text': '2) Насос + клапан (0434)', 'bbox': {'x': 10, 'y': 48, 'w': 140, 'h': 24}, 'confidence': 55},
         ]}
-        with patch('processor._qwen_call', return_value=(response, 1.0, (500, 400))) as call:
+        with patch('qwen_client._qwen_call', return_value=(response, 1.0, (500, 400))) as call:
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 image,
                 [{'bbox': {'x': 20, 'y': 18 + i*26, 'w': 145, 'h': 16}, 'text': str(i)} for i in range(6)],
@@ -1779,7 +1781,7 @@ class Recovery431RegressionTests(unittest.TestCase):
         # The newly detected 3-row table must use the focused per-row OCR path,
         # not fall back to one small whole-block transcription.
         fake_response = {'text': '1) Проверка', 'confidence': 82}
-        with patch('processor._qwen_call', return_value=(fake_response, 1.0, (420, 60))) as qwen:
+        with patch('qwen_client._qwen_call', return_value=(fake_response, 1.0, (420, 60))) as qwen:
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=30, max_edge=1024, max_tokens=1200
@@ -1825,7 +1827,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 {'text': f'{idx*2-1}) Test row (0{idx*2-1:03d})', 'confidence': 75},
                 {'text': f'{idx*2}) Test row (0{idx*2:03d})', 'confidence': 75},
             ]}, 1.0, crop.size
-        with patch('processor._qwen_call', side_effect=fake_qwen):
+        with patch('qwen_client._qwen_call', side_effect=fake_qwen):
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=30, max_edge=1024, max_tokens=1200
@@ -1866,7 +1868,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 ]
                 return {'rows': rows_response}, 1.0, crop.size
             return {'text': '2) Verified by fallback', 'confidence': 85}, 1.0, crop.size
-        with patch('processor._qwen_call', side_effect=fake_qwen):
+        with patch('qwen_client._qwen_call', side_effect=fake_qwen):
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=30, max_edge=1024, max_tokens=1200
@@ -1889,7 +1891,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                         cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
         def failed_qwen(*_args, **_kwargs):
             raise TimeoutError('synthetic timeout')
-        with patch('processor._qwen_call', side_effect=failed_qwen) as call:
+        with patch('qwen_client._qwen_call', side_effect=failed_qwen) as call:
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
                 model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
@@ -1925,7 +1927,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                         return {'annotations': []}, 1.0, crop.size
                     index = sum(1 for _ in [])  # call count is derived below
                     return {'text': '1) KCL + pump / line (0405)', 'confidence': 70}, 1.0, crop.size
-                with patch('processor._qwen_call', side_effect=[
+                with patch('qwen_client._qwen_call', side_effect=[
                     ({'annotations': []}, 1.0, (980, 490)),
                     *[({'text': f'{i}) KCL + pump / line (0405)', 'confidence': 70}, 1.0, (768, 60)) for i in range(1, 11)]
                 ]) as call:
@@ -1968,7 +1970,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                         cv2.FONT_HERSHEY_SIMPLEX, .42, (68, 78, 125), 1, cv2.LINE_AA)
         def fake_qwen(crop, prompt, **kwargs):
             return {'text': '1) KCL + pump / line (0405)', 'confidence': 70}, 1.0, crop.size
-        with patch('processor._qwen_call', side_effect=fake_qwen) as call:
+        with patch('qwen_client._qwen_call', side_effect=fake_qwen) as call:
             lines, diagnostics = processor._run_handwritten_block_ocr(
                 PILImage.fromarray(canvas), [], url='http://ollama.test/api/chat',
                 model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200
@@ -2038,7 +2040,7 @@ class Recovery431RegressionTests(unittest.TestCase):
                 x += 34 if len(value) == 1 else 40
             return {'text': ' '.join(source_rows[2]), 'confidence': 92, 'cells': cells}, 1.0, crop.size
 
-        with patch('processor._qwen_call', side_effect=fake_qwen):
+        with patch('qwen_client._qwen_call', side_effect=fake_qwen):
             annotations, diagnostics = processor._run_handwritten_block_ocr(
                 image, [], url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=30, max_edge=4096, max_tokens=1200
@@ -2261,7 +2263,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 'QWEN_TILE_RETRY_BUDGET': '0', 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
                 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
             }
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=first_run):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=first_run):
                 first_items, first_status = processor._qwen_annotations(str(image_path), 1000, 800, checkpoint_dir)
             self.assertFalse(first_status['complete'])
             self.assertEqual(first_status['successful_tiles'], 3)
@@ -2274,7 +2276,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 second_calls.append(image.size)
                 return {'annotations': []}, 1.0, image.size
 
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=resumed_run):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=resumed_run):
                 second_items, second_status = processor._qwen_annotations(str(image_path), 1000, 800, checkpoint_dir)
             self.assertTrue(second_status['complete'])
             self.assertEqual(second_status['successful_tiles'], 4)
@@ -2305,7 +2307,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 'QWEN_PIPE_TRACE_TIMEOUT': '20', 'QWEN_TILE_RETRY_BUDGET': '0',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat', 'QWEN_MODEL': 'qwen3-vl:4b-instruct'
             }
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=first_run):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=first_run):
                 first_routes, first_status = processor._qwen_semantic_routes(str(image_path), 1000, 800, checkpoint_dir)
             self.assertFalse(first_status['complete'])
             self.assertEqual(first_status['successful_tiles'], 3)
@@ -2317,7 +2319,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 second_calls.append(image.size)
                 return {'routes': []}, 1.0, image.size
 
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=resumed_run):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=resumed_run):
                 second_routes, second_status = processor._qwen_semantic_routes(str(image_path), 1000, 800, checkpoint_dir)
             self.assertTrue(second_status['complete'])
             self.assertEqual(second_status['successful_tiles'], 4)
@@ -2338,7 +2340,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
 
         diagnostics = {}
         with patch.dict(os.environ, {'QWEN_RETRY_TIMEOUT_FACTOR': '1.25', 'QWEN_RETRY_BACKOFF_SECONDS': '0'}, clear=False), \
-             patch('processor._qwen_call', side_effect=transient_then_success):
+             patch('qwen_client._qwen_call', side_effect=transient_then_success):
             parsed, scale, size = processor._qwen_call_with_retry(
                 image, 'test', url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=20, max_edge=1024, num_predict=500, diagnostics=diagnostics,
@@ -2364,7 +2366,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
 
         diagnostics = {}
         with patch.dict(os.environ, {'QWEN_RETRY_TIMEOUT_FACTOR': '1.25', 'QWEN_RETRY_BACKOFF_SECONDS': '0'}, clear=False), \
-             patch('processor._qwen_call', side_effect=server_error_then_success):
+             patch('qwen_client._qwen_call', side_effect=server_error_then_success):
             result, _, _ = processor._qwen_call_with_retry(
                 image, 'test', url='http://ollama.test/api/chat', model='qwen3-vl:4b-instruct',
                 timeout=40, max_edge=1024, num_predict=300, diagnostics=diagnostics,
@@ -2381,7 +2383,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
             calls.append(kwargs['timeout'])
             raise RuntimeError("Ollama HTTP 404: model 'missing' not found")
 
-        with patch('processor._qwen_call', side_effect=missing_model):
+        with patch('qwen_client._qwen_call', side_effect=missing_model):
             with self.assertRaisesRegex(RuntimeError, '404'):
                 processor._qwen_call_with_retry(
                     image, 'test', url='http://ollama.test/api/chat', model='missing',
@@ -2412,7 +2414,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 'QWEN_RETRY_BACKOFF_SECONDS': '0',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
             }
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=fail_once_per_tile):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=fail_once_per_tile):
                 _, status = processor._qwen_annotations(str(image_path), 1000, 800, Path(temp) / '.checkpoints')
 
             self.assertTrue(status['complete'])
@@ -2440,7 +2442,7 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
                 'QWEN_RETRY_BACKOFF_SECONDS': '0',
                 'OLLAMA_CHAT_URL': 'http://ollama.test/api/chat',
             }
-            with patch.dict(os.environ, env, clear=False), patch('processor._qwen_call', side_effect=fail_once_per_tile):
+            with patch.dict(os.environ, env, clear=False), patch('qwen_client._qwen_call', side_effect=fail_once_per_tile):
                 _, status = processor._qwen_semantic_routes(str(image_path), 1000, 800, Path(temp) / '.checkpoints')
 
             self.assertTrue(status['complete'])
@@ -2449,14 +2451,14 @@ class TileCheckpointRecoveryTests(unittest.TestCase):
             self.assertTrue(all(item.get('attempts') == 2 for item in status['tile_diagnostics']))
 
     def test_analysis_deadline_reserves_time_for_partial_graph_export(self):
-        previous_deadline = processor._ANALYSIS_HARD_DEADLINE
+        previous_deadline = analysis_state.ANALYSIS_HARD_DEADLINE
         try:
-            processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 1.0
+            analysis_state.ANALYSIS_HARD_DEADLINE = time.monotonic() + 1.0
             self.assertFalse(processor._analysis_has_qwen_budget(180, 1, 720))
-            processor._ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600.0
+            analysis_state.ANALYSIS_HARD_DEADLINE = time.monotonic() + 3600.0
             self.assertTrue(processor._analysis_has_qwen_budget(180, 1, 720))
         finally:
-            processor._ANALYSIS_HARD_DEADLINE = previous_deadline
+            analysis_state.ANALYSIS_HARD_DEADLINE = previous_deadline
 
     def test_qwen_stage_completeness_requires_every_declared_tile(self):
         self.assertTrue(processor._qwen_stage_is_complete({'tiles': 9, 'successful_tiles': 9}))
