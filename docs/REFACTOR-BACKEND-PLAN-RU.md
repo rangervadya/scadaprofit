@@ -242,7 +242,8 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563; `processor.py` 5062 — далее). `workforce-system.js` и `processor.py` — далее).
+- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→4622; в работе).
+  - **P2-1 progress**: JS-API разбит полностью (7 route-модулей + 3 доменных); `processor.py` — вынесен CAD-экспорт (SVG/DXF) в `engine/cad_export.py`, остаток — OCR/Qwen/CAD-пайплайн (нужен отдельный этап). `workforce-system.js` и `processor.py` — далее).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
   - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
@@ -392,6 +393,13 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 13: вынесен CAD-экспорт из processor.py
+
+- `engine/cad_export.py` (470 строк) — `build_clean_svg`, `build_dxf`, `_cad_edge_chains`, `_clean_cad_points`, `_sheet_layout`, `_semantic_route_chains`, `_annotation_export_kind`, `_primary_semantic_chains`.
+- `processor.py` 5062 → 4622 строки; вынесенные функции реэкспортируются (`from cad_export import ... # noqa: F401`), поэтому `processor.build_clean_svg` и тесты, патчащие `processor.*`, продолжают работать.
+- `tests/python/test_cad_export.py` — 4 теста (состав модуля, реэкспорт, генерация SVG/DXF).
+- Проверено: 201 Python-тест (195+4 новых, 2 skip), 62 VDGO, 102 node, `verify` exit 0.
 
 ### 2026-11-15 — P2-1 шаг 12: завершён вынос workforce (итог)
 
