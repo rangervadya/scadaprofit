@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 9 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-7 (SBOM) | 4 (P2-1, P2-3, P2-12, P2-14) |
+| P2 | 10 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-1 (остаток `processor.py`), P2-7 (SBOM) | 3 (P2-3, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -242,7 +242,7 @@
 
 Нумерация совпадает с §3.3 (все 12 пунктов + P2-13).
 
-- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→4622; в работе).
+- [~] **P2-1** Разбить монолиты на слои (`server.js` 2646→1579, `workforce-system.js` 1748→563, `processor.py` 5062→2355; в работе).
   - **P2-1 progress**: JS-API разбит полностью (7 route-модулей + 3 доменных); `processor.py` — вынесен CAD-экспорт (SVG/DXF) в `engine/cad_export.py`, остаток — OCR/Qwen/CAD-пайплайн (нужен отдельный этап). `workforce-system.js` и `processor.py` — далее).
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
@@ -398,6 +398,17 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 
 - `engine/cad_export.py` (470 строк) — `build_clean_svg`, `build_dxf`, `_cad_edge_chains`, `_clean_cad_points`, `_sheet_layout`, `_semantic_route_chains`, `_annotation_export_kind`, `_primary_semantic_chains`.
 - `processor.py` 5062 → 4622 строки; вынесенные функции реэкспортируются (`from cad_export import ... # noqa: F401`), поэтому `processor.build_clean_svg` и тесты, патчащие `processor.*`, продолжают работать.
+
+### 2026-11-15 — P2-1 шаг 14–17: разбивка processor.py (продолжение)
+
+- `engine/image_preprocess.py` (373) — поворот/квадрат страницы, деление на ячейки, апскейл.
+- `engine/segment_geometry.py` (880) — выборка сегментов, привязка линий, сборка маршрутов.
+- `engine/cad_graph.py` (767) — граф узлов, цепочки, приоритет разрезов.
+- `engine/qwen_client.py` (376) — Ollama vision-клиент, retry-бюджет, tile-чекпоинты, `_parse_json_object`; реэкспорт из `processor`.
+- `engine/analysis_state.py` — разделяемый `ANALYSIS_HARD_DEADLINE` (вместо module-level global), чтобы бюджет времени пережил вынос.
+- `processor.py` 4622 → 2355 строк (−49% от исходного); остаток — OCR-пайплайн, Qwen-оркестрация, `analyze`, `main`.
+- Тесты переведены на патчи в модуле-владельце (`qwen_client._qwen_call`, `qwen_client.urllib.request.urlopen`, `analysis_state.ANALYSIS_HARD_DEADLINE`, `segment_geometry.*`, `image_preprocess.*`).
+- **Проверено**: `tests/python` 199 passed, 2 skipped, 5 subtests passed; `ruff check` exit 0.
 - `tests/python/test_cad_export.py` — 4 теста (состав модуля, реэкспорт, генерация SVG/DXF).
 - Проверено: 201 Python-тест (195+4 новых, 2 skip), 62 VDGO, 102 node, `verify` exit 0.
 
