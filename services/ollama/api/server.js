@@ -54,6 +54,9 @@ import {
 import { fetchSchemeMeta as fetchSchemeMetaPg, saveSchemeMeta as saveSchemeMetaPg } from './scheme-meta-repo.js';
 import { findIdempotency, saveIdempotency } from './postgres-repo.js';
 import { appVersion } from './version.js';
+import { createTemplateStore } from './template-store.js';
+import { cleanLabel } from './text.js';
+import { createTemplateRouter } from './routes/template-routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
@@ -89,8 +92,7 @@ const LIBRARY_PATH = path.join(LIBRARY_DIR, 'address-library.json');
 const SCHEME_META_DIR = path.join(LIBRARY_DIR, 'schemes');
 // The global drawing-style reference is stored in the same named Docker volume
 // as the address library, not in /tmp and never inside an individual house job.
-const TEMPLATE_DIR = path.join(LIBRARY_DIR, 'template');
-const TEMPLATE_META_PATH = path.join(TEMPLATE_DIR, 'template.json');
+// Persistence lives in template-store.js (P2-1).
 // Manual CAD projects are isolated from automatic analysis jobs and from the VDGO app.
 const MANUAL_CAD_DIR = path.join(LIBRARY_DIR, 'manual-cad');
 const LEGACY_YANDEX_CONFIG_PATH = path.join(LIBRARY_DIR, 'yandex-ai-settings.json');
@@ -126,9 +128,11 @@ await rm(LEGACY_YANDEX_CONFIG_PATH, { force: true }).catch(() => {});
 // Fail fast before binding a port if the database is not configured.
 requirePostgres();
 await mkdir(SCHEME_META_DIR, { recursive: true });
-await mkdir(TEMPLATE_DIR, { recursive: true });
+
 await mkdir(MANUAL_CAD_DIR, { recursive: true });
 await mkdir(UPLOAD_DIR, { recursive: true });
+const templateStore = createTemplateStore({ libraryDir: LIBRARY_DIR, cleanLabel });
+await templateStore.ensureDir();
 const workforceSystem = await createWorkforceSystem({
   dataDir: LIBRARY_DIR,
   uploadDir: UPLOAD_DIR,
@@ -510,27 +514,6 @@ const upload = multer({
   },
 });
 
-const templateExtensions = new Set(['.pdf', '.svg', '.dxf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
-const templateMimeTypes = {
-  '.pdf': 'application/pdf',
-  '.svg': 'image/svg+xml',
-  '.dxf': 'application/dxf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.tif': 'image/tiff',
-  '.tiff': 'image/tiff',
-};
-const templateUpload = multer({
-  dest: UPLOAD_DIR,
-  limits: { fileSize: 30 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(String(file.originalname || '')).toLowerCase();
-    cb(null, templateExtensions.has(ext));
-  },
-});
-
 const manualSourceUpload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: 18 * 1024 * 1024, files: 1 },
@@ -719,30 +702,10 @@ function attachJobUrls(jobId, graph, sourceName = null) {
   return graph;
 }
 
-function cleanLabel(value, maxLength = 100) {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxLength);
-}
-
+// Template persistence lives in template-store.js; these thin wrappers keep the
+// existing call sites (pinTemplateReference, readyz) working unchanged.
 async function readTemplateMeta() {
-  try {
-    const meta = JSON.parse(await readFile(TEMPLATE_META_PATH, 'utf8'));
-    const storageName = path.basename(String(meta.storageName || ''));
-    if (!storageName || !/^template-[a-f0-9-]+\.[a-z0-9]+$/i.test(storageName)) return null;
-    return {
-      originalName: cleanLabel(meta.originalName || 'Эталонный шаблон', 180),
-      storageName,
-      mimeType: templateMimeTypes[path.extname(storageName).toLowerCase()] || 'application/octet-stream',
-      size: Math.max(0, Number(meta.size) || 0),
-      uploadedAt: meta.uploadedAt || null,
-    };
-  } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    throw error;
-  }
+  return templateStore.readMeta();
 }
 
 // Pin the selected reference sheet into each job folder so a later retry uses
@@ -756,26 +719,9 @@ async function pinTemplateReference(jobDir) {
   const extension = path.extname(meta.storageName).toLowerCase() || '.bin';
   const snapshotName = `.drawing-template-reference${extension}`;
   const snapshotPath = path.join(jobDir, snapshotName);
-  const sourcePath = path.join(TEMPLATE_DIR, meta.storageName);
+  const sourcePath = templateStore.absolutePath(meta.storageName);
   await copyFile(sourcePath, snapshotPath);
   return snapshotPath;
-}
-
-async function saveTemplateMeta(meta) {
-  const temporary = `${TEMPLATE_META_PATH}.tmp-${randomUUID()}`;
-  await writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
-  await rename(temporary, TEMPLATE_META_PATH);
-}
-
-function publicTemplate(meta) {
-  if (!meta) return null;
-  return {
-    originalName: meta.originalName,
-    mimeType: meta.mimeType,
-    size: meta.size,
-    uploadedAt: meta.uploadedAt,
-    downloadUrl: '/api/template/file',
-  };
 }
 
 async function readAddressLibraryFile() {
@@ -1209,85 +1155,7 @@ function nextManualEdgeId(edges) {
   return `E${maxId + 1}`;
 }
 
-// A single global style reference, separate from house uploads and analysis jobs.
-// Files live under DATA/.private/template inside the persistent cad_jobs volume.
-app.get('/api/template', async (req, res) => {
-  try {
-    const meta = await readTemplateMeta();
-    return res.json({ ok: true, template: publicTemplate(meta) });
-  } catch (error) {
-    if (error?.code === 'ENOENT') return res.json({ ok: true, template: null });
-    req.log.error({ err: error }, 'Cannot read template metadata');
-    return res.status(500).json({ error: 'Не удалось прочитать эталонный шаблон.' });
-  }
-});
-
-app.get('/api/template/file', async (_req, res) => {
-  try {
-    const meta = await readTemplateMeta();
-    if (!meta) return res.status(404).json({ error: 'Эталонный шаблон ещё не загружен.' });
-    const filePath = path.join(TEMPLATE_DIR, meta.storageName);
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    // Always download reference files, including SVG, rather than rendering user content inline.
-    res.setHeader('Content-Type', 'application/octet-stream');
-    return res.download(filePath, meta.originalName, (error) => {
-      if (error && !res.headersSent)
-        res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'Файл шаблона не найден.' });
-    });
-  } catch (error) {
-    _req.log.error({ err: error }, 'Cannot download template');
-    return res.status(500).json({ error: 'Не удалось скачать эталонный шаблон.' });
-  }
-});
-
-app.post('/api/template', limitHeavyRequests, templateUpload.single('template'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Выберите PDF, SVG, DXF, PNG, JPG, WEBP или TIFF.' });
-  const ext = path.extname(String(req.file.originalname || '')).toLowerCase();
-  if (!templateExtensions.has(ext)) {
-    await rm(req.file.path, { force: true }).catch(() => {});
-    return res.status(400).json({ error: 'Формат файла шаблона не поддерживается.' });
-  }
-  const originalName =
-    cleanLabel(path.basename(String(req.file.originalname || '').replace(/\\/g, '/')), 180) || `template${ext}`;
-  const storageName = `template-${randomUUID()}${ext}`;
-  const destination = path.join(TEMPLATE_DIR, storageName);
-  const previous = await readTemplateMeta().catch(() => null);
-  try {
-    // /tmp and the named Docker volume can be different filesystems: copy, then remove.
-    await copyFile(req.file.path, destination);
-    const meta = {
-      originalName,
-      storageName,
-      mimeType: templateMimeTypes[ext] || 'application/octet-stream',
-      size: Number(req.file.size) || 0,
-      uploadedAt: new Date().toISOString(),
-    };
-    await saveTemplateMeta(meta);
-    if (previous?.storageName && previous.storageName !== storageName) {
-      await rm(path.join(TEMPLATE_DIR, previous.storageName), { force: true }).catch(() => {});
-    }
-    return res.status(201).json({ ok: true, template: publicTemplate(meta) });
-  } catch (error) {
-    await rm(destination, { force: true }).catch(() => {});
-    req.log.error({ err: error, size: req.file?.size || 0 }, 'Cannot save uploaded template');
-    return res.status(500).json({ error: 'Не удалось сохранить эталонный шаблон.' });
-  } finally {
-    await rm(req.file.path, { force: true }).catch(() => {});
-  }
-});
-
-app.delete('/api/template', async (req, res) => {
-  try {
-    const meta = await readTemplateMeta();
-    if (meta?.storageName) await rm(path.join(TEMPLATE_DIR, meta.storageName), { force: true });
-    await rm(TEMPLATE_META_PATH, { force: true });
-    return res.json({ ok: true, template: null });
-  } catch (error) {
-    req.log.error({ err: error }, 'Cannot delete template');
-    return res.status(500).json({ error: 'Не удалось удалить эталонный шаблон.' });
-  }
-});
+app.use('/api/template', createTemplateRouter({ store: templateStore, uploadDir: UPLOAD_DIR, limitHeavyRequests }));
 
 app.get('/api/library', async (req, res) => {
   try {

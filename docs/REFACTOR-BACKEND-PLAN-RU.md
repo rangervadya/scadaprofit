@@ -245,7 +245,9 @@
 - [~] **P2-1** Разбить монолиты на слои.
   - **Сделано (шаг 1)**: интеграционные тесты как сетка безопасности — `tests/node/integration/` (12 тестов: health/readyz, доступ без сессии, login/logout, создание сотрудника, дубликаты, multi-house dispatch, lifecycle start→visit, 404, ETag/304). Поднимают реальный сервер на эфемерном порту против отдельной БД `vdgo_itest`; харнесс `tests/node/helpers/integration-harness.js`. CI-job `integration`. Скрипты `test:integration`, `db:deploy:test`.
   - **Попутно исправлен баг**: `resumeStoredAnalysisQueue` падал на пустой библиотеке (`Cannot read properties of null (reading 'streets')`) — приложение не стартовало с чистой БД.
-  - **Осталось**: вынести роуты/домен из `server.js` (41 маршрут), затем `workforce-system.js` (33 маршрута); `processor.py` отдельно. (`server.js`, `workforce-system.js`, `app.py`, `processor.py` → routes/domain/services).
+  - **Сделано (шаг 2)**: выделен блок шаблона — `api/template-store.js` (домен: чтение/запись/удаление/путь) + `api/routes/template-routes.js` (HTTP); `api/text.js` с `cleanLabel` (убрано дублирование). `server.js` теперь только создаёт store и монтирует router; старые хелперы/маршруты удалены.
+  - **Проверено**: `server.js` 2646 → 2515 строк; `verify` exit 0; 12/12 интеграционных; живой цикл шаблона (GET 200 null → upload 201 → GET 200 → DELETE 200 → null; `/file` 404 без файла).
+  - **Осталось**: settings (P2-1), затем address library / schemes / jobs / manual-cad / health / analyze; после — `workforce-system.js` (33 маршрута); `processor.py` отдельно.
 - [x] **P2-2** Compression/cache/ETag.
   - **Сделано**: nginx `gzip` для JSON/SVG/JS/CSS; per-location `client_max_body_size` (64m загрузки / 2m JSON); `sendJsonConditional` (weak ETag + `private, no-cache` + 304) на `/api/library`, `/api/manual-cad/projects`, `/api/workforce/{tasks,reports,defects,overview,users}`; `ETag` на `PUT /api/manual-cad/projects/:id`.
   - **Проверено**: 200 + ETag, повтор с `If-None-Match` → 304; `tests/node/etag.test.js`.
@@ -373,6 +375,14 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-1 шаг 2: выделен блок шаблона
+
+- `api/template-store.js` — домен: `readMeta/saveMeta/remove/toPublic/replaceTemplate/filePath/absolutePath/ensureDir`; валидация `storageName`, атомарная запись (tmp + rename).
+- `api/routes/template-routes.js` — 4 HTTP-маршрута (`GET /`, `GET /file`, `POST /`, `DELETE /`), зависимости инжектируются, multer создаётся внутри.
+- `api/text.js` — `cleanLabel`; устранено дублирование (было объявлено и в `server.js`, и инжектилось в store).
+- `server.js` 2646 → 2515 строк; `readTemplateMeta` оставлен тонкой обёрткой (используется `pinTemplateReference` и `readyz`).
+- Проверено: `verify` exit 0; 12/12 интеграционных; живой цикл (GET null → upload 201 → GET → DELETE → null).
 
 ### 2026-11-15 — P2-1 шаг 1: интеграционные тесты (сетка безопасности)
 
