@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 8 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-13) | P2-7 (SBOM) | 5 (P2-1, P2-3, P2-11, P2-12, P2-14) |
+| P2 | 9 (P2-2, P2-4, P2-5, P2-6, P2-8, P2-9, P2-10, P2-11, P2-13) | P2-7 (SBOM) | 4 (P2-1, P2-3, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -268,7 +268,9 @@
 - [x] **P2-10** Удалить dead code (JS-часть).
   - **Сделано**: удалены `services/ollama/engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок; пайплайн полностью на Python). `engine/` больше не содержит JS.
   - **Осталось (отдельно)**: проверить `moss_ai.py`, `openrouter_ai.py`, legacy UI-ассеты.
-- [ ] **P2-11** Source-string тесты → поведенческие.
+- [x] **P2-11** Source-string тесты → поведенческие (legacy UI удалён).
+  - **Сделано**: удалён мёртвый legacy UI `tests/fixtures/legacy-frontend/` (524K, приложением не отдаётся, заменён React-SPA) вместе с тестами, которые проверяли его HTML/JS строками (`workforce-contract`, `workforce-inbox-folders`, `workforce-planning`, `manual-cad-ink-trace`); 4 python-теста `BrowserExportRegressionTests` удалены; backend-контракты сохранены в `tests/node/workforce-backend-contracts.test.js`; обновлены `package.json`, `eslint.config.js`, `repository-layout.test.js`.
+  - **Проверено**: `npm run verify` exit 0; 97 node-тестов; 195 python; 62 vdgo.
 - [ ] **P2-12** SLO + нагрузочные тесты (k6/Locust, capacity model).
 - [x] **P2-13** ADR/runbook/DR.
   - **Сделано**: `docs/adr/0001-postgres-system-of-record.md`, `docs/adr/0002-no-api-versioning.md`, `docs/runbook.md` (запуск, verify, backup/restore, retention, аварии, отложенное до прода).
@@ -366,6 +368,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P2-11: dead legacy UI removed
+
+- Удалён `tests/fixtures/legacy-frontend/` (524K) — старый multi-page UI, который приложение не отдаёт (заменён React-SPA: `/team`, `/schemes`, `/login` и т.д.).
+- Удалены тесты, проверявшие его HTML/JS строками: `workforce-contract`, `workforce-inbox-folders`, `workforce-planning`, `manual-cad-ink-trace` (последний тестировал алгоритм, которого нет в продакшене).
+- Удалён класс `BrowserExportRegressionTests` в `tests/python/test_engine.py` (4 теста по legacy `app.js`/`index.html`/`styles.css`).
+- Backend-контракты сохранены: `tests/node/workforce-backend-contracts.test.js`.
+- Обновлены `services/ollama/package.json`, `eslint.config.js`, `tests/node/repository-layout.test.js`.
+- Проверено: `npm run verify` exit 0; node 97, python 195, vdgo 62.
 
 ### 2026-11-15 — P2-5: lookup indexes
 

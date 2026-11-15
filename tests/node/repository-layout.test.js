@@ -24,7 +24,6 @@ test('one React frontend is the active UI; backend and document services stay se
     'frontend/src/pages/TeamPage.tsx',
     'frontend/src/pages/ConclusionPage.tsx',
     'frontend/public/robots.txt',
-    'tests/fixtures/legacy-frontend/public/manual-cad.js',
     'services/vdgo/app.py',
     'services/vdgo/templates/index.html',
     'infra/docker/app.Dockerfile',

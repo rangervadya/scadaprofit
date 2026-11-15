@@ -8,7 +8,6 @@ export default [
       'frontend/public/vdgo/**',
       'services/ollama/prisma/generated/**',
       'services/ollama/prisma/migrations/**',
-      'tests/fixtures/legacy-frontend/**',
       'services/vdgo/output/**',
       'services/vdgo/uploads/**',
     ],
