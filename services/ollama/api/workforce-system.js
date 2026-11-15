@@ -6,6 +6,7 @@ import { logger } from './logger.js';
 import { validateBody, loginSchema, setupSchema } from './schemas.js';
 import { requirePostgres } from './db.js';
 import { sendJsonConditional } from './etag.js';
+import { appVersion } from './version.js';
 import {
   mirrorUser,
   mirrorSession,
@@ -1652,7 +1653,7 @@ export async function createWorkforceSystem({
     if (!requireRoles(req, res, ['developer'])) return;
     return res.json({
       ok: true,
-      version: '4.5.17',
+      version: appVersion(),
       node: process.version,
       users: users.length,
       tasks: workspace.tasks.length,

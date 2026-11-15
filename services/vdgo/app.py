@@ -37,9 +37,20 @@ from schemas import parse_workforce_schemes
 configure_logging()
 log = get_logger('vdgo')
 
-# Release label is injected by compose so the image and this process can never
-# disagree; the fallback keeps a bare `python app.py` run working.
-APP_RELEASE = os.environ.get('APP_RELEASE', '4.5.17')
+# Release label comes from APP_RELEASE (injected by compose) and falls back to
+# the repository VERSION file, so a bare `python app.py` run cannot drift (P2-9).
+def _read_app_release() -> str:
+    override = os.environ.get('APP_RELEASE', '').strip()
+    if override:
+        return override
+    version_file = Path(__file__).resolve().parents[2] / 'VERSION'
+    try:
+        return version_file.read_text(encoding='utf-8').strip()
+    except OSError:
+        return 'dev'
+
+
+APP_RELEASE = _read_app_release()
 BACKEND_IMAGE_VERSION = '5.3.9'
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'template'

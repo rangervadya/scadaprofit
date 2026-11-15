@@ -28,29 +28,20 @@ RUN python3 -m venv /opt/venv \
 
 ENV PATH="/opt/venv/bin:${PATH}"
 
-COPY services/ollama/package.json ./services/ollama/package.json
+COPY services/ollama/package.json services/ollama/package-lock.json ./services/ollama/
 WORKDIR /app/services/ollama
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY services/ollama/ ./
 RUN DATABASE_URL='postgresql://build:build@localhost:5432/build' npx prisma generate --schema prisma/schema.prisma
 COPY VERSION /app/VERSION
-COPY frontend/package.json /app/frontend/package.json
-COPY frontend/package-lock.json /app/frontend/package-lock.json
-# Keep the frontend source tree available to the repository-layout regression tests
-# executed in the runtime image. The built SPA remains the only served UI artifact.
-COPY --from=frontend-build /frontend/index.html /app/frontend/index.html
-COPY --from=frontend-build /frontend/vite.config.ts /app/frontend/vite.config.ts
-COPY --from=frontend-build /frontend/src/ /app/frontend/src/
-COPY frontend/public/ /app/frontend/public/
+# Only the built SPA is shipped: sources, tests and dev configs are CI concerns
+# (P2-8) and must not ship in the runtime image.
+COPY --from=frontend-build /frontend/public/ /app/frontend/public/
 COPY --from=frontend-build /frontend/public/vdgo/ /app/frontend/public/vdgo/
 COPY services/vdgo/app.py /app/services/vdgo/app.py
 COPY services/vdgo/templates/index.html /app/services/vdgo/templates/index.html
-COPY tests/ /app/tests/
-COPY compose.yaml /app/compose.yaml
-COPY infra/docker/app.Dockerfile /app/infra/docker/app.Dockerfile
-COPY infra/nginx/nginx-unified.conf /app/infra/nginx/nginx-unified.conf
 RUN test -s /app/frontend/public/vdgo/index.html \
-    && npm run test \
+    && test -s /app/frontend/public/vdgo/assets/ \
     && chown -R node:node /app \
     && mkdir -p /data/cad-reconstruction-jobs \
     && chown -R node:node /data

@@ -11,12 +11,10 @@
  * and `renderProgressLine()` render the same events into the compact
  * `[STAGE] message` text that the page and `progress.log` have always shown.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import pino from 'pino';
 import { pinoHttp } from 'pino-http';
+import { appVersion } from './version.js';
 
 const LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']);
 const DEFAULT_LEVEL = 'info';
@@ -27,14 +25,8 @@ export const MAX_PROGRESS_MESSAGE = 2000;
 /** Longest stage token kept in progress.log. */
 export const MAX_PROGRESS_STAGE = 16;
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 function readAppVersion() {
-  try {
-    return readFileSync(path.join(__dirname, '../../../VERSION'), 'utf8').trim();
-  } catch {
-    return 'dev';
-  }
+  return appVersion();
 }
 
 /**

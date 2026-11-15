@@ -103,7 +103,9 @@ def archive_document(
             "output_filename": filename,
             "archived": True,
             "archived_at": datetime.now(UTC).isoformat(),
-            "storage_path": str(destination),
+            # Relative to the archive directory: the container path differs from
+            # a developer checkout, so an absolute path here is never portable.
+            "storage_path": filename,
             "original_filename": original_filename or filename,
             "content_type": content_type or "application/octet-stream",
             "file_size": len(data),
@@ -173,7 +175,14 @@ def archived_path(report_id: object) -> Path | None:
     if not entry:
         return None
     archive_root = ARCHIVE_DIR.resolve()
-    candidates = [Path(str(entry.get("storage_path") or "")), ARCHIVE_DIR / Path(str(entry.get("output_filename") or "")).name]
+    # `storage_path` is stored relative to the archive directory; older rows may
+    # still hold an absolute path, which is accepted only when it resolves inside
+    # the archive directory.
+    stored = Path(str(entry.get("storage_path") or ""))
+    candidates = [
+        (ARCHIVE_DIR / stored) if not stored.is_absolute() else stored,
+        ARCHIVE_DIR / Path(str(entry.get("output_filename") or "")).name,
+    ]
     for candidate in candidates:
         try:
             resolved = candidate.resolve()

@@ -10,7 +10,7 @@
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
 | P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
-| P2 | 4 (P2-2, P2-4, P2-6, P2-13) | — | 9 (P2-1, P2-3, P2-5, P2-7…P2-12, P2-14) |
+| P2 | 7 (P2-2, P2-4, P2-6, P2-8, P2-9, P2-10, P2-13) | P2-7 (SBOM) | 6 (P2-1, P2-3, P2-5, P2-11, P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
 **Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
@@ -159,7 +159,7 @@
 - P3-2. Multi-region/DR — избыточно для текущего масштаба.
 - P3-3. Schema registry для `graph.json`.
 - P3-4. S3/object storage вместо томов.
-- P3-5. `.DS_Store`, `archive_index.json` с локальным путём, артефакты `output/` — вычистить.
+- [x] P3-5. `.DS_Store` удалён из репо и добавлен в `.gitignore`; убран устаревший `archive_index.json`; удалены `generated.pdf`, `_work.pdf`, `_regression_upload.png`; `storage_path` в архиве теперь относительный (`services/vdgo/archive.py`).
 
 ## 4. План
 
@@ -254,10 +254,18 @@
 - [ ] **P2-5** O(n) сканы → индексы/БД/кэш.
 - [x] **P2-6** Optimistic concurrency для manual CAD.
   - **Сделано**: `If-Match: "<rev>"` / `body.expectedRevision`; атомарный `updateMany ... where revision = expected`; 409 `REVISION_CONFLICT`; `ETag` в ответе; фронт показывает «изменил другой редактор»; исправлена бесконечная рекурсия `readManualProject` в JSON-режиме; тест `tests/node/manual-cad-concurrency.test.js`.
-- [ ] **P2-7** Воспроизводимость сборки + SBOM (`npm ci`, lock, digest, `--require-hashes`).
-- [ ] **P2-8** Runtime image без тестов (вынести тесты в CI).
-- [ ] **P2-9** Версии/docs drift (single source version, changelog automation).
-- [ ] **P2-10** Удалить dead code (`engine/graph.js`, `strokes.js`, `prompts.js`, `moss_ai.py`, `openrouter_ai.py`, legacy UI).
+- [~] **P2-7** Воспроизводимость сборки.
+  - **Сделано**: `app.Dockerfile` переведён с `npm install` на `npm ci` (frontend и app), копируются оба `package-lock.json`; версия больше не хардкодится (см. P2-9).
+  - **Осталось**: SBOM (`syft`/`npm sbom`), digest-пиннинг базовых образов, `--require-hashes` для Python.
+- [x] **P2-8** Runtime image без тестов.
+  - **Сделано**: из `app.Dockerfile` убраны `COPY tests/`, `frontend/src`, `compose.yaml`, `infra/*`; в образ попадает только собранный SPA. Тесты остаются в CI (`node`, `python`), добавлена job `image`, которая собирает образ и проверяет отсутствие `/app/tests` и `/app/frontend/src`.
+  - **Проверено**: образ собран и запущен (health 200, readyz 503 без Ollama, `/vdgo/` 200, JS-ассет 200); `tests/` и `frontend/src` в образе отсутствуют.
+- [x] **P2-9** Версии/docs drift.
+  - **Сделано**: `VERSION` — единственный источник; `services/ollama/api/version.js` (`appVersion()`, учитывает `APP_RELEASE`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION` как fallback; `frontend/package.json` и оба lock-файла синхронизированы на `4.5.17`.
+  - **Проверено**: `tests/node/version.test.js` (5 тестов) — версии совпадают, хардкод-лейблов в коде нет.
+- [x] **P2-10** Удалить dead code (JS-часть).
+  - **Сделано**: удалены `services/ollama/engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок; пайплайн полностью на Python). `engine/` больше не содержит JS.
+  - **Осталось (отдельно)**: проверить `moss_ai.py`, `openrouter_ai.py`, legacy UI-ассеты.
 - [ ] **P2-11** Source-string тесты → поведенческие.
 - [ ] **P2-12** SLO + нагрузочные тесты (k6/Locust, capacity model).
 - [x] **P2-13** ADR/runbook/DR.
@@ -269,7 +277,8 @@
 
 ### Фаза 3 — долгосрочно
 
-- [ ] P3-1…P3-5.
+- [x] P3-5 (мусор вычищен).
+- [ ] P3-1…P3-4.
 
 ## 5. Целевая архитектура
 
@@ -355,6 +364,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — быстрый батч P2/P3
+
+- **P2-9**: `VERSION` — единственный источник версии; `services/ollama/api/version.js` (`appVersion()`), подключён в `server.js`, `logger.js`, `workforce-system.js`; `services/vdgo/app.py` читает `VERSION`; `frontend/package.json` и lock-файлы синхронизированы (4.5.13 → 4.5.17); `tests/node/version.test.js`.
+- **P3-5**: `.DS_Store` удалён из репо и игнорируется; убран устаревший `archive_index.json`; удалены `generated.pdf`, `_work.pdf`, `_regression_upload.png`; `storage_path` в архиве стал относительным.
+- **P2-10**: удалены `engine/graph.js`, `strokes.js`, `prompts.js` (0 ссылок, пайплайн на Python).
+- **P2-7**: `app.Dockerfile` переведён на `npm ci` (frontend + app), копируются lock-файлы.
+- **P2-8**: из runtime-образа убраны `tests/`, `frontend/src`, `compose.yaml`, `infra/*`; в CI добавлена job `image`, проверяющая отсутствие тестов и исходников в образе.
+- Проверено: `npm run verify` exit 0; 114 node-тестов; образ собран и запущен (health 200, `/vdgo/` 200, ассеты 200, `tests/` и `src` отсутствуют).
 
 ### 2026-11-15 — P2-4: write amplification
 

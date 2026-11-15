@@ -53,11 +53,12 @@ import {
 } from './address-library-repo.js';
 import { fetchSchemeMeta as fetchSchemeMetaPg, saveSchemeMeta as saveSchemeMetaPg } from './scheme-meta-repo.js';
 import { findIdempotency, saveIdempotency } from './postgres-repo.js';
+import { appVersion } from './version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fingerprint the actual loaded sources, not a manually maintained release label.
 const BUILD_INFO = {
-  version: (await readFile(path.join(__dirname, '../../../VERSION'), 'utf8')).trim(),
+  version: appVersion(),
   pipelineSha256: createHash('sha256')
     .update(
       Buffer.concat(
