@@ -5,9 +5,11 @@ technical audit entry is saved after a successful generation.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from logging_setup import get_logger
@@ -281,3 +283,54 @@ def recent_reports(limit: int = 12) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# --- Document generation idempotency (P1-3) -------------------------------
+#
+# /generate, /generate_docx and /preview take a multipart body and return a
+# binary document. A retried request (double click, flaky proxy) would burn
+# minutes of CPU and produce a duplicate archive row. The body is hashed and the
+# mapping key+endpoint -> stored file is kept in idempotency_keys, so an
+# identical retry replays the already generated document.
+
+_IDEMPOTENCY_TTL_HOURS = 24
+
+
+def find_idempotent(endpoint: str, key: str) -> dict[str, Any] | None:
+    """Return the stored response for an identical request, if still valid."""
+    if not _dsn() or not endpoint or not key:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT response, expires_at
+            FROM idempotency_keys
+            WHERE key = %s AND endpoint = %s
+            """,
+            (key, endpoint),
+        ).fetchone()
+    if not row:
+        return None
+    response, expires_at = row
+    if expires_at is not None and expires_at <= datetime.now(UTC):
+        return None
+    return response if isinstance(response, dict) else None
+
+
+def save_idempotent(endpoint: str, key: str, response: dict[str, Any]) -> None:
+    """Persist the generated-document pointer for an identical retry."""
+    if not _dsn() or not endpoint or not key:
+        return
+    expires_at = datetime.now(UTC) + timedelta(hours=_IDEMPOTENCY_TTL_HOURS)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO idempotency_keys (id, key, endpoint, user_id, status, response, created_at, expires_at)
+            VALUES (gen_random_uuid(), %s, %s, NULL, '200', %s::jsonb, NOW(), %s)
+            ON CONFLICT (key, endpoint) DO UPDATE SET
+                status = EXCLUDED.status,
+                response = EXCLUDED.response,
+                expires_at = EXCLUDED.expires_at
+            """,
+            (key, endpoint, json.dumps(response, ensure_ascii=False), expires_at),
+        )
