@@ -1,14 +1,7 @@
 // Typed runtime layer for database rows (P1-14).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  addressLibrarySchema,
-  manualProjectSchema,
-  parseOrDefault,
-  sessionSchema,
-  userSchema,
-  workspaceSchema,
-} from '../../services/ollama/api/entities.js';
+import { manualProjectSchema, parseOrDefault, sessionSchema, userSchema } from '../../services/ollama/api/entities.js';
 
 const warnings = [];
 const log = { warn: (obj, msg) => warnings.push({ obj, msg }) };
@@ -46,27 +39,6 @@ test('session: numeric timestamps are preserved', () => {
   assert.equal(row.expiresAt, 20);
 });
 
-test('workspace: arrays default and unknown keys pass through', () => {
-  const parsed = parseOrDefault(
-    workspaceSchema,
-    { tasks: [{ id: 1 }], extra: true },
-    { label: 'ws', fallback: null, log },
-  );
-  assert.deepEqual(parsed.tasks, [{ id: 1 }]);
-  assert.deepEqual(parsed.reports, []);
-  assert.equal(parsed.extra, true);
-});
-
-test('workspace: non-object falls back to null', () => {
-  assert.equal(parseOrDefault(workspaceSchema, 'nope', { label: 'ws', fallback: null, log }), null);
-  assert.equal(parseOrDefault(workspaceSchema, null, { label: 'ws', fallback: null, log }), null);
-});
-
-test('address library: missing arrays default to empty', () => {
-  const parsed = parseOrDefault(addressLibrarySchema, { streets: [] }, { label: 'lib', fallback: null, log });
-  assert.deepEqual(parsed.buildings, []);
-});
-
 test('manual project: revision defaults and extra fields survive', () => {
   const parsed = parseOrDefault(
     manualProjectSchema,
@@ -83,12 +55,16 @@ test('repos validate rows on read', async () => {
   assert.match(pg, /parseOrDefault\(\s*userSchema/);
   assert.match(pg, /parseOrDefault\(\s*sessionSchema/);
 
-  const ws = await readFile(new URL('../../services/ollama/api/workforce-workspace-repo.js', import.meta.url), 'utf8');
-  assert.match(ws, /parseOrDefault\(workspaceSchema/);
-
   const lib = await readFile(new URL('../../services/ollama/api/address-library-repo.js', import.meta.url), 'utf8');
-  assert.match(lib, /parseOrDefault\(addressLibrarySchema/);
+  assert.match(lib, /prisma\.addressStreet\.findMany/);
 
   const cad = await readFile(new URL('../../services/ollama/api/manual-cad-repo.js', import.meta.url), 'utf8');
   assert.match(cad, /parseOrDefault\(manualProjectSchema/);
+});
+
+test('normalized repos read from tables instead of the JSONB singleton', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const ws = await readFile(new URL('../../services/ollama/api/workforce-workspace-repo.js', import.meta.url), 'utf8');
+  assert.match(ws, /prisma\.workforceTask\.findMany/);
+  assert.doesNotMatch(ws, /parseOrDefault\(workspaceSchema/);
 });

@@ -20,8 +20,8 @@
 | Сессии | `workforce/sessions.json` | **PostgreSQL** | `sessions` |
 | Идемпотентность | — | **PostgreSQL** | `idempotency_keys` |
 | Manual CAD | `manual-cad/<id>/project.json` | **PostgreSQL** | `manual_cad_projects` (`jsonb`) |
-| Адресная библиотека | `address-library.json` | **PostgreSQL (`jsonb`)** | `address_library` (нормализация — позже) |
-| Задания/отчёты/дефекты | `workforce/workspace.json` | **PostgreSQL (`jsonb`)** | `workforce_workspace` (нормализация — позже) |
+| Адресная библиотека | `address-library.json` | **PostgreSQL (нормализованные таблицы)** | `address_streets`, `address_buildings`, `address_schemes` |
+| Задания/отчёты/дефекты | `workforce/workspace.json` | **PostgreSQL (нормализованные таблицы)** | `workforce_tasks`, `workforce_reports`, `workforce_defect_reports` |
 | Метаданные схемы | `schemes/<jobId>.json` | **PostgreSQL** | `scheme_meta` (`jsonb`) |
 | Архив | `output/archive_index.json` | **PostgreSQL** | `archive_entries` |
 | Граф/диагностика | `<jobId>/graph.json`, `diagnostics.json` | файлы | артефакт тома |
@@ -52,7 +52,7 @@
 
 ### Этап 3 — address library (готово, jsonb)
 
-- [x] `address_library` singleton (`id=1`, `data jsonb`, `schema_version`).
+- [x] `address_library` singleton (`id=1`, `data jsonb`, `schema_version`) — заменён нормализованными таблицами (P1-14).
 - [x] `address-library-repo.js`: read/save.
 - [x] Backfill существующего `address-library.json`.
 - [x] `readAddressLibrary`/`saveAddressLibrary` работают через PG.
@@ -62,6 +62,10 @@
 ### Этап 4 — workforce workspace (готово, jsonb)
 
 - [x] `workforce_workspace` singleton (`data jsonb`).
+- [x] **P1-14**: `workforce_workspace` → `workforce_tasks` / `workforce_reports` / `workforce_defect_reports`;
+  `address_library` → `address_streets` / `address_buildings` / `address_schemes`
+  (миграция `20261116120000_normalize_address_and_workspace`, backfill, индексы).
+  Репозитории читают из таблиц; legacy JSONB обновляется write-through до снятия.
 - [x] `workforce-workspace-repo.js`: read/save.
 - [x] Backfill существующего `workspace.json`.
 - [x] `saveWorkspace` пишет в PG; файл не обновляется.

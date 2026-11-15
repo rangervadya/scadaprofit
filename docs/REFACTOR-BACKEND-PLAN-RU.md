@@ -1,7 +1,7 @@
 # ScadaProfit — план backend-рефакторинга
 
 Документ создан по результатам аудита `docs/engineering-backend-architect.md`.
-Статус: **фаза 1 закрыта, кроме P1-5 (на прод) и нормализации P1-14; далее P2**. Обновляется по мере выполнения пунктов.
+Статус: **фаза 1 закрыта, кроме P1-5 (на прод); далее P2**. Обновляется по мере выполнения пунктов.
 
 ## Сводка выполнения
 
@@ -9,13 +9,13 @@
 |---|---|---|---|
 | P0 | 6 (P0-1…P0-6) | P0-7 (на прод) | — |
 | Фаза 0.5 (типизация) | 4 (Zod, Pydantic, Prisma, тулинг) | — | — |
-| P1 | 12 из 14 (P1-1…P1-4, P1-6…P1-14, кроме P1-5) | P1-2, P1-14 (нормализация) | P1-5 (на прод) |
+| P1 | 13 из 14 (все, кроме P1-5) | P1-2 (CSRF/__Host-/multi-instance) | P1-5 (на прод) |
 | P2 | 3 (P2-2, P2-6, P2-13) | — | 10 (P2-1, P2-3…P2-5, P2-7…P2-12, P2-14) |
 | P3 | 0 | 0 | 5 |
 
-**Итог: фаза 1 практически завершена.** Все 11 пунктов, бывших «частично», доведены до конца, кроме двух осознанно отложенных частей:
-CSRF/`__Host-`/multi-instance кэш (P1-2) и нормализация JSONB-синглтонов `address_library`/`workforce_workspace` (P1-14) — это prod/крупная отдельная задача. P1-5 (observability) отложен на прод.
-Не начата фаза P2 (монолиты, real-time, сборка, dead code, SLO) и P3.
+**Итог: фаза 1 закрыта.** P1-14 доведён до конца: данные переведены в нормализованные таблицы (`address_streets/buildings/schemes`, `workforce_tasks/reports/defect_reports`) с backfill и живыми проверками.
+Отложено осознанно: **P1-2** (CSRF, `__Host-` cookie, multi-instance кэш сессий) и **P0-7** (TLS, `Secure`-cookie, дефолтный пароль БД) — только для production. **P1-5** (observability) — тоже на прод.
+Не начата фаза P2 (монолиты, real-time, write amplification, сборка, dead code, SLO, нагрузка) и P3.
 
 ## 0. Как читать
 
@@ -231,10 +231,12 @@ CSRF/`__Host-`/multi-instance кэш (P1-2) и нормализация JSONB-с
 - [x] **P1-13** CI.
   - **Сделано**: `.github/workflows/ci.yml` — node-джоб (lint/typecheck/node-тесты) и python-джоб (ruff + engine/VDGO тесты).
   - **Осталось**: прогнать на GitHub, добавить build/scan.
-- [~] **P1-14** Typed runtime client.
-  - **Сделано**: `services/ollama/api/entities.js` — Zod-схемы строк БД (`user`, `session`, `workspace`, `address_library`, `scheme_meta`, `manual_cad_project`) + `parseOrDefault` (логирует и возвращает fallback, не роняя список); подключено во всех репозиториях (`postgres-repo`, `workforce-workspace-repo`, `address-library-repo`, `scheme-meta-repo`, `manual-cad-repo`); тест `tests/node/entities.test.js`.
-  - **Проверено**: реальные данные читаются через typed-слой (users=5, sessions=0, tasks=3, streets=2).
-  - **Осталось (крупное, отдельной задачей)**: нормализованные таблицы вместо JSONB-синглтонов `address_library` и `workforce_workspace` (реляционные запросы по улицам/домам/заданиям).
+- [x] **P1-14** Normalized tables + typed runtime client.
+  - **Typed-слой**: `services/ollama/api/entities.js` — Zod-схемы (`user`, `session`, `manual_cad_project`, `scheme_meta`) + `parseOrDefault` (логирует и возвращает fallback, не роняя список); подключено в `postgres-repo` и `manual-cad-repo`; тест `tests/node/entities.test.js`.
+  - **Нормализация**: `address_library` JSONB → `address_streets` / `address_buildings` / `address_schemes`; `workforce_workspace` JSONB → `workforce_tasks` / `workforce_reports` / `workforce_defect_reports` (с индексами по `status`, `assignedTo`, `taskId`, `userId`, `submittedAt`). Миграция `20261116120000_normalize_address_and_workspace` создаёт таблицы и выполняет backfill.
+  - **Репозитории**: `address-library-repo.js` и `workforce-workspace-repo.js` читают из нормализованных таблиц и собирают прежнюю форму ответа; запись — upsert + удаление исчезнувших в одной транзакции; legacy JSONB обновляется write-through для совместимости.
+  - **Проверено**: backfill (streets=2, buildings=1, schemes=1, tasks=3, reports=1); round-trip без потерь; живой API (login → library/tasks/overview/reports 200, создание задачи → `workforce_tasks=4`, смена статуса → `house_visited`, идемпотентность); тесты `tests/node/normalized-repos.test.js`.
+  - **Осталось (небольшое)**: убрать write-through legacy JSONB и удалить старые таблицы-синглтоны после перехода всех инстансов.
 
 ### Фаза 2 — качество и производительность (1–2 месяца)
 
@@ -351,6 +353,15 @@ Prisma: `services/ollama/prisma/schema.prisma` (`ReportRun`, `User`, `Session`, 
 - Файл-чеклист миграции: `docs/MIGRATION-JSON-TO-POSTGRES-RU.md`.
 - Все state-сущности переведены в PostgreSQL (`users`, `sessions`, `manual_cad_projects`, `address_library`, `workforce_workspace`, `scheme_meta`, `archive_entries`); JSON остался только для fallback/backfill и производных артефактов.
 - Осталось: cleanup legacy JSON, P1-4 (retention/backup), P1-5 (observability), P1-10 (OpenAPI/error envelope), P1-12 (compose hardening), хвосты P1-2/3/8/9/11/14.
+
+### 2026-11-15 — P1-14: нормализация данных
+
+- Миграция `20261116120000_normalize_address_and_workspace`: таблицы `address_streets`, `address_buildings`, `address_schemes`, `workforce_tasks`, `workforce_reports`, `workforce_defect_reports` + индексы + backfill из JSONB-синглтонов.
+- `address-library-repo.js`: чтение сборкой из таблиц, запись upsert + удаление исчезнувших в транзакции.
+- `workforce-workspace-repo.js`: то же для задач/отчётов/дефектов; `data` хранит полный payload.
+- Оба репозитория сохраняют прежнюю форму ответа, поэтому маршруты не менялись.
+- Проверено: backfill (streets=2, buildings=1, schemes=1, tasks=3, reports=1); round-trip; API (library/tasks/overview/reports 200, создание задачи → 4 строки, статус → `house_visited`, идемпотентность); `tests/node/normalized-repos.test.js`.
+- Осталось: снять write-through legacy JSONB и удалить старые таблицы-синглтоны после перехода всех инстансов.
 
 ### 2026-11-15 — завершение «частичных» пунктов
 

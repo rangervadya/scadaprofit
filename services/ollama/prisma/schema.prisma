@@ -105,12 +105,122 @@ model AddressLibrary {
   @@map("address_library")
 }
 
+/// Normalized address library (P1-14): replaces the address_library JSONB
+/// singleton so streets/buildings/schemes can be queried by key.
+model AddressStreet {
+  id        String            @id @db.Uuid
+  name      String            @db.VarChar(200)
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  buildings AddressBuilding[]
+
+  @@index([name])
+  @@map("address_streets")
+}
+
+model AddressBuilding {
+  id        String           @id @db.Uuid
+  streetId  String           @map("street_id") @db.Uuid
+  name      String           @db.VarChar(100)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  street    AddressStreet    @relation(fields: [streetId], references: [id], onDelete: Cascade)
+  schemes   AddressScheme[]
+
+  @@unique([streetId, name])
+  @@index([streetId])
+  @@map("address_buildings")
+}
+
+model AddressScheme {
+  id           String          @id @db.Uuid
+  buildingId   String          @map("building_id") @db.Uuid
+  jobId        String          @unique @map("job_id") @db.Uuid
+  title        String          @default("") @db.VarChar(400)
+  status       String          @default("completed") @db.VarChar(32)
+  sourceName   String?         @map("source_name") @db.VarChar(400)
+  originalName String?         @map("original_name") @db.VarChar(400)
+  uploadedBy   String?         @map("uploaded_by") @db.VarChar(200)
+  error        String?         @db.Text
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  completedAt  DateTime?       @map("completed_at") @db.Timestamptz(6)
+  building     AddressBuilding @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+
+  @@index([buildingId])
+  @@index([status])
+  @@map("address_schemes")
+}
+
 model WorkforceWorkspace {
   id        Int      @id
   data      Json
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("workforce_workspace")
+}
+
+/// Normalized workforce tasks (P1-14): replaces the workforce_workspace JSONB
+/// singleton for task reads. `data` keeps the full task payload so unknown
+/// fields survive a round-trip.
+model WorkforceTask {
+  id               String   @id @db.Uuid
+  title            String   @default("") @db.VarChar(400)
+  status           String   @default("assigned") @db.VarChar(32)
+  street           String   @default("") @db.VarChar(300)
+  address          String   @default("") @db.VarChar(100)
+  scheduledDate    String?  @map("scheduled_date") @db.VarChar(32)
+  assignedTo       String?  @map("assigned_to") @db.Uuid
+  assignedName     String?  @map("assigned_name") @db.VarChar(200)
+  assignmentGroupId String? @map("assignment_group_id") @db.Uuid
+  data             Json
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([assignedTo])
+  @@index([scheduledDate])
+  @@index([updatedAt])
+  @@map("workforce_tasks")
+}
+
+/// Normalized workforce reports (sketches) — P1-14.
+model WorkforceReport {
+  id            String    @id @db.Uuid
+  taskId        String?   @map("task_id") @db.Uuid
+  userId        String?   @map("user_id") @db.Uuid
+  status        String    @default("pending_review") @db.VarChar(32)
+  schemeJobId   String?   @map("scheme_job_id") @db.Uuid
+  data          Json
+  submittedAt   DateTime? @map("submitted_at") @db.Timestamptz(6)
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([taskId])
+  @@index([userId])
+  @@index([submittedAt])
+  @@map("workforce_reports")
+}
+
+/// Normalized defect reports — P1-14.
+model WorkforceDefectReport {
+  id          String    @id @db.Uuid
+  taskId      String?   @map("task_id") @db.Uuid
+  userId      String?   @map("user_id") @db.Uuid
+  status      String    @default("pending_review") @db.VarChar(32)
+  data        Json
+  submittedAt DateTime? @map("submitted_at") @db.Timestamptz(6)
+  reviewedAt  DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([taskId])
+  @@index([userId])
+  @@index([submittedAt])
+  @@map("workforce_defect_reports")
 }
 
 model SchemeMeta {

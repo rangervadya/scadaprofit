@@ -41,21 +41,6 @@ export const manualProjectSchema = z
   })
   .passthrough();
 
-export const workspaceSchema = z
-  .object({
-    tasks: z.array(z.record(z.unknown())).default([]),
-    reports: z.array(z.record(z.unknown())).default([]),
-    defectReports: z.array(z.record(z.unknown())).default([]),
-  })
-  .passthrough();
-
-export const addressLibrarySchema = z
-  .object({
-    streets: z.array(z.record(z.unknown())).default([]),
-    buildings: z.array(z.record(z.unknown())).default([]),
-  })
-  .passthrough();
-
 /** Scheme metadata is an open object; only the container shape is enforced. */
 export const schemeMetaSchema = z.record(z.unknown());
 
