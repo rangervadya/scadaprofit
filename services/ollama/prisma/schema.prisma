@@ -26,6 +26,27 @@ model ReportRun {
   @@map("report_runs")
 }
 
+// Created by the VDGO backend (services/vdgo/database.py). Declared here so the
+// Prisma schema is the single inventory of the database: `prisma db push` drops
+// tables it does not know about, and archive_entries is not one we can lose.
+model ArchiveEntry {
+  id                BigInt   @id
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+  report_number     String   @default("") @db.VarChar(120)
+  report_date       String   @default("") @db.VarChar(32)
+  output_format     String   @db.VarChar(16)
+  page_count        Int      @default(0)
+  output_filename   String   @db.VarChar(255)
+  original_filename String   @default("") @db.VarChar(255)
+  content_type      String   @default("") @db.VarChar(120)
+  file_size         BigInt   @default(0)
+  archived_at       DateTime @default(now()) @db.Timestamptz(6)
+  storage_path      String
+
+  @@index([created_at])
+  @@map("archive_entries")
+}
+
 model User {
   id            String    @id @db.Uuid
   username      String    @unique @db.VarChar(80)

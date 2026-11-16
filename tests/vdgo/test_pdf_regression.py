@@ -781,6 +781,28 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
 
 
 class DockerBuildContractTests(unittest.TestCase):
+    def test_every_table_vdgo_creates_is_declared_in_prisma(self):
+        """Prisma owns the schema inventory.
+
+        `prisma db push` drops tables that are not in schema.prisma, and it is
+        the fallback used by scripts/db-deploy.sh when migrations cannot run
+        (P3005). Any table vdgo creates must therefore also be declared in the
+        Prisma schema, or a deploy silently deletes its data.
+        """
+        backend_sql = (BACKEND / "database.py").read_text(encoding="utf-8")
+        created = set(re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", backend_sql))
+        self.assertTrue(created, "expected vdgo to create at least one table")
+
+        schema = (ROOT / "services" / "ollama" / "prisma" / "schema.prisma").read_text(encoding="utf-8")
+        mapped = set(re.findall(r'@@map\("([a-z_]+)"\)', schema))
+        missing = sorted(created - mapped)
+        self.assertEqual(
+            missing,
+            [],
+            f"tables created by vdgo but missing from schema.prisma: {missing}. "
+            "prisma db push would drop them.",
+        )
+
     def test_every_imported_module_is_copied_into_backend_image(self):
         """The image must contain every module app.py imports.
 

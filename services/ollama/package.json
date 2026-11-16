@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node --import ./api/lib/moss-env-boot.js api/server.js",
-    "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:deploy": "sh scripts/db-deploy.sh",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:validate": "prisma validate --schema prisma/schema.prisma",
     "test:node": "node --check api/lib/moss-env-boot.js && node --check api/lib/logger.js && node --check api/server.js && node --check api/services/workforce-system.js && node --check api/validation/schemas.js && node --test ../../tests/node/logging.test.js ../../tests/node/frontend-resilience.test.js ../../tests/node/workforce-auth.test.js ../../tests/node/workforce-backend-contracts.test.js ../../tests/node/workforce-upload.test.js ../../tests/node/repository-layout.test.js && node --check api/domain/manual-cad-core.js && node --test ../../tests/node/manual-cad.test.js",
