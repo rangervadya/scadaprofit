@@ -1,6 +1,6 @@
-**Текущая версия: 4.5.17**
+**Текущая версия: 4.5.20**
 
-# ScadaProfit 4.5.17
+# ScadaProfit 4.5.20
 
 Комплекс для обработки ручных схем, редактирования CAD, распределения выездов слесарям, приёмки схем и дефектных фотографий и подготовки технических заключений.
 
@@ -12,10 +12,10 @@ frontend/                 Единое React-приложение для все�
   index.html              Vite entry point
   vite.config.ts           Сборка в frontend/public/vdgo
   public/                  Публичные статические файлы
-services/ollama/          Основной Node.js API и Python CAD/recognition engine
+backend/                  Основной Node.js API и Python CAD/recognition engine
   api/                    Авторизация, workforce API, обработка заданий
   engine/                 Распознавание ручных схем и CAD-реконструкция
-services/vdgo/            API технических заключений, PDF/Word и PostgreSQL
+services/vdgo/backend/    API технических заключений, PDF/Word и PostgreSQL
 infra/                    Dockerfile, Nginx, compose overrides и scripts
 tests/                    Node.js, Python и VDGO regression tests
 docs/                     Руководства, deployment, architecture и changelog
@@ -56,7 +56,7 @@ docker compose restart gateway
 docker compose ps
 ```
 
-Если `docker compose build` завершился ошибкой, не выполняйте следующий `up`: Docker может оставить старый образ. Сначала исправьте причину и добейтесь успешной сборки. После запуска проверьте версию в логах `app` — должна быть `ScadaProfit 4.5.17`.
+Если `docker compose build` завершился ошибкой, не выполняйте следующий `up`: Docker может оставить старый образ. Сначала исправьте причину и добейтесь успешной сборки. После запуска проверьте версию в логах `app` — должна быть `ScadaProfit 4.5.20`.
 
 Не запускайте `docker compose down -v` и не удаляйте именованные тома: в них хранятся задания, CAD-проекты, аккаунты, фотографии, документы, модели Ollama и PostgreSQL.
 
@@ -68,18 +68,15 @@ npm ci
 npm run dev
 ```
 
-Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксируя `/api` к основному backend и `/vdgo/api`, `/vdgo/generate*` к backend заключений. Для полной разработки запустите также основной API и `services/vdgo` согласно `docs/deployment/DOCKER.md` и frontend README.
+Vite открывает SPA на `http://127.0.0.1:5173/vdgo/`, проксируя `/api` к основному backend и `/vdgo/api`, `/vdgo/generate*` к backend заключений. Для полной разработки запустите также основной API и `services/vdgo/backend` согласно `docs/deployment/DOCKER.md` и frontend README.
 
 ## Проверки
 
 ```bash
-npm install
-npm run verify
+npm --prefix backend run check
+PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
 cd frontend && npm ci && npm run build
 ```
-
-`npm run verify` = ESLint + Prettier check + Ruff + frontend typecheck + Node/Python/VDGO тесты.
-Старый `npm run check` удалён; отдельные команды: `npm run lint`, `npm run format`, `npm run typecheck`, `npm run test`.
 
 ## Документация
 

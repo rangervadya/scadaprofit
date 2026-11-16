@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { access, chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { persistUploadedFile } from '../../services/ollama/api/services/workforce-system.js';
+import { persistUploadedFile } from '../../backend/api/workforce-system.js';
 
 const makeTempDir = async (base, prefix) => mkdtemp(path.join(base, prefix));
 
@@ -50,15 +50,9 @@ test('persistUploadedFile safely stores a Multer upload across filesystem bounda
 });
 
 test('workforce report uploads use the cross-device-safe persistence helper', async () => {
-  const source = await (
-    await import('node:fs/promises')
-  ).readFile(new URL('../../services/ollama/api/routes/workforce-submission-routes.js', import.meta.url), 'utf8');
+  const source = await (await import('node:fs/promises')).readFile(new URL('../../backend/api/workforce-system.js', import.meta.url), 'utf8');
   assert.match(source, /await persistUploadedFile\(file\.path, path\.join\(reportDir, fileName\)\)/);
-  const core = await readFile(new URL('../../services/ollama/api/domain/workforce-core.js', import.meta.url), 'utf8');
-  const persistBody = core.slice(
-    core.indexOf('export async function persistUploadedFile'),
-    core.indexOf('export async function authenticateCredentials'),
-  );
+  const persistBody = source.slice(source.indexOf('export async function persistUploadedFile'), source.indexOf('export async function createWorkforceSystem'));
   assert.match(persistBody, /await copyFile\(sourcePath, stagingPath\)/);
   assert.match(persistBody, /await rename\(stagingPath, destinationPath\)/);
   assert.doesNotMatch(source, /await rename\(file\.path, path\.join\(reportDir, fileName\)\)/);

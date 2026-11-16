@@ -14,7 +14,7 @@ export function useHealth(): HealthState & { reload: () => void } {
   const [state, setState] = useState<HealthState>(initial);
 
   const load = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true }));
+    setState(current => ({ ...current, loading: true }));
     try {
       const data = await healthApi.main();
       setState({ data, loading: false, error: null });

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#edf2fa">
+  <meta name="description" content="Ручное построение профессиональных схем трубопроводов ScadaProfit">
+  <title>CAD-редактор · ПРОФИТ</title>
+  <link rel="stylesheet" href="/manual-cad.css?v=4.5.11">
+  <link rel="stylesheet" href="/profit-ui.css?v=8">
+  <script type="module" src="/manual-cad.js?v=4.5.11"></script>
+</head>
+<body class="manual-cad-page">
+  <nav class="profit-rail" aria-label="Модули ПРОФИТ">
+    <a class="profit-brand" href="/dashboard.html"><svg viewBox="0 0 32 36" width="29" height="33" aria-hidden="true"><path fill="#63b9ff" d="M19 1c1 8-7 10-7 17 0 2 1 3 2 4-5-1-8-4-7-8C9 9 15 6 19 1Z"/><path fill="#3189e4" d="M21 12c7 5 9 10 6 16-2 4-6 6-11 7 4-3 5-6 3-9-1-2-4-3-4-6 0-3 3-6 6-8Z"/><path fill="#a2d6ff" d="M6 19c0 5 6 7 7 11l-2 4C5 31 2 26 6 19Z"/></svg><strong>PROFIT</strong></a>
+    <div class="profit-links">
+      <a href="/dashboard.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3z"/></svg><span>Рабочий стол</span></a>
+      <a href="/conclusion.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg><span>Заключение</span></a>
+      <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l5-4 4 4 5-7 4 4M4 12v8h16V9M9 20v-5h5v5"/></svg><span>Схемы домов</span></a>
+      <a href="/archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v5H3zm2 5v11h14V9M10 13h4"/></svg><span>Архив</span></a>
+      <a class="profit-team-link" href="/workforce.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7-5h4m-2-2v4"/></svg><span>Команда</span></a>
+      <a href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4"/></svg><span>Настройки</span></a>
+    </div>
+    <span class="profit-rail-caption">CAD-редактор</span>
+  </nav>
+
+  <div class="profit-topbar">
+    <label class="library-search"><span aria-hidden="true">⌕</span><input id="projectSearch" type="search" placeholder="Поиск по чертежам…" aria-label="Поиск по чертежам"></label>
+    <span class="mc-save-state" id="saveState" aria-live="polite">Загружаю проекты…</span><span class="profit-avatar" aria-label="Профит">П</span>
+  </div>
+  <header class="mc-topbar">
+    <div class="mc-brand">
+      <div><p class="profit-breadcrumb">Рабочий стол / CAD-редактор</p><h1>CAD-редактор</h1></div>
+    </div>
+    <div class="mc-top-actions">
+      <button class="mc-button mc-button-primary" id="newProjectBtn" type="button">＋ Новый чертёж</button>
+    </div>
+  </header>
+
+  <nav class="profit-tabs" aria-label="Рабочая область">
+    <a href="#cad-projects"><span>1</span>Мои чертежи</a>
+    <a href="#cad-sheet"><span>2</span>Редактор чертежа</a>
+    <a href="#cad-tools"><span>3</span>Инструменты и свойства</a>
+  </nav>
+  <main class="mc-shell">
+    <aside class="mc-projects-panel" id="cad-projects">
+      <div class="mc-panel-head"><div><b>Мои чертежи</b><small>Сохраняются на сервере</small></div><span id="projectCount" class="mc-count">0</span></div>
+      <div id="projectList" class="mc-project-list"><div class="mc-muted-block">Загружаю список…</div></div>
+      <div class="mc-project-help">
+        <b>Работа с чертежом</b>
+        <p>Система автоматически создаёт редактируемый черновик. Выбирай объект на листе или в списке, меняй его свойства справа. Вершины трубы можно перетаскивать; ветви привязываются к узлам. Ctrl+Z отменяет действие, Ctrl+Y повторяет.</p>
+      </div>
+      <section class="mc-object-manager" aria-label="Слои и объекты чертежа">
+        <div class="mc-object-manager-head"><b>Слои и объекты</b><span id="objectCount" class="mc-count">0</span></div>
+        <div class="mc-layer-list">
+          <label><input type="checkbox" data-layer="pipes" checked><span class="mc-layer-swatch mc-layer-main"></span><span>Основные трассы</span><b id="layerPipesCount">0</b></label>
+          <label><input type="checkbox" data-layer="candidates" checked><span class="mc-layer-swatch mc-layer-review"></span><span>Кандидаты</span><b id="layerCandidatesCount">0</b></label>
+          <label><input type="checkbox" data-layer="symbols" checked><span class="mc-layer-swatch mc-layer-symbols"></span><span>Оборудование</span><b id="layerSymbolsCount">0</b></label>
+          <label><input type="checkbox" data-layer="labels" checked><span class="mc-layer-swatch mc-layer-labels"></span><span>Надписи</span><b id="layerLabelsCount">0</b></label>
+          <label><input type="checkbox" data-layer="dimensions" checked><span class="mc-layer-swatch mc-layer-dimensions"></span><span>Размеры</span><b id="layerDimensionsCount">0</b></label>
+          <label><input type="checkbox" data-layer="junctions" checked><span class="mc-layer-swatch mc-layer-junctions"></span><span>Узлы</span><b id="layerJunctionsCount">0</b></label>
+          <label><input type="checkbox" id="layerSource" checked><span class="mc-layer-swatch mc-layer-source"></span><span>Оригинал схемы</span></label>
+        </div>
+        <div class="mc-object-list-head"><b>Список объектов</b><small>Найди объект по типу или обозначению, затем выбери его для редактирования</small></div>
+        <div class="mc-object-search"><input id="objectSearch" type="search" placeholder="Поиск: труба, DN, кран, номер…" autocomplete="off"><span id="objectListMeta">0 объектов</span></div>
+        <div id="objectList" class="mc-object-list"><div class="mc-muted-block">Объекты появятся после загрузки схемы.</div></div>
+      </section>
+    </aside>
+
+    <section class="mc-workspace" id="cad-sheet">
+      <div class="mc-documentbar">
+        <div class="mc-document-name"><label for="projectTitle">Название чертежа</label><input id="projectTitle" maxlength="140" value="Новая схема" placeholder="Например, Газоснабжение · подъезд 2"></div>
+        <div class="mc-document-actions">
+          <label class="mc-button mc-button-light mc-file-button" for="sourceFile">Загрузить эскиз</label>
+          <input id="sourceFile" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,.jpg,.jpeg,.png,.webp,.tif,.tiff" hidden>
+          <button class="mc-button mc-button-light" id="toggleSourceBtn" type="button" disabled>Показать оригинал схемы</button>
+          <button class="mc-button mc-button-primary" id="returnToAddressFolderBtn" type="button" hidden>Сохранить и вернуться в папку</button>
+          <a class="mc-button mc-button-export" id="exportSvgBtn" href="#" aria-disabled="true">Экспорт SVG</a>
+          <a class="mc-button mc-button-export" id="exportDxfBtn" href="#" aria-disabled="true">Экспорт DXF</a>
+        </div>
+      </div>
+
+      <section class="mc-sketch-assist" id="mcSketchAssistPanel" aria-label="Помощник восстановления эскиза">
+        <div class="mc-sketch-assist-copy"><span class="mc-sketch-assist-mark">Э</span><div><b>Автоматический черновик уже собран</b><p>После распознавания система сама переносит найденные трассы, узлы, символы и подписи в редактируемый лист. Чертёж показан чёрными линиями. Включите «Подсветить непроверенные линии», чтобы увидеть участки для проверки. Выбирай объект в списке или на листе, редактируй его свойства и вершины. «Коррекция трассы» — вспомогательный инструмент для участков, которые автоматике не удалось восстановить.</p><small id="mcSketchCandidateStats">Состав объектов появится после импорта распознанного эскиза.</small></div></div>
+        <button class="mc-button mc-button-review" id="mcShowSketchCandidatesBtn" type="button" disabled>Показать кандидаты</button>
+      </section>
+
+      <details class="mc-engineering-panel">
+        <summary><span><b>Чистовой лист LPGCad R1</b><small>Шапка заключения · адрес · легенда · подписи · A4/A3</small></span><span class="mc-engineering-caret">▾</span></summary>
+        <div class="mc-engineering-fields">
+          <div class="mc-prop mc-prop-style"><label for="drawingStyle">Профиль оформления</label><select id="drawingStyle"><option value="standard">Стандартный CAD</option><option value="lpgcad-r1">Газовая схема · LPGCad R1</option></select></div>
+          <div class="mc-prop mc-prop-paper"><label for="paperSize">Формат листа</label><select id="paperSize"><option value="A4">A4</option><option value="A3">A3</option></select></div>
+          <div class="mc-prop mc-prop-address"><label for="siteAddress">Адрес объекта</label><input id="siteAddress" maxlength="240" placeholder="Республика Татарстан, г. Казань, ул. ..."></div>
+          <div class="mc-prop mc-prop-entrance"><label for="entrance">Подъезд</label><input id="entrance" maxlength="80" placeholder="2"></div>
+          <div class="mc-prop mc-prop-inspection"><label for="inspectionTitle">Заголовок заключения</label><input id="inspectionTitle" maxlength="240"></div>
+          <div class="mc-prop mc-prop-subtitle"><label for="schemeSubtitle">Подзаголовок схемы</label><input id="schemeSubtitle" maxlength="240"></div>
+          <div class="mc-prop mc-prop-author"><label for="schemeAuthor">Схему составил</label><input id="schemeAuthor" maxlength="100" placeholder="ФИО"></div>
+          <div class="mc-prop mc-prop-checker"><label for="schemeChecker">Схему начертил</label><input id="schemeChecker" maxlength="100" placeholder="ФИО"></div>
+          <div class="mc-prop mc-prop-riser-groups"><label for="riserGroups">Нижние группы стояков · по одной строке на группу</label><textarea id="riserGroups" rows="3" placeholder="Ст-5: 67, 63, 59, 55, 51\nСт-6: 68, 64, 60, 56, 52"></textarea><small>Номера и порядок задаёт оператор. Формат: название стояка: номера квартир через запятую. До 8 групп по 30 номеров.</small></div>
+        </div>
+        <p class="mc-engineering-note">LPGCad R1 оформляет чистовой лист и выводит группы стояков из явно введённых номеров квартир. Он не угадывает квартиры, количество этажей, трассы или оборудование. Проверь данные и геометрию по оригиналу.</p>
+      </details>
+
+      <div class="mc-toolbar" role="toolbar" aria-label="Инструменты черчения">
+        <div class="mc-toolgroup mc-toolgroup-right">
+          <button class="mc-button mc-button-light" id="finishRouteBtn" type="button" disabled>Завершить линию ↵</button>
+          <button class="mc-icon-button" id="undoBtn" type="button" title="Отменить Ctrl+Z" disabled>↶</button>
+          <button class="mc-icon-button" id="redoBtn" type="button" title="Повторить Ctrl+Y · Del узел/элемент" disabled>↷</button>
+          <button class="mc-icon-button" id="duplicateBtn" type="button" title="Дублировать выбранный элемент · Ctrl+D" disabled>⧉</button>
+          <button class="mc-icon-button mc-danger" id="deleteBtn" type="button" title="Удалить выбранный узел или элемент" disabled>⌫</button>
+          <span class="mc-toolbar-divider"></span>
+          <button class="mc-icon-button" id="zoomOutBtn" type="button" title="Уменьшить масштаб">−</button>
+          <button class="mc-button mc-button-light mc-zoom-value" id="zoomResetBtn" type="button" title="Сбросить масштаб">100%</button>
+          <button class="mc-icon-button" id="zoomInBtn" type="button" title="Увеличить масштаб">＋</button>
+          <button class="mc-button mc-button-light" id="fitViewBtn" type="button" title="Вписать весь чертёж в рабочую область">Вписать лист</button>
+        </div>
+      </div>
+
+      <div class="mc-propertybar">
+        <div class="mc-prop mc-prop-route"><label for="pipeName">Обозначение трубы</label><input id="pipeName" maxlength="80" placeholder="Например, Т-1"></div>
+        <div class="mc-prop mc-prop-route"><label for="pipeDiameter">Диаметр / DN</label><input id="pipeDiameter" maxlength="32" placeholder="Например, 25"></div>
+        <div class="mc-prop mc-prop-route"><label for="pipeKind">Тип линии</label><select id="pipeKind"><option value="pipe">Газопровод</option><option value="riser">Стояк</option></select></div>
+        <div class="mc-prop mc-prop-trace" hidden><label for="traceCorridor">Коридор поиска</label><select id="traceCorridor"><option value="24">Узкий · 24 px</option><option value="38" selected>Обычный · 38 px</option><option value="54">Широкий · 54 px</option><option value="72">Очень широкий · 72 px</option></select></div>
+        <div class="mc-prop mc-prop-label" hidden><label for="labelText">Текст подписи</label><input id="labelText" maxlength="180" placeholder="Номер, адрес, примечание"></div>
+        <div class="mc-prop mc-prop-symbol" hidden><label for="symbolType">Условное обозначение</label><select id="symbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option></select></div>
+        <div class="mc-prop mc-prop-dimension" hidden><label for="dimensionText">Значение размера</label><input id="dimensionText" maxlength="60" placeholder="Например, 1500 мм"></div>
+        <div class="mc-prop mc-prop-snap"><label for="snapRadius">Привязка, px</label><select id="snapRadius"><option value="0">Выкл.</option><option value="8">8</option><option value="14" selected>14</option><option value="22">22</option><option value="32">32</option></select></div>
+        <label class="mc-check mc-ortho-check" title="Фиксировать горизонтальные и вертикальные сегменты"><input id="orthoMode" type="checkbox"><span>Ортогонально</span></label>
+        <label class="mc-check" id="reviewCandidatesLabel" hidden title="Показывает линии, которые не включены в чистовой экспорт"><input id="showReviewCandidates" type="checkbox"><span>Кандидаты на проверку: <b id="reviewCandidatesCount">0</b></span></label>
+        <label class="mc-check"><input id="sourceVisible" type="checkbox" checked disabled><span>Оригинал схемы</span></label>
+        <div class="mc-prop mc-prop-opacity"><label for="sourceOpacity">Прозрачность оригинала</label><input type="range" id="sourceOpacity" min="10" max="100" value="58" disabled></div>
+      </div>
+
+      <div class="mc-canvas-wrap">
+        <div class="mc-canvas-head"><span id="canvasHint">Выбери инструмент или загрузи рукописный эскиз</span><span id="canvasDimensions">1600 × 1000 px</span></div>
+        <div class="mc-canvas-scroll" id="canvasScroll">
+          <svg id="cadCanvas" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-label="Редактор инженерной схемы" tabindex="0">
+            <defs><pattern id="mcGrid" width="25" height="25" patternUnits="userSpaceOnUse"><path d="M 25 0 L 0 0 0 25" fill="none" stroke="#dce4de" stroke-width="1"/></pattern></defs>
+            <rect width="1600" height="1000" fill="#fff"/><rect width="1600" height="1000" fill="url(#mcGrid)"/>
+            <text x="800" y="490" text-anchor="middle" fill="#9aa69d" font-size="30">Загрузи исходный эскиз или начни чертить</text>
+          </svg>
+        </div>
+        <div class="mc-canvas-foot"><span id="cursorPosition">X: — · Y: —</span><span id="draftStatus">Нет незавершённых линий</span></div>
+      </div>
+
+      <div class="mc-lowerbar">
+        <div class="mc-settings">
+          <div class="mc-prop"><label for="pageOrientation">Ориентация листа</label><select id="pageOrientation"><option value="portrait">Книжная</option><option value="landscape">Альбомная</option></select></div>
+          <div class="mc-prop"><label for="preparedBy">Исполнитель</label><input id="preparedBy" maxlength="100" placeholder="ФИО / организация"></div>
+          <div class="mc-prop mc-notes-prop"><label for="drawingNotes">Примечание в штампе</label><input id="drawingNotes" maxlength="300" placeholder="Например, по результатам обследования"></div>
+        </div>
+        <div class="mc-lower-actions"><button class="mc-button mc-button-primary" id="saveNowBtn" type="button">Сохранить</button></div>
+      </div>
+      <div class="mc-status-note" id="statusNote" role="status" aria-live="polite">Совет: двойной щелчок или Enter завершает построение трубы. Esc отменяет текущую линию.</div>
+    </section>
+
+    <aside class="mc-inspector" id="cad-tools">
+      <label class="mc-check"><input id="highlightReview" type="checkbox"><span>Подсветить непроверенные линии</span></label>
+      <section class="mc-tools-panel" aria-label="Инструменты черчения">
+        <h2 class="profit-panel-heading">Инструменты</h2>
+        <div class="mc-toolgroup">
+          <button class="mc-tool is-active" type="button" data-tool="select" title="Выбор и перемещение вершин">↖ <span>Выбор</span></button>
+          <button class="mc-tool" type="button" data-tool="pipe" title="Нарисовать отдельную трубу">／ <span>Труба</span></button>
+          <button class="mc-tool" type="button" data-tool="branch" title="Начать ответвление на существующей трубе">⑂ <span>Ответвление</span></button>
+          <button class="mc-tool mc-tool-trace" type="button" data-tool="trace" title="Вспомогательная коррекция: проведи участок по реальным пикселям ручки, если автоматическая трасса требует правки">⌁ <span>Коррекция трассы</span></button>
+          <button class="mc-tool" type="button" data-tool="node" title="Добавить вершину на существующий отрезок">＋ <span>Узел</span></button>
+          <button class="mc-tool" type="button" data-tool="label" title="Разместить текстовую подпись">T <span>Подпись</span></button>
+          <button class="mc-tool" type="button" data-tool="symbol" title="Разместить условное обозначение">◇ <span>Символ</span></button>
+          <button class="mc-tool" type="button" data-tool="dimension" title="Поставить размер между двумя точками">↔ <span>Размер</span></button>
+        </div>
+      </section>
+      <div class="mc-panel-head"><div><b>Свойства</b><small>Выбранный элемент</small></div><span class="mc-count" id="selectionType">—</span></div>
+      <div id="selectionEmpty" class="mc-empty-properties"><div class="mc-empty-icon">⌖</div><b>Ничего не выбрано</b><p>Выбери трубу, вершину, символ или подпись. Перетаскивай объект, меняй координаты и свойства справа. Ctrl+D создаёт копию; Del удаляет вершину или объект.</p></div>
+      <div id="selectionProperties" hidden>
+        <div class="mc-prop mc-full"><label for="selectedName">Название / обозначение</label><input id="selectedName" maxlength="180"></div>
+        <div class="mc-prop mc-full" id="selectedDiameterWrap"><label for="selectedDiameter">Диаметр / DN</label><input id="selectedDiameter" maxlength="32"></div>
+        <div class="mc-prop mc-full" id="selectedSymbolWrap" hidden><label for="selectedSymbolType">Тип условного обозначения</label><select id="selectedSymbolType"><option value="valve">Кран / клапан</option><option value="meter">Счётчик газа</option><option value="regulator">Регулятор</option><option value="consumer">Потребитель</option><option value="riser">Стояк</option><option value="filter">Фильтр</option><option value="callout">Выноска с номером</option><option value="unknown">Не определён — классифицировать</option></select><label for="selectedSymbolLabel">Подпись / номер</label><input id="selectedSymbolLabel" maxlength="80"></div>
+        <div class="mc-prop mc-full" id="selectedKindWrap" hidden><label for="selectedKind">Тип трубопровода</label><select id="selectedKind"><option value="pipe">Газопровод</option><option value="branch">Ответвление</option><option value="riser">Стояк</option></select></div>
+        <div class="mc-property-grid" id="selectedPositionWrap" hidden>
+          <div class="mc-prop"><label for="selectedX">Координата X</label><input id="selectedX" type="number" step="1"></div>
+          <div class="mc-prop"><label for="selectedY">Координата Y</label><input id="selectedY" type="number" step="1"></div>
+        </div>
+        <div class="mc-property-grid" id="selectedTransformWrap" hidden>
+          <div class="mc-prop"><label for="selectedRotation">Поворот, °</label><input id="selectedRotation" type="number" min="-360" max="360" step="5"></div>
+          <div class="mc-prop" id="selectedScaleWrap" hidden><label for="selectedScale">Масштаб символа</label><input id="selectedScale" type="number" min="0.25" max="4" step="0.05"></div>
+          <div class="mc-prop" id="selectedFontSizeWrap" hidden><label for="selectedFontSize">Размер текста</label><input id="selectedFontSize" type="number" min="6" max="120" step="1"></div>
+        </div>
+        <button class="mc-button mc-button-primary mc-accept-review" id="acceptReviewPipeBtn" type="button" hidden>Подтвердить линию и включить в чертёж</button>
+        <div class="mc-property-help" id="selectedHelp">Измени свойства, затем они автоматически сохранятся.</div>
+      </div>
+      <div class="mc-statistics" id="drawingStats"><div><span>Трубы</span><b>0</b></div><div><span>Узлы</span><b>0</b></div><div><span>Символы</span><b>0</b></div><div><span>Подписи</span><b>0</b></div></div>
+      <div class="mc-symbol-legend"><b>Библиотека символов</b><div><span class="mc-legend-symbol">◇</span>Кран / клапан</div><div><span class="mc-legend-symbol">◉</span>Счётчик газа</div><div><span class="mc-legend-symbol">□</span>Регулятор</div><div><span class="mc-legend-symbol">│</span>Стояк</div><div><span class="mc-legend-symbol">○</span>Потребитель</div></div>
+    </aside>
+  </main>
+  <div id="mcToast" class="mc-toast" role="status" aria-live="polite"></div>
+</body>
+</html>

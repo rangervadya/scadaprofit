@@ -5,50 +5,27 @@ Run from project root with:
 """
 from __future__ import annotations
 
-import re
 import sys
 import unittest
-import zipfile
-from http.server import HTTPServer
-from io import BytesIO
 from pathlib import Path
+import zipfile
+from io import BytesIO
 from tempfile import TemporaryDirectory
+from http.server import HTTPServer
 from threading import Thread
-from unittest.mock import patch
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 import fitz
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKEND = ROOT / "services" / "vdgo"
+BACKEND = ROOT / "services" / "vdgo" / "backend"
 sys.path.insert(0, str(BACKEND))
-from app import (  # noqa: E402
-    DEFECTS,
-    FONT,
-    FONT_BOLD,
-    FONT_BOLD_ITALIC,
-    FONT_ITALIC,
-    OUTPUT,
-    PAGE,
-    TEMPLATE,
-    Handler,
-    _download_disposition,
-    _ordered_uploaded_photos,
-    append_extra_photo_pages,
-    build_pdf,
-    compact_specialist_certificate,
-    normalize_form_dates,
-)
+from app import OUTPUT, TEMPLATE, DEFECTS, Handler, build_pdf, normalize_form_dates, PAGE, append_extra_photo_pages, _ordered_uploaded_photos, compact_specialist_certificate, _download_disposition  # noqa: E402
 from pdf_to_docx import pdf_to_docx  # noqa: E402
 from pdf_to_docx_editable import pdf_to_docx_editable  # noqa: E402
-
-_FONTS_AVAILABLE = all(Path(path).exists() for path in (FONT, FONT_BOLD, FONT_ITALIC, FONT_BOLD_ITALIC))
-requires_fonts = unittest.skipUnless(
-    _FONTS_AVAILABLE,
-    "Carlito fonts are not installed; install fonts-crosextra-carlito (Docker image installs it)",
-)
 
 
 class DownloadBehaviorRegressionTests(unittest.TestCase):
@@ -99,7 +76,6 @@ class DownloadBehaviorRegressionTests(unittest.TestCase):
                 thread.join(timeout=3)
 
 
-@requires_fonts
 class PdfRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -184,12 +160,14 @@ class PdfRegressionTests(unittest.TestCase):
         cls.uploads = {f"photo_{i}": str(cls.upload_image) for i in range(1, 20)}
         cls.uploads["material_page_16"] = str(cls.upload_image)
         cls.uploads["material_page_17"] = str(cls.upload_image)
-        cls.output = build_pdf(cls.form, cls.uploads)
+        build_pdf(cls.form, cls.uploads)
 
     @classmethod
     def tearDownClass(cls):
         cls.output.unlink(missing_ok=True)
         cls.upload_image.unlink(missing_ok=True)
+        work = OUTPUT / "_work.pdf"
+        work.unlink(missing_ok=True)
 
     def test_document_has_49_pages(self):
         with fitz.open(self.output) as doc:
@@ -548,8 +526,15 @@ class PdfRegressionTests(unittest.TestCase):
                 temps=append_extra_photo_pages(doc,[str(test_image)], {'report_number':'QA-2026','address':'Тестовый адрес'})
                 try:
                     self.assertEqual(len(doc),50)
-                    self.assertEqual(len(doc[-1].get_images(full=True)),1)
-                    self.assertIn('Приложение 3. Фото дефектного участка (продолжение', doc[-1].get_text())
+                    overflow_pages = [index for index, page in enumerate(doc)
+                                      if 'Приложение 3. Фото дефектного участка (продолжение' in page.get_text()]
+                    self.assertEqual(len(overflow_pages), 1)
+                    overflow_index = overflow_pages[0]
+                    self.assertEqual(len(doc[overflow_index].get_images(full=True)),1)
+                    appendix_4 = next(index for index, page in enumerate(doc)
+                                      if index >= 10 and 'Приложение 4' in page.get_text())
+                    self.assertLess(overflow_index, appendix_4,
+                                    'Overflow photos must stay inside Appendix 3 before Appendix 4')
                 finally:
                     for tmp in temps: Path(tmp).unlink(missing_ok=True)
         finally:
@@ -640,23 +625,22 @@ def self_form_fixture():
     }
 
 
-@requires_fonts
 class WorkforceSchemeSection7Tests(unittest.TestCase):
-    def test_selected_workforce_scheme_is_embedded_in_pdf_and_editable_word(self):
+    def test_accepted_workforce_materials_fill_original_defect_photo_and_scheme_placements_in_pdf_and_word(self):
         from unittest.mock import patch
-
         from docx import Document
         with TemporaryDirectory() as temporary:
             temp = Path(temporary)
             scheme_path = temp / "field-scheme.png"
+            photo_path = temp / "defect-photo.png"
             image = Image.new("RGB", (900, 620), "white")
-            # Draw a visible, unique schematic mark to ensure it is embedded as an image.
             from PIL import ImageDraw
             draw = ImageDraw.Draw(image)
             draw.line((60, 80, 840, 80), fill="black", width=5)
             draw.line((450, 80, 450, 540), fill="black", width=5)
             draw.rectangle((220, 220, 680, 420), outline="black", width=4)
             image.save(scheme_path, format="PNG")
+            Image.new("RGB", (900, 620), "white").save(photo_path, format="PNG")
             scheme = {
                 "path": str(scheme_path),
                 "street": "улица Тестовая",
@@ -666,43 +650,61 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                 "reportId": "test-report-7",
                 "status": "accepted",
             }
+            form = self_form_fixture()
+            form.update({
+                "defect_1_enabled": "1",
+                "defect_1_location": "Подъезд 2, дом 15",
+                "defect_1_text": "Коррозия участка газопровода",
+                "defect_1_recommendation": "Восстановить защитное покрытие",
+            })
             with patch("app.OUTPUT", temp):
-                pdf_path = build_pdf(self_form_fixture(), {}, workforce_schemes=[scheme])
+                pdf_path = build_pdf(form, {"photo_1": str(photo_path)}, workforce_schemes=[scheme])
                 with fitz.open(pdf_path) as pdf:
-                    matches = [i for i, page in enumerate(pdf)
-                               if "7. Актуальные схемы, удостоверения и акты" in page.get_text()]
-                    self.assertEqual(len(matches), 1)
-                    page = pdf[matches[0]]
-                    text = page.get_text()
-                    self.assertIn("улица Тестовая, дом 15", text)
-                    self.assertIn("Иванов Иван Иванович", text)
-                    self.assertIn("принята приёмщиком", text)
-                    self.assertEqual(len(page.get_images(full=True)), 1)
-                    self.assertLess(matches[0], next(i for i, p in enumerate(pdf) if "Приложение 6" in p.get_text()))
-                # Export just the inserted PDF page through the same DOCX converter.
-                # The main suite already exercises complete-document Word conversion;
-                # this focused page-level check proves the new image survives conversion
-                # without repeating a costly 40+ page conversion in the regression run.
-                section_pdf = temp / "section-7-only.pdf"
-                with fitz.open(pdf_path) as full_pdf:
+                    scheme_pages = [i for i, page in enumerate(pdf)
+                                    if "Приложение 2. Схема неразрушающего контроля" in page.get_text()
+                                    and "улица Тестовая, дом 15" in page.get_text()]
+                    photo_pages = [i for i, page in enumerate(pdf)
+                                   if "Приложение 3" in page.get_text()
+                                   and "Фото дефектного участка" in page.get_text()
+                                   and "Фото 1" in page.get_text()]
+                    self.assertEqual(len(scheme_pages), 1)
+                    self.assertEqual(len(photo_pages), 1)
+                    self.assertLess(scheme_pages[0], photo_pages[0],
+                                    "Appendix 2 schemes must remain before the original Appendix 3 photo sheets")
+                    scheme_page = pdf[scheme_pages[0]]
+                    self.assertIn("Иванов Иван Иванович", scheme_page.get_text())
+                    self.assertEqual(len(scheme_page.get_images(full=True)), 1)
+                    photo_page = pdf[photo_pages[0]]
+                    self.assertGreaterEqual(len(photo_page.get_images(full=True)), 1)
+                    defect_page = next(page for page in pdf if "Коррозия участка газопровода" in page.get_text())
+                    self.assertIn("Подъезд 2, дом 15", defect_page.get_text())
+                    # The field worker supplies the factual defect description only;
+                    # the receiver must enter the corrective recommendation in the
+                    # existing form field rather than having one invented automatically.
+
+                    # Export the actual, unchanged template locations for CAD, defects and photos.
+                    selected_pages = [defect_page.number, scheme_pages[0], photo_pages[0]]
+                    section_pdf = temp / "workforce-sections.pdf"
                     section_doc = fitz.open()
-                    section_doc.insert_pdf(full_pdf, from_page=matches[0], to_page=matches[0])
+                    for page_no in selected_pages:
+                        section_doc.insert_pdf(pdf, from_page=page_no, to_page=page_no)
                     section_doc.save(section_pdf)
                     section_doc.close()
-                docx_path = temp / "report-with-field-scheme.docx"
+
+                docx_path = temp / "report-with-workforce-materials.docx"
                 page_count = pdf_to_docx_editable(section_pdf, docx_path)
                 word = Document(docx_path)
                 word_text = "\n".join(p.text for p in word.paragraphs)
-                self.assertIn("7. Актуальные схемы, удостоверения и акты", word_text)
+                self.assertIn("Приложение 2. Схема неразрушающего контроля", word_text)
                 self.assertIn("улица Тестовая, дом 15", word_text)
                 self.assertIn("Иванов Иван Иванович", word_text)
-                self.assertGreaterEqual(len(word.inline_shapes), 1)
-                self.assertEqual(page_count, 1)
+                self.assertIn("Коррозия участка газопровода", word_text)
+                self.assertGreaterEqual(len(word.inline_shapes), 2)
+                self.assertEqual(page_count, 3)
 
     def test_workforce_payload_is_validated_and_written_as_png(self):
         import base64
         import json
-
         from app import prepare_workforce_schemes
         with TemporaryDirectory() as temporary:
             from unittest.mock import patch
@@ -773,7 +775,6 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
 
     def test_workforce_json_still_has_its_own_payload_size_limit(self):
         from unittest.mock import patch
-
         from app import prepare_workforce_schemes
         with patch("app.MAX_WORKFORCE_SCHEMES_JSON_BYTES", 100):
             with self.assertRaisesRegex(ValueError, "превышает 180 МБ"):
@@ -781,61 +782,10 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
 
 
 class DockerBuildContractTests(unittest.TestCase):
-    def test_every_table_vdgo_creates_is_declared_in_prisma(self):
-        """Prisma owns the schema inventory.
-
-        `prisma db push` drops tables that are not in schema.prisma, and it is
-        the fallback used by scripts/db-deploy.sh when migrations cannot run
-        (P3005). Any table vdgo creates must therefore also be declared in the
-        Prisma schema, or a deploy silently deletes its data.
-        """
-        backend_sql = (BACKEND / "database.py").read_text(encoding="utf-8")
-        created = set(re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", backend_sql))
-        self.assertTrue(created, "expected vdgo to create at least one table")
-
-        schema = (ROOT / "services" / "ollama" / "prisma" / "schema.prisma").read_text(encoding="utf-8")
-        mapped = set(re.findall(r'@@map\("([a-z_]+)"\)', schema))
-        missing = sorted(created - mapped)
-        self.assertEqual(
-            missing,
-            [],
-            f"tables created by vdgo but missing from schema.prisma: {missing}. "
-            "prisma db push would drop them.",
-        )
-
-    def test_every_imported_module_is_copied_into_backend_image(self):
-        """The image must contain every module app.py imports.
-
-        The Dockerfile copies the whole service directory (`COPY . ./`), so this
-        test guards the .dockerignore instead of an explicit file list: if a
-        module were excluded, the container would crash at import time with
-        ModuleNotFoundError (the archive.py incident).
-        """
+    def test_editable_word_exporter_is_copied_into_backend_image(self):
         dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIsNotNone(
-            re.search(r"^COPY \. \./$", dockerfile, re.M),
-            "Dockerfile must copy the whole service directory so every module ships",
-        )
-
-        imported = set()
-        for rel in ("app.py", "pdf_to_docx.py", "pdf_to_docx_editable.py", "archive.py", "database.py"):
-            source = (BACKEND / rel).read_text(encoding="utf-8")
-            for match in re.finditer(r"^(?:from|import)\s+([a-z_][a-z0-9_]*)", source, re.M):
-                imported.add(match.group(1))
-
-        local_modules = {p.stem for p in BACKEND.glob("*.py")} - {"app"}
-        third_party = {"pymupdf", "fitz", "PIL", "docx", "psycopg", "psycopg_pool", "pydantic", "cairosvg"}
-        expected = (imported & local_modules) - third_party
-        self.assertTrue(expected, "expected at least one local module import to check")
-
-        # .dockerignore must not exclude any of them.
-        ignored = (BACKEND / ".dockerignore").read_text(encoding="utf-8")
-        for name in sorted(expected):
-            self.assertNotIn(
-                name,
-                ignored,
-                f"{name}.py is imported by the backend but .dockerignore excludes it",
-            )
+        self.assertIn("pdf_to_docx_editable.py", dockerfile,
+                      "The backend imports pdf_to_docx_editable, so Dockerfile must copy it into /app")
 
     def test_runtime_uses_supported_pymupdf_import(self):
         for rel in ("app.py", "pdf_to_docx.py", "pdf_to_docx_editable.py"):

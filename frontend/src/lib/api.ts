@@ -15,77 +15,41 @@ import type {
 
 export class ApiError extends Error {
   status: number;
-  requestId: string | null;
-  details?: string;
-  constructor(message: string, status: number, requestId: string | null = null, details?: string) {
+  constructor(message: string, status: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    this.requestId = requestId;
-    this.details = details;
   }
 }
 
-/** Human-readable fallback for a transport-level failure (server unreachable). */
-const NETWORK_ERROR = 'Нет связи с сервером. Проверь, что сервис запущен, и попробуй ещё раз.';
-
-type RequestOptions = Omit<RequestInit, 'body'> & {
-  body?: BodyInit | unknown;
-  /** Optimistic-concurrency revision sent as If-Match: "<rev>". */
-  ifMatch?: number;
-};
+type RequestOptions = Omit<RequestInit, 'body'> & { body?: BodyInit | unknown };
 
 function isFormData(body: unknown): body is FormData {
   return typeof FormData !== 'undefined' && body instanceof FormData;
 }
 
-/**
- * Build an ApiError from a failed response.
- *
- * The backend echoes `X-Request-Id` on every response; keeping it on the error
- * lets an operator paste the id into `docker compose logs` and find the exact
- * server-side record for what the user just saw.
- */
-function toApiError(payload: unknown, response: Response, fallbackStatus: number): ApiError {
-  const requestId = response.headers.get('x-request-id');
-  const base =
-    typeof payload === 'object' && payload && 'error' in payload
-      ? String((payload as { error: unknown }).error)
-      : `HTTP ${response.status || fallbackStatus}`;
-  const details =
-    typeof payload === 'object' && payload && 'details' in payload && payload.details
-      ? String((payload as { details: unknown }).details)
-      : undefined;
-  const shortId = requestId ? ` · запрос ${requestId.slice(0, 8)}` : '';
-  return new ApiError(`${base}${shortId}`, response.status, requestId, details);
-}
-
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { body, headers, ifMatch, ...rest } = options;
+  const { body, headers, ...rest } = options;
   const init: RequestInit = { credentials: 'same-origin', cache: 'no-store', ...rest };
   if (body !== undefined && body !== null) {
     init.body = isFormData(body) ? body : JSON.stringify(body);
   }
   const finalHeaders = new Headers(headers);
   if (init.body && !isFormData(body)) finalHeaders.set('Content-Type', 'application/json');
-  if (typeof ifMatch === 'number' && Number.isFinite(ifMatch)) finalHeaders.set('If-Match', `"${ifMatch}"`);
   finalHeaders.set('Accept', 'application/json');
   init.headers = finalHeaders;
 
-  let response: Response;
-  try {
-    response = await fetch(path, init);
-  } catch (cause) {
-    // `fetch` only rejects on transport failures: DNS, refused connection,
-    // offline, or a CORS block. All of them mean "the request never reached the
-    // service", which must not surface as "TypeError: Failed to fetch".
-    throw new ApiError(NETWORK_ERROR, 0, null, cause instanceof Error ? cause.message : undefined);
-  }
+  const response = await fetch(path, init);
   const type = response.headers.get('content-type') || '';
   const payload = type.includes('application/json')
     ? await response.json().catch(() => ({}))
     : await response.text().catch(() => '');
-  if (!response.ok) throw toApiError(payload, response, 0);
+  if (!response.ok) {
+    const message = typeof payload === 'object' && payload && 'error' in payload
+      ? String((payload as { error: unknown }).error)
+      : `HTTP ${response.status}`;
+    throw new ApiError(message, response.status);
+  }
   return payload as T;
 }
 
@@ -115,7 +79,6 @@ export const healthApi = {
   main: () => api.get<HealthResponse>(`${MAIN}/health`),
   vdgo: () => api.get<HealthResponse>(`${VDGO}/health`),
   reports: () => api.get<{ items?: ReportRun[] }>(`${VDGO}/reports`),
-  archiveReports: () => api.get<{ items?: ReportRun[] }>(`${VDGO}/reports?archived=1&limit=200`),
 };
 
 export const libraryApi = {
@@ -123,75 +86,42 @@ export const libraryApi = {
   createStreet: (name: string) => api.post<{ ok: boolean }>(`${MAIN}/library/streets`, { name }),
   createBuilding: (streetId: string, name: string) =>
     api.post<{ ok: boolean }>(`${MAIN}/library/buildings`, { streetId, name }),
-  uploadScheme: (input: {
-    file: File;
-    streetId: string;
-    buildingId: string;
-    title?: string;
-    rotationDegrees?: string;
-  }) => {
+  uploadScheme: (input: { file: File; streetId: string; buildingId: string; title?: string; rotationDegrees?: string }) => {
     const form = new FormData();
     form.append('image', input.file, input.file.name);
     form.append('streetId', input.streetId);
     form.append('buildingId', input.buildingId);
     form.append('title', input.title || input.file.name.replace(/\.[^.]+$/, ''));
-    if (input.rotationDegrees && input.rotationDegrees !== 'auto')
-      form.append('rotationDegrees', input.rotationDegrees);
+    if (input.rotationDegrees && input.rotationDegrees !== 'auto') form.append('rotationDegrees', input.rotationDegrees);
     return api.post<{ ok: boolean; scheme: { jobId: string } }>(`${MAIN}/library/schemes/upload`, form);
   },
   schemeStatus: (jobId: string) =>
-    api.get<{
-      ok: boolean;
-      status: string;
-      progress?: string;
-      error?: string;
-      graphReady?: boolean;
-      queuePosition?: number | null;
-    }>(`${MAIN}/library/schemes/${encodeURIComponent(jobId)}/status`),
+    api.get<{ ok: boolean; status: string; progress?: string; error?: string; graphReady?: boolean; queuePosition?: number | null }>(
+      `${MAIN}/library/schemes/${encodeURIComponent(jobId)}/status`,
+    ),
   analyze: (jobId: string) =>
     api.post<{ ok: boolean; status: string }>(`${MAIN}/library/schemes/${encodeURIComponent(jobId)}/analyze`),
   graph: (jobId: string) => api.get<JobGraph>(`${MAIN}/jobs/${encodeURIComponent(jobId)}/graph`),
-  connect: (
-    jobId: string,
-    payload: { from: string; to: string; candidateId?: string | null; confirmAlternative?: boolean },
-  ) => api.post<{ ok: boolean; graph: JobGraph }>(`${MAIN}/jobs/${encodeURIComponent(jobId)}/connections`, payload),
+  connect: (jobId: string, payload: { from: string; to: string; candidateId?: string | null; confirmAlternative?: boolean }) =>
+    api.post<{ ok: boolean; graph: JobGraph }>(`${MAIN}/jobs/${encodeURIComponent(jobId)}/connections`, payload),
   review: (
     jobId: string,
-    payload: {
-      action: string;
-      targetId: string;
-      symbolType?: string;
-      rotation?: number;
-      pipeId?: string;
-      value?: string;
-      text?: string;
-    },
+    payload: { action: string; targetId: string; symbolType?: string; rotation?: number; pipeId?: string; value?: string; text?: string },
   ) => api.post<{ ok: boolean; graph: JobGraph }>(`${MAIN}/jobs/${encodeURIComponent(jobId)}/review`, payload),
 };
 
 export const cadApi = {
   list: () => api.get<{ ok: boolean; projects: ManualCadProjectSummary[] }>(`${MAIN}/manual-cad/projects`),
-  create: (title: string) =>
-    api.post<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects`, { title }),
-  get: (id: string) =>
-    api.get<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`),
+  create: (title: string) => api.post<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects`, { title }),
+  get: (id: string) => api.get<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`),
   save: (id: string, project: ManualCadProject) =>
-    request<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: { project },
-      ifMatch: project.manualEditRevision,
-    }),
+    api.put<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/projects/${encodeURIComponent(id)}`, { project }),
   importJob: (jobId: string, title: string) =>
-    api.post<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/import-job/${encodeURIComponent(jobId)}`, {
-      title,
-    }),
+    api.post<{ ok: boolean; project: ManualCadProject }>(`${MAIN}/manual-cad/import-job/${encodeURIComponent(jobId)}`, { title }),
 };
 
 export const templateApi = {
-  get: () =>
-    api.get<{ ok: boolean; template: { originalName: string; size: number; uploadedAt: string } | null }>(
-      `${MAIN}/template`,
-    ),
+  get: () => api.get<{ ok: boolean; template: { originalName: string; size: number; uploadedAt: string } | null }>(`${MAIN}/template`),
   upload: (file: File) => {
     const form = new FormData();
     form.append('template', file, file.name);
@@ -214,15 +144,6 @@ export const workforceApi = {
   startTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/start`),
   visitTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/visit`),
   officeTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/office`),
-  reassignTask: (id: string, assignedTo: string) =>
-    api.patch<{ ok: boolean; changed: boolean; task: WorkforceTask }>(
-      `${MAIN}/workforce/tasks/${encodeURIComponent(id)}`,
-      { assignedTo },
-    ),
-  deleteTask: (id: string, scope: 'single' | 'group' = 'single') =>
-    api.del<{ ok: boolean; removed: { tasks: number; reports: number; defects: number } }>(
-      `${MAIN}/workforce/tasks/${encodeURIComponent(id)}?scope=${scope === 'group' ? 'group' : 'single'}`,
-    ),
   submitSketch: (id: string, file: File, note: string) => {
     const form = new FormData();
     form.append('sketch', file, file.name);
@@ -236,8 +157,7 @@ export const workforceApi = {
     return api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/defects`, form);
   },
   reports: () => api.get<{ ok: boolean; reports: WorkforceReport[]; unreadCount: number }>(`${MAIN}/workforce/reports`),
-  defects: () =>
-    api.get<{ ok: boolean; reports: WorkforceDefectReport[]; unreadCount: number }>(`${MAIN}/workforce/defects`),
+  defects: () => api.get<{ ok: boolean; reports: WorkforceDefectReport[]; unreadCount: number }>(`${MAIN}/workforce/defects`),
   seeReport: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/reports/${encodeURIComponent(id)}/seen`),
   seeDefect: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/defects/${encodeURIComponent(id)}/seen`),
   reviewReport: (id: string, status: 'accepted' | 'revision_requested', comment: string) =>
@@ -250,22 +170,13 @@ export const workforceApi = {
     return api.get<{ ok: boolean } & ConclusionContext>(`${MAIN}/workforce/conclusion?${search.toString()}`);
   },
   addToConclusion: (taskId: string) =>
-    api.post<{ ok: boolean; conclusionUrl: string }>(
-      `${MAIN}/workforce/tasks/${encodeURIComponent(taskId)}/conclusion`,
-    ),
+    api.post<{ ok: boolean; conclusionUrl: string }>(`${MAIN}/workforce/tasks/${encodeURIComponent(taskId)}/conclusion`),
   users: () => api.get<{ ok: boolean; users: WorkforceOverview['users'] }>(`${MAIN}/workforce/users`),
-  createUser: (payload: {
-    displayName: string;
-    role: string;
-    autoGenerate?: boolean;
-    username?: string;
-    password?: string;
-  }) =>
-    api.post<{
-      ok: boolean;
-      user: { id: string; displayName: string; roleName: string };
-      credentials: { username: string; password: string };
-    }>(`${MAIN}/workforce/users`, payload),
+  createUser: (payload: { displayName: string; role: string; autoGenerate?: boolean; username?: string; password?: string }) =>
+    api.post<{ ok: boolean; user: { id: string; displayName: string; roleName: string }; credentials: { username: string; password: string } }>(
+      `${MAIN}/workforce/users`,
+      payload,
+    ),
   resetPassword: (id: string) =>
     api.post<{ ok: boolean; credentials: { username: string; password: string } }>(
       `${MAIN}/workforce/users/${encodeURIComponent(id)}/reset-password`,
@@ -280,15 +191,8 @@ export const conclusionApi = {
   preview: (form: FormData) => submitForm('/vdgo/preview', form),
 };
 
-type FormSubmitResult = { reportId: number | null; filename: string };
-
-async function submitForm(path: string, form: FormData): Promise<FormSubmitResult> {
-  let response: Response;
-  try {
-    response = await fetch(path, { method: 'POST', body: form, credentials: 'same-origin' });
-  } catch (cause) {
-    throw new ApiError(NETWORK_ERROR, 0, null, cause instanceof Error ? cause.message : undefined);
-  }
+async function submitForm(path: string, form: FormData): Promise<void> {
+  const response = await fetch(path, { method: 'POST', body: form, credentials: 'same-origin' });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     let message = `HTTP ${response.status}`;
@@ -299,19 +203,12 @@ async function submitForm(path: string, form: FormData): Promise<FormSubmitResul
     } catch {
       if (text) message = text.slice(0, 300);
     }
-    const requestId = response.headers.get('x-request-id');
-    throw new ApiError(
-      requestId ? `${message} · запрос ${requestId.slice(0, 8)}` : message,
-      response.status,
-      requestId,
-    );
+    throw new ApiError(message, response.status);
   }
-  const reportId = Number(response.headers.get('X-Report-Id')) || null;
   const blob = await response.blob();
   const disposition = response.headers.get('Content-Disposition') || '';
   const filename = decodeDisposition(disposition) || (path.includes('docx') ? 'Заключение.docx' : 'Заключение.pdf');
   downloadBlob(blob, filename);
-  return { reportId, filename };
 }
 
 function decodeDisposition(value: string): string {
@@ -333,18 +230,8 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export async function svgToPngBase64(svgUrl: string): Promise<string> {
-  let response: Response;
-  try {
-    response = await fetch(svgUrl, { cache: 'no-store', credentials: 'same-origin' });
-  } catch (cause) {
-    throw new ApiError(NETWORK_ERROR, 0, null, cause instanceof Error ? cause.message : undefined);
-  }
-  if (!response.ok)
-    throw new ApiError(
-      `Не удалось получить CAD-схему (HTTP ${response.status})`,
-      response.status,
-      response.headers.get('x-request-id'),
-    );
+  const response = await fetch(svgUrl, { cache: 'no-store', credentials: 'same-origin' });
+  if (!response.ok) throw new ApiError(`Не удалось получить CAD-схему (HTTP ${response.status})`, response.status);
   const svgText = await response.text();
   if (!/<svg[\s>]/i.test(svgText)) throw new ApiError('CAD-файл не является SVG', response.status);
   const objectUrl = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' }));
@@ -352,12 +239,10 @@ export async function svgToPngBase64(svgUrl: string): Promise<string> {
     const image = new Image();
     image.decoding = 'async';
     image.src = objectUrl;
-    await (typeof image.decode === 'function'
-      ? image.decode()
-      : new Promise((resolve, reject) => {
-          image.onload = resolve;
-          image.onerror = () => reject(new ApiError('Не удалось отрисовать CAD-схему', 500));
-        }));
+    await (typeof image.decode === 'function' ? image.decode() : new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new ApiError('Не удалось отрисовать CAD-схему', 500));
+    }));
     const sourceWidth = image.naturalWidth || 1600;
     const sourceHeight = image.naturalHeight || 1200;
     const scale = Math.min(1.5, 2600 / Math.max(sourceWidth, sourceHeight));
@@ -370,10 +255,7 @@ export async function svgToPngBase64(svgUrl: string): Promise<string> {
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (value) => (value ? resolve(value) : reject(new ApiError('Не удалось преобразовать CAD-схему в PNG', 500))),
-        'image/png',
-      ),
+      canvas.toBlob(value => (value ? resolve(value) : reject(new ApiError('Не удалось преобразовать CAD-схему в PNG', 500))), 'image/png'),
     );
     return await blobToBase64(blob);
   } finally {
@@ -414,11 +296,7 @@ async function convertDefectPhoto(blob: Blob, name: string, mimeType: string): P
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     const jpeg = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (value) => (value ? resolve(value) : reject(new ApiError('Не удалось сохранить JPEG', 500))),
-        'image/jpeg',
-        0.88,
-      ),
+      canvas.toBlob(value => (value ? resolve(value) : reject(new ApiError('Не удалось сохранить JPEG', 500))), 'image/jpeg', 0.88),
     );
     return new File([jpeg], `${name.replace(/\.[^.]+$/, '')}.jpg`, { type: 'image/jpeg' });
   } finally {
@@ -429,7 +307,10 @@ async function convertDefectPhoto(blob: Blob, name: string, mimeType: string): P
 export async function buildWorkforceSchemes(reports: WorkforceReport[]) {
   const payload: Array<Record<string, string>> = [];
   for (const report of reports) {
-    const svgUrl = `/api/manual-cad/projects/${report.manualCadProjectId}/preview.svg`;
+    const svgUrl = report.schemeSvgUrl
+      || (report.manualCadProjectId ? `/api/manual-cad/projects/${encodeURIComponent(report.manualCadProjectId)}/preview.svg` : null)
+      || (report.schemeJobId ? `/jobs/${encodeURIComponent(report.schemeJobId)}/clean.svg` : null);
+    if (!svgUrl) throw new ApiError(`Для схемы «${report.street}, дом ${report.address}» ещё нет готового CAD-файла`, 409);
     const pngBase64 = await svgToPngBase64(svgUrl);
     payload.push({
       id: report.id,
@@ -448,18 +329,8 @@ export async function buildDefectPhotos(reports: WorkforceDefectReport[]) {
   const files: Array<{ file: File; report: WorkforceDefectReport }> = [];
   for (const report of reports) {
     for (const photo of report.photos) {
-      let response: Response;
-      try {
-        response = await fetch(photo.url, { cache: 'no-store', credentials: 'same-origin' });
-      } catch (cause) {
-        throw new ApiError(NETWORK_ERROR, 0, null, cause instanceof Error ? cause.message : undefined);
-      }
-      if (!response.ok)
-        throw new ApiError(
-          `Не удалось загрузить фото «${photo.originalName}»`,
-          response.status,
-          response.headers.get('x-request-id'),
-        );
+      const response = await fetch(photo.url, { cache: 'no-store', credentials: 'same-origin' });
+      if (!response.ok) throw new ApiError(`Не удалось загрузить фото «${photo.originalName}»`, response.status);
       const blob = await response.blob();
       const file = await convertDefectPhoto(blob, photo.originalName, photo.mimeType || blob.type);
       files.push({ file, report });

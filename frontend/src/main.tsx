@@ -2,10 +2,8 @@ import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
-import { ErrorBoundary } from './components/ErrorBoundary';
 import { Spinner, ToastProvider } from './components/ui';
 import { AuthProvider, useAuth } from './lib/auth';
-import { STAFF_ROLES } from './lib/roles';
 import type { SessionUser } from './lib/types';
 import './styles/index.css';
 
@@ -46,21 +44,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RequireRole({ roles, children }: { roles: SessionUser['role'][]; children: React.ReactNode }) {
+function RequireRole({ children, roles }: { children: React.ReactNode; roles: SessionUser['role'][] }) {
   const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
-  if (!roles.includes(user.role)) return <Navigate to="/" replace />;
+  if (!user || !roles.includes(user.role)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
+
+const STAFF_ROLES: SessionUser['role'][] = ['receiver', 'supervisor', 'developer'];
 
 function NotFoundPage() {
   return (
     <div className="stack" style={{ justifyItems: 'center', textAlign: 'center', padding: '60px 0' }}>
       <h1>404</h1>
       <p className="muted">Страница не найдена.</p>
-      <a className="btn btn--primary" href={import.meta.env.BASE_URL}>
-        На рабочий стол
-      </a>
+      <a className="btn btn--primary" href={import.meta.env.BASE_URL}>На рабочий стол</a>
     </div>
   );
 }
@@ -71,76 +68,27 @@ export function App() {
       <AuthProvider>
         <ToastProvider>
           <Suspense fallback={<PageFallback />}>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route
-                element={
-                  <RequireAuth>
-                    <AppLayout />
-                  </RequireAuth>
-                }
-              >
-                <Route index element={<DashboardPage />} />
-                <Route
-                  path="/conclusion"
-                  element={
-                    <RequireRole roles={[...STAFF_ROLES, 'fitter']}>
-                      <ConclusionPage />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/schemes"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <SchemesPage />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/schemes/:jobId"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <SchemeDetailPage />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/archive"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <ArchivePage />
-                    </RequireRole>
-                  }
-                />
-                <Route path="/team" element={<TeamPage />} />
-                <Route
-                  path="/cad"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <CadPage />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/cad/:id"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <CadEditorPage />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/settings"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <SettingsPage />
-                    </RequireRole>
-                  }
-                />
-                <Route path="*" element={<NotFoundPage />} />
-              </Route>
-            </Routes>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              element={
+                <RequireAuth>
+                  <AppLayout />
+                </RequireAuth>
+              }
+            >
+              <Route index element={<DashboardPage />} />
+              <Route path="/conclusion" element={<RequireRole roles={STAFF_ROLES}><ConclusionPage /></RequireRole>} />
+              <Route path="/schemes" element={<RequireRole roles={STAFF_ROLES}><SchemesPage /></RequireRole>} />
+              <Route path="/schemes/:jobId" element={<RequireRole roles={STAFF_ROLES}><SchemeDetailPage /></RequireRole>} />
+              <Route path="/archive" element={<RequireRole roles={STAFF_ROLES}><ArchivePage /></RequireRole>} />
+              <Route path="/team" element={<TeamPage />} />
+              <Route path="/cad" element={<RequireRole roles={STAFF_ROLES}><CadPage /></RequireRole>} />
+              <Route path="/cad/:id" element={<RequireRole roles={STAFF_ROLES}><CadEditorPage /></RequireRole>} />
+              <Route path="/settings" element={<RequireRole roles={STAFF_ROLES}><SettingsPage /></RequireRole>} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
           </Suspense>
         </ToastProvider>
       </AuthProvider>
@@ -153,8 +101,6 @@ if (!container) throw new Error('Root container is missing');
 
 createRoot(container).render(
   <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <App />
   </StrictMode>,
 );

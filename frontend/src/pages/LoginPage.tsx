@@ -8,7 +8,6 @@ import { useAuth } from '../lib/auth';
 export function LoginPage() {
   const { user, loading, login } = useAuth();
   const navigate = useNavigate();
-  const [setupRequired, setSetupRequired] = useState(false);
   const [mode, setMode] = useState<'login' | 'setup'>('login');
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -20,11 +19,10 @@ export function LoginPage() {
   useEffect(() => {
     authApi
       .status()
-      .then((status) => {
-        setSetupRequired(status.setupRequired);
+      .then(status => {
         if (status.setupRequired) setMode('setup');
       })
-      .catch(() => setSetupRequired(false));
+      .catch(() => setMode('login'));
   }, []);
 
   if (loading) {
@@ -45,6 +43,7 @@ export function LoginPage() {
     try {
       if (mode === 'setup') {
         await authApi.setup(username, displayName, password);
+        await login(username, password);
       } else {
         await login(username, password);
       }
@@ -74,17 +73,13 @@ export function LoginPage() {
             </p>
           </div>
 
-          {error ? (
-            <div className="auth__error" role="alert">
-              {error}
-            </div>
-          ) : null}
+          {error ? <div className="auth__error" role="alert">{error}</div> : null}
 
           <Field label="Логин" required>
             <input
               className="input"
               value={username}
-              onChange={(event) => setUsername(event.target.value)}
+              onChange={event => setUsername(event.target.value)}
               autoComplete="username"
               required
               placeholder="ivan.petrov"
@@ -96,7 +91,7 @@ export function LoginPage() {
               <input
                 className="input"
                 value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
+                onChange={event => setDisplayName(event.target.value)}
                 required
                 placeholder="Иван Петров"
               />
@@ -138,18 +133,6 @@ export function LoginPage() {
             {mode === 'setup' ? 'Создать аккаунт и войти' : 'Войти'}
           </Button>
 
-          {!setupRequired ? (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => {
-                setMode((current) => (current === 'login' ? 'setup' : 'login'));
-                setError(null);
-              }}
-            >
-              {mode === 'login' ? 'Настроить доступ' : 'Вернуться ко входу'}
-            </button>
-          ) : null}
         </form>
       </main>
     </div>

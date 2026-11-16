@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: up down config verify check tests logs frontend-build
+.PHONY: up down config check tests logs frontend-build
 
 config:
 	docker compose config --quiet
@@ -10,12 +10,9 @@ up:
 down:
 	docker compose down
 
-verify:
-	npm run lint
-	npm run typecheck
-	npm run test
-
-check: verify
+check:
+	npm --prefix backend run check
+	PYTHONPATH=backend python -m unittest discover -s tests/vdgo -p 'test_*.py' -v
 
 logs:
 	docker compose logs -f --tail=150

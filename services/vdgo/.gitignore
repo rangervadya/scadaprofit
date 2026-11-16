@@ -5,7 +5,7 @@ __pycache__/
 *.pyc
 
 # Runtime documents and uploads
-output/*
-!output/.gitkeep
-uploads/*
-!uploads/.gitkeep
+backend/output/*
+!backend/output/.gitkeep
+backend/uploads/*
+!backend/uploads/.gitkeep

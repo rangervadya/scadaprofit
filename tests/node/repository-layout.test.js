@@ -5,17 +5,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const file = (relative) => path.join(root, relative);
+const file = relative => path.join(root, relative);
 
-const read = (relative) => readFile(file(relative), 'utf8');
+const read = relative => readFile(file(relative), 'utf8');
 
 test('one React frontend is the active UI; backend and document services stay separate', async () => {
   const required = [
     'compose.yaml',
-    'services/ollama/package.json',
-    'services/ollama/api/server.js',
-    'services/ollama/api/services/workforce-system.js',
-    'services/ollama/engine/processor.py',
+    'backend/package.json',
+    'backend/api/server.js',
+    'backend/api/workforce-system.js',
+    'backend/engine/processor.py',
     'frontend/package.json',
     'frontend/package-lock.json',
     'frontend/index.html',
@@ -24,28 +24,26 @@ test('one React frontend is the active UI; backend and document services stay se
     'frontend/src/pages/TeamPage.tsx',
     'frontend/src/pages/ConclusionPage.tsx',
     'frontend/public/robots.txt',
-    'services/vdgo/app.py',
-    'services/vdgo/templates/index.html',
+    'tests/fixtures/legacy-frontend/public/manual-cad.js',
+    'services/vdgo/backend/app.py',
+    'services/vdgo/backend/templates/index.html',
     'infra/docker/app.Dockerfile',
     'infra/nginx/nginx-unified.conf',
   ];
   for (const relative of required) await access(file(relative));
 
-  const server = await read('services/ollama/api/server.js');
-  // SPA serving moved to routes/spa-routes.js in the P2-1 split.
-  const spa = await read('services/ollama/api/routes/spa-routes.js');
-  assert.match(spa, /frontend\/public/);
-  assert.match(spa, /frontend\/public\/vdgo/);
-  assert.match(spa, /redirect\(308, '\/vdgo\/'\)/);
-  assert.match(server, /createSpaRouter/);
+  const server = await read('backend/api/server.js');
+  assert.match(server, /frontend\/public/);
+  assert.match(server, /frontend\/public\/vdgo/);
+  assert.match(server, /redirect\(308, '\/vdgo\/'\)/);
 
-  const auth = await read('services/ollama/api/services/workforce-system.js');
+  const auth = await read('backend/api/workforce-system.js');
   assert.match(auth, /pathname\.startsWith\('\/vdgo\/'\)/);
   assert.match(auth, /redirect\('\/vdgo\/login'\)/);
 
   const compose = await read('compose.yaml');
   assert.match(compose, /dockerfile: infra\/docker\/app\.Dockerfile/);
-  assert.match(compose, /context: \.\/services\/vdgo\n/);
+  assert.match(compose, /context: \.\/services\/vdgo\/backend/);
   assert.doesNotMatch(compose, /vdgo-frontend|services\/vdgo\/frontend/);
 
   const frontendPackage = JSON.parse(await read('frontend/package.json'));
@@ -65,10 +63,10 @@ test('one React frontend is the active UI; backend and document services stay se
   assert.match(nginx, /location \/vdgo\/api\//);
   assert.match(nginx, /proxy_pass http:\/\/app:3000/);
   assert.doesNotMatch(nginx, /vdgo-frontend:4173/);
-  const staticVdgoBlock = nginx.match(/location \/vdgo\/ \{([\s\S]*?)\n {4}\}/)?.[1] || '';
+  const staticVdgoBlock = nginx.match(/location \/vdgo\/ \{([\s\S]*?)\n    \}/)?.[1] || '';
   assert.ok(staticVdgoBlock, 'static SPA location exists');
   assert.doesNotMatch(staticVdgoBlock, /auth_request/);
-  assert.match(nginx, /location \/vdgo\/api\/ \{\n {8}auth_request/);
+  assert.match(nginx, /location \/vdgo\/api\/ \{\n        auth_request/);
 
   const dockerfile = await read('infra/docker/app.Dockerfile');
   assert.match(dockerfile, /COPY frontend\/ \.\//);
@@ -89,16 +87,12 @@ test('the replacement frontend exposes the project workflows and address-folder 
   assert.match(source, /DashboardPage/);
   assert.match(source, /ConclusionPage/);
   assert.match(source, /CadEditorPage/);
-  const roles = await read('frontend/src/lib/roles.ts');
-  assert.match(
-    roles,
-    /export const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/,
-  );
+  assert.match(source, /const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/);
   assert.match(sidebar, /roles: STAFF_ROLES/);
   assert.match(topbar, /const isFitter = user\?\.role === 'fitter'/);
   assert.match(topbar, /!isFitter \?/);
   assert.match(sidebar, /to: '\/team'.*label: 'Команда'/);
-  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi[\s\S]*?\.reports\(\)/);
+  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi\.reports\(\)/);
   assert.doesNotMatch(login, /Выбрать аккаунт|Выберите роль|Первичная настройка системы/);
   assert.match(team, /Добавить папку в заключение|Папка добавлена в заключение/);
   assert.match(team, /reviewReport/);

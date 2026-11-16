@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Icon } from '../../components/ui/Icon';
 import { Badge, Button, Field } from '../../components/ui';
 import type { ConclusionForm } from './useConclusionForm';
+import type { WorkforceDefectReport, WorkforceReport } from '../../lib/types';
 import {
   DEFECTS,
   MATERIAL_PAGES,
@@ -22,22 +23,14 @@ function maskDate(raw: string): string {
   return parts.join('.');
 }
 
-function DateInput({
-  value,
-  onChange,
-  required,
-}: {
-  value: string;
-  onChange: (next: string) => void;
-  required?: boolean;
-}) {
+function DateInput({ value, onChange, required }: { value: string; onChange: (next: string) => void; required?: boolean }) {
   const pickerRef = useRef<HTMLInputElement>(null);
   return (
     <span style={{ display: 'flex', gap: 6 }}>
       <input
         className="input"
         value={value}
-        onChange={(event) => onChange(maskDate(event.target.value))}
+        onChange={event => onChange(maskDate(event.target.value))}
         inputMode="numeric"
         placeholder="ДД.ММ.ГГГГ"
         required={required}
@@ -64,7 +57,7 @@ function DateInput({
         tabIndex={-1}
         aria-hidden="true"
         style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
-        onChange={(event) => {
+        onChange={event => {
           const iso = event.target.value;
           if (!iso) return;
           const [year, month, day] = iso.split('-');
@@ -77,23 +70,19 @@ function DateInput({
 
 export function FieldsSection({ section, form }: { section: SectionDef; form: ConclusionForm }) {
   const fields = section.fields || [];
-  const gridClass = fields.some((field) => field.type === 'textarea') ? 'grid grid--2' : 'field-row';
+  const gridClass = fields.some(field => field.type === 'textarea') ? 'grid grid--2' : 'field-row';
   return (
     <section className="card form-section" id={section.id}>
       <header className="form-section__head">
         <span className="form-section__num">{section.num}</span>
         <div>
           <h2>{section.title}</h2>
-          {section.note ? (
-            <p className="form-section__note" style={{ marginTop: 4 }}>
-              {section.note}
-            </p>
-          ) : null}
+          {section.note ? <p className="form-section__note" style={{ marginTop: 4 }}>{section.note}</p> : null}
         </div>
       </header>
       <div className="form-section__body">
         <div className={gridClass}>
-          {fields.map((field) => {
+          {fields.map(field => {
             const value = form.values[field.name] || '';
             const common = {
               required: field.required,
@@ -104,7 +93,7 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
                 <textarea
                   className="textarea"
                   value={value}
-                  onChange={(event) => form.setField(field.name, event.target.value)}
+                  onChange={event => form.setField(field.name, event.target.value)}
                   placeholder={field.placeholder}
                   required={field.required}
                   maxLength={field.name === 'conclusion_text' ? 700 : 900}
@@ -113,20 +102,18 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
                 <select
                   className="select"
                   value={value}
-                  onChange={(event) => form.setField(field.name, event.target.value)}
+                  onChange={event => form.setField(field.name, event.target.value)}
                   required={field.required}
                 >
-                  {(field.options || []).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
+                  {(field.options || []).map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               ) : field.type === 'date' ? (
                 <DateInput
                   value={value}
                   required={field.required}
-                  onChange={(next) => {
+                  onChange={next => {
                     form.setField(field.name, next);
                     if (field.name === 'report_date') {
                       const year = next.slice(6, 10);
@@ -139,7 +126,7 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
                   className="input"
                   type={field.type === 'number' ? 'number' : 'text'}
                   value={value}
-                  onChange={(event) => form.setField(field.name, event.target.value)}
+                  onChange={event => form.setField(field.name, event.target.value)}
                   {...common}
                 />
               );
@@ -161,7 +148,7 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
                   <input
                     type="checkbox"
                     checked={form.values.uzt_calibration_date_nd === '1'}
-                    onChange={(event) => form.setField('uzt_calibration_date_nd', event.target.checked ? '1' : '')}
+                    onChange={event => form.setField('uzt_calibration_date_nd', event.target.checked ? '1' : '')}
                   />
                   <span>Нет данных о поверке (н.д.)</span>
                 </label>
@@ -173,7 +160,7 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
                   <input
                     type="checkbox"
                     checked={form.values.uk_calibration_date_nd === '1'}
-                    onChange={(event) => form.setField('uk_calibration_date_nd', event.target.checked ? '1' : '')}
+                    onChange={event => form.setField('uk_calibration_date_nd', event.target.checked ? '1' : '')}
                   />
                   <span>Нет данных / не применялся (н.д.)</span>
                 </label>
@@ -181,6 +168,7 @@ export function FieldsSection({ section, form }: { section: SectionDef; form: Co
             </div>
           </div>
         ) : null}
+        {section.id === 'calc' ? <UztTablesContent form={form} /> : null}
       </div>
     </section>
   );
@@ -190,7 +178,7 @@ export function DefectsSection({ form }: { form: ConclusionForm }) {
   return (
     <section className="card form-section" id="defects">
       <header className="form-section__head">
-        <span className="form-section__num">5</span>
+        <span className="form-section__num">4</span>
         <div>
           <h2>Дефекты</h2>
           <p className="form-section__note" style={{ marginTop: 4 }}>
@@ -199,58 +187,33 @@ export function DefectsSection({ form }: { form: ConclusionForm }) {
         </div>
       </header>
       <div className="form-section__body">
+        {form.defects.some(row => row.workforceReportId) ? (
+          <div className="alert alert--info">
+            <Icon name="check-circle" />
+            <span>
+              Описания из принятых отчётов слесарей автоматически перенесены в таблицу неисправностей раздела 6.1.
+              Проверьте формулировки и заполните рекомендации по устранению — слесарь их не назначает.
+            </span>
+          </div>
+        ) : null}
         {form.defects.map((row, index) => {
           const defect = DEFECTS[index];
           return (
-            <div
-              key={defect.id}
-              className="stack stack--sm"
-              style={{
-                padding: 14,
-                border: '1px solid var(--line)',
-                borderRadius: 10,
-                background: row.enabled ? 'var(--brand-soft)' : '#fff',
-              }}
-            >
+            <div key={defect.id} className="stack stack--sm" style={{ padding: 14, border: '1px solid var(--line)', borderRadius: 10, background: row.enabled ? 'var(--brand-soft)' : '#fff' }}>
               <label className="check" style={{ fontWeight: 600 }}>
-                <input
-                  type="checkbox"
-                  checked={row.enabled}
-                  onChange={(event) => form.setDefect(index, { enabled: event.target.checked })}
-                />
-                <span>Дефект {defect.id}</span>
+                <input type="checkbox" checked={row.enabled} onChange={event => form.setDefect(index, { enabled: event.target.checked })} />
+                <span>Дефект {defect.id}{row.workforceReportId ? ' · из отчёта слесаря' : ''}</span>
               </label>
               {row.enabled ? (
                 <>
                   <Field label="Место расположения" required>
-                    <textarea
-                      className="textarea"
-                      style={{ minHeight: 64 }}
-                      value={row.location}
-                      onChange={(event) => form.setDefect(index, { location: event.target.value })}
-                      placeholder={defect.location}
-                      required
-                    />
+                    <textarea className="textarea" style={{ minHeight: 64 }} value={row.location} onChange={event => form.setDefect(index, { location: event.target.value })} placeholder={defect.location} required />
                   </Field>
                   <Field label="Наименование неисправности" required>
-                    <textarea
-                      className="textarea"
-                      style={{ minHeight: 64 }}
-                      value={row.text}
-                      onChange={(event) => form.setDefect(index, { text: event.target.value })}
-                      placeholder={defect.defect}
-                      required
-                    />
+                    <textarea className="textarea" style={{ minHeight: 64 }} value={row.text} onChange={event => form.setDefect(index, { text: event.target.value })} placeholder={defect.defect} required />
                   </Field>
                   <Field label="Рекомендации по устранению" required>
-                    <textarea
-                      className="textarea"
-                      style={{ minHeight: 64 }}
-                      value={row.recommendation}
-                      onChange={(event) => form.setDefect(index, { recommendation: event.target.value })}
-                      placeholder={defect.recommendation}
-                      required
-                    />
+                    <textarea className="textarea" style={{ minHeight: 64 }} value={row.recommendation} onChange={event => form.setDefect(index, { recommendation: event.target.value })} placeholder={defect.recommendation} required />
                   </Field>
                 </>
               ) : (
@@ -265,50 +228,31 @@ export function DefectsSection({ form }: { form: ConclusionForm }) {
 }
 
 export function ValvesSection({ form }: { form: ConclusionForm }) {
-  const fields = (SECTIONS.find((section) => section.id === 'valves')?.fields || []).filter(
-    (field) => !VALVE_FIELDS.some((item) => field.name.startsWith(`valve_${item.key}`)),
-  );
+  const fields = (SECTIONS.find(section => section.id === 'valves')?.fields || []).filter(field => !VALVE_FIELDS.some(item => field.name.startsWith(`valve_${item.key}`)));
   return (
     <section className="card form-section" id="valves">
       <header className="form-section__head">
-        <span className="form-section__num">6</span>
+        <span className="form-section__num">5</span>
         <div>
           <h2>Арматура и результаты проверок</h2>
-          <p className="form-section__note" style={{ marginTop: 4 }}>
-            Включайте только фактически проверенную арматуру.
-          </p>
+          <p className="form-section__note" style={{ marginTop: 4 }}>Включайте только фактически проверенную арматуру.</p>
         </div>
       </header>
       <div className="form-section__body">
         {form.valves.map((row, index) => (
-          <div
-            key={index}
-            className="stack stack--sm"
-            style={{
-              padding: 14,
-              border: '1px solid var(--line)',
-              borderRadius: 10,
-              background: row.enabled ? 'var(--brand-soft)' : '#fff',
-            }}
-          >
+          <div key={index} className="stack stack--sm" style={{ padding: 14, border: '1px solid var(--line)', borderRadius: 10, background: row.enabled ? 'var(--brand-soft)' : '#fff' }}>
             <label className="check" style={{ fontWeight: 600 }}>
-              <input
-                type="checkbox"
-                checked={row.enabled}
-                onChange={(event) => form.setValve(index, { enabled: event.target.checked })}
-              />
+              <input type="checkbox" checked={row.enabled} onChange={event => form.setValve(index, { enabled: event.target.checked })} />
               <span>Строка {index + 1}</span>
             </label>
             {row.enabled ? (
               <div className="field-row field-row--3">
-                {VALVE_FIELDS.map((field) => (
+                {VALVE_FIELDS.map(field => (
                   <Field key={field.key} label={field.label} required>
                     <input
                       className="input input--sm"
                       value={row.fields[field.key] || ''}
-                      onChange={(event) =>
-                        form.setValve(index, { fields: { ...row.fields, [field.key]: event.target.value } })
-                      }
+                      onChange={event => form.setValve(index, { fields: { ...row.fields, [field.key]: event.target.value } })}
                       placeholder={field.placeholder}
                       required
                     />
@@ -319,36 +263,17 @@ export function ValvesSection({ form }: { form: ConclusionForm }) {
           </div>
         ))}
         <div className="field-row">
-          {fields.map((field) => (
+          {fields.map(field => (
             <div key={field.name} style={field.full ? { gridColumn: '1 / -1' } : undefined}>
               <Field label={field.label} required={field.required}>
                 {field.type === 'textarea' ? (
-                  <textarea
-                    className="textarea"
-                    value={form.values[field.name] || ''}
-                    onChange={(event) => form.setField(field.name, event.target.value)}
-                    required={field.required}
-                  />
+                  <textarea className="textarea" value={form.values[field.name] || ''} onChange={event => form.setField(field.name, event.target.value)} required={field.required} />
                 ) : field.type === 'select' ? (
-                  <select
-                    className="select"
-                    value={form.values[field.name] || ''}
-                    onChange={(event) => form.setField(field.name, event.target.value)}
-                    required={field.required}
-                  >
-                    {(field.options || []).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
+                  <select className="select" value={form.values[field.name] || ''} onChange={event => form.setField(field.name, event.target.value)} required={field.required}>
+                    {(field.options || []).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 ) : (
-                  <input
-                    className="input"
-                    value={form.values[field.name] || ''}
-                    onChange={(event) => form.setField(field.name, event.target.value)}
-                    required={field.required}
-                  />
+                  <input className="input" value={form.values[field.name] || ''} onChange={event => form.setField(field.name, event.target.value)} required={field.required} />
                 )}
               </Field>
             </div>
@@ -359,89 +284,31 @@ export function ValvesSection({ form }: { form: ConclusionForm }) {
   );
 }
 
-export function UztSection({ form }: { form: ConclusionForm }) {
+export function UztTablesContent({ form }: { form: ConclusionForm }) {
   const [tab, setTab] = useState<'shared' | 'flat' | 'resource'>('shared');
   return (
-    <section className="card form-section" id="uzt">
-      <header className="form-section__head">
-        <span className="form-section__num">4</span>
-        <div>
-          <h2>Таблицы УЗТ и расчёт ресурса</h2>
-          <p className="form-section__note" style={{ marginTop: 4 }}>
-            Для отсутствующих данных введите «н.д.».
-          </p>
-        </div>
-      </header>
-      <div className="form-section__body">
+    <div className="stack stack--sm" id="uzt-tables" style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--line)' }}>
+      <div>
+        <h3>Таблицы УЗТ и расчёт ресурса</h3>
+        <p className="form-section__note">Для отсутствующих данных введите «н.д.».</p>
+      </div>
         <div className="tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'shared'}
-            className="tabs__tab"
-            onClick={() => setTab('shared')}
-          >
-            Общие участки · {UZT_SHARED_ROWS}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'flat'}
-            className="tabs__tab"
-            onClick={() => setTab('flat')}
-          >
-            Жилые помещения · {UZT_FLAT_ROWS}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'resource'}
-            className="tabs__tab"
-            onClick={() => setTab('resource')}
-          >
-            Расчёт ресурса · {RESOURCE_ROWS}
-          </button>
+          <button type="button" role="tab" aria-selected={tab === 'shared'} className="tabs__tab" onClick={() => setTab('shared')}>Общие участки · {UZT_SHARED_ROWS}</button>
+          <button type="button" role="tab" aria-selected={tab === 'flat'} className="tabs__tab" onClick={() => setTab('flat')}>Жилые помещения · {UZT_FLAT_ROWS}</button>
+          <button type="button" role="tab" aria-selected={tab === 'resource'} className="tabs__tab" onClick={() => setTab('resource')}>Расчёт ресурса · {RESOURCE_ROWS}</button>
         </div>
 
         {tab === 'shared' ? (
           <div className="table-wrap" style={{ maxHeight: 460 }}>
             <table className="data-table">
-              <thead>
-                <tr>
-                  <th className="row-num">№</th>
-                  <th>Обозначение участка</th>
-                  <th>Ду, мм</th>
-                  <th>Толщина, мм</th>
-                </tr>
-              </thead>
+              <thead><tr><th className="row-num">№</th><th>Обозначение участка</th><th>Ду, мм</th><th>Толщина, мм</th></tr></thead>
               <tbody>
                 {form.uztShared.map((row, index) => (
                   <tr key={index}>
                     <td className="row-num">{index + 1}</td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.segment}
-                        onChange={(event) => form.setUztShared(index, { segment: event.target.value })}
-                        placeholder="№ участка"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.diameter}
-                        onChange={(event) => form.setUztShared(index, { diameter: event.target.value })}
-                        placeholder="н.д."
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.thickness}
-                        onChange={(event) => form.setUztShared(index, { thickness: event.target.value })}
-                        placeholder="н.д."
-                      />
-                    </td>
+                    <td><input className="input table-input" value={row.segment} onChange={event => form.setUztShared(index, { segment: event.target.value })} placeholder="№ участка" /></td>
+                    <td><input className="input table-input" value={row.diameter} onChange={event => form.setUztShared(index, { diameter: event.target.value })} placeholder="н.д." /></td>
+                    <td><input className="input table-input" value={row.thickness} onChange={event => form.setUztShared(index, { thickness: event.target.value })} placeholder="н.д." /></td>
                   </tr>
                 ))}
               </tbody>
@@ -452,51 +319,15 @@ export function UztSection({ form }: { form: ConclusionForm }) {
         {tab === 'flat' ? (
           <div className="table-wrap" style={{ maxHeight: 460 }}>
             <table className="data-table">
-              <thead>
-                <tr>
-                  <th className="row-num">№</th>
-                  <th>Квартира</th>
-                  <th>Ду25</th>
-                  <th>Ду20</th>
-                  <th>Ду15</th>
-                </tr>
-              </thead>
+              <thead><tr><th className="row-num">№</th><th>Квартира</th><th>Ду25</th><th>Ду20</th><th>Ду15</th></tr></thead>
               <tbody>
                 {form.uztFlat.map((row, index) => (
                   <tr key={index}>
                     <td className="row-num">{index + 1}</td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.apartment}
-                        onChange={(event) => form.setUztFlat(index, { apartment: event.target.value })}
-                        placeholder="№ квартиры"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.du25}
-                        onChange={(event) => form.setUztFlat(index, { du25: event.target.value })}
-                        placeholder="н.д."
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.du20}
-                        onChange={(event) => form.setUztFlat(index, { du20: event.target.value })}
-                        placeholder="н.д."
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="input table-input"
-                        value={row.du15}
-                        onChange={(event) => form.setUztFlat(index, { du15: event.target.value })}
-                        placeholder="н.д."
-                      />
-                    </td>
+                    <td><input className="input table-input" value={row.apartment} onChange={event => form.setUztFlat(index, { apartment: event.target.value })} placeholder="№ квартиры" /></td>
+                    <td><input className="input table-input" value={row.du25} onChange={event => form.setUztFlat(index, { du25: event.target.value })} placeholder="н.д." /></td>
+                    <td><input className="input table-input" value={row.du20} onChange={event => form.setUztFlat(index, { du20: event.target.value })} placeholder="н.д." /></td>
+                    <td><input className="input table-input" value={row.du15} onChange={event => form.setUztFlat(index, { du15: event.target.value })} placeholder="н.д." /></td>
                   </tr>
                 ))}
               </tbody>
@@ -507,21 +338,12 @@ export function UztSection({ form }: { form: ConclusionForm }) {
         {tab === 'resource' ? (
           <div className="grid grid--2">
             {Array.from({ length: RESOURCE_ROWS }, (_, index) => (
-              <div
-                key={index}
-                className="stack stack--sm"
-                style={{ padding: 12, border: '1px solid var(--line)', borderRadius: 10 }}
-              >
+              <div key={index} className="stack stack--sm" style={{ padding: 12, border: '1px solid var(--line)', borderRadius: 10 }}>
                 <h4>Расчётная позиция {index + 1}</h4>
                 <div className="field-row">
-                  {RESOURCE_LABELS.map((item) => (
+                  {RESOURCE_LABELS.map(item => (
                     <Field key={item.key} label={item.label}>
-                      <input
-                        className="input input--sm"
-                        value={form.resource[index]?.[item.key] || ''}
-                        onChange={(event) => form.setResource(index, { [item.key]: event.target.value })}
-                        placeholder={item.placeholder}
-                      />
+                      <input className="input input--sm" value={form.resource[index]?.[item.key] || ''} onChange={event => form.setResource(index, { [item.key]: event.target.value })} placeholder={item.placeholder} />
                     </Field>
                   ))}
                 </div>
@@ -529,15 +351,14 @@ export function UztSection({ form }: { form: ConclusionForm }) {
             ))}
           </div>
         ) : null}
-      </div>
-    </section>
+    </div>
   );
 }
 
-export function PhotosSection({ form }: { form: ConclusionForm }) {
+export function PhotosSection({ form, workforceDefectReports = [] }: { form: ConclusionForm; workforceDefectReports?: WorkforceDefectReport[] }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const previews = useMemo(() => form.photos.map((file) => ({ file, url: URL.createObjectURL(file) })), [form.photos]);
+  const previews = useMemo(() => form.photos.map(file => ({ file, url: URL.createObjectURL(file) })), [form.photos]);
 
   const accept = (files: FileList | File[]) => {
     for (const file of Array.from(files)) {
@@ -552,7 +373,7 @@ export function PhotosSection({ form }: { form: ConclusionForm }) {
   return (
     <section className="card form-section" id="photos">
       <header className="form-section__head">
-        <span className="form-section__num">7</span>
+        <span className="form-section__num">6</span>
         <div>
           <h2>Фотографии объекта</h2>
           <p className="form-section__note" style={{ marginTop: 4 }}>
@@ -561,58 +382,47 @@ export function PhotosSection({ form }: { form: ConclusionForm }) {
         </div>
       </header>
       <div className="form-section__body">
+        {workforceDefectReports.length ? (
+          <div className="stack stack--sm">
+            <div className="row row--between">
+              <h3>Принятые фотографии дефектов из папки адреса</h3>
+              <Badge tone="success">{workforceDefectReports.reduce((sum, report) => sum + report.photos.length, 0)} фото</Badge>
+            </div>
+            <p className="field__hint">Эти фотографии уже привязаны к текущему заданию и автоматически попадут в Приложение 3 PDF/Word. Повторно загружать их не нужно.</p>
+            <div className="photo-grid">
+              {workforceDefectReports.flatMap(report => report.photos.map(photo => (
+                <div key={`${report.id}-${photo.id}`} className="photo-card">
+                  <div className="photo-card__preview"><img src={photo.url} alt={photo.originalName} loading="lazy" /></div>
+                  <span className="photo-card__name">{report.street}, д. {report.address} · {photo.originalName}</span>
+                  <span className="field__hint">Слесарь: {report.userName}</span>
+                </div>
+              )))}
+            </div>
+          </div>
+        ) : null}
         <div
           className={`dropzone ${over ? 'dropzone--over' : ''}`}
           onClick={() => inputRef.current?.click()}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setOver(true);
-          }}
+          onDragOver={event => { event.preventDefault(); setOver(true); }}
           onDragLeave={() => setOver(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            setOver(false);
-            accept(event.dataTransfer.files);
-          }}
+          onDrop={event => { event.preventDefault(); setOver(false); accept(event.dataTransfer.files); }}
           role="button"
           tabIndex={0}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click();
-          }}
+          onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click(); }}
         >
-          <span className="dropzone__icon">
-            <Icon name="upload" />
-          </span>
+          <span className="dropzone__icon"><Icon name="upload" /></span>
           <span className="dropzone__title">Перетащите фотографии или нажмите для выбора</span>
-          <span className="dropzone__hint">
-            JPG, PNG или WEBP · до {MAX_PHOTO_UPLOAD_BYTES / 1024 / 1024} МБ на файл
-          </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            multiple
-            hidden
-            onChange={(event) => {
-              if (event.target.files) accept(event.target.files);
-              event.target.value = '';
-            }}
-          />
+          <span className="dropzone__hint">JPG, PNG или WEBP · до {MAX_PHOTO_UPLOAD_BYTES / 1024 / 1024} МБ на файл</span>
+          <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={event => { if (event.target.files) accept(event.target.files); event.target.value = ''; }} />
         </div>
 
         {previews.length ? (
           <div className="photo-grid">
             {previews.map((preview, index) => (
               <div key={`${preview.file.name}-${index}`} className="photo-card">
-                <div className="photo-card__preview">
-                  <img src={preview.url} alt={preview.file.name} />
-                </div>
-                <span className="photo-card__name">
-                  {index + 1}. {preview.file.name}
-                </span>
-                <Button size="sm" variant="ghost" icon="trash" onClick={() => form.removePhoto(index)}>
-                  Удалить
-                </Button>
+                <div className="photo-card__preview"><img src={preview.url} alt={preview.file.name} /></div>
+                <span className="photo-card__name">{index + 1}. {preview.file.name}</span>
+                <Button size="sm" variant="ghost" icon="trash" onClick={() => form.removePhoto(index)}>Удалить</Button>
               </div>
             ))}
           </div>
@@ -622,24 +432,21 @@ export function PhotosSection({ form }: { form: ConclusionForm }) {
           <input
             type="checkbox"
             checked={Boolean(form.confirmations.photo_content_confirm)}
-            onChange={(event) => form.setConfirmation('photo_content_confirm', event.target.checked)}
+            onChange={event => form.setConfirmation('photo_content_confirm', event.target.checked)}
             required
           />
-          <span>
-            Подтверждаю, что в фотослоты загружены только фотографии текущего объекта; SCADA/экраны, работники,
-            удостоверения и акты сюда не загружены.
-          </span>
+          <span>Подтверждаю, что в фотослоты загружены только фотографии текущего объекта; SCADA/экраны, работники, удостоверения и акты сюда не загружены.</span>
         </label>
       </div>
     </section>
   );
 }
 
-export function MaterialsSection({ form }: { form: ConclusionForm }) {
+export function MaterialsSection({ form, workforceSchemes = [] }: { form: ConclusionForm; workforceSchemes?: WorkforceReport[] }) {
   return (
     <section className="card form-section" id="materials">
       <header className="form-section__head">
-        <span className="form-section__num">8</span>
+        <span className="form-section__num">7</span>
         <div>
           <h2>Актуальные схемы, удостоверения и акты</h2>
           <p className="form-section__note" style={{ marginTop: 4 }}>
@@ -649,31 +456,50 @@ export function MaterialsSection({ form }: { form: ConclusionForm }) {
         </div>
       </header>
       <div className="form-section__body">
+        {workforceSchemes.length ? (
+          <div className="stack stack--sm" style={{ marginBottom: 18 }}>
+            <div className="row row--between">
+              <h3>Схемы, принятые из папки адреса</h3>
+              <Badge tone="success">{workforceSchemes.length} CAD</Badge>
+            </div>
+            <p className="field__hint">Эти схемы автоматически добавляются в Приложение 2 «Схема неразрушающего контроля». Дополнительно загружать их в ручные слоты ниже не нужно.</p>
+            {workforceSchemes.map(report => (
+              <div className="list-item" key={report.id} style={{ alignItems: 'flex-start', gap: 14 }}>
+                {report.schemeSvgUrl ? (
+                  <a href={report.schemeSvgUrl} target="_blank" rel="noreferrer" aria-label={`Открыть CAD-схему ${report.street}, дом ${report.address}`} style={{ display: 'block', flex: '0 0 180px', maxWidth: '36%' }}>
+                    <img
+                      src={report.schemeSvgUrl}
+                      alt={`CAD-схема: ${report.street}, дом ${report.address}`}
+                      loading="lazy"
+                      style={{ display: 'block', width: '100%', maxHeight: 132, objectFit: 'contain', background: '#fff', border: '1px solid var(--line)', borderRadius: 8 }}
+                    />
+                  </a>
+                ) : null}
+                <div className="list-item__main">
+                  <span className="list-item__title">{report.street}, дом {report.address}</span>
+                  <span className="list-item__meta">{report.userName} · {report.schemeStatus || 'CAD готов'}</span>
+                  {report.note ? <span className="field__hint">{report.note}</span> : null}
+                </div>
+                <Badge tone="success">Принята</Badge>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="material-grid">
-          {MATERIAL_PAGES.map((item) => {
+          {MATERIAL_PAGES.map(item => {
             const entry = form.materials[item.page] || { file: null, exclude: false };
             return (
               <div key={item.page} className={`material-card ${item.optional ? '' : 'material-card--required'}`}>
                 <div className="material-card__head">
-                  <span className="material-card__title">
-                    Страница {item.page} — {item.title}
-                  </span>
-                  {entry.file ? (
-                    <Badge tone="success">Файл</Badge>
-                  ) : entry.exclude ? (
-                    <Badge tone="warn">Исключена</Badge>
-                  ) : item.optional ? (
-                    <Badge plain>Необязательно</Badge>
-                  ) : (
-                    <Badge tone="danger">Нужно</Badge>
-                  )}
+                  <span className="material-card__title">Страница {item.page} — {item.title}</span>
+                  {entry.file ? <Badge tone="success">Файл</Badge> : entry.exclude ? <Badge tone="warn">Исключена</Badge> : item.optional ? <Badge plain>Необязательно</Badge> : <Badge tone="danger">Нужно</Badge>}
                 </div>
                 <input
                   className="input input--sm"
                   type="file"
                   accept="image/jpeg,image/png,image/webp,application/pdf,.pdf"
                   disabled={entry.exclude}
-                  onChange={(event) => {
+                  onChange={event => {
                     const file = event.target.files?.[0] || null;
                     if (file && file.size > MAX_MATERIAL_UPLOAD_BYTES) {
                       window.alert(`Файл «${file.name}» больше ${MAX_MATERIAL_UPLOAD_BYTES / 1024 / 1024} МБ.`);
@@ -688,7 +514,7 @@ export function MaterialsSection({ form }: { form: ConclusionForm }) {
                   <input
                     type="checkbox"
                     checked={entry.exclude}
-                    onChange={(event) => form.setMaterial(item.page, { file: null, exclude: event.target.checked })}
+                    onChange={event => form.setMaterial(item.page, { file: null, exclude: event.target.checked })}
                   />
                   <span>Не включать эту страницу</span>
                 </label>
@@ -700,26 +526,27 @@ export function MaterialsSection({ form }: { form: ConclusionForm }) {
           <input
             type="checkbox"
             checked={Boolean(form.confirmations.template_review_confirm)}
-            onChange={(event) => form.setConfirmation('template_review_confirm', event.target.checked)}
+            onChange={event => form.setConfirmation('template_review_confirm', event.target.checked)}
             required
           />
-          <span>
-            Я проверил все страницы итогового документа. Схема Приложения 2 проверена; актуальные вложения загружены или
-            страницы явно исключены; в фотослоты не загружены SCADA/экраны, удостоверения и акты.
-          </span>
+          <span>Я проверил все страницы итогового документа. Схема Приложения 2 проверена; актуальные вложения загружены или страницы явно исключены; в фотослоты не загружены SCADA/экраны, удостоверения и акты.</span>
         </label>
       </div>
     </section>
   );
 }
 
-export function SectionRenderer({ section, form }: { section: SectionDef; form: ConclusionForm }) {
+export function SectionRenderer({ section, form, workforceDefectReports = [], workforceSchemes = [] }: {
+  section: SectionDef;
+  form: ConclusionForm;
+  workforceDefectReports?: WorkforceDefectReport[];
+  workforceSchemes?: WorkforceReport[];
+}) {
   if (section.kind === 'fields') return <FieldsSection section={section} form={form} />;
   if (section.kind === 'defects') return <DefectsSection form={form} />;
   if (section.kind === 'valves') return <ValvesSection form={form} />;
-  if (section.kind === 'uzt') return <UztSection form={form} />;
-  if (section.kind === 'photos') return <PhotosSection form={form} />;
-  if (section.kind === 'materials') return <MaterialsSection form={form} />;
+  if (section.kind === 'photos') return <PhotosSection form={form} workforceDefectReports={workforceDefectReports} />;
+  if (section.kind === 'materials') return <MaterialsSection form={form} workforceSchemes={workforceSchemes} />;
   return null;
 }
 

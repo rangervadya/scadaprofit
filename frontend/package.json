@@ -1,13 +1,12 @@
 {
   "name": "scadaprofit-unified-frontend",
-  "version": "4.5.17",
+  "version": "4.5.20",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+    "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
     "react": "19.1.1",

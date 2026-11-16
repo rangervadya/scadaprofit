@@ -23,7 +23,7 @@ export function AppLayout() {
       {navOpen ? (
         <button type="button" className="nav-overlay" aria-label="Закрыть меню" onClick={() => setNavOpen(false)} />
       ) : null}
-      <Sidebar onCloseNav={() => setNavOpen(false)} />
+      <Sidebar navOpen={navOpen} onCloseNav={() => setNavOpen(false)} />
       <div className="main">
         <Topbar onToggleNav={() => setNavOpen((open) => !open)} navOpen={navOpen} />
         <main className="page" id="main-content">
