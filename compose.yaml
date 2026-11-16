@@ -37,6 +37,24 @@ services:
       retries: 20
       start_period: 30s
 
+  # One-shot: apply Prisma migrations before anything reads the database.
+  # vdgo-backend also creates report_runs/archive_entries with IF NOT EXISTS,
+  # which would leave Prisma with a non-empty schema and no migration history
+  # (P3005). Running migrations first makes both services agree on one owner.
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/app.Dockerfile
+    image: scadaprofit-app:latest
+    logging: *default-logging
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-vdgo_app}:${POSTGRES_PASSWORD:-change_me_vdgo_2026}@vdgo-db:5432/${POSTGRES_DB:-vdgo}"
+    command: ["npm", "run", "db:deploy"]
+    depends_on:
+      vdgo-db:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build:
       context: .
@@ -85,6 +103,8 @@ services:
       QWEN_PIPE_MAX_IMAGE_EDGE: "${QWEN_PIPE_MAX_IMAGE_EDGE:-1280}"
       QWEN_PIPE_MIN_CONFIDENCE: "${QWEN_PIPE_MIN_CONFIDENCE:-30}"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       ollama:
         condition: service_healthy
       vdgo-db:
@@ -141,6 +161,8 @@ services:
     depends_on:
       vdgo-db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).read()"]
       interval: 15s
