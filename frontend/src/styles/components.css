@@ -98,6 +98,9 @@
 .card__body {
   padding: 18px;
 }
+.card__body::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, новый Edge, Opera */
+}
 .card__body--flush {
   padding: 0;
 }

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const wfUrl = new URL('../../services/ollama/api/services/workforce-system.js', import.meta.url);
+const userRoutesUrl = new URL('../../services/ollama/api/routes/workforce-user-routes.js', import.meta.url);
 const repoUrl = new URL('../../services/ollama/api/repositories/postgres-repo.js', import.meta.url);
 const schemaUrl = new URL('../../services/ollama/prisma/schema.prisma', import.meta.url);
 
@@ -35,8 +36,8 @@ test('idle: activity touch is throttled and persisted', async () => {
 });
 
 test('revoke: global revoke-all endpoint exists', async () => {
-  const src = await readFile(wfUrl, 'utf8');
-  assert.match(src, /routes\.post\('\/api\/workforce\/admin\/revoke-all-sessions'/);
+  const src = await readFile(userRoutesUrl, 'utf8');
+  assert.match(src, /router\.post\('\/admin\/revoke-all-sessions'/);
   assert.match(src, /deleteAllSessions\(\)/);
   const repo = await readFile(repoUrl, 'utf8');
   assert.match(repo, /export async function deleteAllSessions/);

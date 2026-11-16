@@ -66,14 +66,21 @@ test('etag: changed payload produces a different ETag', () => {
 
 test('etag: read endpoints use sendJsonConditional', async () => {
   const { readFile } = await import('node:fs/promises');
-  const wf = await readFile(new URL('../../services/ollama/api/services/workforce-system.js', import.meta.url), 'utf8');
+  const tasks = await readFile(
+    new URL('../../services/ollama/api/routes/workforce-task-routes.js', import.meta.url),
+    'utf8',
+  );
+  const users = await readFile(
+    new URL('../../services/ollama/api/routes/workforce-user-routes.js', import.meta.url),
+    'utf8',
+  );
   const library = await readFile(
     new URL('../../services/ollama/api/routes/library-routes.js', import.meta.url),
     'utf8',
   );
   const cad = await readFile(new URL('../../services/ollama/api/routes/manual-cad-routes.js', import.meta.url), 'utf8');
-  assert.match(wf, /sendJsonConditional\(req, res, \{ ok: true, tasks \}\)/);
-  assert.match(wf, /sendJsonConditional\(req, res, \{ ok: true, users: visible\.map\(publicUser\) \}\)/);
+  assert.match(tasks, /sendJsonConditional\(req, res, \{ ok: true, tasks \}\)/);
+  assert.match(users, /sendJsonConditional\(req, res, \{ ok: true, users: visible\.map\(publicUser\) \}\)/);
   assert.match(cad, /sendJsonConditional\(req, res, \{ ok: true, projects \}\)/);
   assert.match(library, /sendJsonConditional\(req, res, \{ ok: true, library \}\)/);
 });

@@ -61,7 +61,7 @@ services:
       SESSION_IDLE_MS: "${SESSION_IDLE_MS:-43200000}"
       DATA_DIR: "/data/cad-reconstruction-jobs"
       AUTH_BACKEND: "${AUTH_BACKEND:-postgres}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://vdgo:change_me_vdgo_2026@vdgo-db:5432/vdgo}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-vdgo_app}:${POSTGRES_PASSWORD:-change_me_vdgo_2026}@vdgo-db:5432/${POSTGRES_DB:-vdgo}"
       OLLAMA_CHAT_URL: "http://ollama:11434/api/chat"
       OLLAMA_TAGS_URL: "http://ollama:11434/api/tags"
       QWEN_MODEL: "${QWEN_MODEL:-qwen3-vl:4b-instruct}"

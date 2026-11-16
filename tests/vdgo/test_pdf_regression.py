@@ -5,6 +5,7 @@ Run from project root with:
 """
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 import zipfile
@@ -780,10 +781,39 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
 
 
 class DockerBuildContractTests(unittest.TestCase):
-    def test_editable_word_exporter_is_copied_into_backend_image(self):
+    def test_every_imported_module_is_copied_into_backend_image(self):
+        """The image must contain every module app.py imports.
+
+        The Dockerfile copies the whole service directory (`COPY . ./`), so this
+        test guards the .dockerignore instead of an explicit file list: if a
+        module were excluded, the container would crash at import time with
+        ModuleNotFoundError (the archive.py incident).
+        """
         dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("pdf_to_docx_editable.py", dockerfile,
-                      "The backend imports pdf_to_docx_editable, so Dockerfile must copy it into /app")
+        self.assertIsNotNone(
+            re.search(r"^COPY \. \./$", dockerfile, re.M),
+            "Dockerfile must copy the whole service directory so every module ships",
+        )
+
+        imported = set()
+        for rel in ("app.py", "pdf_to_docx.py", "pdf_to_docx_editable.py", "archive.py", "database.py"):
+            source = (BACKEND / rel).read_text(encoding="utf-8")
+            for match in re.finditer(r"^(?:from|import)\s+([a-z_][a-z0-9_]*)", source, re.M):
+                imported.add(match.group(1))
+
+        local_modules = {p.stem for p in BACKEND.glob("*.py")} - {"app"}
+        third_party = {"pymupdf", "fitz", "PIL", "docx", "psycopg", "psycopg_pool", "pydantic", "cairosvg"}
+        expected = (imported & local_modules) - third_party
+        self.assertTrue(expected, "expected at least one local module import to check")
+
+        # .dockerignore must not exclude any of them.
+        ignored = (BACKEND / ".dockerignore").read_text(encoding="utf-8")
+        for name in sorted(expected):
+            self.assertNotIn(
+                name,
+                ignored,
+                f"{name}.py is imported by the backend but .dockerignore excludes it",
+            )
 
     def test_runtime_uses_supported_pymupdf_import(self):
         for rel in ("app.py", "pdf_to_docx.py", "pdf_to_docx_editable.py"):

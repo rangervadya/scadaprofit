@@ -22,8 +22,8 @@ function routeBody(src, route) {
 }
 
 test('p2-4: GET /api/workforce/reports only writes when a status moved', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
-  const body = routeBody(src, "routes.get('/api/workforce/reports'");
+  const src = await readFile(join(ROOT, 'services/ollama/api/routes/workforce-inbox-routes.js'), 'utf8');
+  const body = routeBody(src, "router.get('/reports'");
   assert.match(body, /if \(await refreshSchemeState\(report\)\) changed = true;/);
   // The save must be conditional: exactly one saveWorkspace call, guarded.
   const saves = body.match(/saveWorkspace\(\)/g) || [];
@@ -32,7 +32,7 @@ test('p2-4: GET /api/workforce/reports only writes when a status moved', async (
 });
 
 test('p2-4: refreshSchemeState reports whether anything changed', async () => {
-  const src = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
+  const src = await readFile(join(ROOT, 'services/ollama/api/routes/workforce-inbox-routes.js'), 'utf8');
   assert.match(src, /const before = `\$\{report\.schemeStatus\}/);
   assert.match(src, /return before !== after;/);
 });

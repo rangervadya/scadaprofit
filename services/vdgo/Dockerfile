@@ -15,10 +15,10 @@ RUN apt-get update \
     && pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py pdf_to_docx.py pdf_to_docx_editable.py database.py logging_setup.py ./
-COPY templates ./templates
-COPY template ./template
-COPY assets ./assets
+# Copy the whole service directory: app.py imports archive.py, schemas.py,
+# database.py and logging_setup.py, so an explicit file list silently breaks
+# the image whenever a module is added. .dockerignore keeps output/uploads out.
+COPY . ./
 RUN mkdir -p /app/output /app/uploads \
     && useradd --create-home --uid 10001 vdgo \
     && chown -R vdgo:vdgo /app

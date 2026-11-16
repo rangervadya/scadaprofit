@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
 const SERVER = readFileSync(join(ROOT, 'services/ollama/api/server.js'), 'utf8');
-const WORKFORCE = readFileSync(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
+const TASKS = readFileSync(join(ROOT, 'services/ollama/api/routes/workforce-task-routes.js'), 'utf8');
 const REPO = readFileSync(join(ROOT, 'services/ollama/api/repositories/postgres-repo.js'), 'utf8');
 
 test('idempotency: postgres-repo экспортирует find/save', () => {
@@ -28,9 +28,9 @@ test('idempotency: /api/analyze читает и пишет ключ', () => {
 });
 
 test('idempotency: /api/workforce/tasks читает и пишет ключ', () => {
-  const start = WORKFORCE.indexOf("routes.post('/api/workforce/tasks'");
+  const start = TASKS.indexOf("router.post('/tasks'");
   assert.ok(start >= 0, 'нет POST /api/workforce/tasks');
-  const body = WORKFORCE.slice(start, start + 3000);
+  const body = TASKS.slice(start, start + 3000);
   assert.match(body, /findIdempotency\('POST \/api\/workforce\/tasks'/);
   assert.match(body, /saveIdempotency\(\{[\s\S]*endpoint: 'POST \/api\/workforce\/tasks'/);
 });

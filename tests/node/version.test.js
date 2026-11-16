@@ -52,7 +52,7 @@ test('version: no hardcoded release label remains in app code', async () => {
     assert.ok(!src.includes(`'${version}'`) && !src.includes(`"${version}"`), `${rel} still hardcodes ${version}`);
   }
   // Node reports the version through the shared module.
-  const wf = await readFile(join(ROOT, 'services/ollama/api/services/workforce-system.js'), 'utf8');
+  const wf = await readFile(join(ROOT, 'services/ollama/api/routes/workforce-user-routes.js'), 'utf8');
   assert.match(wf, /version: appVersion\(\)/);
   const logger = await readFile(join(ROOT, 'services/ollama/api/lib/logger.js'), 'utf8');
   assert.match(logger, /return appVersion\(\)/);
