@@ -313,6 +313,7 @@ export type WorkforceTask = {
   scheduledDate: string;
   assignedTo: string;
   assignedName: string;
+  assignmentGroupId?: string | null;
   status: TaskStatus;
   events: TaskEvent[];
   reportsCount: number;

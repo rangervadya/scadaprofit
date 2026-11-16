@@ -84,7 +84,7 @@ export function App() {
                 <Route
                   path="/conclusion"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequireRole roles={[...STAFF_ROLES, 'fitter']}>
                       <ConclusionPage />
                     </RequireRole>
                   }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Card, Empty } from '../components/ui';
 import { healthApi, workforceApi } from '../lib/api';
@@ -20,6 +20,7 @@ const QUICK_LINKS: QuickLink[] = [
 
 export function DashboardPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const isFitter = user?.role === 'fitter';
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [reportsError, setReportsError] = useState<string | null>(null);
@@ -63,31 +64,46 @@ export function DashboardPage() {
               : 'Единый контур: заключения, ручные схемы, CAD-редактор, архив и приёмка работ слесарей.'}
           </p>
           <div className="hero__actions">
-            <Link to="/conclusion" className="btn btn--primary">
-              <Icon name="doc" /> Открыть заключение
-            </Link>
-            <Link to="/schemes" className="btn">
-              <Icon name="upload" /> Загрузить схему
-            </Link>
-            <Link to="/team" className="btn">
-              <Icon name="team" /> Задания и отчёты
-            </Link>
+            {isFitter ? (
+              <Link to="/conclusion" className="btn btn--primary">
+                <Icon name="doc" /> Заполнить заключение
+              </Link>
+            ) : (
+              <>
+                <Link to="/conclusion" className="btn btn--primary">
+                  <Icon name="doc" /> Открыть заключение
+                </Link>
+                <Link to="/schemes" className="btn">
+                  <Icon name="upload" /> Загрузить схему
+                </Link>
+                <Link to="/team" className="btn">
+                  <Icon name="team" /> Задания и отчёты
+                </Link>
+              </>
+            )}
           </div>
         </div>
-        <div className="hero__aside">
-          <div className="hero__metric">
-            <div className="hero__metric-value">{reports.length}</div>
-            <div className="hero__metric-label">Заключений сформировано</div>
+        {isFitter ? null : (
+          <div className="hero__aside">
+            <div className="hero__metric">
+              <div className="hero__metric-value">{reports.length}</div>
+              <div className="hero__metric-label">Заключений сформировано</div>
+            </div>
+            <div className="hero__metric">
+              <div className="hero__metric-value">{activeTasks.length}</div>
+              <div className="hero__metric-label">Активных заданий</div>
+            </div>
           </div>
-          <div className="hero__metric">
-            <div className="hero__metric-value">{activeTasks.length}</div>
-            <div className="hero__metric-label">Активных заданий</div>
-          </div>
-        </div>
+        )}
       </section>
 
       <div className="quick-grid">
-        {QUICK_LINKS.map((link) => (
+        {(isFitter
+          ? QUICK_LINKS.filter((link) => link.to === '/conclusion').map((link) =>
+              link.to === '/conclusion' ? { ...link, text: 'Заполнить данные по своему дому' } : link,
+            )
+          : QUICK_LINKS
+        ).map((link) => (
           <Link key={link.to} to={link.to} className="quick-card">
             <span className="quick-card__icon">
               <Icon name={link.icon} />
@@ -98,7 +114,7 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <div className="split split--equal">
+      <div className={isFitter ? '' : 'split split--equal'}>
         <Card
           title={user?.role === 'fitter' ? 'Мои задания' : 'Ближайшие задания'}
           actions={
@@ -128,11 +144,21 @@ export function DashboardPage() {
                 </thead>
                 <tbody>
                   {myTasks.slice(0, 6).map((task) => (
-                    <tr key={task.id}>
+                    <tr
+                      key={task.id}
+                      className="table__row--clickable"
+                      tabIndex={0}
+                      role="link"
+                      aria-label={`${task.street}, ${task.address} — ${taskStatusLabel(task.status)}`}
+                      onClick={() => navigate(`/team?task=${task.id}`)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        navigate(`/team?task=${task.id}`);
+                      }}
+                    >
                       <td>
-                        <Link to={`/team?task=${task.id}`}>
-                          {task.street}, {task.address}
-                        </Link>
+                        {task.street}, {task.address}
                         <div className="muted" style={{ fontSize: 11 }}>
                           {task.assignedName}
                         </div>
@@ -159,50 +185,52 @@ export function DashboardPage() {
           )}
         </Card>
 
-        <Card
-          title="Последние заключения"
-          actions={
-            <Link to="/archive" className="btn btn--ghost btn--sm">
-              Архив <Icon name="chevronRight" />
-            </Link>
-          }
-          flush
-        >
-          {reportsError ? (
-            <div style={{ padding: 16 }}>
-              <Badge tone="warn">{reportsError}</Badge>
-            </div>
-          ) : reports.length === 0 ? (
-            <Empty icon="archive" title="История пуста">
-              Сформируйте первое заключение в разделе «Заключение».
-            </Empty>
-          ) : (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Номер</th>
-                    <th>Дата</th>
-                    <th>Формат</th>
-                    <th>Создано</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reports.slice(0, 6).map((report) => (
-                    <tr key={report.id}>
-                      <td className="mono">{report.report_number || '—'}</td>
-                      <td className="nowrap">{report.report_date || '—'}</td>
-                      <td>
-                        <Badge plain>{report.output_format?.toUpperCase() || '—'}</Badge>
-                      </td>
-                      <td className="nowrap muted">{formatDateTime(report.created_at)}</td>
+        {isFitter ? null : (
+          <Card
+            title="Последние заключения"
+            actions={
+              <Link to="/archive" className="btn btn--ghost btn--sm">
+                Архив <Icon name="chevronRight" />
+              </Link>
+            }
+            flush
+          >
+            {reportsError ? (
+              <div style={{ padding: 16 }}>
+                <Badge tone="warn">{reportsError}</Badge>
+              </div>
+            ) : reports.length === 0 ? (
+              <Empty icon="archive" title="История пуста">
+                Сформируйте первое заключение в разделе «Заключение».
+              </Empty>
+            ) : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Номер</th>
+                      <th>Дата</th>
+                      <th>Формат</th>
+                      <th>Создано</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
+                  </thead>
+                  <tbody>
+                    {reports.slice(0, 6).map((report) => (
+                      <tr key={report.id}>
+                        <td className="mono">{report.report_number || '—'}</td>
+                        <td className="nowrap">{report.report_date || '—'}</td>
+                        <td>
+                          <Badge plain>{report.output_format?.toUpperCase() || '—'}</Badge>
+                        </td>
+                        <td className="nowrap muted">{formatDateTime(report.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        )}
       </div>
     </>
   );

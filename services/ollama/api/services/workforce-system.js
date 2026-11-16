@@ -414,6 +414,7 @@ export async function createWorkforceSystem({
       sendJsonConditional,
       findIdempotency,
       saveIdempotency,
+      reportFilesDir,
     }),
   );
 

@@ -85,6 +85,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
 }
@@ -313,6 +314,41 @@
   background: var(--bg-inset);
   color: var(--muted);
 }
+.input-wrap {
+  position: relative;
+  display: block;
+}
+.input-wrap .input {
+  padding-right: 38px;
+}
+.input-wrap__toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.input-wrap__toggle:hover {
+  background: var(--bg-inset);
+  color: var(--ink);
+}
+.input-wrap__toggle:focus-visible {
+  outline: 2px solid #94b0e8;
+  outline-offset: 1px;
+}
 .input--sm,
 .select--sm {
   min-height: 32px;
@@ -387,6 +423,7 @@
 /* Tables */
 .table-wrap {
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .table {
   width: 100%;
@@ -414,6 +451,13 @@
 }
 .table tbody tr:hover {
   background: #fafbfe;
+}
+.table tbody tr.table__row--clickable {
+  cursor: pointer;
+}
+.table tbody tr.table__row--clickable:focus-visible {
+  outline: 2px solid #94b0e8;
+  outline-offset: -2px;
 }
 .table td.num {
   font-variant-numeric: tabular-nums;
@@ -866,6 +910,12 @@
 .row--between {
   justify-content: space-between;
 }
+.row--end {
+  justify-content: flex-end;
+}
+.table__actions {
+  text-align: right;
+}
 .stack {
   display: grid;
   gap: 12px;
@@ -907,4 +957,82 @@
 }
 .fade-in {
   animation: fade 0.2s ease;
+}
+
+/* ---------- Responsive adjustments for shared components ---------- */
+
+/* Long definition values (file names, statuses) must be allowed to wrap so a
+   single wide word cannot push the whole page sideways. */
+.kv dd {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+@media (max-width: 680px) {
+  /* Denser tables so more columns fit before horizontal scroll kicks in. */
+  .table th,
+  .table td {
+    padding: 9px 11px;
+  }
+  .table th {
+    font-size: 11px;
+  }
+  .modal-backdrop {
+    padding: 12px;
+  }
+  .modal {
+    width: 100%;
+    max-height: 92vh;
+  }
+  .modal__footer {
+    flex-wrap: wrap;
+  }
+  /* Buttons inside sticky action bars share the row instead of overflowing. */
+  .sticky-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 560px) {
+  /* Stack key/value pairs: the two-column grid gets too cramped on phones. */
+  .kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .kv dd {
+    margin-bottom: 6px;
+  }
+  .toasts {
+    right: 12px;
+    left: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+  .modal-backdrop {
+    padding: 8px;
+    align-items: end;
+  }
+  .modal {
+    max-height: 94vh;
+  }
+  .modal__header,
+  .modal__body,
+  .modal__footer {
+    padding: 14px 16px;
+  }
+  /* Slightly larger tap targets on touch screens. */
+  .btn {
+    min-height: 40px;
+  }
+  .btn--sm {
+    min-height: 34px;
+  }
+  .btn--icon {
+    width: 38px;
+    min-height: 38px;
+  }
+  .field-row,
+  .field-row--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

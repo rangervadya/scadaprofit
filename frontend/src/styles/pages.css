@@ -80,6 +80,35 @@
   font-size: 11px;
   color: #a9c2e6;
 }
+/* Stack the hero on tablets and put the two metrics side by side below the
+   text; on phones the whole card becomes a single column. */
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero__aside {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+  }
+}
+@media (max-width: 560px) {
+  .hero {
+    padding: 20px 18px;
+  }
+  .hero__title {
+    font-size: 22px;
+  }
+  .hero__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero__actions .btn {
+    width: 100%;
+  }
+  .quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 
 .quick-grid {
   display: grid;
@@ -133,6 +162,7 @@
 /* Login */
 .auth {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -438,6 +468,34 @@
     grid-auto-flow: column;
     grid-auto-columns: max-content;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .conclusion-nav__link {
+    flex: none;
+  }
+}
+@media (max-width: 680px) {
+  .form-section__head {
+    padding: 14px;
+  }
+  .form-section__body {
+    padding: 14px;
+  }
+}
+@media (max-width: 560px) {
+  /* The action bar becomes a compact two-row block pinned to the bottom. */
+  .sticky-actions {
+    bottom: 8px;
+    padding: 10px;
+  }
+  .sticky-actions .sticky-actions__spacer {
+    display: none;
+  }
+  .material-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .photo-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
 
@@ -594,6 +652,34 @@
   max-height: 62vh;
   overflow-y: auto;
 }
+
+/* One folder per fitter: same card look as the address folders, houses nested. */
+.task-folders {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.task-folder {
+  display: grid;
+  gap: 6px;
+}
+.task-folder__body {
+  display: grid;
+  gap: 6px;
+  padding: 6px 8px 8px 20px;
+  border-left: 2px solid var(--line);
+  margin-left: 10px;
+}
+.task-folder__body .list-item {
+  padding: 9px 12px;
+}
+.list-item--sub {
+  background: #fff;
+}
+.list-item--sub .list-item__title {
+  font-size: 12.5px;
+}
+
 .folder-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -914,5 +1000,40 @@
 @media (max-width: 1080px) {
   .archive-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Cross-page responsive refinements ---------- */
+
+@media (max-width: 760px) {
+  /* Inside the stacked team layout the list already sits in a card that
+     scrolls as a whole; a second nested scroll area just traps the page. */
+  .team-list {
+    max-height: none;
+  }
+  .workspace-side {
+    position: static;
+  }
+  .canvas-frame {
+    max-height: 56vh;
+  }
+}
+
+@media (max-width: 560px) {
+  .user-card {
+    flex-wrap: wrap;
+  }
+  .user-card__main {
+    flex: 1 1 60%;
+  }
+  /* Page-level toolbars (tabs + search + filters) stack cleanly. */
+  .page__actions {
+    width: 100%;
+  }
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .review-card__head {
+    flex-wrap: wrap;
   }
 }

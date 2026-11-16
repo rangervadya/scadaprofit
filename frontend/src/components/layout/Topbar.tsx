@@ -12,7 +12,7 @@ const stateLabel = (online: boolean | null, loading: boolean, ready: boolean): s
   return ready ? 'Сервисы доступны' : 'Без Ollama: базовые сервисы';
 };
 
-export function Topbar() {
+export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => void; navOpen?: boolean }) {
   const { data, loading, error } = useHealth();
   const { user } = useAuth();
   const location = useLocation();
@@ -29,9 +29,15 @@ export function Topbar() {
 
   return (
     <header className="topbar">
-      <Link to="/" className="topbar__icon mobile-only" aria-label="На главную">
-        <Icon name="menu" />
-      </Link>
+      <button
+        type="button"
+        className="topbar__icon mobile-only"
+        aria-label={navOpen ? 'Закрыть меню' : 'Открыть меню'}
+        aria-expanded={navOpen}
+        onClick={onToggleNav}
+      >
+        <Icon name={navOpen ? 'x' : 'menu'} />
+      </button>
       {!isFitter ? (
         <form
           className="searchbox"
@@ -54,16 +60,18 @@ export function Topbar() {
         </form>
       ) : null}
       <span className="topbar__spacer" />
-      <Link
-        to={statusTo}
-        className="status-pill"
-        title={error || data?.ollama?.hint || data?.localRecognition?.mode || 'Состояние сервисов'}
-      >
-        <span
-          className={`status-dot ${loading ? 'status-dot--checking' : online ? 'status-dot--ok' : 'status-dot--error'}`}
-        />
-        {stateLabel(online, loading, ready)}
-      </Link>
+      {isFitter ? null : (
+        <Link
+          to={statusTo}
+          className="status-pill"
+          title={error || data?.ollama?.hint || data?.localRecognition?.mode || 'Состояние сервисов'}
+        >
+          <span
+            className={`status-dot ${loading ? 'status-dot--checking' : online ? 'status-dot--ok' : 'status-dot--error'}`}
+          />
+          {stateLabel(online, loading, ready)}
+        </Link>
+      )}
       {!isFitter ? (
         <Link to="/settings" className="topbar__icon" aria-label="Настройки">
           <Icon name="settings" />

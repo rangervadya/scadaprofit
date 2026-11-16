@@ -214,6 +214,15 @@ export const workforceApi = {
   startTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/start`),
   visitTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/visit`),
   officeTask: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/office`),
+  reassignTask: (id: string, assignedTo: string) =>
+    api.patch<{ ok: boolean; changed: boolean; task: WorkforceTask }>(
+      `${MAIN}/workforce/tasks/${encodeURIComponent(id)}`,
+      { assignedTo },
+    ),
+  deleteTask: (id: string, scope: 'single' | 'group' = 'single') =>
+    api.del<{ ok: boolean; removed: { tasks: number; reports: number; defects: number } }>(
+      `${MAIN}/workforce/tasks/${encodeURIComponent(id)}?scope=${scope === 'group' ? 'group' : 'single'}`,
+    ),
   submitSketch: (id: string, file: File, note: string) => {
     const form = new FormData();
     form.append('sketch', file, file.name);

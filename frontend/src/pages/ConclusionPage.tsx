@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Button, Card, Empty, Loading, Spinner, useToast } from '../components/ui';
 import { buildDefectPhotos, buildWorkforceSchemes, conclusionApi, workforceApi } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import type { ConclusionContext } from '../lib/types';
 import { SectionRenderer } from './conclusion/ConclusionSections';
@@ -13,6 +14,8 @@ type Busy = null | 'pdf' | 'docx' | 'preview';
 
 export function ConclusionPage() {
   const [params] = useSearchParams();
+  const { user } = useAuth();
+  const isFitter = user?.role === 'fitter';
   const taskId = params.get('task');
   const reportId = params.get('report');
   const defectId = params.get('defectReport');
@@ -101,6 +104,12 @@ export function ConclusionPage() {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // A fitter fills the form; only staff may render or submit the document.
+    // Hiding the buttons is not enough: Enter in a field still fires submit.
+    if (isFitter) {
+      notify('Формирование заключения доступно приёмщику или руководителю', 'error');
+      return;
+    }
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const format = (submitter?.dataset.format as Busy) || 'pdf';
     if (format === 'preview') {
@@ -166,17 +175,20 @@ export function ConclusionPage() {
             ) : null}
           </div>
           <p className="page__subtitle">
-            Заполните данные объекта, проверьте приложения и сформируйте PDF или Word. Черновик автоматически
-            сохраняется в браузере.
+            {isFitter
+              ? 'Заполните данные по своему дому. Сформировать заключение может приёмщик или руководитель.'
+              : 'Заполните данные объекта, проверьте приложения и сформируйте PDF или Word. Черновик автоматически сохраняется в браузере.'}
           </p>
         </div>
         <div className="page__actions">
           <Button icon="save" onClick={downloadDraft}>
             Сохранить JSON
           </Button>
-          <Button icon="upload" onClick={() => loadRef.current?.click()}>
-            Загрузить JSON
-          </Button>
+          {isFitter ? null : (
+            <Button icon="upload" onClick={() => loadRef.current?.click()}>
+              Загрузить JSON
+            </Button>
+          )}
           <input
             ref={loadRef}
             type="file"
@@ -368,52 +380,57 @@ export function ConclusionPage() {
               <div className="alert alert--info">
                 <Icon name="info" />
                 <span>
-                  Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный
-                  адрес.
+                  {isFitter
+                    ? 'Заполните поля и сохраните черновик. Готовое заключение сформирует приёмщик.'
+                    : 'Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный адрес.'}
                 </span>
               </div>
             </div>
           </section>
 
           <div className="sticky-actions">
-            <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>
-              Сбросить
-            </Button>
-            <span className="sticky-actions__spacer" />
-            {busy ? (
-              <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}>
-                <Spinner /> Формируем…
-              </span>
-            ) : null}
-            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy)}>
-              Word
-            </Button>
-            <Button
-              icon="doc"
-              type="submit"
-              name="format"
-              value="preview"
-              data-format="preview"
-              disabled={Boolean(busy)}
-            >
-              Проверить PDF
-            </Button>
-            <Button
-              variant="primary"
-              icon="download"
-              type="submit"
-              name="format"
-              value="pdf"
-              data-format="pdf"
-              disabled={Boolean(busy)}
-            >
-              Сформировать PDF
-            </Button>
-            {archivedReportId ? (
-              <Link className="btn btn--ghost" to="/archive">
-                <Icon name="archive" /> В архиве
-              </Link>
-            ) : null}
+            {isFitter ? null : (
+              <>
+                <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>
+                  Сбросить
+                </Button>
+                <span className="sticky-actions__spacer" />
+                {busy ? (
+                  <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}>
+                    <Spinner /> Формируем…
+                  </span>
+                ) : null}
+                <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy)}>
+                  Word
+                </Button>
+                <Button
+                  icon="doc"
+                  type="submit"
+                  name="format"
+                  value="preview"
+                  data-format="preview"
+                  disabled={Boolean(busy)}
+                >
+                  Проверить PDF
+                </Button>
+                <Button
+                  variant="primary"
+                  icon="download"
+                  type="submit"
+                  name="format"
+                  value="pdf"
+                  data-format="pdf"
+                  disabled={Boolean(busy)}
+                >
+                  Сформировать PDF
+                </Button>
+                {archivedReportId ? (
+                  <Link className="btn btn--ghost" to="/archive">
+                    <Icon name="archive" /> В архиве
+                  </Link>
+                ) : null}
+              </>
+            )}
           </div>
         </form>
       </div>

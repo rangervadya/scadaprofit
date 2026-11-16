@@ -104,7 +104,16 @@ export function createAuthRouter(ctx) {
     return res.json({ ok: true, user: publicUser(user) });
   });
 
-  router.get('/auth/check-vdgo', (_req, res) => res.sendStatus(204));
+  // nginx auth_request for /vdgo/api/*, /vdgo/generate and /vdgo/legacy.
+  // A fitter may fill a conclusion but must not render or archive documents,
+  // so anything behind this gate is staff-only. 403 makes nginx refuse the
+  // upstream request before vdgo-backend sees it.
+  router.get('/auth/check-vdgo', (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.sendStatus(401);
+    if (user.role === 'fitter') return res.sendStatus(403);
+    return res.sendStatus(204);
+  });
 
   return router;
 }

@@ -28,7 +28,7 @@ export function createSubmissionRouter(ctx) {
   const router = express.Router();
 
   router.post(
-    '/api/workforce/tasks/:id/report',
+    '/tasks/:id/report',
     (req, res, next) => {
       if (!req.user || !['fitter', 'developer'].includes(req.user.role))
         return res.status(403).json({ error: 'Отправлять полевые отчёты может слесарь.' });
@@ -154,7 +154,7 @@ export function createSubmissionRouter(ctx) {
 
   // Defect photos are a separate review queue. They do not enter CAD processing or Section 7.
   router.post(
-    '/api/workforce/tasks/:id/defects',
+    '/tasks/:id/defects',
     (req, res, next) => {
       if (!req.user || !['fitter', 'developer'].includes(req.user.role))
         return res.status(403).json({ error: 'Отправлять фотографии дефектов может слесарь.' });

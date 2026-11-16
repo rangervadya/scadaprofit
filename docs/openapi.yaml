@@ -185,6 +185,37 @@ paths:
         "400": { description: Валидация }
         "409": { description: Конфликт назначения }
 
+  /api/workforce/tasks/{id}:
+    patch:
+      tags: [workforce]
+      summary: Сменить слесаря у задания
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignedTo]
+              properties:
+                assignedTo: { type: string, description: ID действующего слесаря }
+      responses:
+        "200": { description: Слесарь сменён }
+        "400": { description: Валидация }
+        "404": { description: Не найдено }
+    delete:
+      tags: [workforce]
+      summary: Удалить задание (дом) или весь обход при scope=group
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: scope
+          in: query
+          schema: { type: string, enum: [single, group] }
+      responses:
+        "200": { description: Удалено }
+        "404": { description: Не найдено }
+
   /api/workforce/tasks/{id}/start:
     post:
       tags: [workforce]

@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { BrandMark, Icon } from '../ui/Icon';
 import { useAuth } from '../../lib/auth';
 import { STAFF_ROLES } from '../../lib/roles';
+import { useMediaQuery } from '../../lib/useMediaQuery';
 import type { SessionUser } from '../../lib/types';
 
 export type NavItem = {
@@ -15,7 +16,7 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Рабочий стол', icon: 'home', end: true },
-  { to: '/conclusion', label: 'Заключение', icon: 'doc', roles: STAFF_ROLES },
+  { to: '/conclusion', label: 'Заключение', icon: 'doc', roles: [...STAFF_ROLES, 'fitter'] },
   { to: '/schemes', label: 'Схемы домов', icon: 'scheme', roles: STAFF_ROLES },
   { to: '/archive', label: 'Архив', icon: 'archive', roles: STAFF_ROLES },
   { to: '/team', label: 'Команда', icon: 'team' },
@@ -39,22 +40,37 @@ export function useActiveNav(): NavItem | undefined {
 
 const COLLAPSED_KEY = 'profit.sidebar.collapsed';
 
-export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }) {
+export function Sidebar({ onCloseNav }: { onCloseNav?: () => void }) {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === '1');
+  // Below 760px the sidebar is a drawer: collapsing it there just hides the
+  // labels and leaves an unreadable icon strip, so the toggle closes instead.
+  const isMobile = useMediaQuery('(max-width: 760px)');
+  const isCollapsed = collapsed && !isMobile;
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+    if (isMobile) {
+      document.documentElement.style.removeProperty('--sidebar-width');
+      return;
+    }
     document.documentElement.style.setProperty('--sidebar-width', collapsed ? '76px' : '248px');
     return () => {
       document.documentElement.style.removeProperty('--sidebar-width');
     };
-  }, [collapsed]);
+  }, [collapsed, isMobile]);
 
-  const toggle = () => setCollapsed((value) => !value);
+  const toggle = () => {
+    if (isMobile) {
+      onCloseNav?.();
+      return;
+    }
+    setCollapsed((value) => !value);
+  };
+  const toggleLabel = isMobile ? 'Закрыть меню' : collapsed ? 'Развернуть меню' : 'Свернуть меню';
 
   return (
-    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
+    <aside className={`sidebar ${isCollapsed ? 'sidebar--collapsed' : ''}`}>
       <div className="sidebar__head">
         <NavLink to="/" className="sidebar__brand" title="ПРОФИТ — на главную">
           <span className="sidebar__mark">
@@ -66,31 +82,27 @@ export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }
           type="button"
           className="sidebar__toggle"
           onClick={toggle}
-          aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
-          aria-expanded={!collapsed}
-          title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          aria-label={toggleLabel}
+          aria-expanded={isMobile ? true : !collapsed}
+          title={toggleLabel}
         >
-          <Icon name={collapsed ? 'chevronRight' : 'chevronLeft'} size={16} />
+          <Icon name={isMobile ? 'x' : collapsed ? 'chevronRight' : 'chevronLeft'} size={16} />
         </button>
       </div>
       <p className="sidebar__caption">Инженерные сервисы</p>
       <nav className="sidebar__nav" aria-label="Модули ПРОФИТ">
-        {NAV_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role))).map((item) => {
-          const count = badges?.[item.to];
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className="sidebar__link"
-              title={collapsed ? item.label : undefined}
-            >
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-              {count ? <span className="sidebar__badge">{count > 99 ? '99+' : count}</span> : null}
-            </NavLink>
-          );
-        })}
+        {NAV_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role))).map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            className="sidebar__link"
+            title={isCollapsed ? item.label : undefined}
+          >
+            <Icon name={item.icon} />
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
       </nav>
       <div className="sidebar__footer">
         {user ? (

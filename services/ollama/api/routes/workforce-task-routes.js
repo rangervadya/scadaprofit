@@ -1,8 +1,12 @@
 import express from 'express';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { logger } from '../lib/logger.js';
 
 /**
- * Task routes (P2-1): list, dispatch (multi-house), start, visit, office.
+ * Task routes (P2-1): list, dispatch (multi-house), start, visit, office,
+ * reassign, delete.
  *
  * Mutating handlers read/write the workspace through accessors; `taskForClient`
  * is injected so the serializer stays the single source of truth.
@@ -20,6 +24,7 @@ export function createTaskRouter(ctx) {
     sendJsonConditional,
     findIdempotency,
     saveIdempotency,
+    reportFilesDir,
   } = ctx;
 
   const router = express.Router();
@@ -104,6 +109,114 @@ export function createTaskRouter(ctx) {
       });
     }
     return res.status(201).json(payload);
+  });
+
+  function findTask(id) {
+    return getWorkspace().tasks.find((item) => item.id === id) || null;
+  }
+
+  function findFitter(value) {
+    const id = cleanText(value, 80);
+    return getUsers().find((user) => user.id === id && user.role === 'fitter' && user.active !== false) || null;
+  }
+
+  /**
+   * Remove a task with everything that belongs to one house visit: sketch
+   * reports, defect photo sets and their uploaded files. CAD jobs are owned by
+   * the scheme pipeline and are intentionally left alone.
+   */
+  function removeTask(task) {
+    const workspace = getWorkspace();
+    const reportIds = new Set();
+    const defectIds = new Set();
+    workspace.reports = workspace.reports.filter((report) => {
+      if (report.taskId !== task.id) return true;
+      reportIds.add(report.id);
+      return false;
+    });
+    workspace.defectReports = workspace.defectReports.filter((report) => {
+      if (report.taskId !== task.id) return true;
+      defectIds.add(report.id);
+      return false;
+    });
+    workspace.tasks = workspace.tasks.filter((item) => item.id !== task.id);
+    return { reportIds: [...reportIds], defectIds: [...defectIds] };
+  }
+
+  async function removeReportFiles(ids) {
+    await Promise.all(
+      ids.map((id) =>
+        rm(path.join(reportFilesDir, id), { recursive: true, force: true }).catch((error) => {
+          logger.warn({ err: error, reportId: id }, 'Cannot remove uploaded report files');
+        }),
+      ),
+    );
+  }
+
+  router.patch('/tasks/:id', async (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const task = findTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
+    const assignedTo = cleanText(req.body?.assignedTo, 80);
+    if (!assignedTo) return res.status(400).json({ error: 'Выбери слесаря.' });
+    const fitter = findFitter(assignedTo);
+    if (!fitter) return res.status(400).json({ error: 'Выбери действующий аккаунт слесаря.' });
+    const previous = { assignedTo: task.assignedTo, assignedName: task.assignedName };
+    if (previous.assignedTo === fitter.id) {
+      return res.json({ ok: true, changed: false, task: taskForClient(task) });
+    }
+    const timestamp = new Date().toISOString();
+    task.assignedTo = fitter.id;
+    task.assignedName = fitter.displayName;
+    task.updatedAt = timestamp;
+    task.events = Array.isArray(task.events) ? task.events : [];
+    task.events.push({
+      type: 'reassigned',
+      label: `Слесарь сменён: ${previous.assignedName || 'не назначен'} → ${fitter.displayName}`,
+      at: timestamp,
+      userId: req.user.id,
+      userName: req.user.displayName,
+    });
+    await saveWorkspace();
+    req.log.info(
+      { taskId: task.id, from: previous.assignedTo, to: fitter.id, by: req.user.id },
+      'Task fitter reassigned',
+    );
+    return res.json({ ok: true, changed: true, task: taskForClient(task) });
+  });
+
+  /**
+   * Delete one house task, or a whole walk when `scope=group` is passed and the
+   * task belongs to a multi-house dispatch. Managers only: fitters must not be
+   * able to erase an assigned visit.
+   */
+  router.delete('/tasks/:id', async (req, res) => {
+    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    const task = findTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
+    const scope = cleanText(req.query.scope, 20).toLowerCase();
+    let targets = [task];
+    if (scope === 'group' && task.assignmentGroupId) {
+      targets = getWorkspace().tasks.filter((item) => item.assignmentGroupId === task.assignmentGroupId);
+    }
+    const removed = { tasks: 0, reports: 0, defects: 0 };
+    const fileIds = [];
+    for (const target of targets) {
+      const result = removeTask(target);
+      fileIds.push(...result.reportIds, ...result.defectIds);
+      removed.tasks += 1;
+      removed.reports += result.reportIds.length;
+      removed.defects += result.defectIds.length;
+    }
+    try {
+      await saveWorkspace();
+    } catch (error) {
+      req.log.error({ err: error, taskId: task.id, scope }, 'Failed to delete workforce task');
+      return res.status(500).json({ error: `Не удалось удалить задание: ${error.message}` });
+    }
+    await removeReportFiles(fileIds);
+    req.log.warn({ taskId: task.id, scope, removed, by: req.user.id }, 'Workforce task deleted');
+    return res.json({ ok: true, removed });
   });
 
   router.post('/tasks/:id/start', async (req, res) => {
