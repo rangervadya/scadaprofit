@@ -63,11 +63,102 @@ if not TEMPLATE.is_file():
         TEMPLATE = _template_candidates[0]
 OUTPUT = BASE / 'output'
 UPLOADS = BASE / 'uploads'
-FONT_DIR = Path('/usr/share/fonts/truetype/crosextra')
+# Embedded document fonts. Carlito (fonts-crosextra-carlito) is the design face,
+# but any Cyrillic-capable sans family keeps text readable when the package is
+# missing (local runs, slim images). PDF base-14 faces are the last resort: they
+# have no Cyrillic and render "······" instead of text, so they are avoided.
+FONT_DIR = Path(os.environ.get('VDGO_FONT_DIR') or '/usr/share/fonts/truetype/crosextra')
 FONT = FONT_DIR / 'Carlito-Regular.ttf'
 FONT_BOLD = FONT_DIR / 'Carlito-Bold.ttf'
 FONT_ITALIC = FONT_DIR / 'Carlito-Italic.ttf'
 FONT_BOLD_ITALIC = FONT_DIR / 'Carlito-BoldItalic.ttf'
+
+_FONT_ROOTS = [
+    FONT_DIR,
+    Path('/usr/share/fonts'),
+    Path('/usr/local/share/fonts'),
+    Path.home() / '.fonts',
+    Path.home() / '.local/share/fonts',
+    BASE / 'assets' / 'fonts',
+]
+
+# Per style: preferred face first, then metric-compatible Cyrillic fallbacks.
+_FONT_CANDIDATES = {
+    (False, False): ['Carlito-Regular.ttf', 'LiberationSans-Regular.ttf', 'DejaVuSans.ttf'],
+    (True, False): ['Carlito-Bold.ttf', 'LiberationSans-Bold.ttf', 'DejaVuSans-Bold.ttf'],
+    (False, True): ['Carlito-Italic.ttf', 'LiberationSans-Italic.ttf', 'DejaVuSans-Oblique.ttf'],
+    (True, True): ['Carlito-BoldItalic.ttf', 'LiberationSans-BoldItalic.ttf', 'DejaVuSans-BoldOblique.ttf'],
+}
+_BASE14_FONTS = {
+    (False, False): 'helv',
+    (True, False): 'hebo',
+    (False, True): 'heit',
+    (True, True): 'hebi',
+}
+
+
+def _index_font_files():
+    """Map font file name -> path across the usual font roots (recursive)."""
+    index = {}
+    for root in _FONT_ROOTS:
+        root = Path(root)
+        if not root.is_dir():
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in filenames:
+                index.setdefault(filename, Path(dirpath) / filename)
+    return index
+
+
+_FONT_INDEX = _index_font_files()
+
+
+def _build_font_specs():
+    specs = {}
+    for key, candidates in _FONT_CANDIDATES.items():
+        for filename in candidates:
+            path = _FONT_INDEX.get(filename)
+            if path is not None:
+                specs[key] = (Path(filename).stem, path)
+                break
+        else:
+            specs[key] = (_BASE14_FONTS[key], None)
+    return specs
+
+
+_FONT_SPECS = _build_font_specs()
+_FITZ_FONT_CACHE = {}
+
+# Keep the public FONT* constants pointing at the actually used regular/bold faces
+# so callers (and tests) can report the resolved font.
+FONT = _FONT_SPECS[(False, False)][1] or FONT
+FONT_BOLD = _FONT_SPECS[(True, False)][1] or FONT_BOLD
+FONT_ITALIC = _FONT_SPECS[(False, True)][1] or FONT_ITALIC
+FONT_BOLD_ITALIC = _FONT_SPECS[(True, True)][1] or FONT_BOLD_ITALIC
+
+if _FONT_SPECS[(False, False)][1] is None:
+    log.error('No Cyrillic-capable font found; generated documents will show dots instead of text')
+elif _FONT_SPECS[(False, False)][1].name != 'Carlito-Regular.ttf':
+    log.warning(
+        'Carlito is not installed; using %s for document text',
+        _FONT_SPECS[(False, False)][1].name,
+    )
+
+
+def _load_fitz_font(alias, font_path):
+    if font_path is None:
+        return fitz.Font(alias)
+    return fitz.Font(fontfile=str(font_path))
+
+
+def _get_pdf_font(bold=False, italic=False):
+    key = (bool(bold), bool(italic))
+    if key not in _FITZ_FONT_CACHE:
+        alias, font_path = _FONT_SPECS[key]
+        _FITZ_FONT_CACHE[key] = (alias, _load_fitz_font(alias, font_path), font_path)
+    return _FITZ_FONT_CACHE[key]
+
+
 OUTPUT.mkdir(exist_ok=True)
 UPLOADS.mkdir(exist_ok=True)
 
@@ -147,23 +238,8 @@ def apply_redactions(doc):
         try: p.apply_redactions(images=0, graphics=0, text=0)
         except TypeError: p.apply_redactions()
 
-# All inserted text is stored as real PDF text objects with embedded Carlito fonts.
-# Pillow is used only for raster photographs, never for rendering document typography.
-_FONT_SPECS = {
-    (False, False): ('CarlitoRegular', FONT),
-    (True, False): ('CarlitoBold', FONT_BOLD),
-    (False, True): ('CarlitoItalic', FONT_ITALIC),
-    (True, True): ('CarlitoBoldItalic', FONT_BOLD_ITALIC),
-}
-_FITZ_FONT_CACHE = {}
-
-
-def _get_pdf_font(bold=False, italic=False):
-    key = (bool(bold), bool(italic))
-    if key not in _FITZ_FONT_CACHE:
-        alias, font_path = _FONT_SPECS[key]
-        _FITZ_FONT_CACHE[key] = (alias, fitz.Font(fontfile=str(font_path)), font_path)
-    return _FITZ_FONT_CACHE[key]
+# All inserted text is stored as real PDF text objects with the resolved document
+# font. Pillow is used only for raster photographs, never for rendering typography.
 
 
 def _wrap_text_for_pdf(text, font, size, max_width):
@@ -250,7 +326,8 @@ def put(page, rect, text, size=8.5, align=0, lineheight=1.15, bold=False, italic
         baseline = first_baseline + index * advance
         page.insert_text(
             (x, baseline), line,
-            fontname=font_alias, fontfile=str(font_path),
+            fontname=font_alias,
+            fontfile=str(font_path) if font_path else None,
             fontsize=float(size), color=(0, 0, 0), overlay=True,
         )
     return max(0.1, rect.height - content_height)
