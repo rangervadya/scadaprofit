@@ -20,4 +20,7 @@ fi
 
 echo "db-deploy: migrate deploy refused (P3005: schema exists without migration history)" >&2
 echo "db-deploy: falling back to 'prisma db push' (additive, no data loss)" >&2
-exec npx prisma db push --schema "$SCHEMA"
+# --skip-generate: the client is generated at image build time, and the app
+# container runs with a read-only rootfs, so writing node_modules/.prisma here
+# fails with EROFS.
+exec npx prisma db push --schema "$SCHEMA" --skip-generate
