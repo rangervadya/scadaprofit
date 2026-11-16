@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Card, Empty, Loading } from '../components/ui';
 import { healthApi, workforceApi } from '../lib/api';
@@ -22,7 +22,6 @@ const QUICK_LINKS: QuickLink[] = [
 export function DashboardPage() {
   const { user } = useAuth();
   const health = useHealth();
-  const navigate = useNavigate();
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
@@ -102,7 +101,7 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <div className={isFitter ? '' : 'split split--equal'}>
+      <div className={`split ${isFitter ? '' : 'split--equal'}`}>
         <Card
           title={user?.role === 'fitter' ? 'Мои задания' : 'Ближайшие задания'}
           actions={<Link to="/team" className="btn btn--ghost btn--sm">Все задания <Icon name="chevronRight" /></Link>}
@@ -120,21 +119,9 @@ export function DashboardPage() {
                 </thead>
                 <tbody>
                   {myTasks.slice(0, 6).map(task => (
-                    <tr
-                      key={task.id}
-                      className="table__row--clickable"
-                      tabIndex={0}
-                      role="link"
-                      aria-label={`${task.street}, ${task.address} — ${taskStatusLabel(task.status)}`}
-                      onClick={() => navigate(`/team?task=${task.id}`)}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter' && event.key !== ' ') return;
-                        event.preventDefault();
-                        navigate(`/team?task=${task.id}`);
-                      }}
-                    >
+                    <tr key={task.id}>
                       <td>
-                        {task.street}, {task.address}
+                        <Link to={`/team?task=${task.id}`}>{task.street}, {task.address}</Link>
                         <div className="muted" style={{ fontSize: 11 }}>{task.assignedName}</div>
                       </td>
                       <td className="nowrap">{formatShortDate(task.scheduledDate)}</td>

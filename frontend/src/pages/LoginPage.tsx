@@ -12,7 +12,6 @@ export function LoginPage() {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,33 +98,15 @@ export function LoginPage() {
           ) : null}
 
           <Field label="Пароль" required hint={mode === 'setup' ? 'Минимум 10 символов.' : undefined}>
-            <span className="input-wrap">
-              <input
-                className="input"
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
-                required
-                placeholder="••••••••••"
-              />
-              <button
-                type="button"
-                className="input-wrap__toggle"
-                aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                aria-pressed={showPassword}
-                title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                // Keep the click from bubbling into the wrapping <label>, which
-                // would otherwise re-focus the input.
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={(event) => {
-                  event.preventDefault();
-                  setShowPassword((value) => !value);
-                }}
-              >
-                <Icon name={showPassword ? 'eyeOff' : 'eye'} size={17} />
-              </button>
-            </span>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={event => setPassword(event.target.value)}
+              autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
+              required
+              placeholder="••••••••••"
+            />
           </Field>
 
           <Button type="submit" variant="primary" block disabled={busy}>

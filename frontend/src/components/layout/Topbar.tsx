@@ -11,7 +11,7 @@ const stateLabel = (online: boolean | null, loading: boolean): string => {
   return online ? 'Сервисы доступны' : 'Сервис недоступен';
 };
 
-export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => void; navOpen?: boolean }) {
+export function Topbar() {
   const { data, loading, error } = useHealth();
   const { user } = useAuth();
   const isFitter = user?.role === 'fitter';
@@ -26,15 +26,9 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
 
   return (
     <header className="topbar">
-      <button
-        type="button"
-        className="topbar__icon mobile-only"
-        aria-label={navOpen ? 'Закрыть меню' : 'Открыть меню'}
-        aria-expanded={navOpen}
-        onClick={onToggleNav}
-      >
-        <Icon name={navOpen ? 'x' : 'menu'} />
-      </button>
+      <Link to="/" className="topbar__icon mobile-only" aria-label="На главную">
+        <Icon name="menu" />
+      </Link>
       {!isFitter ? <form
         className="searchbox"
         role="search"

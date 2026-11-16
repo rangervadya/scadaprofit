@@ -94,7 +94,6 @@ export function TeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(params.get('task'));
-  const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
   const [selectedFolderTaskId, setSelectedFolderTaskId] = useState<string | null>(params.get('task'));
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showUserForm, setShowUserForm] = useState(false);
@@ -161,42 +160,6 @@ export function TeamPage() {
 
   const activeFolder = folders.find(folder => folder.taskId === selectedFolderTaskId) || null;
   const activeTask = tasks.find(task => task.id === selectedTaskId) || null;
-
-  const taskFolders = useMemo(() => {
-    const map = new Map<string, { key: string; name: string; tasks: WorkforceTask[] }>();
-    for (const task of tasks) {
-      if (isFitter && task.assignedTo !== user?.id) continue;
-      const key = task.assignedTo || 'unassigned';
-      const entry = map.get(key) || {
-        key,
-        name: task.assignedName || 'Не назначен',
-        tasks: [],
-      };
-      entry.tasks.push(task);
-      map.set(key, entry);
-    }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ru') || a.key.localeCompare(b.key));
-  }, [tasks, isFitter, user?.id]);
-
-  // Opening a house opens its fitter folder; collapsing closes the folder and
-  // clears the selection so the same click can fold it back.
-  useEffect(() => {
-    if (!selectedTaskId) return;
-    const selected = tasks.find((task) => task.id === selectedTaskId);
-    if (!selected) return;
-    setExpandedGroupKey(selected.assignedTo || 'unassigned');
-  }, [tasks, selectedTaskId]);
-
-  const toggleGroup = (key: string, leadTaskId: string, expanded: boolean) => {
-    if (expanded) {
-      setExpandedGroupKey(null);
-      setSelectedTaskId(null);
-      return;
-    }
-    setExpandedGroupKey(key);
-    setSelectedTaskId(leadTaskId);
-  };
-
 
   useEffect(() => {
     if (!activeFolder) return;
@@ -312,56 +275,28 @@ export function TeamPage() {
 
       {tab === 'tasks' ? (
         <div className="team-grid">
-          <Card title={isFitter ? 'Мои обходы' : 'Задания по слесарям'} flush>
-            {taskFolders.length === 0 ? (
-              <Empty icon="team" title="Заданий нет">
-                Назначьте первый дом слесарю.
-              </Empty>
+          <Card title={isFitter ? 'Мои дома' : 'Задания'} flush>
+            {tasks.length === 0 ? (
+              <Empty icon="team" title="Заданий нет">Назначьте первый дом слесарю.</Empty>
             ) : (
-              <div className="card__body" style={{ maxHeight: 600, overflowY: 'auto' }}>
-                <div className="task-folders">
-                  {taskFolders.map((group) => {
-                    const lead = group.tasks[0];
-                    const expanded = group.key === expandedGroupKey;
+              <div className="card__body" style={{ maxHeight: 560, overflowY: 'auto' }}>
+                <div className="team-list">
+                  {tasks.map(task => {
+                    const visible = isFitter ? task.assignedTo === user?.id : true;
+                    if (!visible) return null;
                     return (
-                      <div key={group.key} className="task-folder">
-                        <button
-                          type="button"
-                          className={`list-item ${expanded ? 'list-item--active' : ''}`}
-                          aria-expanded={expanded}
-                          onClick={() => toggleGroup(group.key, lead.id, expanded)}
-                        >
-                          <span className="list-item__main">
-                            <span className="list-item__title">{group.name}</span>
-                            <span className="list-item__meta">
-                              {pluralizeCount(group.tasks.length, ['дом', 'дома', 'домов'])}
-                            </span>
-                          </span>
-                          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={16} />
-                        </button>
-                        {expanded ? (
-                          <div className="task-folder__body">
-                            {group.tasks.map((task) => (
-                              <button
-                                key={task.id}
-                                type="button"
-                                className={`list-item list-item--sub ${selectedTaskId === task.id ? 'list-item--active' : ''}`}
-                                onClick={() => setSelectedTaskId(task.id)}
-                              >
-                                <span className="list-item__main">
-                                  <span className="list-item__title">
-                                    {task.street}, дом {task.address}
-                                  </span>
-                                  <span className="list-item__meta">
-                                    {formatShortDate(task.scheduledDate)} · {task.title}
-                                  </span>
-                                </span>
-                                <Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
+                      <button
+                        key={task.id}
+                        type="button"
+                        className={`list-item ${selectedTaskId === task.id ? 'list-item--active' : ''}`}
+                        onClick={() => setSelectedTaskId(task.id)}
+                      >
+                        <span className="list-item__main">
+                          <span className="list-item__title">{task.street}, {task.address}</span>
+                          <span className="list-item__meta">{task.assignedName} · {formatShortDate(task.scheduledDate)}</span>
+                        </span>
+                        <Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>
+                      </button>
                     );
                   })}
                 </div>

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { BrandMark, Icon } from '../ui/Icon';
 import { useAuth } from '../../lib/auth';
-import { useMediaQuery } from '../../lib/useMediaQuery';
 import type { SessionUser } from '../../lib/types';
 
 export type NavItem = {
@@ -41,36 +40,22 @@ export function useActiveNav(): NavItem | undefined {
 
 const COLLAPSED_KEY = 'profit.sidebar.collapsed';
 
-export function Sidebar({ badges, navOpen = false, onCloseNav }: { badges?: Partial<Record<string, number>>; navOpen?: boolean; onCloseNav?: () => void }) {
+export function Sidebar({ badges }: { badges?: Partial<Record<string, number>> }) {
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === '1');
 
-  const isMobile = useMediaQuery('(max-width: 760px)');
-  const isCollapsed = collapsed && !isMobile;
-
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
-    if (isMobile) {
-      document.documentElement.style.removeProperty('--sidebar-width');
-      return;
-    }
     document.documentElement.style.setProperty('--sidebar-width', collapsed ? '76px' : '248px');
     return () => {
       document.documentElement.style.removeProperty('--sidebar-width');
     };
-  }, [collapsed, isMobile]);
+  }, [collapsed]);
 
-  const toggle = () => {
-    if (isMobile) {
-      onCloseNav?.();
-      return;
-    }
-    setCollapsed((value) => !value);
-  };
-  const toggleLabel = isMobile ? 'Закрыть меню' : collapsed ? 'Развернуть меню' : 'Свернуть меню';
+  const toggle = () => setCollapsed(value => !value);
 
   return (
-    <aside inert={isMobile && !navOpen} className={`sidebar ${isCollapsed ? 'sidebar--collapsed' : ''}`}>
+    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
       <div className="sidebar__head">
         <NavLink to="/" className="sidebar__brand" title="ПРОФИТ — на главную">
           <span className="sidebar__mark"><BrandMark size={20} /></span>
@@ -80,11 +65,11 @@ export function Sidebar({ badges, navOpen = false, onCloseNav }: { badges?: Part
           type="button"
           className="sidebar__toggle"
           onClick={toggle}
-          aria-label={toggleLabel}
-          aria-expanded={!isCollapsed}
-          title={toggleLabel}
+          aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
         >
-          <Icon name={isMobile ? 'x' : collapsed ? 'chevronRight' : 'chevronLeft'} size={16} />
+          <Icon name={collapsed ? 'chevronRight' : 'chevronLeft'} size={16} />
         </button>
       </div>
       <p className="sidebar__caption">Инженерные сервисы</p>
@@ -97,8 +82,7 @@ export function Sidebar({ badges, navOpen = false, onCloseNav }: { badges?: Part
               to={item.to}
               end={item.end}
               className="sidebar__link"
-              onClick={onCloseNav}
-              title={isCollapsed ? item.label : undefined}
+              title={collapsed ? item.label : undefined}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
@@ -110,7 +94,7 @@ export function Sidebar({ badges, navOpen = false, onCloseNav }: { badges?: Part
       <div className="sidebar__footer">
         {user ? (
           <>
-            <div className="sidebar__user" title={isCollapsed ? `${user.displayName || user.username} · ${user.roleName}` : undefined}>
+            <div className="sidebar__user" title={collapsed ? `${user.displayName || user.username} · ${user.roleName}` : undefined}>
               <span className="sidebar__avatar">{initials(user.displayName || user.username)}</span>
               <span className="sidebar__user-copy">
                 <span className="sidebar__user-name">{user.displayName || user.username}</span>
@@ -129,8 +113,7 @@ export function Sidebar({ badges, navOpen = false, onCloseNav }: { badges?: Part
             </button>
           </>
         ) : (
-          <NavLink to="/login" className="sidebar__link"
-              onClick={onCloseNav}>
+          <NavLink to="/login" className="sidebar__link">
             <Icon name="logout" />
             <span>Войти</span>
           </NavLink>

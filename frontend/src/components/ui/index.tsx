@@ -217,15 +217,11 @@ export function useToast(): ToastContextValue {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const dismiss = useCallback((id: number) => {
-    setToasts(current => current.filter(item => item.id !== id));
-  }, []);
-
   const notify = useCallback((message: string, tone: ToastTone = 'info') => {
     const id = Date.now() + Math.random();
     setToasts(current => [...current, { id, tone, message }]);
-    window.setTimeout(() => dismiss(id), 5200);
-  }, [dismiss]);
+    window.setTimeout(() => setToasts(current => current.filter(item => item.id !== id)), 5200);
+  }, []);
 
   const value = useMemo(() => ({ notify }), [notify]);
 
@@ -236,15 +232,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map(toast => (
           <div key={toast.id} className={cx('toast', `toast--${toast.tone}`)}>
             <Icon name={toast.tone === 'error' ? 'alert' : toast.tone === 'success' ? 'check' : 'info'} />
-            <span className="toast__text">{toast.message}</span>
-            <button
-              type="button"
-              className="toast__close"
-              aria-label="Закрыть уведомление"
-              onClick={() => dismiss(toast.id)}
-            >
-              <Icon name="x" />
-            </button>
+            <span>{toast.message}</span>
           </div>
         ))}
       </div>
