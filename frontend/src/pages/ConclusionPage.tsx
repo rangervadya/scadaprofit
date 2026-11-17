@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
-import { Badge, Button, Card, Empty, Loading, Spinner, useToast } from '../components/ui';
+import { Badge, Button, Card, Confirm, Empty, Loading, Spinner, useToast } from '../components/ui';
 import { buildDefectPhotos, buildWorkforceSchemes, conclusionApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
@@ -35,9 +35,10 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(hasMaterialScope);
   const [busy, setBusy] = useState<Busy>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [archivedPdf, setArchivedPdf] = useState(false);
   const [activeSection, setActiveSection] = useState('main');
   const loadRef = useRef<HTMLInputElement>(null);
-  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (!hasMaterialScope) return;
@@ -170,9 +171,18 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
         defectPhotos = prepared.map(item => item.file);
       }
       const formData = form.buildFormData(schemes, defectPhotos);
-      if (mode === 'preview') await conclusionApi.preview(formData);
-      else await conclusionApi.generate(formData, mode);
-      notify(mode === 'preview' ? 'Предпросмотр PDF открыт' : mode === 'docx' ? 'Документ Word сформирован' : 'PDF сформирован', 'success');
+      if (mode === 'preview') {
+        await conclusionApi.preview(formData);
+        notify('Предпросмотр PDF готов', 'success');
+      } else {
+        const result = await conclusionApi.generate(formData, mode);
+        if (mode === 'pdf') {
+          setArchivedPdf(Boolean(result.reportId));
+          notify(result.reportId ? 'PDF сформирован и сохранён в архиве' : 'PDF сформирован. Архив недоступен.', result.reportId ? 'success' : 'error');
+        } else {
+          notify('Документ Word сформирован', 'success');
+        }
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Не удалось сформировать документ', 'error');
     } finally {
@@ -209,24 +219,35 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
               event.target.value = '';
             }}
           />
-          <Button
-            variant="ghost"
-            icon="trash"
-            onClick={() => {
-              if (window.confirm('Очистить форму и сохранённый черновик?')) {
-                form.reset();
-                if (context) {
-                  form.applyWorkforceDefects(context.defectReports, context.task.id);
-                  form.setField('address', `${context.task.street}, дом ${context.task.address}`);
-                }
-                notify('Форма очищена');
-              }
-            }}
-          >
-            Очистить
+          {archivedPdf ? (
+            <Link className="btn" to="/archive"><Icon name="archive" /> Открыть архив</Link>
+          ) : null}
+          <Button variant="danger" icon="trash" disabled={Boolean(busy)} onClick={() => setConfirmClear(true)}>
+            Очистить форму
           </Button>
         </div>
       </header>
+
+      {confirmClear ? (
+        <Confirm
+          title="Вы уверены, что хотите очистить форму?"
+          message="Введённые данные и сохранённый черновик будут удалены."
+          confirmLabel="Очистить"
+          danger
+          onClose={() => setConfirmClear(false)}
+          onConfirm={() => {
+            form.reset();
+            if (context) {
+              form.applyWorkforceDefects(context.defectReports, context.task.id);
+              form.setField('address', `${context.task.street}, дом ${context.task.address}`);
+            }
+            setArchivedPdf(false);
+            setConfirmClear(false);
+            notify('Форма очищена', 'success');
+          }}
+        />
+      ) : null}
+
 
       {hasMaterialScope ? (
         contextLoading ? (
@@ -350,7 +371,7 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
           ) : null}
         </nav>
 
-        <form id="conclusion-form" ref={formRef} className="stack" onSubmit={submit} noValidate={false}>
+        <form id="conclusion-form" className="stack" onSubmit={submit} noValidate={false}>
           {SECTIONS.map(section => (
             <SectionRenderer
               key={section.id}
@@ -390,7 +411,7 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
               </section>
 
               <div className="sticky-actions">
-                <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>Сбросить</Button>
+                <Button variant="ghost" icon="refresh" onClick={() => setConfirmClear(true)} disabled={Boolean(busy)}>Сбросить</Button>
                 <span className="sticky-actions__spacer" />
                 {busy ? <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}><Spinner /> Формируем…</span> : null}
                 <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={generationDisabled}>Word</Button>

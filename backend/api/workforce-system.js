@@ -805,6 +805,20 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return res.json({ ok: true, report: defectReportForClient(report) });
   });
 
+  function sendReportFile(res, reportId, file, fallbackName) {
+    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.originalName || fallbackName)}`);
+    // Express ignores dot-prefixed segments in a requested file path. Resolve
+    // the already-authorized private directory as the root and send the basename.
+    return res.sendFile(file.fileName, { root: path.join(reportFilesDir, reportId) }, error => {
+      if (!error) return;
+      if (res.headersSent) { res.destroy(error); return; }
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('Content-Type');
+      res.status(error.statusCode === 404 ? 404 : 500).json({ error: 'Файл вложения недоступен.' });
+    });
+  }
+
   routes.get('/api/workforce/defects/:reportId/files/:fileId', (req, res) => {
     if (!req.user || !['fitter', 'receiver', 'supervisor', 'developer'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Нет доступа к фотографиям дефектов.' });
@@ -814,10 +828,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этой фотографии.' });
     const file = (report.photos || []).find(item => item.id === req.params.fileId);
     if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]{1,12}$/i.test(file.fileName || '')) return res.status(404).json({ error: 'Фотография не найдена.' });
-    const fullPath = path.join(reportFilesDir, report.id, file.fileName);
-    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.originalName || 'defect-photo')}`);
-    return res.sendFile(fullPath, error => { if (error && !res.headersSent) res.status(404).json({ error: 'Фотография дефекта недоступна.' }); });
+    return sendReportFile(res, report.id, file, 'defect-photo');
   });
 
   async function refreshSchemeState(report) {
@@ -1012,10 +1023,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этому файлу.' });
     const file = [...(report.photos || []), ...(report.sketch ? [report.sketch] : [])].find(item => item.id === req.params.fileId);
     if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]{1,12}$/i.test(file.fileName)) return res.status(404).json({ error: 'Файл не найден.' });
-    const fullPath = path.join(reportFilesDir, report.id, file.fileName);
-    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.originalName || 'report-file')}`);
-    return res.sendFile(fullPath, error => { if (error && !res.headersSent) res.status(404).json({ error: 'Файл отчёта недоступен.' }); });
+    return sendReportFile(res, report.id, file, 'report-file');
   });
 
   routes.get('/api/workforce/overview', (req, res) => {

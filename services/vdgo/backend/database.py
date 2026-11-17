@@ -1,7 +1,7 @@
 """Small PostgreSQL repository for application health and generated-report history.
 
-The report binary and form contents are not stored in the database. Only a minimal
-technical audit entry is saved after a successful generation.
+Exported files are stored in the persistent output volume. This module records
+their metadata and keeps the generation history.
 """
 from __future__ import annotations
 
@@ -68,20 +68,21 @@ def database_status() -> dict[str, Any]:
         return {"status": "error", "configured": True, "message": f"База данных недоступна: {exc}"}
 
 
-def record_generation(report_number: str, report_date: str, output_format: str, page_count: int, filename: str) -> None:
+def record_generation(report_number: str, report_date: str, output_format: str, page_count: int, filename: str) -> int | None:
     if not _dsn():
         return
     with _connect() as conn:
-        conn.execute(
+        row = conn.execute(
             """
             INSERT INTO report_runs (report_number, report_date, output_format, page_count, output_filename)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
             """,
             (report_number or "", report_date or "", output_format, int(page_count), filename or ""),
-        )
+        ).fetchone()
+    return row[0]
 
 
-def recent_reports(limit: int = 12) -> list[dict[str, Any]]:
+def recent_reports(limit: int = 12, *, include_previews: bool = True, before_id: int | None = None) -> list[dict[str, Any]]:
     if not _dsn():
         return []
     safe_limit = min(max(int(limit), 1), 50)
@@ -89,9 +90,11 @@ def recent_reports(limit: int = 12) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT id, created_at, report_number, report_date, output_format, page_count, output_filename
-            FROM report_runs ORDER BY created_at DESC LIMIT %s
+            FROM report_runs
+            WHERE (%s OR output_format <> 'preview') AND id < %s
+            ORDER BY id DESC LIMIT %s
             """,
-            (safe_limit,),
+            (include_previews, before_id if before_id is not None else 2**63 - 1, safe_limit),
         ).fetchall()
     return [
         {
@@ -105,3 +108,16 @@ def recent_reports(limit: int = 12) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+def report_file(report_id: int) -> dict[str, str] | None:
+    if not _dsn():
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT report_number, report_date, output_filename
+               FROM report_runs WHERE id = %s AND output_format = 'pdf'""",
+            (report_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(("report_number", "report_date", "output_filename"), row))

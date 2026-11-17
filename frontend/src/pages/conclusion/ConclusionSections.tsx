@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { AttachmentImage } from '../../components/AttachmentImage';
 import { Icon } from '../../components/ui/Icon';
 import { Badge, Button, Field } from '../../components/ui';
 import type { ConclusionForm } from './useConclusionForm';
@@ -395,7 +396,7 @@ export function PhotosSection({ form, workforceDefectReports = [] }: { form: Con
             <div className="photo-grid">
               {workforceDefectReports.flatMap(report => report.photos.map(photo => (
                 <div key={`${report.id}-${photo.id}`} className="photo-card">
-                  <div className="photo-card__preview"><img src={photo.url} alt={photo.originalName} loading="lazy" /></div>
+                  <div className="photo-card__preview"><AttachmentImage src={photo.url} name={photo.originalName} /></div>
                   <span className="photo-card__name">{report.street}, д. {report.address} · {photo.originalName}</span>
                   <span className="field__hint">Слесарь: {report.userName}</span>
                 </div>
@@ -494,7 +495,7 @@ export function MaterialsSection({ form, workforceSchemes = [] }: { form: Conclu
             return (
               <div key={item.page} className={`material-card ${item.optional ? '' : 'material-card--required'}`}>
                 <div className="material-card__head">
-                  <span className="material-card__title">Страница {item.page} — {item.title}</span>
+                  <span className="material-card__title">{item.title}</span>
                   {entry.file ? <Badge tone="success">Файл</Badge> : entry.exclude ? <Badge tone="warn">Исключена</Badge> : item.optional ? <Badge plain>Необязательно</Badge> : <Badge tone="danger">Нужно</Badge>}
                 </div>
                 <input

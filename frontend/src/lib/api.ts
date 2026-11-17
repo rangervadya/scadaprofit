@@ -115,6 +115,10 @@ export const healthApi = {
   main: () => api.get<HealthResponse>(`${MAIN}/health`),
   vdgo: () => api.get<HealthResponse>(`${VDGO}/health`),
   reports: () => api.get<{ items?: ReportRun[] }>(`${VDGO}/reports`),
+  archivedReports: (before?: number) =>
+    api.get<{ items: ReportRun[]; next_before: number | null }>(`${VDGO}/reports?archive=1${before ? `&before=${before}` : ''}`),
+  reportDownloadUrl: (id: number) => `${VDGO}/reports/${id}/download`,
+
 };
 
 export const libraryApi = {
@@ -453,7 +457,9 @@ export async function buildDefectPhotos(reports: WorkforceDefectReport[]) {
       }
       if (!response.ok)
         throw new ApiError(
-          `Не удалось загрузить фото «${photo.originalName}»`,
+          response.status === 404
+            ? `Фото «${photo.originalName}» отсутствует на сервере. Откройте папку в приёмке и проверьте вложение.`
+            : `Не удалось загрузить фото «${photo.originalName}» (HTTP ${response.status})`,
           response.status,
           response.headers.get('x-request-id'),
         );

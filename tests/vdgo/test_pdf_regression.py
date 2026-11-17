@@ -60,7 +60,12 @@ class DownloadBehaviorRegressionTests(unittest.TestCase):
                     data=body, headers={"Content-Type": "application/x-www-form-urlencoded"},
                     method="POST",
                 )
-                with patch("app.validate_form"), patch("app.build_pdf", return_value=path), patch("app.record_generation"):
+                with (
+                    patch("app.validate_form"),
+                    patch("app.OUTPUT", Path(temporary)),
+                    patch("app.build_pdf", return_value=path),
+                    patch("app.record_generation", return_value=7) as record,
+                ):
                     with urlopen(request, timeout=10) as response:
                         payload = response.read()
                         self.assertEqual(response.status, 200)
@@ -70,6 +75,14 @@ class DownloadBehaviorRegressionTests(unittest.TestCase):
                         self.assertIn("QA-7", disposition)
                         self.assertIn("filename*=UTF-8''", disposition)
                         self.assertEqual(len(payload), int(response.headers.get("Content-Length", "0")))
+                        self.assertEqual(response.headers.get("X-Report-Id"), "7")
+                    filename = record.call_args.args[-1]
+                    self.assertEqual((Path(temporary) / "archive" / filename).read_bytes(), payload)
+                    report = {"report_number": "QA-7", "report_date": "14.10.2026", "output_filename": filename}
+                    with patch("app.report_file", return_value=report):
+                        with urlopen(f"http://127.0.0.1:{server.server_port}/api/reports/7/download", timeout=10) as response:
+                            self.assertEqual(response.read(), payload)
+                            self.assertIn("QA-7", response.headers["Content-Disposition"])
             finally:
                 server.shutdown()
                 server.server_close()

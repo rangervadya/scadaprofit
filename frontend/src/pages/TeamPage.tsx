@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { AttachmentImage } from '../components/AttachmentImage';
 import { Icon } from '../components/ui/Icon';
 import {
   Badge,
@@ -796,7 +797,7 @@ function FolderDetail({
                 {report.sketch ? (
                   <div className="attach-grid">
                     <a className="attach" href={report.sketch.url} target="_blank" rel="noopener">
-                      <img src={report.sketch.url} alt={report.sketch.originalName} />
+                      <AttachmentImage src={report.sketch.url} name={report.sketch.originalName} />
                       <span className="attach__name">{report.sketch.originalName}</span>
                     </a>
                   </div>
@@ -839,7 +840,7 @@ function FolderDetail({
                 <div className="attach-grid">
                   {report.photos.map(photo => (
                     <a key={photo.id} className="attach" href={photo.url} target="_blank" rel="noopener">
-                      <img src={photo.url} alt={photo.originalName} />
+                      <AttachmentImage src={photo.url} name={photo.originalName} />
                       <span className="attach__name">{photo.originalName}</span>
                     </a>
                   ))}

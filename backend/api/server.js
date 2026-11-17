@@ -1832,7 +1832,7 @@ app.get('/api/manual-cad/projects/:id/source', async (req, res) => {
     const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
     const fileName = path.basename(String(project.source?.fileName || ''));
     if (!fileName || !/^source\.(jpe?g|png|webp|tiff?)$/i.test(fileName)) return res.status(404).json({ error: 'Подложка не загружена.' });
-    return res.sendFile(path.join(path.dirname(manualProjectPath(id)), fileName));
+    return res.sendFile(fileName, { root: path.dirname(manualProjectPath(id)) });
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть подложку.' });
   }

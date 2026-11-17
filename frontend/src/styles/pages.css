@@ -1037,3 +1037,13 @@
     flex-wrap: wrap;
   }
 }
+
+.attachment-image-error {
+  display: grid;
+  place-items: center;
+  min-height: 100px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}

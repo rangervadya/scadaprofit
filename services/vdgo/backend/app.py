@@ -1,5 +1,5 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 from pathlib import Path
 from email.parser import BytesParser
 from email.policy import default
@@ -8,7 +8,7 @@ import os, json, math, re, shutil, threading, webbrowser, html as htmlmod, tempf
 from datetime import datetime
 from pdf_to_docx_editable import pdf_to_docx_editable
 from PIL import Image, ImageOps
-from database import init_database, database_status, recent_reports, record_generation
+from database import init_database, database_status, recent_reports, record_generation, report_file
 from io import BytesIO
 
 APP_RELEASE = '4.5.20'
@@ -2188,6 +2188,29 @@ def _download_disposition(form: dict[str, str], extension: str) -> str:
     fallback = f"Zaklyuchenie_{ascii_number}_{ascii_date}.{extension}"
     return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
+def archived_pdf_path(filename):
+    if not re.fullmatch(r'report-[0-9a-f]{32}\.pdf', filename or ''):
+        return None
+    return OUTPUT / 'archive' / filename
+
+
+def archive_pdf(form, page_count, payload):
+    filename = f'report-{uuid.uuid4().hex}.pdf'
+    target = archived_pdf_path(filename)
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    stream = target.open('xb')
+    try:
+        with stream:
+            stream.write(payload)
+        report_id = record_generation(val(form, 'report_number'), val(form, 'report_date'), 'pdf', page_count, filename)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    if report_id is None:
+        target.unlink()
+    return report_id
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload):
         data=json.dumps(payload,ensure_ascii=False,default=str).encode('utf-8')
@@ -2204,11 +2227,47 @@ class Handler(BaseHTTPRequestHandler):
         if self.path=='/api/health':
             self._send_json(200, {'status':'ok','backend':'ok','database':database_status(),'version':BACKEND_IMAGE_VERSION,'release':APP_RELEASE})
             return
-        if self.path=='/api/reports':
+        url = urlsplit(self.path)
+        if url.path == '/api/reports':
+            query = parse_qs(url.query)
+            archive = query.get('archive') == ['1']
+            cursor = query.get('before', [''])[0]
+            if cursor and not re.fullmatch(r'[1-9][0-9]{0,17}', cursor):
+                return self._send_json(400, {'error': 'Некорректная позиция в архиве'})
             try:
-                self._send_json(200, {'items':recent_reports(limit=12)})
+                limit = 30 if archive else 12
+                items = recent_reports(limit=limit + 1, include_previews=not archive,
+                                       before_id=int(cursor) if cursor else None)
+                next_cursor = items[limit - 1]['id'] if len(items) > limit else None
+                items = items[:limit]
+                for item in items:
+                    file = archived_pdf_path(item['output_filename'])
+                    item['archived'] = bool(item['output_format'] == 'pdf' and file and file.is_file())
+                self._send_json(200, {'items': items, 'next_before': next_cursor})
             except Exception as exc:
                 self._send_json(503, {'error':'Не удалось прочитать журнал формирования документов', 'detail':str(exc)})
+            return
+        download = re.fullmatch(r'/api/reports/([1-9][0-9]{0,17})/download', url.path)
+        if download:
+            try:
+                report = report_file(int(download[1]))
+                file = archived_pdf_path(report['output_filename']) if report else None
+                if file is None:
+                    return self._send_json(404, {'error': 'PDF этого заключения отсутствует в архиве'})
+                stream = file.open('rb')
+            except FileNotFoundError:
+                return self._send_json(404, {'error': 'PDF этого заключения отсутствует в архиве'})
+            except Exception as exc:
+                self.log_error('Не удалось открыть архивный PDF: %s', exc)
+                return self._send_json(503, {'error': 'Не удалось открыть архив заключений'})
+            with stream:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/pdf')
+                self.send_header('Content-Disposition', _download_disposition(report, 'pdf'))
+                self.send_header('Content-Length', str(os.fstat(stream.fileno()).st_size))
+                self.send_header('Cache-Control', 'private, no-store')
+                self.end_headers()
+                shutil.copyfileobj(stream, self.wfile)
             return
         self.send_error(404)
     def parse_form(self):
@@ -2269,13 +2328,19 @@ class Handler(BaseHTTPRequestHandler):
                 content_type='application/pdf'
                 disposition='inline; filename="preview.pdf"' if self.path=='/preview' else _download_disposition(form, 'pdf')
                 output_format='preview' if self.path=='/preview' else 'pdf'
-            try:
-                record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
-            except Exception as db_exc:
-                print(f'ПРЕДУПРЕЖДЕНИЕ: не удалось записать событие в PostgreSQL: {db_exc}', flush=True)
+            report_id = None
+            if output_format == 'pdf':
+                report_id = archive_pdf(form, page_count, payload)
+            else:
+                try:
+                    record_generation(val(form,'report_number'),val(form,'report_date'),output_format,page_count,out.name)
+                except Exception as db_exc:
+                    print(f'ПРЕДУПРЕЖДЕНИЕ: не удалось записать событие в PostgreSQL: {db_exc}', flush=True)
             self.send_response(200)
             self.send_header('Content-Type',content_type)
             self.send_header('Content-Disposition',disposition)
+            if isinstance(report_id, int):
+                self.send_header('X-Report-Id', str(report_id))
             self.send_header('Cache-Control','no-store, no-cache, must-revalidate')
             self.send_header('X-Content-Type-Options','nosniff')
             self.send_header('Content-Length',str(len(payload)))

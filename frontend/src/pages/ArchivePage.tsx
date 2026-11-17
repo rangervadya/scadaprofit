@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
-import { Badge, Button, Card, Empty, Loading } from '../components/ui';
+import { Badge, Button, Card, Empty, Loading, useToast } from '../components/ui';
 import { cadApi, healthApi } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 import type { ManualCadProjectSummary, ReportRun } from '../lib/types';
@@ -15,16 +15,20 @@ export function ArchivePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const { notify } = useToast();
   const [format, setFormat] = useState('all');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [reportData, projectData] = await Promise.all([
-        healthApi.reports(),
+        healthApi.archivedReports(),
         cadApi.list(),
       ]);
       setReports(Array.isArray(reportData.items) ? reportData.items : []);
+      setNextBefore(reportData.next_before ?? null);
       setProjects(Array.isArray(projectData.projects) ? projectData.projects : []);
       setError(null);
     } catch (cause) {
@@ -37,6 +41,20 @@ export function ArchivePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadMore = async () => {
+    if (!nextBefore) return;
+    setLoadingMore(true);
+    try {
+      const data = await healthApi.archivedReports(nextBefore);
+      setReports(current => [...current, ...data.items]);
+      setNextBefore(data.next_before);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось загрузить записи архива', 'error');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const formats = useMemo(() => Array.from(new Set(reports.map(report => report.output_format).filter(Boolean))), [reports]);
 
@@ -64,7 +82,7 @@ export function ArchivePage() {
           <p className="page__subtitle">Сформированные заключения, ручные схемы и CAD-проекты.</p>
         </div>
         <div className="page__actions">
-          <Button icon="refresh" onClick={() => void load()} disabled={loading}>Обновить</Button>
+          <Button icon="refresh" onClick={() => void load()} disabled={loading || loadingMore}>Обновить</Button>
           <Link className="btn btn--primary" to="/conclusion"><Icon name="doc" /> Новое заключение</Link>
         </div>
       </header>
@@ -114,13 +132,24 @@ export function ArchivePage() {
                       <td><Badge tone="brand" plain>{report.output_format?.toUpperCase() || '—'}</Badge></td>
                       <td className="num">{report.page_count || '—'}</td>
                       <td className="nowrap muted">{formatDateTime(report.created_at)}</td>
-                      <td className="text-truncate" style={{ maxWidth: 260 }} title={report.output_filename}>{report.output_filename}</td>
+                      <td>
+                        {report.archived ? (
+                          <a className="btn btn--sm" href={healthApi.reportDownloadUrl(report.id)}>
+                            <Icon name="download" /> Скачать PDF
+                          </a>
+                        ) : <span className="muted">Файл не сохранён</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+          {nextBefore ? (
+            <div className="card__footer">
+              <Button size="sm" disabled={loadingMore} onClick={() => void loadMore()}>Показать ещё</Button>
+            </div>
+          ) : null}
         </Card>
       ) : null}
 
