@@ -11,7 +11,7 @@ import type {
   ManualCadSymbol,
 } from '../lib/types';
 
-type Tool = 'select' | 'pipe' | 'node' | 'label' | 'symbol' | 'dimension';
+type Tool = 'select' | 'pan' | 'pipe' | 'node' | 'label' | 'symbol' | 'dimension';
 type Selection = { type: 'pipe' | 'symbol' | 'label' | 'dimension' | 'junction'; id: string } | null;
 
 const SYMBOLS: Array<{ type: ManualCadSymbol['type']; label: string }> = [
@@ -27,6 +27,7 @@ const SYMBOLS: Array<{ type: ManualCadSymbol['type']; label: string }> = [
 
 const TOOLS: Array<{ id: Tool; label: string; icon: string }> = [
   { id: 'select', label: 'Выбор', icon: 'list' },
+  { id: 'pan', label: 'Перемещение', icon: 'move' },
   { id: 'pipe', label: 'Труба', icon: 'route' },
   { id: 'node', label: 'Узел', icon: 'plus' },
   { id: 'label', label: 'Подпись', icon: 'doc' },
@@ -125,6 +126,9 @@ export function CadEditorPage() {
   const [selection, setSelection] = useState<Selection>(null);
   const [draft, setDraft] = useState<number[][]>([]);
   const [zoom, setZoom] = useState(1);
+  const [viewOrigin, setViewOrigin] = useState({ x: 0, y: 0 });
+  const [panning, setPanning] = useState(false);
+  const panRef = useRef<{ pointerId: number; x: number; y: number; origin: typeof viewOrigin } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showSource, setShowSource] = useState(false);
@@ -137,6 +141,7 @@ export function CadEditorPage() {
 
   useEffect(() => {
     setShowSource(false);
+    setViewOrigin({ x: 0, y: 0 });
   }, [id]);
 
   useEffect(() => {
@@ -247,8 +252,8 @@ export function CadEditorPage() {
     const svg = svgRef.current;
     if (!svg) return null;
     const rect = svg.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * (project?.width || 1600);
-    const y = ((event.clientY - rect.top) / rect.height) * (project?.height || 1000);
+    const x = viewOrigin.x + ((event.clientX - rect.left) / rect.width) * (project?.width || 1600);
+    const y = viewOrigin.y + ((event.clientY - rect.top) / rect.height) * (project?.height || 1000);
     return {
       x: Math.max(0, Math.min(project?.width || 1600, round(x))),
       y: Math.max(0, Math.min(project?.height || 1000, round(y))),
@@ -326,19 +331,30 @@ export function CadEditorPage() {
     setDraft([]);
   };
 
-  const onPointerDown = (event: React.PointerEvent) => {
-    if (!project) return;
-    if (event.button !== 0) return;
-    const point = pointFromEvent(event);
-    if (!point) return;
-    if (tool !== 'select') {
-      addAt(point);
+  const onPointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (!project || event.button !== 0) return;
+    if (tool === 'select' || tool === 'pan') {
+      event.preventDefault();
+      panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, origin: viewOrigin };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPanning(true);
+      if (tool === 'select') setSelection(null);
       return;
     }
-    setSelection(null);
+    const point = pointFromEvent(event);
+    if (point) addAt(point);
   };
 
-  const onPointerMove = (event: React.PointerEvent) => {
+  const onPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    const pan = panRef.current;
+    if (pan?.pointerId === event.pointerId && project) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      setViewOrigin({
+        x: pan.origin.x - (event.clientX - pan.x) * project.width / rect.width,
+        y: pan.origin.y - (event.clientY - pan.y) * project.height / rect.height,
+      });
+      return;
+    }
     if (!dragRef.current) return;
     const point = pointFromEvent(event);
     if (!point) return;
@@ -402,7 +418,7 @@ export function CadEditorPage() {
     itemId: string,
     original: unknown,
   ) => {
-    if (tool !== 'select') return;
+    if (tool !== 'select' || event.button !== 0) return;
     event.stopPropagation();
     setSelection({ type, id: itemId });
     const point = pointFromEvent(event);
@@ -412,6 +428,10 @@ export function CadEditorPage() {
 
   const endDrag = () => {
     dragRef.current = null;
+    if (panRef.current) {
+      panRef.current = null;
+      setPanning(false);
+    }
   };
 
   const uploadSource = async (file: File) => {
@@ -640,6 +660,7 @@ export function CadEditorPage() {
               onClick={() => setZoom((value) => Math.max(0.4, Math.round((value - 0.15) * 100) / 100))}
             />
             <Badge plain>{Math.round(zoom * 100)}%</Badge>
+            <Button size="sm" variant="ghost" onClick={() => setViewOrigin({ x: 0, y: 0 })}>По центру</Button>
             <Button
               size="sm"
               variant="ghost"
@@ -684,14 +705,16 @@ export function CadEditorPage() {
           <div className="cad-canvas-wrap">
             <svg
               ref={svgRef}
-              className="cad-canvas"
+              className={`cad-canvas ${panning ? 'cad-canvas--panning' : tool === 'pan' ? 'cad-canvas--grab' : ''}`}
               width={canvasWidth}
               height={canvasHeight}
-              viewBox={`0 0 ${project.width} ${project.height}`}
+              viewBox={`${viewOrigin.x} ${viewOrigin.y} ${project.width} ${project.height}`}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={endDrag}
-              onPointerLeave={endDrag}
+              onPointerCancel={endDrag}
+              onLostPointerCapture={endDrag}
+              onPointerLeave={() => { if (!panRef.current) endDrag(); }}
               onDoubleClick={finishDraft}
               role="application"
               aria-label="Холст чертежа"

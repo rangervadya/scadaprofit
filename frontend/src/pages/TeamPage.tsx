@@ -24,6 +24,7 @@ import {
   isoDate,
   pluralizeCount,
   reviewStatusLabel,
+  schemeStatusLabel,
   taskStatusLabel,
 } from '../lib/format';
 import type {
@@ -573,12 +574,14 @@ function TaskDetail({
 
   if (!task) return <Card><Empty icon="team" title="Выберите задание">Слева выберите дом, чтобы увидеть этапы и отправить материалы.</Empty></Card>;
 
-  const submitSketch = async (event: React.FormEvent) => {
+  const submitSketch = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!sketch) return;
+    const uploadForm = event.currentTarget;
     setSubmitting(true);
     try {
       await workforceApi.submitSketch(task.id, sketch, sketchNote);
+      uploadForm.reset();
       setSketch(null);
       setSketchNote('');
       notify('Эскиз отправлен', 'success');
@@ -590,12 +593,14 @@ function TaskDetail({
     }
   };
 
-  const submitDefects = async (event: React.FormEvent) => {
+  const submitDefects = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!photoFiles.length) return;
+    const uploadForm = event.currentTarget;
     setSubmitting(true);
     try {
       await workforceApi.submitDefects(task.id, photoFiles, photoNote);
+      uploadForm.reset();
       setPhotoFiles([]);
       setPhotoNote('');
       notify('Фотографии дефектов отправлены', 'success');
@@ -611,6 +616,8 @@ function TaskDetail({
   const isFitterView = !canManage;
   const canSubmitSketch = task.canSubmitSketch ?? task.status === 'at_office';
   const canSubmitDefects = task.canSubmitDefects ?? Boolean(task.officeAt);
+  const returnedDefect = task.defectReports.find(report => report.status === 'revision_requested');
+  const returnedSketch = task.lastReportStatus === 'revision_requested';
 
   return (
     <div className="stack">
@@ -623,7 +630,7 @@ function TaskDetail({
         actions={<Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>}
       >
         <div className="row row--wrap" style={{ marginBottom: 12 }}>
-          <Button size="sm" disabled={busy || !['assigned', 'revision_requested'].includes(task.status)} onClick={() => onMark(task, 'start')}>Начать обход</Button>
+          <Button size="sm" disabled={busy || canSubmitSketch || !['assigned', 'revision_requested'].includes(task.status)} onClick={() => onMark(task, 'start')}>Начать обход</Button>
           <Button size="sm" disabled={busy || task.status !== 'in_progress'} onClick={() => onMark(task, 'visit')}>Дом пройден</Button>
           <Button size="sm" disabled={busy || task.status !== 'house_visited'} onClick={() => onMark(task, 'office')}>В офисе</Button>
         </div>
@@ -651,27 +658,37 @@ function TaskDetail({
 
       {isFitterView ? (
         <>
+          {returnedSketch || returnedDefect ? (
+            <div className="alert alert--warn">
+              <Icon name="alert" />
+              <div className="stack stack--sm">
+                {returnedSketch ? <div><strong>Эскиз возвращён</strong><p>{task.lastReviewComment || 'Комментарий не оставлен.'}</p></div> : null}
+                {returnedDefect ? <div><strong>Фотографии дефектов возвращены</strong><p>{returnedDefect.reviewComment || 'Комментарий не оставлен.'}</p></div> : null}
+                {canSubmitDefects ? <p>Исправленные материалы можно отправить сразу.</p> : null}
+              </div>
+            </div>
+          ) : null}
           <Card title="Отправить ручную схему">
             {!canSubmitSketch ? <p className="field__hint">{canSubmitDefects ? 'Эскиз уже отправлен.' : 'Сначала отметьте «В офисе».'}</p> : null}
-            <form className="stack stack--sm" onSubmit={submitSketch}>
+            <form key={task.id} className="stack stack--sm" onSubmit={submitSketch}>
               <Field label="Фотография эскиза" required>
                 <input className="input" type="file" accept="image/jpeg,image/png,image/webp,image/tiff" onChange={event => setSketch(event.target.files?.[0] || null)} required />
               </Field>
               <Field label="Комментарий">
                 <textarea className="textarea" value={sketchNote} onChange={event => setSketchNote(event.target.value)} placeholder="Например, подъезд 1, ввод газа" />
               </Field>
-              <div><Button type="submit" variant="primary" icon="upload" disabled={busy || submitting || !canSubmitSketch || !sketch}>{submitting ? <Spinner light /> : null} Отправить эскиз</Button></div>
+              <div><Button type="submit" variant="primary" icon="upload" disabled={busy || submitting || !canSubmitSketch || !sketch}>{submitting ? <Spinner light /> : null} {task.reportsCount ? 'Заменить эскиз' : 'Отправить эскиз'}</Button></div>
             </form>
           </Card>
           <Card title="Отправить фотографии дефектов">
-            <form className="stack stack--sm" onSubmit={submitDefects}>
+            <form key={task.id} className="stack stack--sm" onSubmit={submitDefects}>
               <Field label="Фотографии" required hint="Можно выбрать несколько файлов.">
                 <input className="input" type="file" accept="image/*" multiple onChange={event => setPhotoFiles(Array.from(event.target.files || []))} required />
               </Field>
               <Field label="Комментарий">
                 <textarea className="textarea" value={photoNote} onChange={event => setPhotoNote(event.target.value)} placeholder="Опишите выявленные дефекты" />
               </Field>
-              <div><Button type="submit" variant="primary" icon="camera" disabled={busy || submitting || !canSubmitDefects || !photoFiles.length}>{submitting ? <Spinner light /> : null} Отправить фотографии</Button></div>
+              <div><Button type="submit" variant="primary" icon="camera" disabled={busy || submitting || !canSubmitDefects || !photoFiles.length}>{submitting ? <Spinner light /> : null} {task.defectReportsCount ? 'Заменить фотографии' : 'Отправить фотографии'}</Button></div>
             </form>
           </Card>
         </>
@@ -765,11 +782,11 @@ function FolderDetail({
         <div className="row row--wrap">
           <Button
             size="sm"
-            disabled={busy || busyLocal || !state.ready || state.allAdded}
+            disabled={busy || busyLocal || !state.ready}
             variant="primary"
             onClick={() => onAddToConclusion(folder.taskId)}
           >
-            Перенести материалы и открыть заключение
+            {state.allAdded ? 'Обновить материалы и открыть заключение' : 'Перенести материалы и открыть заключение'}
           </Button>
           {state.allAdded && folder.task ? (
             <Link className="btn btn--sm" to={`/conclusion?task=${encodeURIComponent(folder.task.id)}`}>Открыть заключение</Link>
@@ -817,7 +834,7 @@ function FolderDetail({
                   ) : hasCadResult(report) ? (
                     <Button size="sm" disabled={busy || busyLocal} onClick={() => void openCad(report)}>Открыть CAD</Button>
                   ) : (
-                    <Badge tone="warn">{report.schemeStatus || 'CAD готовится'}</Badge>
+                    <Badge tone="warn">{schemeStatusLabel(report.schemeStatus || 'queued')}</Badge>
                   )}
                 </div>
               </div>

@@ -73,7 +73,43 @@ function hasReachedOffice(task) {
 }
 
 export function canSubmitTaskSketch(task) {
-  return ['at_office', 'processing_failed'].includes(task.status) && hasReachedOffice(task);
+  return hasReachedOffice(task);
+}
+
+const WORK_STAGE_EVENTS = new Set(['started', 'house_visited', 'office_arrival', 'defects_submitted']);
+
+function currentTaskEvents(events) {
+  if (!Array.isArray(events)) return [];
+  const seen = new Set();
+  return events.slice().reverse().filter(event => {
+    if (!WORK_STAGE_EVENTS.has(event.type)) return true;
+    if (seen.has(event.type)) return false;
+    seen.add(event.type);
+    return true;
+  }).reverse();
+}
+
+function setTaskStage(task, event) {
+  task.events = [...(task.events || []).filter(item => item.type !== event.type), event];
+}
+
+function supersedeReports(reports, current) {
+  const changes = [];
+  for (const report of reports) {
+    if (report.taskId !== current.taskId || report.id === current.id || report.status === 'superseded') continue;
+    changes.push({ report, status: report.status, replacement: report.supersededByReportId });
+    report.status = 'superseded';
+    report.supersededByReportId = current.id;
+  }
+  return changes;
+}
+
+function restoreReportStatuses(changes) {
+  for (const { report, status, replacement } of changes) {
+    report.status = status;
+    if (replacement === undefined) delete report.supersededByReportId;
+    else report.supersededByReportId = replacement;
+  }
 }
 
 /** Evaluate whether every live item in one address folder is ready for a single conclusion transfer. */
@@ -196,7 +232,39 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   // GPS tracking was intentionally removed. Purge legacy coordinate histories from older 4.4 workspaces.
   const hadLegacyLocations = Object.prototype.hasOwnProperty.call(workspace, 'locations');
   delete workspace.locations;
-  if (hadLegacyLocations) await atomicJson(workforcePath, workspace);
+  let migrated = hadLegacyLocations;
+  const latestSchemes = new Map();
+  for (const reports of [workspace.reports, workspace.defectReports]) {
+    const groups = new Map();
+    for (const report of reports) {
+      if (report.status === 'superseded') continue;
+      const group = groups.get(report.taskId) || [];
+      group.push(report);
+      groups.set(report.taskId, group);
+    }
+    for (const group of groups.values()) {
+      const current = group.reduce((latest, report) =>
+        String(report.submittedAt || '') > String(latest.submittedAt || '') ? report : latest);
+      if (supersedeReports(group, current).length) migrated = true;
+      if (reports === workspace.reports) latestSchemes.set(current.taskId, current);
+    }
+  }
+  for (const task of workspace.tasks) {
+    const events = currentTaskEvents(task.events);
+    if (events.length !== task.events?.length) {
+      task.events = events;
+      migrated = true;
+    }
+    const returned = latestSchemes.get(task.id);
+    const lastReassignment = events.findLast(event => event.type === 'reassigned');
+    if (task.status === 'revision_requested' && returned?.status === 'revision_requested'
+      && (!lastReassignment || String(returned.reviewedAt || '') > String(lastReassignment.at || ''))) {
+      task.status = 'at_office';
+      task.officeAt ||= returned.reviewedAt || task.updatedAt;
+      migrated = true;
+    }
+  }
+  if (migrated) await atomicJson(workforcePath, workspace);
   const now = Date.now();
   sessions = sessions.filter(item => Number(item.expiresAt) > now && users.some(user => user.id === item.userId && user.active !== false));
   await atomicJson(sessionsPath, sessions);
@@ -270,14 +338,14 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   }
   function taskForClient(task) {
     const assignee = users.find(user => user.id === task.assignedTo);
-    const taskReports = workspace.reports.filter(report => report.taskId === task.id);
+    const taskReports = workspace.reports.filter(report => report.taskId === task.id && report.status !== 'superseded');
     const latestReport = [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
-    const taskDefectReports = workspace.defectReports.filter(report => report.taskId === task.id);
+    const taskDefectReports = workspace.defectReports.filter(report => report.taskId === task.id && report.status !== 'superseded');
     return {
       ...task, canSubmitSketch: canSubmitTaskSketch(task), canSubmitDefects: hasReachedOffice(task), assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
       defectReportsCount: taskDefectReports.length,
       defectReports: taskDefectReports.map(defectReportForClient),
-      events: Array.isArray(task.events) ? task.events : [],
+      events: currentTaskEvents(task.events),
       lastReviewComment: latestReport?.reviewComment || '', lastReportStatus: latestReport?.status || null,
       lastReviewedAt: latestReport?.reviewedAt || null
     };
@@ -494,8 +562,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     task.startedAt ||= timestamp;
     task.visitedAt = null;
     task.officeAt = null;
-    task.events = Array.isArray(task.events) ? task.events : [];
-    task.events.push({ type: 'started', label: 'Начал обход дома', at: timestamp, userId: req.user.id, userName: req.user.displayName });
+    setTaskStage(task, { type: 'started', label: 'Начал обход дома', at: timestamp, userId: req.user.id, userName: req.user.displayName });
     task.updatedAt = timestamp;
     await saveWorkspace();
     return res.json({ ok: true, task: taskForClient(task) });
@@ -510,8 +577,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const timestamp = new Date().toISOString();
     task.status = 'house_visited';
     task.visitedAt = timestamp;
-    task.events = Array.isArray(task.events) ? task.events : [];
-    task.events.push({ type: 'house_visited', label: `Обход завершён: ${task.street}, дом ${task.address}`, at: timestamp, userId: req.user.id, userName: req.user.displayName });
+    setTaskStage(task, { type: 'house_visited', label: `Обход завершён: ${task.street}, дом ${task.address}`, at: timestamp, userId: req.user.id, userName: req.user.displayName });
     task.updatedAt = timestamp;
     await saveWorkspace();
     return res.json({ ok: true, task: taskForClient(task) });
@@ -526,8 +592,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const timestamp = new Date().toISOString();
     task.status = 'at_office';
     task.officeAt = timestamp;
-    task.events = Array.isArray(task.events) ? task.events : [];
-    task.events.push({ type: 'office_arrival', label: 'Пришёл в офис', at: timestamp, userId: req.user.id, userName: req.user.displayName });
+    setTaskStage(task, { type: 'office_arrival', label: 'Пришёл в офис', at: timestamp, userId: req.user.id, userName: req.user.displayName });
     task.updatedAt = timestamp;
     await saveWorkspace();
     return res.json({ ok: true, task: taskForClient(task) });
@@ -556,7 +621,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       task.status = ['revision_requested', 'processing_failed'].includes(task.status) ? 'revision_requested' : 'assigned';
       task.startedAt = task.visitedAt = null;
     }
-    task.events = [...(task.events || []), {
+    task.events = [...(task.events || []).filter(event => !WORK_STAGE_EVENTS.has(event.type)), {
       type: 'reassigned', label: `Задание передано: ${fitter.displayName}`,
       at: timestamp, userId: req.user.id, userName: req.user.displayName,
     }];
@@ -626,7 +691,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     }
     sketchUploadsInProgress.add(task.id);
     const previousTask = { status: task.status, completedAt: task.completedAt, updatedAt: task.updatedAt, officeAt: task.officeAt };
-    const superseded = [];
+    let superseded = [];
     let createdReport;
     try {
       await mkdir(reportDir, { recursive: true, mode: 0o700 });
@@ -652,13 +717,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         report.schemeStatus = 'failed';
         report.schemeError = 'Автоматическая обработка эскиза не настроена.';
       }
-      for (const previous of workspace.reports) {
-        if (previous.taskId === task.id && ['revision_requested', 'processing_failed'].includes(previous.status)) {
-          superseded.push({ previous, status: previous.status, replacedBy: previous.supersededByReportId });
-          previous.status = 'superseded';
-          previous.supersededByReportId = report.id;
-        }
-      }
+      superseded = supersedeReports(workspace.reports, report);
       if (report.schemeStatus === 'failed') report.status = 'processing_failed';
       createdReport = report;
       workspace.reports.unshift(report);
@@ -674,11 +733,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       if (createdReport) {
         workspace.reports = workspace.reports.filter(report => report !== createdReport);
         Object.assign(task, previousTask);
-        for (const { previous, status, replacedBy } of superseded) {
-          previous.status = status;
-          if (replacedBy === undefined) delete previous.supersededByReportId;
-          else previous.supersededByReportId = replacedBy;
-        }
+        restoreReportStatuses(superseded);
       }
       return res.status(500).json({ error: `Не удалось сохранить отчёт: ${error.message}` });
     } finally {
@@ -712,7 +767,8 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const reportId = randomUUID();
     const reportDir = path.join(reportFilesDir, reportId);
     let createdReport = null;
-    let createdEventAt = null;
+    let superseded = [];
+    const previousEvents = task.events;
     const previousTaskUpdatedAt = task.updatedAt;
     defectUploadsInProgress.add(task.id);
     try {
@@ -734,27 +790,22 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         status: 'pending_review', submittedAt: new Date().toISOString(),
         seenBy: [], reviewComment: '', reviewedAt: null, reviewedBy: null
       };
-      // A fresh photo set replaces earlier defect sets returned for correction.
-      for (const previous of workspace.defectReports) {
-        if (previous.taskId === task.id && previous.status === 'revision_requested') {
-          previous.status = 'superseded';
-          previous.supersededByReportId = report.id;
-        }
-      }
+      superseded = supersedeReports(workspace.defectReports, report);
       createdReport = report;
       workspace.defectReports.unshift(report);
-      task.events = Array.isArray(task.events) ? task.events : [];
-      createdEventAt = report.submittedAt;
-      task.events.push({ type: 'defects_submitted', label: `Отправлены фотографии дефектов: ${photos.length} шт.`, at: createdEventAt, userId: req.user.id, userName: req.user.displayName });
+      setTaskStage(task, { type: 'defects_submitted', label: `Отправлены фотографии дефектов: ${photos.length} шт.`, at: report.submittedAt, userId: req.user.id, userName: req.user.displayName });
       task.updatedAt = report.submittedAt;
       await saveWorkspace();
       return res.status(201).json({ ok: true, report: defectReportForClient(report) });
     } catch (error) {
-      if (createdReport) workspace.defectReports = workspace.defectReports.filter(item => item.id !== createdReport.id);
-      if (createdEventAt && Array.isArray(task.events)) {
-        task.events = task.events.filter(event => !(event.type === 'defects_submitted' && event.at === createdEventAt && event.userId === req.user.id));
+      if (createdReport) {
+        workspace.defectReports = workspace.defectReports.filter(item => item !== createdReport);
+        const previousStage = (previousEvents || []).findLast(event => event.type === 'defects_submitted');
+        if (previousStage) setTaskStage(task, previousStage);
+        else task.events = (task.events || []).filter(event => event.type !== 'defects_submitted');
+        if (task.updatedAt === createdReport.submittedAt) task.updatedAt = previousTaskUpdatedAt;
+        restoreReportStatuses(superseded);
       }
-      task.updatedAt = previousTaskUpdatedAt;
       await rm(reportDir, { recursive: true, force: true }).catch(() => {});
       await cleanupUploads();
       return res.status(500).json({ error: `Не удалось сохранить фотографии дефектов: ${error.message}` });
@@ -792,15 +843,22 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
     const report = workspace.defectReports.find(item => item.id === req.params.id);
     if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    if (report.status === 'superseded') return res.status(409).json({ error: 'Этот материал заменён более новой версией.' });
     if (req.user.role === 'receiver' && !(Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id))) {
       return res.status(409).json({ error: 'Сначала открой фотографии дефектов.' });
     }
     const status = String(req.body?.status || '');
     if (!['accepted', 'revision_requested'].includes(status)) return res.status(400).json({ error: 'Подтверди, что фотографии подходят, или верни отчёт.' });
+    if (status === 'revision_requested' || report.status !== 'accepted') {
+      report.conclusionAddedAt = null;
+      report.conclusionAddedBy = null;
+    }
     report.status = status;
     report.reviewComment = cleanText(req.body?.comment, 1200);
     report.reviewedAt = new Date().toISOString();
     report.reviewedBy = req.user.id;
+    const task = workspace.tasks.find(item => item.id === report.taskId);
+    if (task) task.updatedAt = report.reviewedAt;
     await saveWorkspace();
     return res.json({ ok: true, report: defectReportForClient(report) });
   });
@@ -825,6 +883,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     }
     const report = workspace.defectReports.find(item => item.id === req.params.reportId);
     if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
+    if (report.status === 'superseded') return res.status(404).json({ error: 'Этот материал заменён.' });
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этой фотографии.' });
     const file = (report.photos || []).find(item => item.id === req.params.fileId);
     if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]{1,12}$/i.test(file.fileName || '')) return res.status(404).json({ error: 'Фотография не найдена.' });
@@ -843,9 +902,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       if (state?.error !== undefined) report.schemeError = cleanText(state.error, 900);
       if (state?.completedAt) report.schemeCompletedAt = state.completedAt;
       if (state?.partialGraphReady) report.schemePartialGraphReady = true;
+      if (['accepted', 'revision_requested'].includes(report.status)) return previous !== JSON.stringify(report);
       const hasReviewableResult = report.schemeStatus === 'completed' || (report.schemeStatus === 'failed' && report.schemePartialGraphReady);
       if (hasReviewableResult) {
-        if (!['accepted', 'revision_requested'].includes(report.status)) report.status = 'pending_review';
+        report.status = 'pending_review';
         if (task && task.status === 'submitted') task.status = 'pending_review';
       } else if (report.schemeStatus === 'failed') {
         report.status = 'processing_failed';
@@ -876,7 +936,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const changed = await Promise.all(workspace.reports.map(refreshSchemeState));
     if (changed.some(Boolean)) await saveWorkspace();
     const reports = workspace.reports
-      .filter(report => req.user.role !== 'receiver' || ['processing', 'processing_failed', 'pending_review', 'accepted', 'revision_requested'].includes(report.status))
+      .filter(report => report.status !== 'superseded' && (req.user.role !== 'receiver' || ['processing', 'processing_failed', 'pending_review', 'accepted', 'revision_requested'].includes(report.status)))
       .map(report => ({ ...reportForClient(report), seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id) }));
     return res.json({ ok: true, reports, unreadCount: workspace.reports.filter(report => report.status !== 'superseded' && (!Array.isArray(report.seenBy) || !report.seenBy.includes(req.user.id))).length });
   });
@@ -907,12 +967,13 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const task = workspace.tasks.find(item => item.id === req.params.taskId);
     if (!task) return res.status(404).json({ error: 'Папка задания по этому адресу не найдена.' });
 
-    const allTaskSchemes = workspace.reports.filter(report => report.taskId === task.id);
-    const allTaskDefects = workspace.defectReports.filter(report => report.taskId === task.id);
+    const allTaskSchemes = workspace.reports.filter(report => report.taskId === task.id && report.status !== 'superseded');
     const refreshed = await Promise.all(allTaskSchemes.map(refreshSchemeState));
     if (refreshed.some(Boolean)) await saveWorkspace();
     if (!workspace.tasks.includes(task)) return res.status(404).json({ error: 'Папка задания по этому адресу не найдена.' });
-    const folderState = evaluateAddressFolder({ schemes: allTaskSchemes, defects: allTaskDefects, userId: req.user.role === 'receiver' ? req.user.id : null });
+    const folderState = evaluateAddressFolder({
+      schemes: workspace.reports.filter(report => report.taskId === task.id),
+      defects: workspace.defectReports.filter(report => report.taskId === task.id), userId: req.user.role === 'receiver' ? req.user.id : null });
     const schemeReports = folderState.schemes;
     const defectReports = folderState.defects;
     const materialReports = folderState.items;
@@ -999,19 +1060,24 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
     const report = workspace.reports.find(item => item.id === req.params.id);
     if (!report) return res.status(404).json({ error: 'Отчёт не найден.' });
+    if (report.status === 'superseded') return res.status(409).json({ error: 'Этот материал заменён более новой версией.' });
     if (req.user.role === 'receiver' && !(Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id))) {
       return res.status(409).json({ error: 'Сначала открой папку адреса и просмотри эту схему.' });
     }
     const status = String(req.body?.status || '');
     if (!['accepted', 'revision_requested'].includes(status)) return res.status(400).json({ error: 'Выбери приёмку или возврат на исправление.' });
+    if (status === 'revision_requested' || report.status !== 'accepted') {
+      report.conclusionAddedAt = null;
+      report.conclusionAddedBy = null;
+    }
     report.status = status;
     report.reviewComment = cleanText(req.body?.comment, 1200);
     report.reviewedAt = new Date().toISOString();
     const task = workspace.tasks.find(item => item.id === report.taskId);
     if (task) {
-      task.status = status;
+      task.status = status === 'revision_requested' ? 'at_office' : 'accepted';
       task.updatedAt = report.reviewedAt;
-      if (status === 'revision_requested') { task.completedAt = null; task.visitedAt = null; task.officeAt = null; }
+      if (status === 'revision_requested') { task.completedAt = null; task.officeAt ||= report.reviewedAt; }
     }
     await saveWorkspace();
     return res.json({ ok: true, report: reportForClient(report), task: task ? taskForClient(task) : null });
@@ -1020,6 +1086,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   routes.get('/api/workforce/reports/:reportId/files/:fileId', async (req, res) => {
     const report = workspace.reports.find(item => item.id === req.params.reportId);
     if (!report) return res.status(404).json({ error: 'Отчёт не найден.' });
+    if (report.status === 'superseded') return res.status(404).json({ error: 'Этот материал заменён.' });
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этому файлу.' });
     const file = [...(report.photos || []), ...(report.sketch ? [report.sketch] : [])].find(item => item.id === req.params.fileId);
     if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]{1,12}$/i.test(file.fileName)) return res.status(404).json({ error: 'Файл не найден.' });
@@ -1038,8 +1105,8 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       ok: true,
       users: userList,
       tasks: workspace.tasks.map(taskForClient),
-      reports: workspace.reports.map(reportForClient),
-      defectReports: workspace.defectReports.map(defectReportForClient),
+      reports: workspace.reports.filter(report => report.status !== 'superseded').map(reportForClient),
+      defectReports: workspace.defectReports.filter(report => report.status !== 'superseded').map(defectReportForClient),
       summary: {
         activeFitters: users.filter(user => user.active !== false && user.role === 'fitter').length,
         assigned: workspace.tasks.filter(task => ['assigned', 'in_progress'].includes(task.status)).length,

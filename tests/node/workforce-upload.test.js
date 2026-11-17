@@ -62,6 +62,6 @@ test('a recorded office stage allows sketches, and a failed sketch can be retrie
   assert.equal(canSubmitTaskSketch({ status: 'at_office' }), true);
   assert.equal(canSubmitTaskSketch({ status: 'house_visited' }), false);
   assert.equal(canSubmitTaskSketch({ status: 'processing_failed', officeAt: '2026-11-16' }), true);
-  assert.equal(canSubmitTaskSketch({ status: 'submitted', officeAt: '2026-11-16' }), false);
+  assert.equal(canSubmitTaskSketch({ status: 'submitted', officeAt: '2026-11-16' }), true);
   assert.equal(canSubmitTaskSketch({ status: 'revision_requested', officeAt: '2026-11-16' }), false);
 });

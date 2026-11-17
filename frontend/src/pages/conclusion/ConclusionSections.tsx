@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { AttachmentImage } from '../../components/AttachmentImage';
+import { schemeStatusLabel } from '../../lib/format';
 import { Icon } from '../../components/ui/Icon';
 import { Badge, Button, Field } from '../../components/ui';
 import type { ConclusionForm } from './useConclusionForm';
@@ -481,7 +482,7 @@ export function MaterialsSection({ form, workforceSchemes = [] }: { form: Conclu
                 ) : null}
                 <div className="list-item__main">
                   <span className="list-item__title">{report.street}, дом {report.address}</span>
-                  <span className="list-item__meta">{report.userName} · {report.schemeStatus || 'CAD готов'}</span>
+                  <span className="list-item__meta">{report.userName} · {schemeStatusLabel(report.schemeStatus || 'completed')}</span>
                   {report.note ? <span className="field__hint">{report.note}</span> : null}
                 </div>
                 <Badge tone="success">Принята</Badge>

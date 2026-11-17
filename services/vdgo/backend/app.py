@@ -1558,22 +1558,13 @@ def append_workforce_scheme_pages(doc, schemes, form):
         street = scheme.get('street') or 'Улица не указана'
         house = scheme.get('address') or '—'
         put(page, (42, 91, 553, 112), f'Схема по адресу: {street}, дом {house}', 12.0, 1, 1.0, True)
-        details = []
-        if scheme.get('userName'):
-            details.append('Слесарь: ' + scheme['userName'])
-        if scheme.get('submittedAt'):
-            details.append('Отчёт отправлен: ' + scheme['submittedAt'])
-        if scheme.get('status') == 'accepted':
-            details.append('Статус: принята приёмщиком')
-        if details:
-            put(page, (42, 116, 553, 134), ' · '.join(details), 8.5, 0, 1.0)
         image_path = Path(scheme['path'])
         try:
             with Image.open(image_path) as image:
                 image_width, image_height = image.size
         except Exception as exc:
             raise ValueError(f'Не удалось прочитать CAD-схему {street}, дом {house}: {exc}') from exc
-        image_bounds = fitz.Rect(44, 145, 551, 770)
+        image_bounds = fitz.Rect(44, 118, 551, 770)
         scale = min(image_bounds.width / image_width, image_bounds.height / image_height)
         draw_width, draw_height = image_width * scale, image_height * scale
         image_rect = fitz.Rect(

@@ -871,6 +871,13 @@
   background: #fff;
   touch-action: none;
 }
+.cad-canvas--grab {
+  cursor: grab;
+}
+.cad-canvas--panning,
+.cad-canvas--panning * {
+  cursor: grabbing;
+}
 .cad-tools {
   display: flex;
   flex-wrap: wrap;

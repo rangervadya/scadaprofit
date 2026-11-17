@@ -51,6 +51,8 @@ export function schemeStatusLabel(status: string): string {
     pending: 'В очереди',
     queued: 'В очереди',
     processing: 'Обрабатывается',
+    proccesing: 'Обрабатывается',
+    running: 'Обрабатывается',
     completed: 'Готово',
     failed: 'Ошибка',
   };
@@ -76,6 +78,10 @@ export function taskStatusLabel(status: string): string {
 
 export function reviewStatusLabel(status: string): string {
   const labels: Record<string, string> = {
+    queued: 'В очереди',
+    processing: 'Обрабатывается',
+    proccesing: 'Обрабатывается',
+    processing_failed: 'Ошибка CAD',
     pending_review: 'Ждёт проверки',
     accepted: 'Принято',
     revision_requested: 'На исправление',

@@ -689,7 +689,8 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                     self.assertLess(scheme_pages[0], photo_pages[0],
                                     "Appendix 2 schemes must remain before the original Appendix 3 photo sheets")
                     scheme_page = pdf[scheme_pages[0]]
-                    self.assertIn("Иванов Иван Иванович", scheme_page.get_text())
+                    for internal_text in ("Слесарь:", "Отчёт отправлен:", "Статус:", "Иванов Иван Иванович"):
+                        self.assertNotIn(internal_text, scheme_page.get_text())
                     self.assertEqual(len(scheme_page.get_images(full=True)), 1)
                     photo_page = pdf[photo_pages[0]]
                     self.assertGreaterEqual(len(photo_page.get_images(full=True)), 1)
@@ -717,7 +718,7 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                 word_text = "\n".join(p.text for p in word.paragraphs)
                 self.assertIn("Приложение 2. Схема неразрушающего контроля", word_text)
                 self.assertIn("улица Тестовая, дом 15", word_text)
-                self.assertIn("Иванов Иван Иванович", word_text)
+                self.assertNotIn("Слесарь:", word_text)
                 self.assertIn("Коррозия участка газопровода", word_text)
                 self.assertGreaterEqual(len(word.inline_shapes), 2)
                 self.assertEqual(page_count, 3)

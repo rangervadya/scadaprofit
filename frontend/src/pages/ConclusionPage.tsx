@@ -4,7 +4,7 @@ import { Icon } from '../components/ui/Icon';
 import { Badge, Button, Card, Confirm, Empty, Loading, Spinner, useToast } from '../components/ui';
 import { buildDefectPhotos, buildWorkforceSchemes, conclusionApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatDateTime } from '../lib/format';
+import { formatDateTime, schemeStatusLabel } from '../lib/format';
 import type { ConclusionContext } from '../lib/types';
 import { SectionRenderer } from './conclusion/ConclusionSections';
 import { SECTIONS } from './conclusion/schema';
@@ -300,7 +300,7 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
                         {report.manualCadProjectId ? (
                           <Badge tone="success">Принята</Badge>
                         ) : (
-                          <Badge tone="warn">{report.schemeStatus || 'в обработке'}</Badge>
+                          <Badge tone="warn">{schemeStatusLabel(report.schemeStatus || 'queued')}</Badge>
                         )}
                       </div>
                     ))
