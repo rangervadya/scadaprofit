@@ -5,6 +5,7 @@ const everyone = ['fitter', ...staff];
 export const PERMISSIONS = {
   'dashboard:view': everyone,
   'team:view': everyone,
+  'task:stages:view': staff,
   'task:view': everyone,
   'task:submit': ['fitter', 'developer'],
   'task:assign': staff,

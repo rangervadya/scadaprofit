@@ -4,6 +4,7 @@ import { Icon } from '../components/ui/Icon';
 import { Badge, Card, Empty } from '../components/ui';
 import { healthApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { hasPermission, SECTIONS } from '../lib/permissions.mjs';
 import { useWorkforceUpdates } from '../lib/useWorkforceUpdates';
 import { formatDateTime, formatShortDate, taskStatusLabel } from '../lib/format';
 import type { ReportRun, WorkforceTask } from '../lib/types';
@@ -23,19 +24,22 @@ export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const isFitter = user?.role === 'fitter';
+  const canViewArchive = hasPermission(user?.role, 'archive:view');
+  const canGenerate = hasPermission(user?.role, 'conclusion:generate');
+  const visibleQuickLinks = QUICK_LINKS.filter(link => hasPermission(user?.role, SECTIONS[link.to]));
   const [reports, setReports] = useState<ReportRun[]>([]);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
   const [tasksError, setTasksError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isFitter) {
+    if (canViewArchive) {
       healthApi
         .reports()
         .then((data) => setReports(Array.isArray(data.items) ? data.items : []))
         .catch((cause) => setReportsError(cause instanceof Error ? cause.message : 'Не удалось загрузить историю'));
     }
-  }, [user, isFitter]);
+  }, [canViewArchive]);
 
   const reloadTasks = useCallback(() => {
     if (!user) return;
@@ -87,7 +91,7 @@ export function DashboardPage() {
             )}
           </div>
         </div>
-        {isFitter ? null : (
+        {canViewArchive ? (
           <div className="hero__aside">
             <div className="hero__metric">
               <div className="hero__metric-value">{reports.length}</div>
@@ -98,20 +102,17 @@ export function DashboardPage() {
               <div className="hero__metric-label">Активных заданий</div>
             </div>
           </div>
-        )}
+        ) : null}
       </section>
 
       <div className="quick-grid">
-        {(isFitter
-          ? QUICK_LINKS.filter((link) => ['/team', '/conclusion'].includes(link.to))
-          : QUICK_LINKS
-        ).map((link) => (
+        {visibleQuickLinks.map((link) => (
           <Link key={link.to} to={link.to} className="quick-card">
             <span className="quick-card__icon">
               <Icon name={link.icon} />
             </span>
             <span className="quick-card__title">{link.title}</span>
-            <span className="quick-card__text">{link.text}</span>
+            <span className="quick-card__text">{link.to === '/conclusion' && !canGenerate ? 'Заполнить данные объекта' : link.text}</span>
           </Link>
         ))}
       </div>
@@ -132,7 +133,9 @@ export function DashboardPage() {
             </div>
           ) : myTasks.length === 0 ? (
             <Empty icon="team" title="Заданий пока нет">
-              Назначьте дом слесарю в разделе «Команда».
+              {hasPermission(user?.role, 'task:assign')
+                ? 'Назначьте дом слесарю в разделе «Команда».'
+                : 'Назначенные вам дома появятся здесь.'}
             </Empty>
           ) : (
             <div className="table-wrap">
@@ -187,7 +190,7 @@ export function DashboardPage() {
           )}
         </Card>
 
-        {isFitter ? null : (
+        {canViewArchive ? (
           <Card
             title="Последние заключения"
             actions={
@@ -232,7 +235,7 @@ export function DashboardPage() {
               </div>
             )}
           </Card>
-        )}
+        ) : null}
       </div>
     </>
   );

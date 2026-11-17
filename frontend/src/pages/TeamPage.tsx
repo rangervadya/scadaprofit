@@ -564,6 +564,8 @@ function TaskDetail({
   canManage: boolean;
   currentUserId: string;
 }) {
+  const { user } = useAuth();
+  const canViewStages = hasPermission(user?.role, 'task:stages:view');
   const { notify } = useToast();
   const [sketch, setSketch] = useState<File | null>(null);
   const [sketchNote, setSketchNote] = useState('');
@@ -647,19 +649,23 @@ function TaskDetail({
           {task.instructions ? <><dt>Указания</dt><dd>{task.instructions}</dd></> : null}
           <dt>Материалы</dt><dd>{task.reportsCount} схем · {task.defectReportsCount} комплектов дефектов</dd>
         </dl>
-        <div className="divider" style={{ margin: '14px 0' }} />
-        <h4 style={{ marginBottom: 10 }}>Этапы работ</h4>
-        <div className="timeline">
-          {task.events.map((event, index) => (
-            <div key={`${event.type}-${index}`} className={`timeline__item ${event.type === 'completed' ? 'timeline__item--done' : 'timeline__item--current'}`}>
-              <span className="timeline__dot"><span className="timeline__line" /></span>
-              <span className="timeline__body">
-                <span className="timeline__label">{event.label || event.type}</span>
-                <span className="timeline__meta">{formatDateTime(event.at)}{event.userName ? ` · ${event.userName}` : ''}</span>
-              </span>
+        {canViewStages ? (
+          <>
+            <div className="divider" style={{ margin: '14px 0' }} />
+            <h4 style={{ marginBottom: 10 }}>Этапы работ</h4>
+            <div className="timeline">
+              {task.events.map((event, index) => (
+                <div key={`${event.type}-${index}`} className={`timeline__item ${event.type === 'completed' ? 'timeline__item--done' : 'timeline__item--current'}`}>
+                  <span className="timeline__dot"><span className="timeline__line" /></span>
+                  <span className="timeline__body">
+                    <span className="timeline__label">{event.label || event.type}</span>
+                    <span className="timeline__meta">{formatDateTime(event.at)}{event.userName ? ` · ${event.userName}` : ''}</span>
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        ) : null}
       </Card>
 
       {isFitterView ? (
