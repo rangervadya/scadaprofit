@@ -238,6 +238,8 @@ export const workforceApi = {
     api.get<{ ok: boolean; reports: WorkforceDefectReport[]; unreadCount: number }>(`${MAIN}/workforce/defects`),
   seeReport: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/reports/${encodeURIComponent(id)}/seen`),
   seeDefect: (id: string) => api.post<{ ok: boolean }>(`${MAIN}/workforce/defects/${encodeURIComponent(id)}/seen`),
+  cancelSketchAnalysis: (id: string) =>
+    api.post<{ ok: boolean; report: WorkforceReport }>(`${MAIN}/workforce/reports/${encodeURIComponent(id)}/cancel-analysis`),
   reviewReport: (id: string, status: 'accepted' | 'revision_requested', comment: string) =>
     api.post<{ ok: boolean }>(`${MAIN}/workforce/reports/${encodeURIComponent(id)}/review`, { status, comment }),
   reviewDefect: (id: string, status: 'accepted' | 'revision_requested', comment: string) =>

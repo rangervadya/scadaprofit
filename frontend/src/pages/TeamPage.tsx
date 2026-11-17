@@ -226,8 +226,12 @@ export function TeamPage() {
   };
 
 
+  const activeMaterialIds = JSON.stringify([
+    activeFolder?.state.schemes.map(item => item.id),
+    activeFolder?.state.defects.map(item => item.id),
+  ]);
   useEffect(() => {
-    if (!activeFolder) return;
+    if (tab !== 'inbox' || !activeFolder) return;
     const schemesToMark = activeFolder.state.schemes.filter(item => !item.seen);
     const defectsToMark = activeFolder.state.defects.filter(item => !item.seen);
     for (const item of schemesToMark) {
@@ -240,7 +244,7 @@ export function TeamPage() {
         setDefects(current => current.map(report => report.id === item.id ? { ...report, seen: true } : report));
       }).catch(() => {});
     }
-  }, [activeFolder?.taskId, activeFolder?.state.schemes.length, activeFolder?.state.defects.length]);
+  }, [tab, activeFolder?.taskId, activeMaterialIds]);
 
   const selectFolder = (taskId: string) => {
     setSelectedFolderTaskId(taskId);
@@ -751,6 +755,19 @@ function FolderDetail({
     }
   };
 
+  const cancelAnalysis = async (id: string) => {
+    setBusyLocal(true);
+    try {
+      await workforceApi.cancelSketchAnalysis(id);
+      await onRefresh('Обработка эскиза отменена');
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось отменить обработку', 'error');
+      await onRefresh();
+    } finally {
+      setBusyLocal(false);
+    }
+  };
+
   const review = async (status: 'accepted' | 'revision_requested') => {
     if (!reviewId) return;
     setBusyLocal(true);
@@ -820,10 +837,15 @@ function FolderDetail({
                   </div>
                 ) : null}
                 <div className="review-card__actions">
+                  {report.status === 'processing' ? (
+                    <Button size="sm" variant="danger" disabled={busy || busyLocal} onClick={() => void cancelAnalysis(report.id)}>
+                      Отменить обработку
+                    </Button>
+                  ) : null}
                   <Button
                     size="sm"
                     variant="primary"
-                    disabled={busy || busyLocal || report.status === 'accepted'}
+                    disabled={busy || busyLocal || report.status === 'accepted' || (['processing', 'cancelled'].includes(report.status) && !report.manualCadProjectId)}
                     onClick={() => void workforceApi.reviewReport(report.id, 'accepted', '').then(() => onRefresh('Схема принята')).catch(cause => notify(cause instanceof Error ? cause.message : 'Ошибка', 'error'))}
                   >
                     Принять

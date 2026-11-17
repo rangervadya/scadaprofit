@@ -55,6 +55,7 @@ export function schemeStatusLabel(status: string): string {
     running: 'Обрабатывается',
     completed: 'Готово',
     failed: 'Ошибка',
+    cancelled: 'Обработка отменена',
   };
   return labels[status] || status;
 }
@@ -69,7 +70,7 @@ export function taskStatusLabel(status: string): string {
     processing: 'CAD-обработка',
     pending_review: 'Готово к проверке',
     accepted: 'Принято',
-    revision_requested: 'На исправление',
+    revision_requested: 'На доработке',
     processing_failed: 'Ошибка CAD',
     superseded: 'Заменено',
   };
@@ -82,9 +83,10 @@ export function reviewStatusLabel(status: string): string {
     processing: 'Обрабатывается',
     proccesing: 'Обрабатывается',
     processing_failed: 'Ошибка CAD',
+    cancelled: 'Обработка отменена',
     pending_review: 'Ждёт проверки',
     accepted: 'Принято',
-    revision_requested: 'На исправление',
+    revision_requested: 'На доработке',
     superseded: 'Заменено',
   };
   return labels[status] || status;

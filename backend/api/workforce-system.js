@@ -201,7 +201,7 @@ export async function authenticateCredentials(users, username, password) {
   return user;
 }
 
-export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies = false, onSketchSubmitted = null, getSketchStatus = null }) {
+export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies = false, onSketchSubmitted = null, getSketchStatus = null, onCancelSketch = null }) {
   const authDir = path.join(dataDir, 'workforce');
   const usersPath = path.join(authDir, 'users.json');
   const sessionsPath = path.join(authDir, 'sessions.json');
@@ -341,8 +341,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const taskReports = workspace.reports.filter(report => report.taskId === task.id && report.status !== 'superseded');
     const latestReport = [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
     const taskDefectReports = workspace.defectReports.filter(report => report.taskId === task.id && report.status !== 'superseded');
+    const needsRevision = hasReachedOffice(task) && (latestReport?.status === 'revision_requested'
+      || taskDefectReports.some(report => report.status === 'revision_requested'));
     return {
-      ...task, canSubmitSketch: canSubmitTaskSketch(task), canSubmitDefects: hasReachedOffice(task), assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
+      ...task, status: needsRevision ? 'revision_requested' : task.status, canSubmitSketch: canSubmitTaskSketch(task), canSubmitDefects: hasReachedOffice(task), assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
       defectReportsCount: taskDefectReports.length,
       defectReports: taskDefectReports.map(defectReportForClient),
       events: currentTaskEvents(task.events),
@@ -900,11 +902,16 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       if (!workspace.reports.includes(report) || report.status === 'superseded') return false;
       if (state?.status) report.schemeStatus = state.status;
       if (state?.error !== undefined) report.schemeError = cleanText(state.error, 900);
-      if (state?.completedAt) report.schemeCompletedAt = state.completedAt;
-      if (state?.partialGraphReady) report.schemePartialGraphReady = true;
+      if (state?.completedAt !== undefined) report.schemeCompletedAt = state.completedAt;
+      if (state?.partialGraphReady !== undefined) report.schemePartialGraphReady = Boolean(state.partialGraphReady);
       if (['accepted', 'revision_requested'].includes(report.status)) return previous !== JSON.stringify(report);
       const hasReviewableResult = report.schemeStatus === 'completed' || (report.schemeStatus === 'failed' && report.schemePartialGraphReady);
-      if (hasReviewableResult) {
+      if (report.schemeStatus === 'cancelled') {
+        report.status = 'cancelled';
+        if (task && ['submitted', 'processing'].includes(task.status)) task.status = 'at_office';
+      } else if (['queued', 'processing'].includes(report.schemeStatus)) {
+        report.status = 'processing';
+      } else if (hasReviewableResult) {
         report.status = 'pending_review';
         if (task && task.status === 'submitted') task.status = 'pending_review';
       } else if (report.schemeStatus === 'failed') {
@@ -936,9 +943,36 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const changed = await Promise.all(workspace.reports.map(refreshSchemeState));
     if (changed.some(Boolean)) await saveWorkspace();
     const reports = workspace.reports
-      .filter(report => report.status !== 'superseded' && (req.user.role !== 'receiver' || ['processing', 'processing_failed', 'pending_review', 'accepted', 'revision_requested'].includes(report.status)))
+      .filter(report => report.status !== 'superseded' && (req.user.role !== 'receiver' || ['processing', 'processing_failed', 'pending_review', 'accepted', 'revision_requested', 'cancelled'].includes(report.status)))
       .map(report => ({ ...reportForClient(report), seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id) }));
     return res.json({ ok: true, reports, unreadCount: workspace.reports.filter(report => report.status !== 'superseded' && (!Array.isArray(report.seenBy) || !report.seenBy.includes(req.user.id))).length });
+  });
+
+  routes.post('/api/workforce/reports/:id/cancel-analysis', async (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    const report = workspace.reports.find(item => item.id === req.params.id && item.status !== 'superseded');
+    if (!report) return res.status(404).json({ error: 'Отчёт не найден.' });
+    if (report.status === 'cancelled') return res.json({ ok: true, report: reportForClient(report) });
+    if (report.status !== 'processing' || !report.schemeJobId || typeof onCancelSketch !== 'function') {
+      return res.status(409).json({ error: 'Обработка уже завершена или не была запущена.' });
+    }
+    if (!await onCancelSketch(report.schemeJobId)) {
+      if (await refreshSchemeState(report)) await saveWorkspace();
+      return res.status(409).json({ error: 'Обработка уже завершена.' });
+    }
+    if (report.status === 'processing') {
+      report.status = report.schemeStatus = 'cancelled';
+      report.schemeError = '';
+      report.schemeCompletedAt = null;
+      report.schemePartialGraphReady = false;
+      const task = workspace.tasks.find(item => item.id === report.taskId);
+      if (task && ['submitted', 'processing'].includes(task.status)) {
+        task.status = 'at_office';
+        task.updatedAt = new Date().toISOString();
+      }
+    }
+    await saveWorkspace();
+    return res.json({ ok: true, report: reportForClient(report) });
   });
 
   routes.post('/api/workforce/reports/:id/seen', async (req, res) => {
@@ -1066,6 +1100,15 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     }
     const status = String(req.body?.status || '');
     if (!['accepted', 'revision_requested'].includes(status)) return res.status(400).json({ error: 'Выбери приёмку или возврат на исправление.' });
+    if (status === 'accepted' && report.status === 'processing') {
+      if (await refreshSchemeState(report)) await saveWorkspace();
+      if (!workspace.reports.includes(report) || report.status === 'superseded') {
+        return res.status(409).json({ error: 'Этот материал заменён более новой версией.' });
+      }
+    }
+    if (status === 'accepted' && ['processing', 'cancelled'].includes(report.status) && !report.manualCadProjectId) {
+      return res.status(409).json({ error: 'Сначала завершите обработку эскиза.' });
+    }
     if (status === 'revision_requested' || report.status !== 'accepted') {
       report.conclusionAddedAt = null;
       report.conclusionAddedBy = null;

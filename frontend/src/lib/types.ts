@@ -42,7 +42,7 @@ export type SessionUser = {
   active: boolean;
 };
 
-export type SchemeStatus = 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
+export type SchemeStatus = 'pending' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
 export type SchemeSummary = {
   jobId: string;

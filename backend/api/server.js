@@ -67,7 +67,8 @@ const workforceSystem = await createWorkforceSystem({
   uploadDir: UPLOAD_DIR,
   secureCookies: process.env.COOKIE_SECURE === '1',
   onSketchSubmitted: createWorkforceSchemeJob,
-  getSketchStatus: getWorkforceSchemeStatus
+  getSketchStatus: getWorkforceSchemeStatus,
+  onCancelSketch: cancelStoredSchemeAnalysis
 });
 
 function localRecognitionPythonEnvironment() {
@@ -113,14 +114,16 @@ function checkTesseract() {
 // limited VRAM, and concurrent Qwen requests would compete for the same GPU.
 const activeAnalyses = new Map();
 const analysisQueue = [];
-const queuedAnalysisIds = new Set();
+const queuedAnalysisWrites = new Map();
 let analysisQueueRunning = false;
 
-function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER, env = null }) {
+function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOUT_MS, maxBuffer = PYTHON_MAX_BUFFER, env = null, abortSignal = null }) {
   return new Promise((resolve, reject) => {
+    abortSignal?.throwIfAborted();
     const shortId = String(jobId).slice(0, 8);
     const child = spawn(PYTHON, args, {
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      detached: Boolean(abortSignal && process.platform !== 'win32'),
       env: env ? { ...process.env, ...env } : process.env
     });
     const progressFile = createWriteStream(progressPath, { flags: 'a' });
@@ -158,12 +161,15 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
     };
 
     const complete = (code, signal) => {
+      abortSignal?.removeEventListener('abort', cancelProcess);
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (forceKillHandle) clearTimeout(forceKillHandle);
       if (stderrPending.trim()) logLine(stderrPending);
 
       const finish = () => {
-        if (spawnError) {
+        if (abortSignal?.aborted) {
+          fail(abortSignal.reason);
+        } else if (spawnError) {
           fail(Object.assign(spawnError, { stderr: stderrTail, stdout }));
         } else if (timedOut) {
           const error = new Error(`Python job exceeded ${Math.round(timeout / 60_000)} minute timeout and was terminated.`);
@@ -198,6 +204,23 @@ function runPythonStreaming(args, { jobId, progressPath, timeout = PYTHON_TIMEOU
       if (progressFileFailed || progressFile.destroyed) finish();
       else progressFile.end(finish);
     };
+
+    const stopProcess = (signal) => {
+      if (abortSignal && process.platform !== 'win32' && child.pid) {
+        try { process.kill(-child.pid, signal); }
+        catch (error) { if (error.code !== 'ESRCH') child.kill(signal); }
+      } else {
+        child.kill(signal);
+      }
+    };
+    const cancelProcess = () => {
+      clearTimeout(timeoutHandle);
+      clearTimeout(forceKillHandle);
+      logLine('[JOB] Analysis cancelled');
+      stopProcess('SIGTERM');
+      forceKillHandle = setTimeout(() => stopProcess('SIGKILL'), 5000);
+    };
+    abortSignal?.addEventListener('abort', cancelProcess, { once: true });
 
     logLine(`[JOB] Python process started; timeout=${Math.round(timeout / 60_000)}m (${timeout} ms)`);
 
@@ -525,7 +548,7 @@ async function readAddressLibrary() {
             jobId: String(item.jobId), title: cleanLabel(item.title || 'Схема', 140),
             createdAt: item.createdAt || null, uploadedBy: cleanLabel(item.uploadedBy || '', 80),
             sourceName: cleanLabel(item.sourceName || '', 180),
-            status: ['pending', 'queued', 'processing', 'completed', 'failed'].includes(item.status)
+            status: ['pending', 'queued', 'processing', 'completed', 'failed', 'cancelled'].includes(item.status)
               ? item.status : 'completed',
             originalName: cleanLabel(item.originalName || item.title || 'Эскиз', 180),
             error: cleanLabel(item.error || '', 240),
@@ -629,7 +652,8 @@ async function updateSchemeStatus(jobId, status, extra = {}) {
   return updated;
 }
 
-async function runStoredSchemeAnalysis(jobId) {
+async function runStoredSchemeAnalysis(jobId, entry) {
+  const abortSignal = entry.controller.signal;
   const jobDir = path.join(DATA, jobId);
   const meta = await readSchemeMeta(jobId);
   if (!meta?.sourceName) throw new Error('Исходный эскиз не найден в папке дома.');
@@ -641,12 +665,14 @@ async function runStoredSchemeAnalysis(jobId) {
   if (meta.rotationDegrees != null && [0, 90, 180, 270].includes(Number(meta.rotationDegrees))) processorArgs.push('--rotation', String(Number(meta.rotationDegrees)));
   await runPythonStreaming(
     processorArgs,
-    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment() }
+    { jobId, progressPath, timeout: PYTHON_TIMEOUT_MS, maxBuffer: PYTHON_MAX_BUFFER, env: localRecognitionPythonEnvironment(), abortSignal }
   );
   const graph = JSON.parse(await readFile(path.join(jobDir, 'graph.json'), 'utf8'));
   if (!graph || !graph.image || !Array.isArray(graph.edges)) {
     throw new Error('Python обработчик создал неполный graph.json.');
   }
+  abortSignal.throwIfAborted();
+  entry.finishing = true;
   if (graph.complete === false || graph.analysisStatus === 'incomplete') {
     const reasons = Array.isArray(graph.incompleteReasons) ? graph.incompleteReasons : [];
     const message = [
@@ -679,53 +705,93 @@ async function markStoredAnalysisFailed(jobId, error) {
   }).catch(statusError => console.error('[LIBRARY] Failed to save analysis error:', statusError));
 }
 
+async function markStoredAnalysisCancelled(jobId) {
+  await updateSchemeStatus(jobId, 'cancelled', {
+    error: '', completedAt: null, partialGraphReady: false, queuePosition: null,
+  });
+}
+
 async function drainAnalysisQueue() {
   if (analysisQueueRunning) return;
   analysisQueueRunning = true;
   try {
     while (analysisQueue.length) {
       const jobId = analysisQueue.shift();
-      queuedAnalysisIds.delete(jobId);
-      // Reserve the GPU slot before awaiting metadata writes. Only one Qwen job
-      // can run at a time on the target GTX 1060.
-      activeAnalyses.set(jobId, Promise.resolve());
+      const queuedWrite = queuedAnalysisWrites.get(jobId);
+      queuedAnalysisWrites.delete(jobId);
+      const entry = { controller: new AbortController(), finishing: false, done: null };
+      activeAnalyses.set(jobId, entry);
+      entry.done = (async () => {
+        try {
+          await queuedWrite;
+          entry.controller.signal.throwIfAborted();
+          await updateSchemeStatus(jobId, 'processing', {
+            error: '', startedAt: new Date().toISOString(), completedAt: null,
+            partialGraphReady: false, queuePosition: null,
+          });
+          entry.controller.signal.throwIfAborted();
+          await runStoredSchemeAnalysis(jobId, entry);
+          return false;
+        } catch (error) {
+          entry.finishing = true;
+          if (entry.controller.signal.aborted) {
+            await markStoredAnalysisCancelled(jobId);
+            return true;
+          }
+          await markStoredAnalysisFailed(jobId, error);
+          return false;
+        }
+      })();
       try {
-        await updateSchemeStatus(jobId, 'processing', {
-          error: '', startedAt: new Date().toISOString(), completedAt: null,
-          partialGraphReady: false, queuePosition: null
-        });
-        const task = Promise.resolve().then(() => runStoredSchemeAnalysis(jobId))
-          .catch(error => markStoredAnalysisFailed(jobId, error));
-        activeAnalyses.set(jobId, task);
-        await task;
+        await entry.done;
       } catch (error) {
-        await markStoredAnalysisFailed(jobId, error);
+        console.error('[QUEUE] Could not persist cancellation:', error.message);
       } finally {
         activeAnalyses.delete(jobId);
       }
     }
   } finally {
     analysisQueueRunning = false;
-    // A request can enqueue a new item while the final status write is pending.
     if (analysisQueue.length) void drainAnalysisQueue();
   }
 }
 
 async function enqueueStoredSchemeAnalysis(jobId) {
   if (activeAnalyses.has(jobId)) return 'processing';
-  if (queuedAnalysisIds.has(jobId)) return 'queued';
-  const willStartNow = !analysisQueueRunning && activeAnalyses.size === 0 && analysisQueue.length === 0;
+  if (queuedAnalysisWrites.has(jobId)) return 'queued';
+  const willStartNow = !analysisQueueRunning && analysisQueue.length === 0;
+  const ready = willStartNow ? Promise.resolve() : updateSchemeStatus(jobId, 'queued', {
+    error: '', queuePosition: analysisQueue.length + 1, queuedAt: new Date().toISOString(),
+    completedAt: null, partialGraphReady: false,
+  });
+  queuedAnalysisWrites.set(jobId, ready);
   analysisQueue.push(jobId);
-  queuedAnalysisIds.add(jobId);
   if (willStartNow) {
     void drainAnalysisQueue();
     return 'processing';
   }
-  const queuePosition = analysisQueue.length;
-  await updateSchemeStatus(jobId, 'queued', {
-    error: '', queuePosition, queuedAt: new Date().toISOString(), completedAt: null
-  });
+  await ready;
   return 'queued';
+}
+
+async function cancelStoredSchemeAnalysis(jobId) {
+  const entry = activeAnalyses.get(jobId);
+  if (entry) {
+    if (entry.finishing && !entry.controller.signal.aborted) return false;
+    entry.controller.abort();
+    return entry.done;
+  }
+
+  const index = analysisQueue.indexOf(jobId);
+  if (index < 0) return false;
+  analysisQueue.splice(index, 1);
+  try {
+    await queuedAnalysisWrites.get(jobId);
+    await markStoredAnalysisCancelled(jobId);
+    return true;
+  } finally {
+    queuedAnalysisWrites.delete(jobId);
+  }
 }
 
 async function resumeStoredAnalysisQueue() {

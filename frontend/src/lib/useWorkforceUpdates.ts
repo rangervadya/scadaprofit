@@ -10,16 +10,18 @@ export function useWorkforceUpdates(enabled: boolean, reload: () => void) {
       pending = window.setTimeout(reload, 120);
     };
     const recover = () => {
-      if (stream.readyState !== EventSource.OPEN && document.visibilityState === 'visible') schedule();
+      if (document.visibilityState === 'visible') schedule();
     };
     stream.addEventListener('changed', schedule);
     window.addEventListener('focus', schedule);
-    const fallback = window.setInterval(recover, 5000);
+    document.addEventListener('visibilitychange', recover);
+    const fallback = window.setInterval(recover, 8000);
     return () => {
       stream.close();
       window.clearTimeout(pending);
       window.clearInterval(fallback);
       window.removeEventListener('focus', schedule);
+      document.removeEventListener('visibilitychange', recover);
     };
   }, [enabled, reload]);
 }

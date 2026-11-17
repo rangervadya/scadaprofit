@@ -1,3 +1,4 @@
+import { schemeStatusLabel } from '../lib/format';
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
@@ -182,7 +183,7 @@ export function SchemeDetailPage() {
             {meta?.title || 'Схема'}
             {meta ? (
               <Badge tone={meta.status === 'completed' ? 'success' : meta.status === 'failed' ? 'danger' : 'info'}>
-                {meta.status === 'completed' ? 'Готово' : meta.status === 'failed' ? 'Ошибка' : 'В обработке'}
+                {schemeStatusLabel(meta.status)}
               </Badge>
             ) : null}
           </h1>
