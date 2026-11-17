@@ -322,6 +322,7 @@ export type WorkforceTask = {
   lastReviewComment?: string;
   lastReportStatus?: string | null;
   officeAt?: string | null;
+  updatedAt?: string;
   canSubmitSketch?: boolean;
   canSubmitDefects?: boolean;
 };

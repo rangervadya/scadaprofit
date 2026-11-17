@@ -16,7 +16,34 @@ export default defineConfig({
   root: appRoot,
   base: '/vdgo/',
   publicDir: false,
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'vdgo-session-check',
+      configureServer(server) {
+        server.middlewares.use(async (req, res, next) => {
+          const pathname = req.url?.split('?')[0] || '';
+          if (!/^\/vdgo\/(?:api(?:\/|$)|(?:legacy|health|generate|generate_docx|preview|reports)$)/.test(pathname)) {
+            next();
+            return;
+          }
+          try {
+            const auth = await fetch(new URL('/api/auth/check-vdgo', mainBackend), {
+              headers: { cookie: req.headers.cookie || '' },
+            });
+            if (auth.ok) {
+              next();
+              return;
+            }
+            res.statusCode = auth.status;
+          } catch {
+            res.statusCode = 502;
+          }
+          res.end();
+        });
+      },
+    },
+  ],
   server: {
     host: '127.0.0.1',
     port: 5173,

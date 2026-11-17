@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Button, Card, Empty, Loading, Spinner, useToast } from '../components/ui';
 import { buildDefectPhotos, buildWorkforceSchemes, conclusionApi, workforceApi } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import type { ConclusionContext } from '../lib/types';
 import { SectionRenderer } from './conclusion/ConclusionSections';
@@ -13,20 +14,23 @@ type Busy = null | 'pdf' | 'docx' | 'preview';
 
 export function ConclusionPage() {
   const [params] = useSearchParams();
-  const taskId = params.get('task');
-  const reportId = params.get('report');
-  const defectId = params.get('defectReport');
-  return <ConclusionFormPage key={JSON.stringify([taskId, reportId, defectId])} taskId={taskId} reportId={reportId} defectId={defectId} />;
+  const { user } = useAuth();
+  const fitterId = user?.role === 'fitter' ? user.id : undefined;
+  const taskId = fitterId ? null : params.get('task');
+  const reportId = fitterId ? null : params.get('report');
+  const defectId = fitterId ? null : params.get('defectReport');
+  return <ConclusionFormPage key={JSON.stringify([fitterId, taskId, reportId, defectId])} fitterId={fitterId} taskId={taskId} reportId={reportId} defectId={defectId} />;
 }
 
-function ConclusionFormPage({ taskId, reportId, defectId }: {
+function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
+  fitterId?: string;
   taskId: string | null;
   reportId: string | null;
   defectId: string | null;
 }) {
   const hasMaterialScope = Boolean(taskId || reportId || defectId);
   const [context, setContext] = useState<ConclusionContext | null>(null);
-  const form = useConclusionForm(taskId || context?.task.id, taskId || reportId || defectId);
+  const form = useConclusionForm(taskId || context?.task.id, fitterId ? `fitter.${fitterId}` : taskId || reportId || defectId);
   const { notify } = useToast();
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(hasMaterialScope);
@@ -95,6 +99,8 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
     };
   }, [context]);
 
+  const generationDisabled = Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context));
+
   const downloadDraft = () => {
     const blob = new Blob([form.exportDraft()], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -124,6 +130,7 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (fitterId) return;
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const format = (submitter?.dataset.format as Busy) || 'pdf';
     if (format === 'preview') {
@@ -134,7 +141,7 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
   };
 
   const run = async (mode: Busy) => {
-    if (!mode) return;
+    if (!mode || fitterId) return;
     if (hasMaterialScope && (contextLoading || !context)) {
       notify(contextError || 'Дождитесь загрузки материалов задания', 'error');
       return;
@@ -183,8 +190,9 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
             {context ? <Badge tone="brand">{context.task.street}, дом {context.task.address}</Badge> : null}
           </div>
           <p className="page__subtitle">
-            Заполните данные объекта, проверьте приложения и сформируйте PDF или Word. Черновик автоматически
-            сохраняется в браузере.
+            {fitterId
+              ? 'Заполните данные объекта. Черновик сохраняется в браузере, его можно передать ответственному сотруднику в JSON.'
+              : 'Заполните данные объекта, проверьте приложения и сформируйте PDF или Word. Черновик автоматически сохраняется в браузере.'}
           </p>
         </div>
         <div className="page__actions">
@@ -309,11 +317,11 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
         ) : (
           <Card><Empty icon="folder" title="Материалы задания недоступны">Проверьте ссылку или откройте задание в разделе «Команда».</Empty></Card>
         )
-      ) : (
+      ) : !fitterId ? (
         <div className="row">
           <Link to="/team?tab=inbox" className="btn btn--sm"><Icon name="folder" /> Выбрать адрес в приёмке</Link>
         </div>
-      )}
+      ) : null}
 
       <div className="conclusion-layout">
         <nav className="conclusion-nav" aria-label="Разделы заключения">
@@ -329,15 +337,17 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
               {section.title}
             </button>
           ))}
-          <button
-            type="button"
-            className="conclusion-nav__link"
-            aria-current={activeSection === 'finish'}
-            onClick={() => document.getElementById('finish')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-          >
-            <span className="conclusion-nav__num">9</span>
-            Контроль перед выпуском
-          </button>
+          {!fitterId ? (
+            <button
+              type="button"
+              className="conclusion-nav__link"
+              aria-current={activeSection === 'finish'}
+              onClick={() => document.getElementById('finish')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >
+              <span className="conclusion-nav__num">9</span>
+              Контроль перед выпуском
+            </button>
+          ) : null}
         </nav>
 
         <form id="conclusion-form" ref={formRef} className="stack" onSubmit={submit} noValidate={false}>
@@ -351,42 +361,46 @@ function ConclusionFormPage({ taskId, reportId, defectId }: {
             />
           ))}
 
-          <section className="card form-section" id="finish">
-            <header className="form-section__head">
-              <span className="form-section__num">9</span>
-              <div>
-                <h2>Контроль перед выпуском</h2>
-                <p className="form-section__note" style={{ marginTop: 4 }}>
-                  Основная форма — 49 страниц; при более чем 20 фотографиях добавляются листы. Пустые фотолисты
-                  удаляются автоматически.
-                </p>
-              </div>
-            </header>
-            <div className="form-section__body">
-              <div className="pill-list">
-                <Badge tone="brand" plain>49 основных страниц</Badge>
-                <Badge plain>Дополнительные фотолисты</Badge>
-                <Badge plain>Продолжение таблицы дефектов при необходимости</Badge>
-                <Badge plain>Без автогенерации вывода</Badge>
-                <Badge plain>Проверка обязательных полей</Badge>
-              </div>
-              <div className="alert alert--info">
-                <Icon name="info" />
-                <span>Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный адрес.</span>
-              </div>
-            </div>
-          </section>
+          {!fitterId ? (
+            <>
+              <section className="card form-section" id="finish">
+                <header className="form-section__head">
+                  <span className="form-section__num">9</span>
+                  <div>
+                    <h2>Контроль перед выпуском</h2>
+                    <p className="form-section__note" style={{ marginTop: 4 }}>
+                      Основная форма — 49 страниц; при более чем 20 фотографиях добавляются листы. Пустые фотолисты
+                      удаляются автоматически.
+                    </p>
+                  </div>
+                </header>
+                <div className="form-section__body">
+                  <div className="pill-list">
+                    <Badge tone="brand" plain>49 основных страниц</Badge>
+                    <Badge plain>Дополнительные фотолисты</Badge>
+                    <Badge plain>Продолжение таблицы дефектов при необходимости</Badge>
+                    <Badge plain>Без автогенерации вывода</Badge>
+                    <Badge plain>Проверка обязательных полей</Badge>
+                  </div>
+                  <div className="alert alert--info">
+                    <Icon name="info" />
+                    <span>Перед отправкой просмотрите предпросмотр PDF. Схема Приложения 2 сохраняется и получает актуальный адрес.</span>
+                  </div>
+                </div>
+              </section>
 
-          <div className="sticky-actions">
-            <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>Сбросить</Button>
-            <span className="sticky-actions__spacer" />
-            {busy ? <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}><Spinner /> Формируем…</span> : null}
-            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>Word</Button>
-            <Button icon="doc" type="submit" name="format" value="preview" data-format="preview" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>Проверить PDF</Button>
-            <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>
-              Сформировать PDF
-            </Button>
-          </div>
+              <div className="sticky-actions">
+                <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>Сбросить</Button>
+                <span className="sticky-actions__spacer" />
+                {busy ? <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}><Spinner /> Формируем…</span> : null}
+                <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={generationDisabled}>Word</Button>
+                <Button icon="doc" type="submit" name="format" value="preview" data-format="preview" disabled={generationDisabled}>Проверить PDF</Button>
+                <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={generationDisabled}>
+                  Сформировать PDF
+                </Button>
+              </div>
+            </>
+          ) : null}
         </form>
       </div>
     </>

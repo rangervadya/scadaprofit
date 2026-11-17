@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import {
   Badge,
   Button,
   Card,
+  Confirm,
   Empty,
   Field,
   Loading,
@@ -14,6 +15,7 @@ import {
 } from '../components/ui';
 import { cadApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useWorkforceUpdates } from '../lib/useWorkforceUpdates';
 import {
   formatDate,
   formatDateTime,
@@ -33,8 +35,9 @@ import type {
   WorkforceUser,
 } from '../lib/types';
 
-type Tab = 'tasks' | 'schedule' | 'overview' | 'inbox' | 'users' | 'credentials';
+type Tab = 'tasks' | 'overview' | 'inbox' | 'users';
 
+const FIELDWORK_STATUSES: TaskStatus[] = ['in_progress', 'house_visited', 'at_office'];
 const ACTIVE_STATUSES: TaskStatus[] = ['assigned', 'in_progress', 'house_visited', 'at_office', 'submitted', 'processing', 'pending_review'];
 
 function statusTone(status: string): 'success' | 'warn' | 'danger' | 'info' | 'default' {
@@ -104,48 +107,65 @@ export function TeamPage() {
   const [selectedFolderTaskId, setSelectedFolderTaskId] = useState<string | null>(params.get('task'));
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showUserForm, setShowUserForm] = useState(false);
+  const [taskAction, setTaskAction] = useState<{ kind: 'assign' | 'delete'; task: WorkforceTask } | null>(null);
+  const [assignee, setAssignee] = useState('');
   const [credentials, setCredentials] = useState<{ username: string; password: string; displayName?: string } | null>(null);
 
   const isFitter = user?.role === 'fitter';
   const canManage = user?.role === 'supervisor' || user?.role === 'developer';
 
-  const load = useCallback(async () => {
-    setError(null);
+  const loadSequence = useRef(0);
+  const load = useCallback(async (background = false) => {
+    const sequence = ++loadSequence.current;
     try {
-      const taskData = await workforceApi.tasks();
+      const [taskData, reportData, defectData, overviewData, userData] = await Promise.all([
+        workforceApi.tasks(),
+        isFitter ? null : workforceApi.reports(),
+        isFitter ? null : workforceApi.defects(),
+        isFitter ? null : workforceApi.overview(),
+        canManage ? workforceApi.users() : null,
+      ]);
+      if (sequence !== loadSequence.current) return;
       setTasks(taskData.tasks || []);
-      if (!isFitter) {
-        const [reportData, defectData, overviewData] = await Promise.all([
-          workforceApi.reports(),
-          workforceApi.defects(),
-          workforceApi.overview(),
-        ]);
-        setReports(reportData.reports || []);
-        setDefects(defectData.reports || []);
-        setOverview(overviewData);
-        setUsers(overviewData.users || []);
-        if (canManage) {
-          const userData = await workforceApi.users();
-          setUsers(userData.users || []);
-        }
-      }
+      setReports(reportData?.reports || []);
+      setDefects(defectData?.reports || []);
+      setOverview(overviewData);
+      setUsers(userData?.users.map(item => ({
+        ...item, assignedTasks: overviewData?.users.find(person => person.id === item.id)?.assignedTasks,
+      })) || overviewData?.users || []);
+      setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось загрузить данные команды');
+      if (!background && sequence === loadSequence.current) {
+        setError(cause instanceof Error ? cause.message : 'Не удалось загрузить данные команды');
+      }
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, [isFitter, canManage]);
 
   useEffect(() => {
     void load();
+    return () => { loadSequence.current++; };
   }, [load]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (!isFitter) void workforceApi.overview().then(setOverview).catch(() => {});
-    }, 20_000);
-    return () => window.clearInterval(timer);
-  }, [isFitter]);
+  const reloadLive = useCallback(() => { void load(true); }, [load]);
+  useWorkforceUpdates(Boolean(user), reloadLive);
+
+  const saveTaskAction = async () => {
+    if (!taskAction) return;
+    setBusy(true);
+    try {
+      if (taskAction.kind === 'assign') await workforceApi.reassignTask(taskAction.task.id, assignee);
+      else await workforceApi.deleteTask(taskAction.task.id);
+      setTaskAction(null);
+      await load();
+      notify(taskAction.kind === 'assign' ? 'Слесарь изменён' : 'Задание удалено', 'success');
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось изменить задание', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const folders = useMemo(() => {
     const map = new Map<string, { task: WorkforceTask | undefined; schemes: WorkforceReport[]; defects: WorkforceDefectReport[] }>();
@@ -288,11 +308,9 @@ export function TeamPage() {
     ? [['tasks', 'Мои задания', true]]
     : [
         ['tasks', 'Задания', true],
-        ['schedule', 'Планирование', true],
         ['overview', 'Обзор', true],
         ['inbox', `Приёмка${reports.length + defects.length ? ` · ${folders.length}` : ''}`, true],
         ['users', 'Пользователи', canManage],
-        ['credentials', 'Учётные записи', canManage],
       ];
 
   return (
@@ -389,17 +407,13 @@ export function TeamPage() {
         </div>
       ) : null}
 
-      {tab === 'schedule' ? (
-        <ScheduleTab
-          tasks={tasks}
-          users={users.filter(item => item.role === 'fitter' && item.active)}
-          onCreated={() => void refresh('Задания назначены')}
-          onError={message => notify(message, 'error')}
-        />
-      ) : null}
-
       {tab === 'overview' ? (
-        <OverviewTab overview={overview} tasks={tasks} reports={reports} defects={defects} />
+        <OverviewTab overview={overview} tasks={tasks} reports={reports} defects={defects}
+          onOpenTask={id => { setSelectedTaskId(id); setTab('tasks'); }}
+          onTaskAction={canManage ? (kind, task) => {
+            setAssignee('');
+            setTaskAction({ kind, task });
+          } : undefined} />
       ) : null}
 
       {tab === 'inbox' ? (
@@ -452,25 +466,38 @@ export function TeamPage() {
         </div>
       ) : null}
 
-      {tab === 'users' ? (
+      {tab === 'users' && canManage ? (
         <UsersTab
           users={users}
-          canManage={canManage}
+          canToggle={user?.role === 'developer'}
           onRefresh={refresh}
           onCreate={() => setShowUserForm(true)}
+          onReset={async id => {
+            const result = await workforceApi.resetPassword(id);
+            setCredentials(result.credentials);
+          }}
         />
       ) : null}
 
-      {tab === 'credentials' ? (
-        <CredentialsTab users={users} onReset={async id => {
-          try {
-            const result = await workforceApi.resetPassword(id);
-            setCredentials(result.credentials);
-            notify('Новый пароль выдан', 'success');
-          } catch (cause) {
-            notify(cause instanceof Error ? cause.message : 'Не удалось выдать пароль', 'error');
-          }
-        }} />
+      {taskAction?.kind === 'assign' ? (
+        <Modal title="Сменить слесаря" onClose={() => { if (!busy) setTaskAction(null); }} footer={
+          <Button variant="primary" disabled={busy || !assignee} onClick={() => void saveTaskAction()}>Сохранить</Button>
+        }>
+          <Field label="Новый слесарь">
+            <select className="select" value={assignee} onChange={event => setAssignee(event.target.value)}>
+              <option value="">Выберите слесаря</option>
+              {users.filter(item => item.role === 'fitter' && item.active && item.id !== taskAction.task.assignedTo).map(item =>
+                <option key={item.id} value={item.id}>{item.displayName}</option>
+              )}
+            </select>
+          </Field>
+        </Modal>
+      ) : null}
+
+      {taskAction?.kind === 'delete' ? (
+        <Confirm title="Удалить задание" danger busy={busy} confirmLabel="Удалить"
+          message={`Удалить задание по адресу ${taskAction.task.street}, дом ${taskAction.task.address}? Его материалы исчезнут из приёмки.`}
+          onClose={() => setTaskAction(null)} onConfirm={() => void saveTaskAction()} />
       ) : null}
 
       {showTaskForm ? (
@@ -854,54 +881,6 @@ function FolderDetail({
   );
 }
 
-function ScheduleTab({
-  tasks,
-  users,
-  onCreated,
-  onError,
-}: {
-  tasks: WorkforceTask[];
-  users: WorkforceUser[];
-  onCreated: () => void;
-  onError: (message: string) => void;
-}) {
-  return (
-    <div className="stack">
-      <div className="grid grid--sidebar" style={{ alignItems: 'start' }}>
-        <Card title="Как назначить">
-          <p className="field__hint">
-            Выберите слесаря, улицу и перечислите дома. Система создаст отдельное задание для каждого адреса,
-            чтобы папки приёмки не смешивались.
-          </p>
-          <div className="alert alert--info" style={{ marginTop: 12 }}>
-            <Icon name="info" />
-            <span>Слесарь увидит задания сразу после входа и сможет отмечать этапы обхода.</span>
-          </div>
-        </Card>
-        <TaskForm users={users} onCreated={onCreated} onError={onError} />
-      </div>
-      <Card title={`Задания · ${tasks.length}`} flush>
-        <div className="table-wrap">
-          <table className="table">
-            <thead><tr><th>Адрес</th><th>Слесарь</th><th>Дата</th><th>Статус</th><th>Материалы</th></tr></thead>
-            <tbody>
-              {tasks.map(task => (
-                <tr key={task.id}>
-                  <td>{task.street}, {task.address}</td>
-                  <td>{task.assignedName}</td>
-                  <td className="nowrap">{formatShortDate(task.scheduledDate)}</td>
-                  <td><Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge></td>
-                  <td className="muted">{task.reportsCount} схем · {task.defectReportsCount} дефектов</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
 function TaskForm({
   users,
   onCreated,
@@ -988,11 +967,15 @@ function OverviewTab({
   tasks,
   reports,
   defects,
+  onTaskAction,
+  onOpenTask,
 }: {
   overview: WorkforceOverview | null;
   tasks: WorkforceTask[];
   reports: WorkforceReport[];
   defects: WorkforceDefectReport[];
+  onOpenTask: (id: string) => void;
+  onTaskAction?: (kind: 'assign' | 'delete', task: WorkforceTask) => void;
 }) {
   const summary = overview?.summary;
   const activeTasks = tasks.filter(task => ACTIVE_STATUSES.includes(task.status)).length;
@@ -1020,13 +1003,39 @@ function OverviewTab({
           <span className="stat__hint">схем + комплектов дефектов</span>
         </div>
       </div>
+      {onTaskAction ? (
+        <div className="grid grid--3">
+          {overview?.users.filter(item => item.role === 'fitter' && item.active).map(fitter => {
+            const assigned = tasks.filter(task => task.assignedTo === fitter.id);
+            const current = assigned
+              .filter(task => task.status !== 'accepted')
+              .sort((a, b) => Number(FIELDWORK_STATUSES.includes(b.status)) - Number(FIELDWORK_STATUSES.includes(a.status))
+                || Number(b.status !== 'assigned') - Number(a.status !== 'assigned')
+                || (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
+            return (
+              <Card key={fitter.id} title={fitter.displayName}>
+                {current ? (
+                  <div className="stack stack--sm">
+                    <Button size="sm" variant="ghost" onClick={() => onOpenTask(current.id)}>
+                      {current.street}, дом {current.address}
+                    </Button>
+                    <span>{current.title}</span>
+                    <div className="row"><Badge tone={statusTone(current.status)}>{taskStatusLabel(current.status)}</Badge></div>
+                    <span className="muted">{formatDateTime(current.updatedAt || current.events.at(-1)?.at)}</span>
+                  </div>
+                ) : <p className="muted">Нет текущих заданий</p>}
+              </Card>
+            );
+          })}
+        </div>
+      ) : null}
       <Card title="Отметки слесарей" flush>
         {tasks.length === 0 ? (
           <Empty icon="team" title="Заданий нет">Назначьте задания, чтобы видеть этапы работ.</Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Адрес</th><th>Слесарь</th><th>Статус</th><th>Материалы</th><th>Обновлено</th></tr></thead>
+              <thead><tr><th>Адрес</th><th>Слесарь</th><th>Статус</th><th>Материалы</th><th>Обновлено</th>{onTaskAction ? <th>Действия</th> : null}</tr></thead>
               <tbody>
                 {tasks.map(task => (
                   <tr key={task.id}>
@@ -1034,7 +1043,11 @@ function OverviewTab({
                     <td>{task.assignedName}</td>
                     <td><Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge></td>
                     <td className="muted">{task.reportsCount} схем · {task.defectReportsCount} дефектов</td>
-                    <td className="nowrap muted">{formatDateTime(task.events.at(-1)?.at)}</td>
+                    <td className="nowrap muted">{formatDateTime(task.updatedAt || task.events.at(-1)?.at)}</td>
+                    {onTaskAction ? <td><div className="row">
+                      <Button size="sm" onClick={() => onTaskAction('assign', task)}>Сменить слесаря</Button>
+                      <Button size="sm" variant="danger" onClick={() => onTaskAction('delete', task)}>Удалить</Button>
+                    </div></td> : null}
                   </tr>
                 ))}
               </tbody>
@@ -1048,14 +1061,16 @@ function OverviewTab({
 
 function UsersTab({
   users,
-  canManage,
+  canToggle,
   onRefresh,
   onCreate,
+  onReset,
 }: {
   users: WorkforceUser[];
-  canManage: boolean;
+  canToggle: boolean;
   onRefresh: (message?: string) => Promise<void>;
   onCreate: () => void;
+  onReset: (id: string) => Promise<void>;
 }) {
   const { notify } = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -1072,10 +1087,21 @@ function UsersTab({
     }
   };
 
+  const reset = async (id: string) => {
+    setBusyId(id);
+    try {
+      await onReset(id);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось выдать пароль', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <Card
       title={`Пользователи · ${users.length}`}
-      actions={canManage ? <Button size="sm" variant="primary" icon="plus" onClick={onCreate}>Создать аккаунт</Button> : null}
+      actions={<Button size="sm" variant="primary" icon="plus" onClick={onCreate}>Создать аккаунт</Button>}
       flush
     >
       {users.length === 0 ? (
@@ -1090,42 +1116,16 @@ function UsersTab({
                 <span className="user-card__meta">{roleLabel(item.role)} · {item.active ? 'активен' : 'отключён'} · заданий: {item.assignedTasks ?? 0}</span>
               </div>
               <Badge tone={item.active ? 'success' : 'default'}>{item.active ? 'Активен' : 'Отключён'}</Badge>
-              {canManage && item.role !== 'developer' ? (
+              {['fitter', 'receiver'].includes(item.role) ? (
+                <Button size="sm" disabled={!item.active || busyId === item.id} onClick={() => void reset(item.id)}>Выдать пароль</Button>
+              ) : null}
+              {canToggle && item.role !== 'developer' ? (
                 <Button size="sm" variant="ghost" disabled={busyId === item.id} onClick={() => void toggle(item)}>
                   {item.active ? 'Отключить' : 'Включить'}
                 </Button>
               ) : null}
             </div>
           ))}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function CredentialsTab({ users, onReset }: { users: WorkforceUser[]; onReset: (id: string) => void }) {
-  return (
-    <Card title="Учётные записи" flush>
-      {users.length === 0 ? (
-        <Empty icon="users" title="Аккаунтов нет">Создайте первый аккаунт во вкладке «Пользователи».</Empty>
-      ) : (
-        <div className="table-wrap">
-          <table className="table">
-            <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th>Статус</th><th /></tr></thead>
-            <tbody>
-              {users.filter(item => item.role !== 'developer').map(item => (
-                <tr key={item.id}>
-                  <td>{item.displayName}</td>
-                  <td className="mono">{item.username}</td>
-                  <td>{roleLabel(item.role)}</td>
-                  <td><Badge tone={item.active ? 'success' : 'default'}>{item.active ? 'Активен' : 'Отключён'}</Badge></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <Button size="sm" disabled={!item.active} onClick={() => onReset(item.id)}>Выдать пароль</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
     </Card>

@@ -210,6 +210,10 @@ export const workforceApi = {
     scheduledDate: string;
     instructions?: string;
   }) => api.post<{ ok: boolean; createdCount: number }>(`${MAIN}/workforce/tasks`, payload),
+  reassignTask: (id: string, assignedTo: string) =>
+    api.patch<{ ok: boolean; task: WorkforceTask }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}`, { assignedTo }),
+  deleteTask: (id: string) =>
+    api.del<{ ok: boolean }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}`),
   startTask: (id: string) => api.post<{ ok: boolean; task: WorkforceTask }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/start`),
   visitTask: (id: string) => api.post<{ ok: boolean; task: WorkforceTask }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/visit`),
   officeTask: (id: string) => api.post<{ ok: boolean; task: WorkforceTask }>(`${MAIN}/workforce/tasks/${encodeURIComponent(id)}/office`),

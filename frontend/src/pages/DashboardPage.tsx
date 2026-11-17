@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Card, Empty } from '../components/ui';
 import { healthApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useWorkforceUpdates } from '../lib/useWorkforceUpdates';
 import { formatDateTime, formatShortDate, taskStatusLabel } from '../lib/format';
 import type { ReportRun, WorkforceTask } from '../lib/types';
 
@@ -34,13 +35,16 @@ export function DashboardPage() {
         .then((data) => setReports(Array.isArray(data.items) ? data.items : []))
         .catch((cause) => setReportsError(cause instanceof Error ? cause.message : 'Не удалось загрузить историю'));
     }
-    if (user) {
-      workforceApi
-        .tasks()
-        .then((data) => setTasks(data.tasks || []))
-        .catch((cause) => setTasksError(cause instanceof Error ? cause.message : 'Не удалось загрузить задания'));
-    }
   }, [user, isFitter]);
+
+  const reloadTasks = useCallback(() => {
+    if (!user) return;
+    void workforceApi.tasks()
+      .then(data => { setTasks(data.tasks || []); setTasksError(null); })
+      .catch(cause => setTasksError(cause instanceof Error ? cause.message : 'Не удалось загрузить задания'));
+  }, [user]);
+  useEffect(reloadTasks, [reloadTasks]);
+  useWorkforceUpdates(Boolean(user), reloadTasks);
 
   const activeTasks = useMemo(() => tasks.filter((task) => !['accepted', 'superseded'].includes(task.status)), [tasks]);
   const myTasks = useMemo(
@@ -99,7 +103,7 @@ export function DashboardPage() {
 
       <div className="quick-grid">
         {(isFitter
-          ? QUICK_LINKS.filter((link) => link.to === '/team')
+          ? QUICK_LINKS.filter((link) => ['/team', '/conclusion'].includes(link.to))
           : QUICK_LINKS
         ).map((link) => (
           <Link key={link.to} to={link.to} className="quick-card">

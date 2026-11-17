@@ -127,9 +127,34 @@ export function CadEditorPage() {
   const [zoom, setZoom] = useState(1);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [showSource, setShowSource] = useState(true);
-  const [showGrid, setShowGrid] = useState(true);
+  const [showSource, setShowSource] = useState(false);
+  const [decodedSource, setDecodedSource] = useState<string | null>(null);
+  const [showGrid, setShowGrid] = useState(false);
   const loadToken = useRef(0);
+  const sourceUrl = project?.sourceUrl;
+  const sourceVersion = project?.updatedAt;
+  const sourceHref = sourceUrl ? `${sourceUrl}?v=${encodeURIComponent(sourceVersion || '')}` : null;
+
+  useEffect(() => {
+    setShowSource(false);
+  }, [id]);
+
+  useEffect(() => {
+    if (!showSource || !sourceHref) return;
+    let cancelled = false;
+    const image = new Image();
+    image.src = sourceHref;
+    void image.decode().then(() => {
+      if (!cancelled) setDecodedSource(sourceHref);
+    }).catch(() => {
+      if (cancelled) return;
+      setDecodedSource(null);
+      setShowSource(false);
+      notify('Подложка недоступна или формат изображения не поддерживается браузером.', 'error');
+    });
+    return () => { cancelled = true; };
+  }, [showSource, sourceHref, notify]);
+
   const dragRef = useRef<{
     type: Selection extends null ? never : NonNullable<Selection>['type'];
     id: string;
@@ -405,6 +430,7 @@ export function CadEditorPage() {
       if (!response.ok) throw new Error((payload as { error?: string }).error || `HTTP ${response.status}`);
       notify('Подложка загружена', 'success');
       await load();
+      setShowSource(true);
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : 'Не удалось загрузить подложку', 'error');
     }
@@ -677,9 +703,9 @@ export function CadEditorPage() {
               </defs>
               <rect width={project.width} height={project.height} fill="#fff" />
               {showGrid ? <rect width={project.width} height={project.height} fill="url(#cad-grid)" /> : null}
-              {project.sourceUrl && showSource ? (
+              {sourceHref && showSource && decodedSource === sourceHref ? (
                 <image
-                  href={project.sourceUrl}
+                  href={sourceHref}
                   width={project.width}
                   height={project.height}
                   opacity="0.55"

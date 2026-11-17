@@ -5,13 +5,6 @@ import { useHealth } from '../../lib/health';
 import { useAuth } from '../../lib/auth';
 import { useActiveNav } from './Sidebar';
 
-const stateLabel = (online: boolean | null, loading: boolean, ready: boolean): string => {
-  if (loading) return 'Проверка сервисов';
-  if (online === null) return 'Нет связи';
-  if (!online) return 'Сервис недоступен';
-  return ready ? 'Сервисы доступны' : 'Без Ollama: базовые сервисы';
-};
-
 export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => void; navOpen?: boolean }) {
   const { data, loading, error } = useHealth();
   const { user } = useAuth();
@@ -23,9 +16,8 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
 
   useEffect(() => setQuery(''), [location.pathname]);
 
-  const online = !error && data?.ok !== false;
-  const ready = Boolean(data?.ready);
-  const statusTo = isFitter ? '/team' : '/settings';
+  const online = !error && data?.ok === true;
+  const statusLabel = loading ? 'Проверка связи' : online ? 'Система доступна' : 'Нет связи с сервером';
 
   return (
     <header className="topbar">
@@ -62,14 +54,14 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
       <span className="topbar__spacer" />
       {isFitter ? null : (
         <Link
-          to={statusTo}
+          to="/settings"
           className="status-pill"
-          title={error || data?.ollama?.hint || data?.localRecognition?.mode || 'Состояние сервисов'}
+          title={error || statusLabel}
         >
           <span
             className={`status-dot ${loading ? 'status-dot--checking' : online ? 'status-dot--ok' : 'status-dot--error'}`}
           />
-          {stateLabel(online, loading, ready)}
+          {statusLabel}
         </Link>
       )}
       {!isFitter ? (

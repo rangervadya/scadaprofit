@@ -81,14 +81,7 @@ export function App() {
                 }
               >
                 <Route index element={<DashboardPage />} />
-                <Route
-                  path="/conclusion"
-                  element={
-                    <RequireRole roles={STAFF_ROLES}>
-                      <ConclusionPage />
-                    </RequireRole>
-                  }
-                />
+                <Route path="/conclusion" element={<ConclusionPage />} />
                 <Route
                   path="/schemes"
                   element={

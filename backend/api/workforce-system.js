@@ -200,13 +200,26 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   const now = Date.now();
   sessions = sessions.filter(item => Number(item.expiresAt) > now && users.some(user => user.id === item.userId && user.active !== false));
   await atomicJson(sessionsPath, sessions);
-  const saveUsers = () => atomicJson(usersPath, users);
+  const workforceStreams = new Set();
+  const broadcastChange = () => {
+    for (const client of workforceStreams) {
+      if (!getCurrentUser(client.req) || client.res.writableLength > 16_384) client.res.end();
+      else client.res.write('event: changed\ndata: {}\n\n');
+    }
+  };
+  const saveUsers = async () => {
+    await atomicJson(usersPath, users);
+    broadcastChange();
+  };
   const saveSessions = () => atomicJson(sessionsPath, sessions);
   let workspaceWrite = Promise.resolve();
   let setupInProgress = false;
   let accountCreationInProgress = false;
   const saveWorkspace = () => {
-    const pending = workspaceWrite.then(() => atomicJson(workforcePath, workspace));
+    const pending = workspaceWrite.then(async () => {
+      await atomicJson(workforcePath, workspace);
+      broadcastChange();
+    });
     workspaceWrite = pending.catch(() => {});
     return pending;
   };
@@ -399,7 +412,30 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return res.json({ ok: true, user: publicUser(user) });
   });
 
-  routes.get('/api/auth/check-vdgo', (_req, res) => res.sendStatus(204));
+  routes.get('/api/auth/check-vdgo', (req, res) => {
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
+    return res.sendStatus(204);
+  });
+
+  routes.get('/api/workforce/events', (req, res) => {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    const client = { req, res };
+    workforceStreams.add(client);
+    res.write('event: changed\ndata: {}\n\n');
+    const heartbeat = setInterval(() => {
+      if (!getCurrentUser(req)) res.end();
+      else res.write(': ping\n\n');
+    }, 20_000);
+    res.once('close', () => {
+      clearInterval(heartbeat);
+      workforceStreams.delete(client);
+    });
+  });
 
   routes.get('/api/workforce/tasks', (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Требуется войти.' });
@@ -498,6 +534,62 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
 
   const sketchUploadsInProgress = new Set();
+  const defectUploadsInProgress = new Set();
+  const uploadsInProgress = taskId => sketchUploadsInProgress.has(taskId) || defectUploadsInProgress.has(taskId);
+
+  routes.patch('/api/workforce/tasks/:id', async (req, res) => {
+    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
+    const fitter = users.find(item => item.id === req.body?.assignedTo && item.role === 'fitter' && item.active !== false);
+    if (!fitter) return res.status(400).json({ error: 'Выберите действующий аккаунт слесаря.' });
+    if (task.assignedTo === fitter.id) return res.json({ ok: true, task: taskForClient(task) });
+    if (uploadsInProgress(task.id)) return res.status(409).json({ error: 'Дождитесь окончания загрузки материалов.' });
+
+    const timestamp = new Date().toISOString();
+    const previous = { ...task };
+    task.assignedTo = fitter.id;
+    task.assignedName = fitter.displayName;
+    task.updatedAt = timestamp;
+    task.officeAt = null;
+    if (['assigned', 'in_progress', 'house_visited', 'at_office', 'revision_requested', 'processing_failed'].includes(task.status)) {
+      task.status = ['revision_requested', 'processing_failed'].includes(task.status) ? 'revision_requested' : 'assigned';
+      task.startedAt = task.visitedAt = null;
+    }
+    task.events = [...(task.events || []), {
+      type: 'reassigned', label: `Задание передано: ${fitter.displayName}`,
+      at: timestamp, userId: req.user.id, userName: req.user.displayName,
+    }];
+    try {
+      await saveWorkspace();
+    } catch (error) {
+      Object.assign(task, previous);
+      throw error;
+    }
+    return res.json({ ok: true, task: taskForClient(task) });
+  });
+
+  routes.delete('/api/workforce/tasks/:id', async (req, res) => {
+    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    const index = workspace.tasks.findIndex(item => item.id === req.params.id);
+    if (index < 0) return res.status(404).json({ error: 'Задание не найдено.' });
+    const task = workspace.tasks[index];
+    if (uploadsInProgress(task.id)) return res.status(409).json({ error: 'Дождитесь окончания загрузки материалов.' });
+    const reports = workspace.reports.filter(item => item.taskId === task.id);
+    const defects = workspace.defectReports.filter(item => item.taskId === task.id);
+    workspace.tasks.splice(index, 1);
+    workspace.reports = workspace.reports.filter(item => item.taskId !== task.id);
+    workspace.defectReports = workspace.defectReports.filter(item => item.taskId !== task.id);
+    try {
+      await saveWorkspace();
+    } catch (error) {
+      workspace.tasks.splice(index, 0, task);
+      workspace.reports.push(...reports);
+      workspace.defectReports.push(...defects);
+      throw error;
+    }
+    return res.json({ ok: true });
+  });
   routes.post('/api/workforce/tasks/:id/report', (req, res, next) => {
     if (!req.user || !['fitter', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Отправлять полевые отчёты может слесарь.' });
     upload.fields([{ name: 'sketch', maxCount: 1 }])(req, res, error => error ? next(error) : next());
@@ -611,6 +703,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       await cleanupUploads();
       return res.status(409).json({ error: 'Сначала отметь, что дом пройден и ты пришёл в офис.' });
     }
+    if (defectUploadsInProgress.has(task.id)) {
+      await cleanupUploads();
+      return res.status(409).json({ error: 'Фотографии по этому заданию уже загружаются.' });
+    }
     if (!uploaded.length) return res.status(400).json({ error: 'Добавь хотя бы одну фотографию дефекта (JPG, PNG, WEBP, TIFF или HEIC).' });
 
     const reportId = randomUUID();
@@ -618,6 +714,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     let createdReport = null;
     let createdEventAt = null;
     const previousTaskUpdatedAt = task.updatedAt;
+    defectUploadsInProgress.add(task.id);
     try {
       await mkdir(reportDir, { recursive: true, mode: 0o700 });
       const photos = [];
@@ -644,7 +741,6 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
           previous.supersededByReportId = report.id;
         }
       }
-      if (report.schemeStatus === 'failed') report.status = 'processing_failed';
       createdReport = report;
       workspace.defectReports.unshift(report);
       task.events = Array.isArray(task.events) ? task.events : [];
@@ -662,6 +758,8 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       await rm(reportDir, { recursive: true, force: true }).catch(() => {});
       await cleanupUploads();
       return res.status(500).json({ error: `Не удалось сохранить фотографии дефектов: ${error.message}` });
+    } finally {
+      defectUploadsInProgress.delete(task.id);
     }
   });
 
@@ -724,8 +822,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   async function refreshSchemeState(report) {
     if (!report?.schemeJobId || report.status === 'superseded' || typeof getSketchStatus !== 'function') return;
+    const previous = JSON.stringify(report);
+    const task = workspace.tasks.find(item => item.id === report.taskId);
+    const previousTaskStatus = task?.status;
     try {
       const state = await getSketchStatus(report.schemeJobId);
+      if (!workspace.reports.includes(report) || report.status === 'superseded') return false;
       if (state?.status) report.schemeStatus = state.status;
       if (state?.error !== undefined) report.schemeError = cleanText(state.error, 900);
       if (state?.completedAt) report.schemeCompletedAt = state.completedAt;
@@ -733,20 +835,35 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       const hasReviewableResult = report.schemeStatus === 'completed' || (report.schemeStatus === 'failed' && report.schemePartialGraphReady);
       if (hasReviewableResult) {
         if (!['accepted', 'revision_requested'].includes(report.status)) report.status = 'pending_review';
-        const task = workspace.tasks.find(item => item.id === report.taskId);
         if (task && task.status === 'submitted') task.status = 'pending_review';
       } else if (report.schemeStatus === 'failed') {
         report.status = 'processing_failed';
-        const task = workspace.tasks.find(item => item.id === report.taskId);
         if (task && task.status === 'submitted') task.status = 'processing_failed';
       }
     } catch (error) { report.schemeError = cleanText(error?.message || 'Не удалось проверить состояние CAD-обработки.', 900); }
+    return previous !== JSON.stringify(report) || previousTaskStatus !== task?.status;
   }
+
+  let refreshingCad = false;
+  const cadUpdates = setInterval(async () => {
+    if (workforceStreams.size === 0 || refreshingCad) return;
+    refreshingCad = true;
+    try {
+      const pending = workspace.reports.filter(report => report.status === 'processing');
+      const changed = await Promise.all(pending.map(refreshSchemeState));
+      if (changed.some(Boolean)) await saveWorkspace();
+    } catch (error) {
+      console.error('Не удалось обновить статусы CAD:', error.message);
+    } finally {
+      refreshingCad = false;
+    }
+  }, 4000);
+  cadUpdates.unref();
 
   routes.get('/api/workforce/reports', async (req, res) => {
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
-    for (const report of workspace.reports) await refreshSchemeState(report);
-    await saveWorkspace();
+    const changed = await Promise.all(workspace.reports.map(refreshSchemeState));
+    if (changed.some(Boolean)) await saveWorkspace();
     const reports = workspace.reports
       .filter(report => req.user.role !== 'receiver' || ['processing', 'processing_failed', 'pending_review', 'accepted', 'revision_requested'].includes(report.status))
       .map(report => ({ ...reportForClient(report), seen: Array.isArray(report.seenBy) && report.seenBy.includes(req.user.id) }));
@@ -781,8 +898,9 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
     const allTaskSchemes = workspace.reports.filter(report => report.taskId === task.id);
     const allTaskDefects = workspace.defectReports.filter(report => report.taskId === task.id);
-    for (const report of allTaskSchemes) await refreshSchemeState(report);
-    await saveWorkspace();
+    const refreshed = await Promise.all(allTaskSchemes.map(refreshSchemeState));
+    if (refreshed.some(Boolean)) await saveWorkspace();
+    if (!workspace.tasks.includes(task)) return res.status(404).json({ error: 'Папка задания по этому адресу не найдена.' });
     const folderState = evaluateAddressFolder({ schemes: allTaskSchemes, defects: allTaskDefects, userId: req.user.role === 'receiver' ? req.user.id : null });
     const schemeReports = folderState.schemes;
     const defectReports = folderState.defects;

@@ -16,7 +16,7 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Рабочий стол', icon: 'home', end: true },
-  { to: '/conclusion', label: 'Заключение', icon: 'doc', roles: STAFF_ROLES },
+  { to: '/conclusion', label: 'Заключение', icon: 'doc' },
   { to: '/schemes', label: 'Схемы домов', icon: 'scheme', roles: STAFF_ROLES },
   { to: '/archive', label: 'Архив', icon: 'archive', roles: STAFF_ROLES },
   { to: '/team', label: 'Команда', icon: 'team' },
