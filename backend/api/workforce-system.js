@@ -1,3 +1,4 @@
+import { authorizeRequest, denyAccess } from './access-policy.js';
 import path from 'node:path';
 import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -326,8 +327,8 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return user || null;
   }
   function requireRoles(req, res, roles) {
-    if (!req.user) { res.status(401).json({ error: 'Требуется войти в аккаунт.' }); return false; }
-    if (!roles.includes(req.user.role)) { res.status(403).json({ error: 'Недостаточно прав для этого действия.' }); return false; }
+    if (!req.user) { denyAccess(req, res); return false; }
+    if (!roles.includes(req.user.role)) { denyAccess(req, res); return false; }
     return true;
   }
   async function sessionForUser(res, user) {
@@ -416,16 +417,13 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     if (pathname === '/') return res.redirect(308, '/vdgo/');
 
     if (pathname.startsWith('/api/')) {
-      if (!req.user) return res.status(401).json({ error: 'Сессия не найдена. Войди в аккаунт.', loginRequired: true });
-      if (req.user.role === 'fitter' && !(pathname.startsWith('/api/workforce/') || pathname === '/api/auth/me')) {
-        return res.status(403).json({ error: 'Слесарю доступны только личная панель, назначенные задания, отметки этапов работ и отправка ручной схемы.' });
-      }
-      if (req.user.role !== 'developer' && pathname.startsWith('/api/template') && req.method !== 'GET') return res.status(403).json({ error: 'Изменять глобальный шаблон может только разработчик.' });
+      if (!req.user) return denyAccess(req, res);
+      if (!authorizeRequest(req, res)) return;
       return next();
     }
     if (pathname.startsWith('/jobs/')) {
       if (!req.user) return res.status(401).json({ error: 'Требуется войти в аккаунт.' });
-      if (req.user.role === 'fitter') return res.status(403).json({ error: 'Нет доступа к архиву обработки.' });
+      if (!authorizeRequest(req, res)) return;
       return next();
     }
 
@@ -442,6 +440,15 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   }
 
   const routes = (await import('express')).Router();
+
+  routes.post('/api/conclusion/json/import', (req, res) => {
+    if (typeof req.body?.draft !== 'string') return res.status(400).json({ error: 'Передайте текст JSON.' });
+    return res.json({ ok: true, draft: req.body.draft });
+  });
+  routes.post('/api/conclusion/json/export', (req, res) => {
+    res.setHeader('Content-Disposition', 'attachment; filename="conclusion-draft.json"');
+    return res.json(req.body?.draft ?? {});
+  });
 
   routes.get('/api/auth/status', (_req, res) => res.json({ ok: true, setupRequired: users.length === 0 }));
   routes.post('/api/auth/setup', async (req, res) => {
@@ -516,6 +523,15 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return res.json({ ok: true, tasks });
   });
 
+  routes.get('/api/workforce/tasks/:id', (req, res) => {
+    const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) {
+      return res.status(403).json({ error: 'Нет доступа к заданию.' });
+    }
+    if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
+    return res.json({ ok: true, task: taskForClient(task) });
+  });
+
   routes.post('/api/workforce/tasks', async (req, res) => {
     // Dispatchers (receivers), supervisors and developers can assign jobs to fitters.
     if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
@@ -556,6 +572,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   routes.post('/api/workforce/tasks/:id/start', async (req, res) => {
     if (!requireRoles(req, res, ['fitter', 'developer'])) return;
     const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) return denyAccess(req, res, 'Нет доступа к заданию.');
     if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
     if (req.user.role === 'fitter' && task.assignedTo !== req.user.id) return res.status(403).json({ error: 'Это задание назначено другому сотруднику.' });
     if (!['assigned', 'revision_requested', 'in_progress'].includes(task.status)) return res.status(409).json({ error: 'Это задание уже прошло этап выезда или отправлено.' });
@@ -573,6 +590,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   routes.post('/api/workforce/tasks/:id/visit', async (req, res) => {
     if (!requireRoles(req, res, ['fitter', 'developer'])) return;
     const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) return denyAccess(req, res, 'Нет доступа к заданию.');
     if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
     if (req.user.role === 'fitter' && task.assignedTo !== req.user.id) return res.status(403).json({ error: 'Это задание назначено другому сотруднику.' });
     if (task.status !== 'in_progress') return res.status(409).json({ error: 'Сначала нажми «Начать обход дома».' });
@@ -588,6 +606,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   routes.post('/api/workforce/tasks/:id/office', async (req, res) => {
     if (!requireRoles(req, res, ['fitter', 'developer'])) return;
     const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) return denyAccess(req, res, 'Нет доступа к заданию.');
     if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
     if (req.user.role === 'fitter' && task.assignedTo !== req.user.id) return res.status(403).json({ error: 'Это задание назначено другому сотруднику.' });
     if (task.status !== 'house_visited' || !task.visitedAt) return res.status(409).json({ error: 'Сначала отметь, что обход дома завершён.' });
@@ -605,7 +624,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   const uploadsInProgress = taskId => sketchUploadsInProgress.has(taskId) || defectUploadsInProgress.has(taskId);
 
   routes.patch('/api/workforce/tasks/:id', async (req, res) => {
-    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
     const task = workspace.tasks.find(item => item.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'Задание не найдено.' });
     const fitter = users.find(item => item.id === req.body?.assignedTo && item.role === 'fitter' && item.active !== false);
@@ -637,7 +656,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
 
   routes.delete('/api/workforce/tasks/:id', async (req, res) => {
-    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
+    if (!requireRoles(req, res, ['receiver', 'supervisor', 'developer'])) return;
     const index = workspace.tasks.findIndex(item => item.id === req.params.id);
     if (index < 0) return res.status(404).json({ error: 'Задание не найдено.' });
     const task = workspace.tasks[index];
@@ -662,6 +681,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     upload.fields([{ name: 'sketch', maxCount: 1 }])(req, res, error => error ? next(error) : next());
   }, async (req, res) => {
     const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) {
+      for (const file of Object.values(req.files || {}).flat()) await rm(file.path, { force: true }).catch(() => {});
+      return denyAccess(req, res, 'Нет доступа к заданию.');
+    }
     if (!task) {
       for (const file of Object.values(req.files || {}).flat()) await rm(file.path, { force: true }).catch(() => {});
       return res.status(404).json({ error: 'Задание не найдено.' });
@@ -751,6 +774,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const uploaded = Array.isArray(req.files) ? req.files : [];
     const cleanupUploads = async () => Promise.all(uploaded.map(file => rm(file.path, { force: true }).catch(() => {})));
     const task = workspace.tasks.find(item => item.id === req.params.id);
+    if (req.user.role === 'fitter' && (!task || task.assignedTo !== req.user.id)) {
+      await cleanupUploads();
+      return denyAccess(req, res, 'Нет доступа к заданию.');
+    }
     if (!task) { await cleanupUploads(); return res.status(404).json({ error: 'Задание не найдено.' }); }
     if (req.user.role === 'fitter' && task.assignedTo !== req.user.id) {
       await cleanupUploads();
@@ -884,6 +911,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       return res.status(403).json({ error: 'Нет доступа к фотографиям дефектов.' });
     }
     const report = workspace.defectReports.find(item => item.id === req.params.reportId);
+    if (req.user.role === 'fitter' && (!report || report.userId !== req.user.id)) return denyAccess(req, res, 'Нет доступа к вложению.');
+    if (req.user.role === 'fitter' && (!report || report.userId !== req.user.id)) {
+      return denyAccess(req, res, 'Нет доступа к этому вложению.');
+    }
     if (!report) return res.status(404).json({ error: 'Отчёт о дефектах не найден.' });
     if (report.status === 'superseded') return res.status(404).json({ error: 'Этот материал заменён.' });
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этой фотографии.' });
@@ -1128,6 +1159,10 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
 
   routes.get('/api/workforce/reports/:reportId/files/:fileId', async (req, res) => {
     const report = workspace.reports.find(item => item.id === req.params.reportId);
+    if (req.user.role === 'fitter' && (!report || report.userId !== req.user.id)) return denyAccess(req, res, 'Нет доступа к вложению.');
+    if (req.user.role === 'fitter' && (!report || report.userId !== req.user.id)) {
+      return denyAccess(req, res, 'Нет доступа к этому вложению.');
+    }
     if (!report) return res.status(404).json({ error: 'Отчёт не найден.' });
     if (report.status === 'superseded') return res.status(404).json({ error: 'Этот материал заменён.' });
     if (req.user.role === 'fitter' && report.userId !== req.user.id) return res.status(403).json({ error: 'Нет доступа к этому файлу.' });
@@ -1220,9 +1255,13 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
 
   routes.patch('/api/workforce/users/:id', async (req, res) => {
-    if (!requireRoles(req, res, ['developer'])) return;
+    if (!requireRoles(req, res, ['supervisor', 'developer'])) return;
     const user = users.find(item => item.id === req.params.id);
     if (!user) return res.status(404).json({ error: 'Аккаунт не найден.' });
+    if (req.user.role === 'supervisor' && (!['fitter', 'receiver'].includes(user.role)
+      || (req.body?.role !== undefined && !['fitter', 'receiver'].includes(req.body.role)))) {
+      return res.status(403).json({ error: 'Руководитель управляет аккаунтами слесарей и приёмщиков.' });
+    }
     const displayName = req.body?.displayName === undefined ? user.displayName : cleanText(req.body.displayName, 100);
     const { firstName, lastName } = splitHumanName(displayName);
     const role = req.body?.role === undefined ? user.role : String(req.body.role);

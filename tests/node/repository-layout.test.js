@@ -57,7 +57,7 @@ test('one React frontend is the active UI; backend and document services stay se
 
   const appSource = await read('frontend/src/main.tsx');
   assert.match(appSource, /BrowserRouter basename=\{import\.meta\.env\.BASE_URL\}/);
-  assert.match(appSource, /RequireRole/);
+  assert.match(appSource, /RequirePermission/);
 
   const nginx = await read('infra/nginx/nginx-unified.conf');
   assert.match(nginx, /location \/vdgo\/api\//);
@@ -89,7 +89,7 @@ test('the replacement frontend exposes the project workflows and address-folder 
   assert.match(source, /CadEditorPage/);
   const roles = await read('frontend/src/lib/roles.ts');
   assert.match(roles, /const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/);
-  assert.match(sidebar, /roles: STAFF_ROLES/);
+  assert.match(sidebar, /hasPermission/);
   assert.match(topbar, /const isFitter = user\?\.role === 'fitter'/);
   assert.match(topbar, /!isFitter \?/);
   assert.match(sidebar, /to: '\/team'.*label: 'Команда'/);

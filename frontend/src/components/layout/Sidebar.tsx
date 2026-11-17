@@ -2,26 +2,24 @@ import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { BrandMark, Icon } from '../ui/Icon';
 import { useAuth } from '../../lib/auth';
-import { STAFF_ROLES } from '../../lib/roles';
+import { hasPermission, SECTIONS } from '../../lib/permissions.mjs';
 import { useMediaQuery } from '../../lib/useMediaQuery';
-import type { SessionUser } from '../../lib/types';
 
 export type NavItem = {
   to: string;
   label: string;
   icon: string;
   end?: boolean;
-  roles?: SessionUser['role'][];
 };
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Рабочий стол', icon: 'home', end: true },
   { to: '/conclusion', label: 'Заключение', icon: 'doc' },
-  { to: '/schemes', label: 'Схемы домов', icon: 'scheme', roles: STAFF_ROLES },
-  { to: '/archive', label: 'Архив', icon: 'archive', roles: STAFF_ROLES },
+  { to: '/schemes', label: 'Схемы домов', icon: 'scheme' },
+  { to: '/archive', label: 'Архив', icon: 'archive' },
   { to: '/team', label: 'Команда', icon: 'team' },
-  { to: '/cad', label: 'CAD-редактор', icon: 'cad', roles: STAFF_ROLES },
-  { to: '/settings', label: 'Настройки', icon: 'settings', roles: STAFF_ROLES },
+  { to: '/cad', label: 'CAD-редактор', icon: 'cad' },
+  { to: '/settings', label: 'Настройки', icon: 'settings' },
 ];
 
 export function initials(name: string): string {
@@ -91,7 +89,7 @@ export function Sidebar({ onCloseNav }: { onCloseNav?: () => void }) {
       </div>
       <p className="sidebar__caption">Инженерные сервисы</p>
       <nav className="sidebar__nav" aria-label="Модули ПРОФИТ">
-        {NAV_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role))).map((item) => (
+        {NAV_ITEMS.filter(item => hasPermission(user?.role, SECTIONS[item.to])).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

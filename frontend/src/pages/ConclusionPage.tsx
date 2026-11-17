@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/ui/Icon';
 import { Badge, Button, Card, Confirm, Empty, Loading, Spinner, useToast } from '../components/ui';
 import { buildDefectPhotos, buildWorkforceSchemes, conclusionApi, workforceApi } from '../lib/api';
+import { hasPermission } from '../lib/permissions.mjs';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, schemeStatusLabel } from '../lib/format';
 import type { ConclusionContext } from '../lib/types';
@@ -28,6 +29,9 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
   reportId: string | null;
   defectId: string | null;
 }) {
+  const { user } = useAuth();
+  const canImportJson = hasPermission(user?.role, 'conclusion:json:import');
+  const canExportJson = hasPermission(user?.role, 'conclusion:json:export');
   const hasMaterialScope = Boolean(taskId || reportId || defectId);
   const [context, setContext] = useState<ConclusionContext | null>(null);
   const form = useConclusionForm(taskId || context?.task.id, fitterId ? `fitter.${fitterId}` : taskId || reportId || defectId);
@@ -102,8 +106,16 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
 
   const generationDisabled = Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context));
 
-  const downloadDraft = () => {
-    const blob = new Blob([form.exportDraft()], { type: 'application/json' });
+  const downloadDraft = async () => {
+    if (!canExportJson) return;
+    let exported: string;
+    try {
+      exported = await conclusionApi.exportDraft(form.exportDraft());
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось сохранить JSON', 'error');
+      return;
+    }
+    const blob = new Blob([exported], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -116,8 +128,10 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
   };
 
   const uploadDraft = async (file: File) => {
+    if (!canImportJson) return;
     try {
-      const imported = form.importDraft(await file.text());
+      const json = await conclusionApi.importDraft(await file.text());
+      const imported = form.importDraft(json);
       if (context) {
         form.applyWorkforceDefects(context.defectReports || [], context.task.id);
         form.setField('address', `${context.task.street}, дом ${context.task.address}`);
@@ -206,7 +220,8 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
           </p>
         </div>
         <div className="page__actions">
-          <Button icon="save" onClick={downloadDraft}>Сохранить JSON</Button>
+          {canExportJson ? <Button icon="save" onClick={() => void downloadDraft()}>Сохранить JSON</Button> : null}
+          {canImportJson ? (<>
           <Button icon="upload" onClick={() => loadRef.current?.click()}>Загрузить JSON</Button>
           <input
             ref={loadRef}
@@ -219,6 +234,7 @@ function ConclusionFormPage({ taskId, reportId, defectId, fitterId }: {
               event.target.value = '';
             }}
           />
+          </>) : null}
           {archivedPdf ? (
             <Link className="btn" to="/archive"><Icon name="archive" /> Открыть архив</Link>
           ) : null}

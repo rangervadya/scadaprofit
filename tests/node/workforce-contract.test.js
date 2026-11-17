@@ -185,7 +185,7 @@ test('receiver keeps access to the editable CAD editor and save API', async () =
   const server = await read('backend/api/server.js');
   const authMiddleware = backend.slice(backend.indexOf('async function authMiddleware'), backend.indexOf("const routes ="));
   const cadSaveRoute = server.slice(server.indexOf("app.put('/api/manual-cad/projects/:id'"), server.indexOf("app.post('/api/manual-cad/projects/:id/source'"));
-  assert.match(authMiddleware, /req\.user\.role === 'fitter'/);
+  assert.match(authMiddleware, /authorizeRequest/);
   assert.doesNotMatch(authMiddleware, /req\.user\.role === 'receiver'/);
   assert.match(server, /\['receiver', 'supervisor', 'developer'\]\.includes\(req\.user\?\.role\)/);
   assert.match(cadSaveRoute, /normalizeManualCadProject/);

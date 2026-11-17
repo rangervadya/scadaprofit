@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '../ui/Icon';
 import { useHealth } from '../../lib/health';
+import { hasPermission } from '../../lib/permissions.mjs';
 import { useAuth } from '../../lib/auth';
 import { useActiveNav } from './Sidebar';
 
@@ -13,6 +14,7 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const isFitter = user?.role === 'fitter';
+  const canConfigure = hasPermission(user?.role, 'system:settings');
 
   useEffect(() => setQuery(''), [location.pathname]);
 
@@ -54,7 +56,7 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
       <span className="topbar__spacer" />
       {isFitter ? null : (
         <Link
-          to="/settings"
+          to={canConfigure ? "/settings" : "/team"}
           className="status-pill"
           title={error || statusLabel}
         >
@@ -64,7 +66,7 @@ export function Topbar({ onToggleNav, navOpen = false }: { onToggleNav?: () => v
           {statusLabel}
         </Link>
       )}
-      {!isFitter ? (
+      {canConfigure ? (
         <Link to="/settings" className="topbar__icon" aria-label="Настройки">
           <Icon name="settings" />
         </Link>

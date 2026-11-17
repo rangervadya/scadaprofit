@@ -5,8 +5,7 @@ import { AppLayout } from './components/layout/AppLayout';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Spinner, ToastProvider } from './components/ui';
 import { AuthProvider, useAuth } from './lib/auth';
-import { STAFF_ROLES } from './lib/roles';
-import type { SessionUser } from './lib/types';
+import { hasPermission } from './lib/permissions.mjs';
 import './styles/index.css';
 
 const lazyPage = (loader: () => Promise<Record<string, unknown>>, name: string) =>
@@ -46,10 +45,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RequireRole({ roles, children }: { roles: SessionUser['role'][]; children: React.ReactNode }) {
+function RequirePermission({ permission, children }: { permission: string; children: React.ReactNode }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  if (!roles.includes(user.role)) return <Navigate to="/" replace />;
+  if (!hasPermission(user.role, permission)) return (
+    <div className="stack"><h1>Доступ запрещён</h1><p>У вашей роли нет доступа к этому разделу.</p></div>
+  );
   return <>{children}</>;
 }
 
@@ -85,50 +86,50 @@ export function App() {
                 <Route
                   path="/schemes"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="schemes:manage">
                       <SchemesPage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/schemes/:jobId"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="schemes:manage">
                       <SchemeDetailPage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/archive"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="archive:view">
                       <ArchivePage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route path="/team" element={<TeamPage />} />
                 <Route
                   path="/cad"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="cad:manage">
                       <CadPage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/cad/:id"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="cad:manage">
                       <CadEditorPage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/settings"
                   element={
-                    <RequireRole roles={STAFF_ROLES}>
+                    <RequirePermission permission="system:settings">
                       <SettingsPage />
-                    </RequireRole>
+                    </RequirePermission>
                   }
                 />
                 <Route path="*" element={<NotFoundPage />} />

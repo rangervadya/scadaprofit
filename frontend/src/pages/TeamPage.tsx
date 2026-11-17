@@ -16,6 +16,7 @@ import {
 } from '../components/ui';
 import { cadApi, workforceApi } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { hasPermission } from '../lib/permissions.mjs';
 import { useWorkforceUpdates } from '../lib/useWorkforceUpdates';
 import {
   formatDate,
@@ -114,7 +115,8 @@ export function TeamPage() {
   const [credentials, setCredentials] = useState<{ username: string; password: string; displayName?: string } | null>(null);
 
   const isFitter = user?.role === 'fitter';
-  const canManage = user?.role === 'supervisor' || user?.role === 'developer';
+  const canManage = hasPermission(user?.role, 'users:manage');
+  const canEditTasks = hasPermission(user?.role, 'task:reassign');
 
   const loadSequence = useRef(0);
   const load = useCallback(async (background = false) => {
@@ -416,7 +418,7 @@ export function TeamPage() {
       {tab === 'overview' ? (
         <OverviewTab overview={overview} tasks={tasks} reports={reports} defects={defects}
           onOpenTask={id => { setSelectedTaskId(id); setTab('tasks'); }}
-          onTaskAction={canManage ? (kind, task) => {
+          onTaskAction={canEditTasks ? (kind, task) => {
             setAssignee('');
             setTaskAction({ kind, task });
           } : undefined} />
@@ -475,7 +477,7 @@ export function TeamPage() {
       {tab === 'users' && canManage ? (
         <UsersTab
           users={users}
-          canToggle={user?.role === 'developer'}
+          canToggle={canManage}
           onRefresh={refresh}
           onCreate={() => setShowUserForm(true)}
           onReset={async id => {

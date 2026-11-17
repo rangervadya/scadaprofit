@@ -275,6 +275,14 @@ export const workforceApi = {
 };
 
 export const conclusionApi = {
+  importDraft: async (text: string) => {
+    const result = await api.post<{ draft: string }>('/api/conclusion/json/import', { draft: text });
+    return result.draft;
+  },
+  exportDraft: async (text: string) => {
+    const draft = await api.post<unknown>('/api/conclusion/json/export', { draft: JSON.parse(text) });
+    return JSON.stringify(draft, null, 2);
+  },
   generate: (form: FormData, format: 'pdf' | 'docx') =>
     submitForm(`/vdgo/generate${format === 'docx' ? '_docx' : ''}`, form),
   preview: (form: FormData) => submitForm('/vdgo/preview', form),
