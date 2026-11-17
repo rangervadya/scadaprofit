@@ -3,6 +3,7 @@ export type ServiceState = 'checking' | 'ok' | 'error' | 'not-configured' | 'unk
 export type HealthResponse = {
   status?: string;
   ok?: boolean;
+  ready?: boolean;
   backend?: string;
   version?: string;
   release?: string;
@@ -11,7 +12,7 @@ export type HealthResponse = {
   drawingTemplateConfigured?: boolean;
   mode?: string;
   qwenModel?: string;
-  ollama?: { reachable?: boolean; error?: string | null; model?: string };
+  ollama?: { reachable?: boolean; error?: string | null; model?: string; hint?: string };
 };
 
 export type ReportRun = {
@@ -22,6 +23,10 @@ export type ReportRun = {
   output_format: string;
   page_count: number;
   output_filename: string;
+  archived: boolean;
+  original_filename: string;
+  content_type: string;
+  file_size: number;
 };
 
 export type Role = 'fitter' | 'receiver' | 'supervisor' | 'developer';
@@ -308,6 +313,7 @@ export type WorkforceTask = {
   scheduledDate: string;
   assignedTo: string;
   assignedName: string;
+  assignmentGroupId?: string | null;
   status: TaskStatus;
   events: TaskEvent[];
   reportsCount: number;
@@ -316,6 +322,8 @@ export type WorkforceTask = {
   lastReviewComment?: string;
   lastReportStatus?: string | null;
   officeAt?: string | null;
+  canSubmitSketch?: boolean;
+  canSubmitDefects?: boolean;
 };
 
 export type WorkforceReport = {
@@ -335,12 +343,10 @@ export type WorkforceReport = {
   reviewedAt: string | null;
   schemeJobId: string | null;
   manualCadProjectId: string | null;
-  schemeSvgUrl?: string | null;
-  schemeDxfUrl?: string | null;
-  schemeOriginalUrl?: string | null;
   schemeStatus: string;
   schemeError: string;
   schemePartialGraphReady: boolean;
+  schemeSvgUrl?: string | null;
   seen: boolean;
   conclusionAddedAt: string | null;
   photos: WorkforceFile[];

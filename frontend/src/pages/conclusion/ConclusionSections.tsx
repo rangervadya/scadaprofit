@@ -197,7 +197,10 @@ export function DefectsSection({ form }: { form: ConclusionForm }) {
           </div>
         ) : null}
         {form.defects.map((row, index) => {
-          const defect = DEFECTS[index];
+          const defect = DEFECTS[index] ?? {
+            id: `1.${index + 1}`, location: 'Место выявления',
+            defect: 'Описание неисправности', recommendation: 'Рекомендация по устранению',
+          };
           return (
             <div key={defect.id} className="stack stack--sm" style={{ padding: 14, border: '1px solid var(--line)', borderRadius: 10, background: row.enabled ? 'var(--brand-soft)' : '#fff' }}>
               <label className="check" style={{ fontWeight: 600 }}>

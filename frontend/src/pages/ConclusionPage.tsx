@@ -16,34 +16,45 @@ export function ConclusionPage() {
   const taskId = params.get('task');
   const reportId = params.get('report');
   const defectId = params.get('defectReport');
-  const form = useConclusionForm(taskId);
-  const { notify } = useToast();
+  return <ConclusionFormPage key={JSON.stringify([taskId, reportId, defectId])} taskId={taskId} reportId={reportId} defectId={defectId} />;
+}
 
+function ConclusionFormPage({ taskId, reportId, defectId }: {
+  taskId: string | null;
+  reportId: string | null;
+  defectId: string | null;
+}) {
+  const hasMaterialScope = Boolean(taskId || reportId || defectId);
   const [context, setContext] = useState<ConclusionContext | null>(null);
+  const form = useConclusionForm(taskId || context?.task.id, taskId || reportId || defectId);
+  const { notify } = useToast();
   const [contextError, setContextError] = useState<string | null>(null);
-  const [contextLoading, setContextLoading] = useState(Boolean(taskId));
+  const [contextLoading, setContextLoading] = useState(hasMaterialScope);
   const [busy, setBusy] = useState<Busy>(null);
   const [activeSection, setActiveSection] = useState('main');
   const loadRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (!taskId) {
-      setContext(null);
-      setContextLoading(false);
-      return;
-    }
+    if (!hasMaterialScope) return;
+    let cancelled = false;
     setContextLoading(true);
     setContextError(null);
     workforceApi
-      .conclusionContext({ task: taskId, report: reportId || undefined, defectReport: defectId || undefined })
-      .then(data => setContext({ task: data.task, reports: data.reports || [], defectReports: data.defectReports || [] }))
+      .conclusionContext({ task: taskId || undefined, report: reportId || undefined, defectReport: defectId || undefined })
+      .then(data => {
+        if (cancelled) return;
+        if (!data.task) throw new Error('Не найден адрес для принятых материалов.');
+        setContext({ task: data.task, reports: data.reports || [], defectReports: data.defectReports || [] });
+      })
       .catch(cause => {
+        if (cancelled) return;
         setContext(null);
         setContextError(cause instanceof Error ? cause.message : 'Не удалось загрузить материалы задания');
       })
-      .finally(() => setContextLoading(false));
-  }, [taskId, reportId, defectId]);
+      .finally(() => { if (!cancelled) setContextLoading(false); });
+    return () => { cancelled = true; };
+  }, [hasMaterialScope, taskId, reportId, defectId]);
 
   useEffect(() => {
     if (!context) return;
@@ -124,11 +135,15 @@ export function ConclusionPage() {
 
   const run = async (mode: Busy) => {
     if (!mode) return;
-    if (form.workforceDefectOverflow > 0) {
-      notify(`В форме осталось только 11 строк дефектов. Не помещается ещё ${form.workforceDefectOverflow} записи слесарей — объедините однотипные дефекты или увеличьте число строк вручную.`, 'error');
+    if (hasMaterialScope && (contextLoading || !context)) {
+      notify(contextError || 'Дождитесь загрузки материалов задания', 'error');
       return;
     }
-    if (taskId && context) {
+    if (form.workforceDefectOverflow > 0) {
+      notify(`Достигнут предел таблицы дефектов. Не помещается ещё ${form.workforceDefectOverflow} записи слесарей. Объедините однотипные дефекты.`, 'error');
+      return;
+    }
+    if (hasMaterialScope && context) {
       if (!materials.schemes.length && !materials.defects.length) {
         notify('Формирование заблокировано: к заданию не добавлены схемы и фотографии дефектов', 'error');
         return;
@@ -142,7 +157,7 @@ export function ConclusionPage() {
     try {
       let schemes: Array<Record<string, string>> | null = null;
       let defectPhotos: File[] = [];
-      if (taskId && context && materials.schemes.length + materials.defects.length > 0) {
+      if (hasMaterialScope && context && materials.schemes.length + materials.defects.length > 0) {
         schemes = await buildWorkforceSchemes(materials.schemes);
         const prepared = await buildDefectPhotos(materials.defects);
         defectPhotos = prepared.map(item => item.file);
@@ -192,6 +207,10 @@ export function ConclusionPage() {
             onClick={() => {
               if (window.confirm('Очистить форму и сохранённый черновик?')) {
                 form.reset();
+                if (context) {
+                  form.applyWorkforceDefects(context.defectReports, context.task.id);
+                  form.setField('address', `${context.task.street}, дом ${context.task.address}`);
+                }
                 notify('Форма очищена');
               }
             }}
@@ -201,11 +220,11 @@ export function ConclusionPage() {
         </div>
       </header>
 
-      {taskId ? (
+      {hasMaterialScope ? (
         contextLoading ? (
           <Card><Loading>Загружаем материалы задания…</Loading></Card>
         ) : contextError ? (
-          <div className="alert alert--warn"><Icon name="alert" /><span>{contextError}. Форму можно заполнить вручную без материалов задания.</span></div>
+          <div className="alert alert--warn"><Icon name="alert" /><span>{contextError}. Откройте папку адреса в приёмке и повторите переход.</span></div>
         ) : context ? (
           <Card
             title={
@@ -215,7 +234,7 @@ export function ConclusionPage() {
               </>
             }
             actions={
-              <Link to={`/team?task=${encodeURIComponent(context.task.id)}`} className="btn btn--ghost btn--sm">
+              <Link to={`/team?tab=inbox&task=${encodeURIComponent(context.task.id)}`} className="btn btn--ghost btn--sm">
                 Открыть задание <Icon name="chevronRight" />
               </Link>
             }
@@ -227,7 +246,7 @@ export function ConclusionPage() {
                   <div style={{ fontWeight: 650, marginBottom: 4 }}>Вложений пока нет</div>
                   <div>
                     Формирование PDF или Word блокируется, пока приёмщик не добавит папку адреса.{' '}
-                    <Link to={`/team?task=${encodeURIComponent(context.task.id)}`}>Перейти в приёмку</Link>.
+                    <Link to={`/team?tab=inbox&task=${encodeURIComponent(context.task.id)}`}>Перейти в приёмку</Link>.
                   </div>
                 </div>
               </div>
@@ -280,7 +299,7 @@ export function ConclusionPage() {
               </div>
             )}
             {form.workforceDefectOverflow > 0 ? (
-              <div className="alert alert--warn"><Icon name="alert" /><span>Не все описания дефектов помещаются в 11 строк раздела 6.1. Объедините однотипные записи или оформите продолжение вручную.</span></div>
+              <div className="alert alert--warn"><Icon name="alert" /><span>Достигнут предел таблицы дефектов. Объедините однотипные записи.</span></div>
             ) : null}
             <p className="field__hint" style={{ marginTop: 12 }}>
               Принятые описания дефектов уже подставлены в таблицу раздела 6.1 — заполните рекомендации по устранению.
@@ -290,7 +309,11 @@ export function ConclusionPage() {
         ) : (
           <Card><Empty icon="folder" title="Материалы задания недоступны">Проверьте ссылку или откройте задание в разделе «Команда».</Empty></Card>
         )
-      ) : null}
+      ) : (
+        <div className="row">
+          <Link to="/team?tab=inbox" className="btn btn--sm"><Icon name="folder" /> Выбрать адрес в приёмке</Link>
+        </div>
+      )}
 
       <div className="conclusion-layout">
         <nav className="conclusion-nav" aria-label="Разделы заключения">
@@ -343,7 +366,7 @@ export function ConclusionPage() {
               <div className="pill-list">
                 <Badge tone="brand" plain>49 основных страниц</Badge>
                 <Badge plain>Дополнительные фотолисты</Badge>
-                <Badge plain>11 строк дефектов</Badge>
+                <Badge plain>Продолжение таблицы дефектов при необходимости</Badge>
                 <Badge plain>Без автогенерации вывода</Badge>
                 <Badge plain>Проверка обязательных полей</Badge>
               </div>
@@ -358,9 +381,9 @@ export function ConclusionPage() {
             <Button variant="ghost" icon="refresh" onClick={() => formRef.current?.reset()} disabled={Boolean(busy)}>Сбросить</Button>
             <span className="sticky-actions__spacer" />
             {busy ? <span className="row" style={{ color: 'var(--muted)', fontSize: 12 }}><Spinner /> Формируем…</span> : null}
-            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy)}>Word</Button>
-            <Button icon="doc" type="submit" name="format" value="preview" data-format="preview" disabled={Boolean(busy)}>Проверить PDF</Button>
-            <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={Boolean(busy)}>
+            <Button icon="doc" type="submit" name="format" value="docx" data-format="docx" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>Word</Button>
+            <Button icon="doc" type="submit" name="format" value="preview" data-format="preview" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>Проверить PDF</Button>
+            <Button variant="primary" icon="download" type="submit" name="format" value="pdf" data-format="pdf" disabled={Boolean(busy) || (hasMaterialScope && (contextLoading || !materials.ready || !context))}>
               Сформировать PDF
             </Button>
           </div>

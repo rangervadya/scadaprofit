@@ -17,5 +17,5 @@ export function mergeAcceptedWorkforceDefects(
   currentRows: WorkforceDefectFormRow[],
   reports: WorkforceDefectInput[],
   taskId: string,
-  maxRows?: number,
+  maxRows?: number, expand?: boolean,
 ): { rows: WorkforceDefectFormRow[]; overflow: number; imported: number };

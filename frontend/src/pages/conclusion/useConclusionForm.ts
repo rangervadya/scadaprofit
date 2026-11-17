@@ -27,7 +27,8 @@ export function emptyValves(): ValveRow[] {
   return [1, 2, 3].map(() => ({ enabled: false, fields: Object.fromEntries(VALVE_FIELDS.map(field => [field.key, ''])) }));
 }
 
-export function useConclusionForm(initialTask?: string | null) {
+export function useConclusionForm(initialTask?: string | null, draftScope?: string | null) {
+  const storageKey = draftScope ? `${STORAGE_KEY}.${draftScope}` : STORAGE_KEY;
   const [values, setValues] = useState<Record<string, string>>({});
   const [defects, setDefects] = useState<DefectRow[]>(emptyDefects);
   const defectsRef = useRef<DefectRow[]>(emptyDefects());
@@ -46,7 +47,7 @@ export function useConclusionForm(initialTask?: string | null) {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(storageKey);
       if (!raw) return;
       const saved = JSON.parse(raw) as Record<string, unknown>;
       if (saved.values && typeof saved.values === 'object') setValues(saved.values as Record<string, string>);
@@ -70,17 +71,17 @@ export function useConclusionForm(initialTask?: string | null) {
     } catch {
       /* ignore corrupted draft */
     }
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
     if (!restored && Object.keys(values).length === 0) return;
     const payload = { values, defects, valves, uztShared, uztFlat, resource, confirmations, materials: Object.fromEntries(Object.entries(materials).map(([key, value]) => [key, { exclude: value.exclude }])) };
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(storageKey, JSON.stringify(payload));
     } catch {
       /* quota exceeded — drafts are optional */
     }
-  }, [values, defects, valves, uztShared, uztFlat, resource, confirmations, materials, restored]);
+  }, [values, defects, valves, uztShared, uztFlat, resource, confirmations, materials, restored, storageKey]);
 
   const setField = useCallback((name: string, value: string) => {
     setValues(current => ({ ...current, [name]: value }));
@@ -95,7 +96,7 @@ export function useConclusionForm(initialTask?: string | null) {
   }, []);
 
   const applyWorkforceDefects = useCallback((reports: WorkforceDefectReport[], taskId: string) => {
-    const merged = mergeAcceptedWorkforceDefects(defectsRef.current, reports, taskId, DEFECTS.length);
+    const merged = mergeAcceptedWorkforceDefects(defectsRef.current, reports, taskId, DEFECTS.length, true);
     defectsRef.current = merged.rows;
     setDefects(merged.rows as DefectRow[]);
     setWorkforceDefectOverflow(merged.overflow);
@@ -191,9 +192,9 @@ export function useConclusionForm(initialTask?: string | null) {
   );
 
   const exportDraft = useCallback(() => {
-    const payload = { version: 1, savedAt: new Date().toISOString(), values, defects, valves, uztShared, uztFlat, resource, confirmations };
+    const payload = { version: 1, savedAt: new Date().toISOString(), values, defects, valves, uztShared, uztFlat, resource, confirmations, materials: Object.fromEntries(Object.entries(materials).map(([page, entry]) => [page, { exclude: entry.exclude }])) };
     return JSON.stringify(payload, null, 2);
-  }, [values, defects, valves, uztShared, uztFlat, resource, confirmations]);
+  }, [values, defects, valves, uztShared, uztFlat, resource, confirmations, materials]);
 
   const importDraft = useCallback((json: string) => {
     const parsed = parseConclusionDraftJson(json);
@@ -226,8 +227,8 @@ export function useConclusionForm(initialTask?: string | null) {
     setMaterials(Object.fromEntries(MATERIAL_PAGES.map(item => [item.page, { file: null, exclude: false }])));
     setConfirmations({});
     setWorkforceDefectOverflow(0);
-    localStorage.removeItem(STORAGE_KEY);
-  }, []);
+    localStorage.removeItem(storageKey);
+  }, [storageKey]);
 
   const photoCount = photos.length;
   const materialCount = MATERIAL_PAGES.filter(item => materials[item.page]?.file).length;

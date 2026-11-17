@@ -430,7 +430,12 @@ function normalizeDefectRowSource(row) {
 
 function normalizeDefectRows(parsed, fields) {
   const supplied = findArraySource(parsed, ['defects', 'defectRows', 'defect_rows', 'замечания', 'выявленные дефекты', 'неисправности']);
-  return Array.from({ length: DEFECT_COUNT }, (_, index) => {
+  const lastFieldRow = Object.keys(fields).reduce((last, key) => {
+    const index = Number(/^defect_(\d+)_/.exec(key)?.[1]);
+    return index <= 200 && index > last ? index : last;
+  }, DEFECT_COUNT);
+  const rowCount = Math.max(lastFieldRow, Math.min(supplied?.length || 0, 200));
+  return Array.from({ length: rowCount }, (_, index) => {
     const fallback = normalizeDefectRowSource(supplied?.[index] || {});
     const number = index + 1;
     const location = scalar(fallback.location ?? fields[`defect_${number}_location`]);

@@ -65,6 +65,17 @@ export function parseHouseAddresses(value, fallbackAddress = '') {
   return unique;
 }
 
+function hasReachedOffice(task) {
+  // The stage itself records the office visit on older assignments.
+  if (task.status === 'at_office') return true;
+  return ['submitted', 'processing', 'processing_failed', 'pending_review', 'accepted'].includes(task.status)
+    && Boolean(task.officeAt);
+}
+
+export function canSubmitTaskSketch(task) {
+  return ['at_office', 'processing_failed'].includes(task.status) && hasReachedOffice(task);
+}
+
 /** Evaluate whether every live item in one address folder is ready for a single conclusion transfer. */
 export function evaluateAddressFolder({ schemes = [], defects = [], userId = null } = {}) {
   const liveSchemes = (Array.isArray(schemes) ? schemes : []).filter(item => item?.status !== 'superseded');
@@ -250,7 +261,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     const latestReport = [...taskReports].sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)))[0] || null;
     const taskDefectReports = workspace.defectReports.filter(report => report.taskId === task.id);
     return {
-      ...task, assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
+      ...task, canSubmitSketch: canSubmitTaskSketch(task), canSubmitDefects: hasReachedOffice(task), assignedName: assignee?.displayName || task.assignedName || 'Не назначен', reportsCount: taskReports.length,
       defectReportsCount: taskDefectReports.length,
       defectReports: taskDefectReports.map(defectReportForClient),
       events: Array.isArray(task.events) ? task.events : [],
@@ -486,6 +497,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return res.json({ ok: true, task: taskForClient(task) });
   });
 
+  const sketchUploadsInProgress = new Set();
   routes.post('/api/workforce/tasks/:id/report', (req, res, next) => {
     if (!req.user || !['fitter', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Отправлять полевые отчёты может слесарь.' });
     upload.fields([{ name: 'sketch', maxCount: 1 }])(req, res, error => error ? next(error) : next());
@@ -499,9 +511,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       for (const file of Object.values(req.files || {}).flat()) await rm(file.path, { force: true }).catch(() => {});
       return res.status(403).json({ error: 'Нельзя отправить отчёт по чужому заданию.' });
     }
-    if (task.status !== 'at_office' || !task.officeAt) {
+    if (!canSubmitTaskSketch(task) || sketchUploadsInProgress.has(task.id)) {
       for (const file of Object.values(req.files || {}).flat()) await rm(file.path, { force: true }).catch(() => {});
-      return res.status(409).json({ error: 'Сначала отметь завершение обхода дома и нажатие «Пришёл в офис».' });
+      const error = sketchUploadsInProgress.has(task.id) || hasReachedOffice(task)
+        ? 'Эскиз по этому заданию уже отправляется или отправлен.'
+        : 'Сначала отметь завершение обхода дома и нажатие «Пришёл в офис».';
+      return res.status(409).json({ error });
     }
     const sketchFiles = req.files?.sketch || [];
     if (!sketchFiles.length) {
@@ -510,7 +525,6 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     }
     const reportId = randomUUID();
     const reportDir = path.join(reportFilesDir, reportId);
-    await mkdir(reportDir, { recursive: true, mode: 0o700 });
     async function persistFile(file, kind) {
       const id = randomUUID();
       const ext = path.extname(path.basename(file.originalname || '')).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 12) || (file.mimetype === 'application/pdf' ? '.pdf' : '.jpg');
@@ -518,7 +532,12 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       await persistUploadedFile(file.path, path.join(reportDir, fileName));
       return { id, fileName, originalName: cleanText(path.basename(file.originalname || 'Файл'), 180), size: file.size, mimeType: file.mimetype, kind, uploadedAt: new Date().toISOString() };
     }
+    sketchUploadsInProgress.add(task.id);
+    const previousTask = { status: task.status, completedAt: task.completedAt, updatedAt: task.updatedAt, officeAt: task.officeAt };
+    const superseded = [];
+    let createdReport;
     try {
+      await mkdir(reportDir, { recursive: true, mode: 0o700 });
       const sketch = await persistFile(sketchFiles[0], 'sketch');
       const author = users.find(user => user.id === req.user.id);
       const report = {
@@ -528,15 +547,6 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         status: 'processing', submittedAt: new Date().toISOString(), reviewComment: '', reviewedAt: null,
         seenBy: [], conclusionAddedAt: null, schemeJobId: null, schemeStatus: 'queued', schemeError: '', schemeCompletedAt: null
       };
-      // A re-submitted report replaces earlier versions that were explicitly
-      // returned for correction. Keep their history, but do not block the
-      // address folder from being transferred after the replacement is accepted.
-      for (const previous of workspace.reports) {
-        if (previous.taskId === task.id && previous.status === 'revision_requested') {
-          previous.status = 'superseded';
-          previous.supersededByReportId = report.id;
-        }
-      }
       if (typeof onSketchSubmitted === 'function') {
         try {
           const scheme = await onSketchSubmitted({ report, sourcePath: path.join(reportDir, sketch.fileName) });
@@ -550,8 +560,18 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
         report.schemeStatus = 'failed';
         report.schemeError = 'Автоматическая обработка эскиза не настроена.';
       }
+      for (const previous of workspace.reports) {
+        if (previous.taskId === task.id && ['revision_requested', 'processing_failed'].includes(previous.status)) {
+          superseded.push({ previous, status: previous.status, replacedBy: previous.supersededByReportId });
+          previous.status = 'superseded';
+          previous.supersededByReportId = report.id;
+        }
+      }
+      if (report.schemeStatus === 'failed') report.status = 'processing_failed';
+      createdReport = report;
       workspace.reports.unshift(report);
-      task.status = 'submitted';
+      task.officeAt ||= new Date().toISOString();
+      task.status = report.status === 'processing_failed' ? 'processing_failed' : 'submitted';
       task.completedAt = new Date().toISOString();
       task.updatedAt = task.completedAt;
       await saveWorkspace();
@@ -559,7 +579,18 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     } catch (error) {
       await rm(reportDir, { recursive: true, force: true }).catch(() => {});
       for (const file of sketchFiles) await rm(file.path, { force: true }).catch(() => {});
+      if (createdReport) {
+        workspace.reports = workspace.reports.filter(report => report !== createdReport);
+        Object.assign(task, previousTask);
+        for (const { previous, status, replacedBy } of superseded) {
+          previous.status = status;
+          if (replacedBy === undefined) delete previous.supersededByReportId;
+          else previous.supersededByReportId = replacedBy;
+        }
+      }
       return res.status(500).json({ error: `Не удалось сохранить отчёт: ${error.message}` });
+    } finally {
+      sketchUploadsInProgress.delete(task.id);
     }
   });
 
@@ -576,7 +607,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
       await cleanupUploads();
       return res.status(403).json({ error: 'Нельзя отправить фотографии по чужому заданию.' });
     }
-    if (!task.visitedAt || !task.officeAt) {
+    if (!hasReachedOffice(task)) {
       await cleanupUploads();
       return res.status(409).json({ error: 'Сначала отметь, что дом пройден и ты пришёл в офис.' });
     }
@@ -613,6 +644,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
           previous.supersededByReportId = report.id;
         }
       }
+      if (report.schemeStatus === 'failed') report.status = 'processing_failed';
       createdReport = report;
       workspace.defectReports.unshift(report);
       task.events = Array.isArray(task.events) ? task.events : [];
@@ -691,7 +723,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
   });
 
   async function refreshSchemeState(report) {
-    if (!report?.schemeJobId || typeof getSketchStatus !== 'function') return;
+    if (!report?.schemeJobId || report.status === 'superseded' || typeof getSketchStatus !== 'function') return;
     try {
       const state = await getSketchStatus(report.schemeJobId);
       if (state?.status) report.schemeStatus = state.status;
@@ -796,7 +828,7 @@ export async function createWorkforceSystem({ dataDir, uploadDir, secureCookies 
     return res.json({
       ok: true,
       folder: { taskId: task.id, street: task.street, address: task.address, schemesCount: schemeReports.length, defectReportsCount: defectReports.length, photosCount: defectReports.reduce((sum, report) => sum + (report.photos || []).length, 0), addedAt },
-      conclusionUrl: `/conclusion.html?task=${encodeURIComponent(task.id)}`
+      conclusionUrl: `/vdgo/conclusion?task=${encodeURIComponent(task.id)}`
     });
   });
 

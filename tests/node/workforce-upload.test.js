@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { access, chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { persistUploadedFile } from '../../backend/api/workforce-system.js';
+import { canSubmitTaskSketch, persistUploadedFile } from '../../backend/api/workforce-system.js';
 
 const makeTempDir = async (base, prefix) => mkdtemp(path.join(base, prefix));
 
@@ -56,4 +56,12 @@ test('workforce report uploads use the cross-device-safe persistence helper', as
   assert.match(persistBody, /await copyFile\(sourcePath, stagingPath\)/);
   assert.match(persistBody, /await rename\(stagingPath, destinationPath\)/);
   assert.doesNotMatch(source, /await rename\(file\.path, path\.join\(reportDir, fileName\)\)/);
+});
+
+test('a recorded office stage allows sketches, and a failed sketch can be retried', () => {
+  assert.equal(canSubmitTaskSketch({ status: 'at_office' }), true);
+  assert.equal(canSubmitTaskSketch({ status: 'house_visited' }), false);
+  assert.equal(canSubmitTaskSketch({ status: 'processing_failed', officeAt: '2026-11-16' }), true);
+  assert.equal(canSubmitTaskSketch({ status: 'submitted', officeAt: '2026-11-16' }), false);
+  assert.equal(canSubmitTaskSketch({ status: 'revision_requested', officeAt: '2026-11-16' }), false);
 });

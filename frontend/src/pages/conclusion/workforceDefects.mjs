@@ -1,10 +1,13 @@
 const hasContent = row => Boolean(row?.enabled || row?.location?.trim() || row?.text?.trim() || row?.recommendation?.trim());
 
 /** Merge accepted fitter defect descriptions into the existing defect table. */
-export function mergeAcceptedWorkforceDefects(currentRows, reports, taskId, maxRows = 11) {
+export function mergeAcceptedWorkforceDefects(currentRows, reports, taskId, maxRows = 11, expand = false) {
   const current = Array.isArray(currentRows) ? currentRows : [];
-  const accepted = (Array.isArray(reports) ? reports : []).filter(report => report?.status === 'accepted');
-  const rows = Array.from({ length: maxRows }, () => ({ enabled: false, location: '', text: '', recommendation: '' }));
+  const editedReports = new Set(current.filter(row => row?.workforceReportId && row.text?.trim()).map(row => String(row.workforceReportId)));
+  // Photo-only reports populate the photo appendix without creating an empty defect row.
+  const accepted = (Array.isArray(reports) ? reports : []).filter(report => report?.status === 'accepted'
+    && (String(report.note || '').trim() || editedReports.has(String(report.id))));
+  const rows = Array.from({ length: expand ? Math.max(maxRows, current.length) : maxRows }, () => ({ enabled: false, location: '', text: '', recommendation: '' }));
   const used = new Set();
   const acceptedIds = new Set(accepted.map(report => String(report.id)));
   const existingById = new Map(current
@@ -14,7 +17,7 @@ export function mergeAcceptedWorkforceDefects(currentRows, reports, taskId, maxR
   // Receiver-authored defects stay in their original positions. Worker-derived
   // rows from another address are intentionally not carried into this conclusion.
   current.forEach((row, index) => {
-    if (!row?.workforceReportId && index < maxRows) {
+    if (!row?.workforceReportId && index < rows.length) {
       rows[index] = { ...rows[index], ...row };
       if (hasContent(row)) used.add(index);
     }
@@ -25,9 +28,10 @@ export function mergeAcceptedWorkforceDefects(currentRows, reports, taskId, maxR
     const reportId = String(report.id);
     const existing = existingById.get(reportId);
     let index = existing ? current.findIndex(row => String(row?.workforceReportId || '') === reportId) : -1;
-    if (index < 0 || index >= maxRows || used.has(index)) {
+    if (index < 0 || index >= rows.length || used.has(index)) {
       index = rows.findIndex((row, rowIndex) => !used.has(rowIndex) && !hasContent(row));
     }
+    if (index < 0 && expand && rows.length < 200) index = rows.length;
     if (index < 0) {
       overflow += 1;
       continue;

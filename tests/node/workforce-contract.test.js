@@ -148,7 +148,7 @@ test('all accepted materials transfer together from one address folder into the 
   assert.match(folderRoute, /folderState\.schemesReady/);
   assert.match(folderRoute, /folderState\.photosReady/);
   assert.match(folderRoute, /report\.conclusionFolderId = task\.id/);
-  assert.ok(folderRoute.includes('conclusionUrl: `/conclusion.html?task='));
+  assert.ok(folderRoute.includes('conclusionUrl: `/vdgo/conclusion?task='));
   assert.match(scopedGet, /report\.taskId === taskId/);
   assert.match(scopedGet, /Boolean\(report\.conclusionAddedAt\)/);
   assert.match(scopedGet, /defectReports/);
@@ -231,7 +231,7 @@ test('defect photo intake is limited, private, rollback-safe, and separate from 
   assert.match(uploadConfig, /files:\s*10/);
   assert.match(js, /name="defectPhotos"[^>]*multiple required/);
   assert.match(js, /image\/tiff/);
-  assert.match(defectRoute, /if \(!task\.visitedAt \|\| !task\.officeAt\)/);
+  assert.match(defectRoute, /if \(!hasReachedOffice\(task\)\)/);
   assert.match(defectRoute, /createdReport/);
   assert.match(defectRoute, /workspace\.defectReports = workspace\.defectReports\.filter/);
   assert.doesNotMatch(defectRoute, /onSketchSubmitted|schemeJobId|conclusionAddedAt|workforceConclusion/);

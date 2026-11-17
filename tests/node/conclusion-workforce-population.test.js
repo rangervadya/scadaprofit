@@ -63,3 +63,15 @@ test('existing conclusion section names and numbering remain unchanged', async (
     assert.ok(schema.includes(`title: '${title}'`), `Section title must remain: ${title}`);
   }
 });
+
+test('a full imported defect table retains every row and appends accepted fitter descriptions', () => {
+  const rows = Array.from({ length: 11 }, (_, index) => ({
+    enabled: true, location: 'Дом 10', text: `Импортированный дефект ${index + 1}`, recommendation: 'Устранить',
+  }));
+  const report = { id: 'extra-1', status: 'accepted', street: 'Ленина', address: '10', note: 'Замечание слесаря' };
+  const merged = mergeAcceptedWorkforceDefects(rows, [report], 'task-10', 11, true);
+  assert.deepEqual(merged.rows.slice(0, 11), rows);
+  assert.equal(merged.rows[11].text, report.note);
+  assert.equal(merged.overflow, 0);
+  assert.deepEqual(mergeAcceptedWorkforceDefects(merged.rows, [report], 'task-10', 11, true).rows, merged.rows);
+});

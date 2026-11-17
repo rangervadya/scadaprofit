@@ -87,12 +87,13 @@ test('the replacement frontend exposes the project workflows and address-folder 
   assert.match(source, /DashboardPage/);
   assert.match(source, /ConclusionPage/);
   assert.match(source, /CadEditorPage/);
-  assert.match(source, /const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/);
+  const roles = await read('frontend/src/lib/roles.ts');
+  assert.match(roles, /const STAFF_ROLES: SessionUser\['role'\]\[\] = \['receiver', 'supervisor', 'developer'\]/);
   assert.match(sidebar, /roles: STAFF_ROLES/);
   assert.match(topbar, /const isFitter = user\?\.role === 'fitter'/);
   assert.match(topbar, /!isFitter \?/);
   assert.match(sidebar, /to: '\/team'.*label: 'Команда'/);
-  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi\.reports\(\)/);
+  assert.match(dashboard, /if \(!isFitter\) \{[\s\S]*healthApi\s*\.reports\(\)/);
   assert.doesNotMatch(login, /Выбрать аккаунт|Выберите роль|Первичная настройка системы/);
   assert.match(team, /Добавить папку в заключение|Папка добавлена в заключение/);
   assert.match(team, /reviewReport/);

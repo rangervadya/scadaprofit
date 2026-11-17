@@ -656,6 +656,10 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                 "defect_1_location": "Подъезд 2, дом 15",
                 "defect_1_text": "Коррозия участка газопровода",
                 "defect_1_recommendation": "Восстановить защитное покрытие",
+                "defect_12_enabled": "1",
+                "defect_12_location": "Подъезд 3, дом 15",
+                "defect_12_text": "Следы коррозии на дополнительном участке",
+                "defect_12_recommendation": "Устранить повреждение покрытия",
             })
             with patch("app.OUTPUT", temp):
                 pdf_path = build_pdf(form, {"photo_1": str(photo_path)}, workforce_schemes=[scheme])
@@ -678,6 +682,9 @@ class WorkforceSchemeSection7Tests(unittest.TestCase):
                     self.assertGreaterEqual(len(photo_page.get_images(full=True)), 1)
                     defect_page = next(page for page in pdf if "Коррозия участка газопровода" in page.get_text())
                     self.assertIn("Подъезд 2, дом 15", defect_page.get_text())
+                    continuation = next(page for page in pdf if "Перечень дефектов (продолжение)" in page.get_text())
+                    self.assertIn("Следы коррозии на дополнительном участке", " ".join(continuation.get_text().split()))
+                    self.assertLess(continuation.number, scheme_pages[0])
                     # The field worker supplies the factual defect description only;
                     # the receiver must enter the corrective recommendation in the
                     # existing form field rather than having one invented automatically.

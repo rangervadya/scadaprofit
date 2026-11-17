@@ -1497,6 +1497,40 @@ def prepare_workforce_schemes(form, files):
     return prepared
 
 
+def extra_defect_indices(form):
+    return sorted(
+        int(match[1]) for key in form
+        if (match := re.fullmatch(r'defect_([1-9]\d{0,2})_enabled', key))
+        and len(DEFECTS) < int(match[1]) <= 200 and val(form, key) == '1'
+    )
+
+
+def append_defect_continuation(doc, form):
+    indices = extra_defect_indices(form)
+    if not indices:
+        return
+    index = _actual_appendix_page_index(doc, 1)
+    if index is None:
+        index = len(doc)
+    for offset in range(0, len(indices), 2):
+        page = doc.new_page(pno=index + offset // 2, width=595.32, height=841.92)
+        put(page, (42, 24, 553, 42), 'Адрес объекта: ' + val(form, 'address'), 9, 1)
+        put(page, (42, 52, 553, 75), '6.1. Перечень дефектов (продолжение)', 14, 1, bold=True)
+        columns = [(42, 172, 'Расположение', 'location'),
+                   (172, 365, 'Неисправность', 'text'),
+                   (365, 553, 'Рекомендация', 'recommendation')]
+        for row, defect_index in enumerate(indices[offset:offset + 2]):
+            top = 95 + row * 352
+            put(page, (42, top, 553, top + 17), f'Дефект 1.{defect_index}', 11, bold=True)
+            for left, right, title, field in columns:
+                rect = fitz.Rect(left, top + 20, right, top + 345)
+                page.draw_rect(rect, color=(0.35, 0.35, 0.35), width=0.5)
+                put(page, (left + 5, top + 25, right - 5, top + 43), title, 10, bold=True)
+                text = val(form, f'defect_{defect_index}_{field}')
+                if put(page, (left + 5, top + 45, right - 5, top + 340), text, 9) < 0:
+                    raise ValueError(f'Дефект {defect_index}: сократите текст в поле «{title}»')
+
+
 def append_workforce_scheme_pages(doc, schemes, form):
     """Insert fitter CAD schemes in the original Appendix 2 position (Section 7 materials)."""
     if not schemes:
@@ -1697,6 +1731,7 @@ def build_pdf(form, photo_paths, workforce_schemes=None):
     delete_optional_pages(doc,photo_pages_to_remove + material_pages_to_remove)
     append_workforce_scheme_pages(doc, workforce_schemes or [], form)
     temp_extra_photos=append_extra_photo_pages(doc,extra_photo_paths,form)
+    append_defect_continuation(doc, form)
     renumber_document_pages(doc)
     add_searchable_text_layer(doc)
     out=OUTPUT/'generated.pdf'
@@ -1868,7 +1903,7 @@ def validate_form(form, files):
     if not shared_any: missing.append('Заполните таблицу УЗТ общих участков (или укажите «н.д.» в фактических полях)')
     if not flat_any: missing.append('Заполните таблицу УЗТ жилых помещений (или укажите «н.д.» в фактических полях)')
     enabled=[]
-    for i in range(1,len(DEFECTS)+1):
+    for i in [*range(1,len(DEFECTS)+1), *extra_defect_indices(form)]:
         if val(form,f'defect_{i}_enabled')=='1':
             enabled.append(i)
             for key,label in [('location','место расположения'),('text','наименование неисправности'),('recommendation','рекомендация')]:

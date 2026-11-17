@@ -60,11 +60,17 @@ type FolderState = {
   photoCount: number;
 };
 
+function hasCadResult(report: WorkforceReport): boolean {
+  return Boolean(report.schemeJobId && (
+    report.schemeStatus === 'completed' || (report.schemeStatus === 'failed' && report.schemePartialGraphReady)
+  ));
+}
+
 function evaluateFolder(schemes: WorkforceReport[], defects: WorkforceDefectReport[], userId: string | null): FolderState {
   const allAccepted = [...schemes, ...defects].every(item => item.status === 'accepted');
-  const schemesReady = schemes.every(item => Boolean(item.manualCadProjectId));
+  const schemesReady = schemes.every(hasCadResult);
   const photosReady = defects.every(item => (item.photos || []).length > 0);
-  const unseenCount = [...schemes, ...defects].filter(item => !item.seen && (userId === null || item.userId !== userId)).length;
+  const unseenCount = [...schemes, ...defects].filter(item => userId !== null && !item.seen).length;
   const allAdded = [...schemes, ...defects].length > 0 && [...schemes, ...defects].every(item => item.conclusionAddedAt);
   return {
     schemes,
@@ -84,7 +90,7 @@ export function TeamPage() {
   const { notify } = useToast();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useState<Tab>('tasks');
+  const [tab, setTab] = useState<Tab>(() => params.get('tab') === 'inbox' ? 'inbox' : 'tasks');
   const [tasks, setTasks] = useState<WorkforceTask[]>([]);
   const [reports, setReports] = useState<WorkforceReport[]>([]);
   const [defects, setDefects] = useState<WorkforceDefectReport[]>([]);
@@ -94,6 +100,7 @@ export function TeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(params.get('task'));
+  const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
   const [selectedFolderTaskId, setSelectedFolderTaskId] = useState<string | null>(params.get('task'));
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showUserForm, setShowUserForm] = useState(false);
@@ -155,24 +162,63 @@ export function TeamPage() {
     }
     return Array.from(map.entries())
       .filter(([, entry]) => entry.schemes.length + entry.defects.length > 0)
-      .map(([taskId, entry]) => ({ taskId, task: entry.task, state: evaluateFolder(entry.schemes, entry.defects, user?.id || null) }));
-  }, [tasks, reports, defects, user?.id]);
+      .map(([taskId, entry]) => ({ taskId, task: entry.task, state: evaluateFolder(entry.schemes, entry.defects, user?.role === 'receiver' ? user.id : null) }));
+  }, [tasks, reports, defects, user?.role, user?.id]);
 
   const activeFolder = folders.find(folder => folder.taskId === selectedFolderTaskId) || null;
   const activeTask = tasks.find(task => task.id === selectedTaskId) || null;
 
+  const taskFolders = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; tasks: WorkforceTask[] }>();
+    for (const task of tasks) {
+      if (isFitter && task.assignedTo !== user?.id) continue;
+      const key = task.assignedTo || 'unassigned';
+      const entry = map.get(key) || {
+        key,
+        name: task.assignedName || 'Не назначен',
+        tasks: [],
+      };
+      entry.tasks.push(task);
+      map.set(key, entry);
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ru') || a.key.localeCompare(b.key));
+  }, [tasks, isFitter, user?.id]);
+
+  // Opening a house opens its fitter folder; collapsing closes the folder and
+  // clears the selection so the same click can fold it back.
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    const selected = tasks.find((task) => task.id === selectedTaskId);
+    if (!selected) return;
+    setExpandedGroupKey(selected.assignedTo || 'unassigned');
+  }, [tasks, selectedTaskId]);
+
+  const toggleGroup = (key: string, leadTaskId: string, expanded: boolean) => {
+    if (expanded) {
+      setExpandedGroupKey(null);
+      setSelectedTaskId(null);
+      return;
+    }
+    setExpandedGroupKey(key);
+    setSelectedTaskId(leadTaskId);
+  };
+
+
   useEffect(() => {
     if (!activeFolder) return;
-    const pending = [
-      ...activeFolder.state.schemes.filter(item => !item.seen).map(item => workforceApi.seeReport(item.id)),
-      ...activeFolder.state.defects.filter(item => !item.seen).map(item => workforceApi.seeDefect(item.id)),
-    ];
-    if (!pending.length) return;
-    void Promise.all(pending).then(() => {
-      setReports(current => current.map(item => ({ ...item, seen: true })));
-      setDefects(current => current.map(item => ({ ...item, seen: true })));
-    }).catch(() => {});
-  }, [activeFolder?.taskId]);
+    const schemesToMark = activeFolder.state.schemes.filter(item => !item.seen);
+    const defectsToMark = activeFolder.state.defects.filter(item => !item.seen);
+    for (const item of schemesToMark) {
+      void workforceApi.seeReport(item.id).then(() => {
+        setReports(current => current.map(report => report.id === item.id ? { ...report, seen: true } : report));
+      }).catch(() => {});
+    }
+    for (const item of defectsToMark) {
+      void workforceApi.seeDefect(item.id).then(() => {
+        setDefects(current => current.map(report => report.id === item.id ? { ...report, seen: true } : report));
+      }).catch(() => {});
+    }
+  }, [activeFolder?.taskId, activeFolder?.state.schemes.length, activeFolder?.state.defects.length]);
 
   const selectFolder = (taskId: string) => {
     setSelectedFolderTaskId(taskId);
@@ -187,10 +233,11 @@ export function TeamPage() {
   const mark = async (task: WorkforceTask, endpoint: 'start' | 'visit' | 'office') => {
     setBusy(true);
     try {
-      if (endpoint === 'start') await workforceApi.startTask(task.id);
-      if (endpoint === 'visit') await workforceApi.visitTask(task.id);
-      if (endpoint === 'office') await workforceApi.officeTask(task.id);
-      await refresh(endpoint === 'start' ? 'Обход начат' : endpoint === 'visit' ? 'Дом отмечен пройденным' : 'Отметка «в офисе» сохранена');
+      const next = endpoint === 'start' ? await workforceApi.startTask(task.id)
+        : endpoint === 'visit' ? await workforceApi.visitTask(task.id)
+        : await workforceApi.officeTask(task.id);
+      setTasks(current => current.map(item => item.id === next.task.id ? next.task : item));
+      notify(endpoint === 'start' ? 'Обход начат' : endpoint === 'visit' ? 'Дом отмечен пройденным' : 'Отметка «в офисе» сохранена', 'success');
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : 'Не удалось обновить статус', 'error');
     } finally {
@@ -206,12 +253,11 @@ export function TeamPage() {
       await Promise.all(folder.state.schemes.map(async report => {
         if (!report.manualCadProjectId) {
           if (!report.schemeJobId) throw new Error(`Нет задания CAD для схемы ${report.street}, дом ${report.address}.`);
-          const project = await cadApi.importJob(report.schemeJobId, `${report.street}, дом ${report.address}`);
-          report.manualCadProjectId = project.project.id;
+          await cadApi.importJob(report.schemeJobId, `${report.street}, дом ${report.address}`);
         }
       }));
       await workforceApi.addToConclusion(taskId);
-      await refresh('Папка добавлена в заключение');
+      notify('Папка добавлена в заключение', 'success');
       // Open the same task-scoped conclusion so accepted defects and attachments are loaded immediately.
       navigate(`/conclusion?task=${encodeURIComponent(taskId)}`);
     } catch (cause) {
@@ -275,28 +321,56 @@ export function TeamPage() {
 
       {tab === 'tasks' ? (
         <div className="team-grid">
-          <Card title={isFitter ? 'Мои дома' : 'Задания'} flush>
-            {tasks.length === 0 ? (
-              <Empty icon="team" title="Заданий нет">Назначьте первый дом слесарю.</Empty>
+          <Card title={isFitter ? 'Мои обходы' : 'Задания по слесарям'} flush>
+            {taskFolders.length === 0 ? (
+              <Empty icon="team" title="Заданий нет">
+                Назначьте первый дом слесарю.
+              </Empty>
             ) : (
-              <div className="card__body" style={{ maxHeight: 560, overflowY: 'auto' }}>
-                <div className="team-list">
-                  {tasks.map(task => {
-                    const visible = isFitter ? task.assignedTo === user?.id : true;
-                    if (!visible) return null;
+              <div className="card__body" style={{ maxHeight: 600, overflowY: 'auto' }}>
+                <div className="task-folders">
+                  {taskFolders.map((group) => {
+                    const lead = group.tasks[0];
+                    const expanded = group.key === expandedGroupKey;
                     return (
-                      <button
-                        key={task.id}
-                        type="button"
-                        className={`list-item ${selectedTaskId === task.id ? 'list-item--active' : ''}`}
-                        onClick={() => setSelectedTaskId(task.id)}
-                      >
-                        <span className="list-item__main">
-                          <span className="list-item__title">{task.street}, {task.address}</span>
-                          <span className="list-item__meta">{task.assignedName} · {formatShortDate(task.scheduledDate)}</span>
-                        </span>
-                        <Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>
-                      </button>
+                      <div key={group.key} className="task-folder">
+                        <button
+                          type="button"
+                          className={`list-item ${expanded ? 'list-item--active' : ''}`}
+                          aria-expanded={expanded}
+                          onClick={() => toggleGroup(group.key, lead.id, expanded)}
+                        >
+                          <span className="list-item__main">
+                            <span className="list-item__title">{group.name}</span>
+                            <span className="list-item__meta">
+                              {pluralizeCount(group.tasks.length, ['дом', 'дома', 'домов'])}
+                            </span>
+                          </span>
+                          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={16} />
+                        </button>
+                        {expanded ? (
+                          <div className="task-folder__body">
+                            {group.tasks.map((task) => (
+                              <button
+                                key={task.id}
+                                type="button"
+                                className={`list-item list-item--sub ${selectedTaskId === task.id ? 'list-item--active' : ''}`}
+                                onClick={() => setSelectedTaskId(task.id)}
+                              >
+                                <span className="list-item__main">
+                                  <span className="list-item__title">
+                                    {task.street}, дом {task.address}
+                                  </span>
+                                  <span className="list-item__meta">
+                                    {formatShortDate(task.scheduledDate)} · {task.title}
+                                  </span>
+                                </span>
+                                <Badge tone={statusTone(task.status)}>{taskStatusLabel(task.status)}</Badge>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     );
                   })}
                 </div>
@@ -507,6 +581,8 @@ function TaskDetail({
 
   const mine = canManage || task.assignedTo === currentUserId;
   const isFitterView = !canManage;
+  const canSubmitSketch = task.canSubmitSketch ?? task.status === 'at_office';
+  const canSubmitDefects = task.canSubmitDefects ?? Boolean(task.officeAt);
 
   return (
     <div className="stack">
@@ -520,7 +596,7 @@ function TaskDetail({
       >
         <div className="row row--wrap" style={{ marginBottom: 12 }}>
           <Button size="sm" disabled={busy || !['assigned', 'revision_requested'].includes(task.status)} onClick={() => onMark(task, 'start')}>Начать обход</Button>
-          <Button size="sm" disabled={busy || !['assigned', 'in_progress'].includes(task.status)} onClick={() => onMark(task, 'visit')}>Дом пройден</Button>
+          <Button size="sm" disabled={busy || task.status !== 'in_progress'} onClick={() => onMark(task, 'visit')}>Дом пройден</Button>
           <Button size="sm" disabled={busy || task.status !== 'house_visited'} onClick={() => onMark(task, 'office')}>В офисе</Button>
         </div>
         <dl className="kv">
@@ -548,6 +624,7 @@ function TaskDetail({
       {isFitterView ? (
         <>
           <Card title="Отправить ручную схему">
+            {!canSubmitSketch ? <p className="field__hint">{canSubmitDefects ? 'Эскиз уже отправлен.' : 'Сначала отметьте «В офисе».'}</p> : null}
             <form className="stack stack--sm" onSubmit={submitSketch}>
               <Field label="Фотография эскиза" required>
                 <input className="input" type="file" accept="image/jpeg,image/png,image/webp,image/tiff" onChange={event => setSketch(event.target.files?.[0] || null)} required />
@@ -555,7 +632,7 @@ function TaskDetail({
               <Field label="Комментарий">
                 <textarea className="textarea" value={sketchNote} onChange={event => setSketchNote(event.target.value)} placeholder="Например, подъезд 1, ввод газа" />
               </Field>
-              <div><Button type="submit" variant="primary" icon="upload" disabled={submitting || !sketch}>{submitting ? <Spinner light /> : null} Отправить эскиз</Button></div>
+              <div><Button type="submit" variant="primary" icon="upload" disabled={busy || submitting || !canSubmitSketch || !sketch}>{submitting ? <Spinner light /> : null} Отправить эскиз</Button></div>
             </form>
           </Card>
           <Card title="Отправить фотографии дефектов">
@@ -566,7 +643,7 @@ function TaskDetail({
               <Field label="Комментарий">
                 <textarea className="textarea" value={photoNote} onChange={event => setPhotoNote(event.target.value)} placeholder="Опишите выявленные дефекты" />
               </Field>
-              <div><Button type="submit" variant="primary" icon="camera" disabled={submitting || !photoFiles.length}>{submitting ? <Spinner light /> : null} Отправить фотографии</Button></div>
+              <div><Button type="submit" variant="primary" icon="camera" disabled={busy || submitting || !canSubmitDefects || !photoFiles.length}>{submitting ? <Spinner light /> : null} Отправить фотографии</Button></div>
             </form>
           </Card>
         </>
@@ -613,6 +690,21 @@ function FolderDetail({
   const [comment, setComment] = useState('');
   const [kind, setKind] = useState<'scheme' | 'defect'>('scheme');
   const [busyLocal, setBusyLocal] = useState(false);
+  const navigate = useNavigate();
+  const returnQuery = new URLSearchParams({ task: folder.taskId });
+
+  const openCad = async (report: WorkforceReport) => {
+    if (!report.schemeJobId) return;
+    setBusyLocal(true);
+    try {
+      const result = await cadApi.importJob(report.schemeJobId, `${report.street}, дом ${report.address}`);
+      navigate(`/cad/${encodeURIComponent(result.project.id)}?${returnQuery}`);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Не удалось открыть CAD', 'error');
+    } finally {
+      setBusyLocal(false);
+    }
+  };
 
   const review = async (status: 'accepted' | 'revision_requested') => {
     if (!reviewId) return;
@@ -649,7 +741,7 @@ function FolderDetail({
             variant="primary"
             onClick={() => onAddToConclusion(folder.taskId)}
           >
-            Добавить всю папку в заключение
+            Перенести материалы и открыть заключение
           </Button>
           {state.allAdded && folder.task ? (
             <Link className="btn btn--sm" to={`/conclusion?task=${encodeURIComponent(folder.task.id)}`}>Открыть заключение</Link>
@@ -693,7 +785,9 @@ function FolderDetail({
                   </Button>
                   <Button size="sm" disabled={busy || busyLocal} onClick={() => { setReviewId(report.id); setKind('scheme'); setComment(''); }}>Вернуть</Button>
                   {report.manualCadProjectId ? (
-                    <Link className="btn btn--sm" to={`/cad/${report.manualCadProjectId}`}>Открыть CAD</Link>
+                    <Link className="btn btn--sm" to={`/cad/${encodeURIComponent(report.manualCadProjectId)}?${returnQuery}`}>Открыть CAD</Link>
+                  ) : hasCadResult(report) ? (
+                    <Button size="sm" disabled={busy || busyLocal} onClick={() => void openCad(report)}>Открыть CAD</Button>
                   ) : (
                     <Badge tone="warn">{report.schemeStatus || 'CAD готовится'}</Badge>
                   )}

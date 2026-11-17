@@ -34,7 +34,9 @@
   font-weight: 750;
   letter-spacing: -0.01em;
 }
-.sidebar__brand:hover { text-decoration: none; }
+.sidebar__brand:hover {
+  text-decoration: none;
+}
 .sidebar__mark {
   display: grid;
   place-items: center;
@@ -42,8 +44,13 @@
   height: 48px;
   flex: none;
 }
-.sidebar__mark svg { width: 18px; height: 18px; }
-.sidebar__brand-name { min-width: 0; }
+.sidebar__mark svg {
+  width: 18px;
+  height: 18px;
+}
+.sidebar__brand-name {
+  min-width: 0;
+}
 .sidebar__toggle {
   display: grid;
   place-items: center;
@@ -54,9 +61,14 @@
   border-radius: 8px;
   background: transparent;
   color: #8fa3c2;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
-.sidebar__toggle:hover { background: #1c2c48; color: #fff; }
+.sidebar__toggle:hover {
+  background: #1c2c48;
+  color: #fff;
+}
 .sidebar__caption {
   padding: 0 10px;
   font-size: 10px;
@@ -66,7 +78,10 @@
   color: #6b7c99;
 }
 
-.sidebar__nav { display: grid; gap: 3px; }
+.sidebar__nav {
+  display: grid;
+  gap: 3px;
+}
 .sidebar__link {
   display: flex;
   align-items: center;
@@ -80,15 +95,28 @@
   font-size: 13.5px;
   font-weight: 550;
   text-align: left;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
-.sidebar__link svg { width: 18px; height: 18px; flex: none; opacity: 0.85; }
-.sidebar__link:hover { background: rgba(255, 255, 255, 0.06); color: #fff; text-decoration: none; }
+.sidebar__link svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  opacity: 0.85;
+}
+.sidebar__link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  text-decoration: none;
+}
 .sidebar__link[aria-current='page'] {
   background: #1c2c48;
   color: #fff;
 }
-.sidebar__link[aria-current='page'] svg { opacity: 1; }
+.sidebar__link[aria-current='page'] svg {
+  opacity: 1;
+}
 
 .sidebar__badge {
   margin-left: auto;
@@ -103,7 +131,10 @@
   font-size: 10.5px;
   font-weight: 700;
 }
-.sidebar__link[aria-current='page'] .sidebar__badge { background: #2f6fed; color: #fff; }
+.sidebar__link[aria-current='page'] .sidebar__badge {
+  background: #2f6fed;
+  color: #fff;
+}
 
 .sidebar__footer {
   margin-top: auto;
@@ -112,7 +143,12 @@
   display: grid;
   gap: 8px;
 }
-.sidebar__user { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.sidebar__user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
 .sidebar__avatar {
   display: grid;
   place-items: center;
@@ -125,9 +161,22 @@
   font-size: 11px;
   font-weight: 700;
 }
-.sidebar__user-copy { min-width: 0; display: grid; }
-.sidebar__user-name { color: #eef3fb; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sidebar__user-role { color: #8296b5; font-size: 11px; }
+.sidebar__user-copy {
+  min-width: 0;
+  display: grid;
+}
+.sidebar__user-name {
+  color: #eef3fb;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar__user-role {
+  color: #8296b5;
+  font-size: 11px;
+}
 .sidebar__logout {
   display: flex;
   align-items: center;
@@ -139,8 +188,13 @@
   text-align: left;
   padding: 6px 2px;
 }
-.sidebar__logout svg { flex: none; }
-.sidebar__logout:hover { color: #fff; text-decoration: underline; }
+.sidebar__logout svg {
+  flex: none;
+}
+.sidebar__logout:hover {
+  color: #fff;
+  text-decoration: underline;
+}
 
 .main {
   flex: 1;
@@ -177,8 +231,16 @@
   background: var(--bg-subtle);
   color: var(--subtle);
 }
-.searchbox:focus-within { border-color: #b6c6e6; background: #fff; box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.08); }
-.searchbox svg { width: 16px; height: 16px; flex: none; }
+.searchbox:focus-within {
+  border-color: #b6c6e6;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.08);
+}
+.searchbox svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
 .searchbox input {
   flex: 1;
   min-width: 0;
@@ -196,7 +258,9 @@
   font-size: 10px;
 }
 
-.topbar__spacer { flex: 1; }
+.topbar__spacer {
+  flex: 1;
+}
 
 .status-pill {
   display: inline-flex;
@@ -212,11 +276,29 @@
   font-weight: 550;
   white-space: nowrap;
 }
-.status-pill:hover { border-color: var(--line-strong); text-decoration: none; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); flex: none; }
-.status-dot--ok { background: #12b76a; box-shadow: 0 0 0 3px rgba(18, 183, 106, 0.16); }
-.status-dot--error { background: #f04438; box-shadow: 0 0 0 3px rgba(240, 68, 56, 0.16); }
-.status-dot--checking { background: #f79009; box-shadow: 0 0 0 3px rgba(247, 144, 9, 0.16); }
+.status-pill:hover {
+  border-color: var(--line-strong);
+  text-decoration: none;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--subtle);
+  flex: none;
+}
+.status-dot--ok {
+  background: #12b76a;
+  box-shadow: 0 0 0 3px rgba(18, 183, 106, 0.16);
+}
+.status-dot--error {
+  background: #f04438;
+  box-shadow: 0 0 0 3px rgba(240, 68, 56, 0.16);
+}
+.status-dot--checking {
+  background: #f79009;
+  box-shadow: 0 0 0 3px rgba(247, 144, 9, 0.16);
+}
 
 .topbar__icon {
   display: grid;
@@ -228,8 +310,15 @@
   background: #fff;
   color: var(--muted);
 }
-.topbar__icon:hover { color: var(--ink); border-color: var(--line-strong); text-decoration: none; }
-.topbar__icon svg { width: 17px; height: 17px; }
+.topbar__icon:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  text-decoration: none;
+}
+.topbar__icon svg {
+  width: 17px;
+  height: 17px;
+}
 
 .page {
   flex: 1;
@@ -257,9 +346,24 @@
   color: var(--brand);
   margin-bottom: 6px;
 }
-.page__title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.page__subtitle { margin-top: 6px; color: var(--muted); font-size: 13.5px; max-width: 720px; }
-.page__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.page__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page__subtitle {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13.5px;
+  max-width: 720px;
+}
+.page__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 .breadcrumbs {
   display: flex;
@@ -268,17 +372,31 @@
   font-size: 12px;
   color: var(--subtle);
 }
-.breadcrumbs a { color: var(--muted); }
-.breadcrumbs span[aria-current] { color: var(--ink-soft); font-weight: 600; }
+.breadcrumbs a {
+  color: var(--muted);
+}
+.breadcrumbs span[aria-current] {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
 
-.mobile-only { display: none; }
+.mobile-only {
+  display: none;
+}
 
 .sidebar--collapsed {
   align-items: center;
   padding: 16px 10px;
 }
-.sidebar--collapsed .sidebar__head { justify-content: center; width: 100%; }
-.sidebar--collapsed .sidebar__brand { flex: none; justify-content: center; padding: 4px; }
+.sidebar--collapsed .sidebar__head {
+  justify-content: center;
+  width: 100%;
+}
+.sidebar--collapsed .sidebar__brand {
+  flex: none;
+  justify-content: center;
+  padding: 4px;
+}
 .sidebar--collapsed .sidebar__toggle {
   position: absolute;
   top: 22px;
@@ -288,42 +406,132 @@
   border-color: #2f4266;
   box-shadow: 0 4px 12px rgba(6, 12, 24, 0.45);
 }
-.sidebar--collapsed .sidebar__toggle:hover { background: #24365a; }
+.sidebar--collapsed .sidebar__toggle:hover {
+  background: #24365a;
+}
 .sidebar--collapsed .sidebar__brand-name,
 .sidebar--collapsed .sidebar__caption,
 .sidebar--collapsed .sidebar__link > span,
-.sidebar--collapsed .sidebar__user-copy { display: none; }
-.sidebar--collapsed .sidebar__nav { width: 100%; }
-.sidebar--collapsed .sidebar__link { position: relative; justify-content: center; padding: 8px; }
-.sidebar--collapsed .sidebar__badge { position: absolute; display: inline-grid; margin: -18px 0 0 22px; }
-.sidebar--collapsed .sidebar__footer { width: 100%; align-items: center; }
-.sidebar--collapsed .sidebar__user { justify-content: center; }
+.sidebar--collapsed .sidebar__user-copy {
+  display: none;
+}
+.sidebar--collapsed .sidebar__nav {
+  width: 100%;
+}
+.sidebar--collapsed .sidebar__link {
+  position: relative;
+  justify-content: center;
+  padding: 8px;
+}
+.sidebar--collapsed .sidebar__badge {
+  position: absolute;
+  display: inline-grid;
+  margin: -18px 0 0 22px;
+}
+.sidebar--collapsed .sidebar__footer {
+  width: 100%;
+  align-items: center;
+}
+.sidebar--collapsed .sidebar__user {
+  justify-content: center;
+}
 .sidebar--collapsed .sidebar__logout {
   justify-content: center;
   width: 36px;
   height: 34px;
   padding: 0;
 }
-.sidebar--collapsed .sidebar__logout span { display: none; }
-
-@media (max-width: 1080px) {
-  :root { --sidebar-width: 76px; }
-  .sidebar { padding: 16px 10px; align-items: center; }
-  .sidebar__brand-name, .sidebar__caption, .sidebar__link span, .sidebar__user-copy, .sidebar__logout span, .sidebar__badge { display: none; }
-  .sidebar__brand { padding: 4px; }
-  .sidebar__nav { width: 100%; }
-  .sidebar__link { justify-content: center; padding: 8px; }
-  .sidebar__footer { width: 100%; align-items: center; }
-  .sidebar__badge { position: absolute; margin: -18px 0 0 22px; display: inline-grid; }
-  .sidebar__link { position: relative; }
+.sidebar--collapsed .sidebar__logout span {
+  display: none;
 }
 
+/* Tablets keep the full sidebar with labels: the drawer only replaces it on
+   phones (<= 760px), so there is no icon-only strip between those ranges. */
 @media (max-width: 760px) {
-  :root { --sidebar-width: 0px; --topbar-height: 58px; }
-  .sidebar { display: none; }
-  .main { margin-left: 0; }
-  .mobile-only { display: grid; }
-  .topbar { gap: 10px; }
-  .searchbox { width: 100%; }
-  .page { padding: 18px 14px 48px; }
+  :root {
+    --sidebar-width: 0px;
+    --topbar-height: 58px;
+  }
+  /* The sidebar becomes a slide-over drawer toggled from the topbar.
+     --sidebar-width stays 0 so .main never reserves space for it. */
+  .sidebar {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 60;
+    width: 248px;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--shadow-lg, 0 12px 32px rgba(15, 23, 42, 0.18));
+  }
+  .app-shell--nav-open .sidebar {
+    transform: translateX(0);
+  }
+  .nav-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    border: 0;
+    padding: 0;
+    background: rgba(15, 23, 42, 0.4);
+    cursor: pointer;
+  }
+  .main {
+    margin-left: 0;
+  }
+  .mobile-only {
+    display: grid;
+  }
+  .topbar {
+    gap: 8px;
+    padding: 0 12px;
+  }
+  .searchbox {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .searchbox kbd {
+    display: none;
+  }
+  .page {
+    padding: 18px 14px 48px;
+  }
+}
+
+/* Small phones: tighten the topbar so the menu button, search, service
+   indicator and settings icon fit on one row without horizontal scroll. */
+@media (max-width: 560px) {
+  :root {
+    --topbar-height: 54px;
+  }
+  .topbar {
+    gap: 6px;
+  }
+  /* The service pill is a link to Settings; on a phone the full label does not
+     fit next to the search field, so collapse it to the status dot. */
+  .status-pill {
+    width: 34px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+    font-size: 0;
+  }
+  .status-dot {
+    width: 9px;
+    height: 9px;
+  }
+  .topbar__icon {
+    width: 32px;
+    height: 32px;
+    flex: none;
+  }
+  .page {
+    padding: 14px 12px 40px;
+  }
+  .page__title {
+    font-size: 21px;
+  }
 }
