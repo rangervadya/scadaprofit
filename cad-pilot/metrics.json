@@ -1,0 +1,15 @@
+{
+  "train_pairs": 68,
+  "test_pairs": 21,
+  "train_addresses": 19,
+  "test_addresses": 7,
+  "iterations": 80,
+  "mlp": {
+    "mse": 0.0026192069053649902,
+    "ink_f1": 0.4983369895973392
+  },
+  "mean_baseline": {
+    "mse": 0.0032098821830004454,
+    "ink_f1": 0.3367892976588629
+  }
+}
