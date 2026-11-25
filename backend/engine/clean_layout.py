@@ -516,7 +516,7 @@ def build_clean_layout(
     explicit_number_positions: list[list[float]] = []
     source_labels = [item for item in model.get("labels", [])
                      if item.get("state") == "primary" and item.get("role") != "dimension_value"
-                     and _numeric_text(item.get("text"))]
+                     and str(item.get("text") or "").strip()]
     for label in source_labels:
         text = str(label.get("text") or "").strip()
         box = label.get("bbox") or {}
@@ -531,9 +531,10 @@ def build_clean_layout(
         occupied.append(label_box)
         layout_labels.append({**deepcopy(label), "position": position, "layoutBBox": label_box,
                               "sourceBBox": deepcopy(box), "autoPlaced": bool(target_pipe)})
-        if target_id:
-            explicit_number_targets.add(target_id)
-        explicit_number_positions.append(position)
+        if _numeric_text(text):
+            if target_id:
+                explicit_number_targets.add(target_id)
+            explicit_number_positions.append(position)
 
     layout_dimensions = []
     for dimension in model.get("dimensions", []):
