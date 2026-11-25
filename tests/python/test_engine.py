@@ -458,7 +458,7 @@ class GraphTests(unittest.TestCase):
             self.assertNotIn("reference.jpg", svg)
             self.assertNotIn("<image", svg)
 
-    def test_clean_layout_exports_only_primary_numeric_labels(self):
+    def test_clean_layout_exports_primary_numeric_and_text_labels(self):
         model = {
             "sourceImage": {"width": 100, "height": 80},
             "nodes": [], "pipes": [], "symbols": [], "dimensions": [],
@@ -469,7 +469,7 @@ class GraphTests(unittest.TestCase):
             ],
         }
         layout, _ = build_clean_layout(model)
-        self.assertEqual([item["id"] for item in layout["labels"]], ["A1"])
+        self.assertEqual([item["id"] for item in layout["labels"]], ["A1", "A2"])
 
     def test_partial_clean_export_is_watermarked_in_svg_and_dxf(self):
         layout = {
