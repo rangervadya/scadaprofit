@@ -98,3 +98,5 @@ cd frontend && npm ci && npm run build
 - [Быстрый старт ролей и выездов](docs/user-guides/WORKFORCE-QUICKSTART-RU.md)
 - [Руководство CAD](docs/user-guides/MANUAL-CAD-USER-GUIDE-RU.md)
 - [История изменений](docs/releases/CHANGELOG-RU.md)
+
+Для сравнения качества и времени см. [контрольный прогон CAD](docs/development/CAD-BENCHMARK-RU.md).

@@ -1451,6 +1451,12 @@ app.get('/api/health', async (_req, res) => {
       ocrUpscale: qwenDiagnosticLimit('QWEN_OCR_UPSCALE', 1.25, 1.0, 2.5),
       modelKeepAlive: process.env.QWEN_KEEP_ALIVE?.trim() || '10m'
     },
+    cadExperiments: {
+      ocrNormalizedCoordinates: process.env.QWEN_OCR_NORMALIZED_COORDS === '1',
+      pipeNormalizedCoordinates: process.env.QWEN_PIPE_NORMALIZED_COORDS === '1',
+      clahe: process.env.CAD_CLAHE === '1',
+      bilateral: process.env.CAD_BILATERAL === '1'
+    },
     localRecognition: { mode: 'Qwen3-VL + Tesseract', cloudDisabled: true, qwen: ollama, tesseract },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),
     cloudProvidersDisabled: true,

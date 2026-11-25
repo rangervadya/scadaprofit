@@ -18,6 +18,7 @@ import hashlib
 import socket
 import urllib.request
 import urllib.error
+from contextvars import ContextVar
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,9 @@ from moss_ai import (
     DEFAULT_MODEL as DEFAULT_MOSS_MODEL, test_moss_ai,
     moss_ocr_annotations, moss_semantic_routes,
 )
+
+
+_QWEN_AUDIT: ContextVar[dict | None] = ContextVar('qwen_audit', default=None)
 
 
 def _progress(stage: str, message: str) -> None:
@@ -1523,6 +1527,11 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
         headers={'Content-Type': 'application/json'}, method='POST'
     )
     request_started = time.perf_counter()
+    audit = _QWEN_AUDIT.get()
+    if audit is not None:
+        audit['requests'] += 1
+        audit['runtime'] = {key: payload['options'][key] for key in ('num_ctx', 'num_batch', 'num_thread')}
+        audit['runtime'].update(model=model, keep_alive=payload['keep_alive'])
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode('utf-8'))
@@ -1533,6 +1542,11 @@ def _qwen_call(rgb: Image.Image, prompt: str, *, url: str, model: str, timeout: 
             detail = ''
         raise RuntimeError(f'Ollama HTTP {error.code}: {detail or error.reason}') from error
     request_ms = (time.perf_counter() - request_started) * 1000.0
+    if audit is not None:
+        if body.get('done_reason') == 'length':
+            audit['truncated_responses'] += 1
+        if isinstance(body.get('load_duration'), (int, float)):
+            audit['load_ms'] += body['load_duration'] / 1_000_000
     if body.get('error'):
         raise RuntimeError(str(body['error']))
     parse_started = time.perf_counter()
@@ -1746,6 +1760,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_OCR_UPSCALE', '1.25'))))
         with Image.open(image_path) as source:
             original = ImageOps.exif_transpose(source).convert('RGB')
+        normalized = os.getenv('QWEN_OCR_NORMALIZED_COORDS', '0') == '1'
         prompt_template = (
             'Ты читаешь рукописную инженерную схему. Это задача OCR, не трассировки линий. '
             'Внимательно перечисли все читаемые надписи в ЭТОМ фрагменте, включая отдельные цифры, '
@@ -1766,6 +1781,15 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
             'Пример формы: {"annotations":[{"text":"1500","bbox":[10,20,45,34],"confidence":72}]}. '
             'Максимум 64 текстовые области на фрагмент. Размер изображения: {width}x{height} px.'
         )
+        if normalized:
+            prompt_template = prompt_template.replace(
+                'в пикселях отправленного изображения', 'в диапазоне 0..1000 по каждой оси'
+            ).replace(
+                'Координаты строго в пикселях именно этого отправленного фрагмента, от его левого верхнего угла; '
+                'не используй нормализацию 0..1000 и не пересчитывай координаты на весь лист.',
+                'Используй шкалу 0..1000 по каждой оси отправленного фрагмента. '
+                'Левый верхний угол (0,0), правый нижний (1000,1000).'
+            )
         # Two-by-two crops enlarge handwritten numbers without losing the page context
         # entirely. A 12% overlap prevents labels on tile borders from being clipped.
         grid = max(1, min(2, int(os.getenv('QWEN_OCR_TILE_GRID', '2'))))
@@ -1811,7 +1835,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 'source_crop_xyxy': [int(left), int(top), int(right), int(bottom)],
             }
             checkpoint_settings = {
-                'prompt_version': 3, 'model': model, 'grid': grid,
+                'prompt_version': 4 if normalized else 3, 'model': model, 'grid': grid,
                 'region': [int(left), int(top), int(right), int(bottom)],
                 'crop_scale': round(float(crop_scale), 6), 'max_edge': max_edge,
                 'max_output_tokens': max_output_tokens, 'upscale': upscale,
@@ -1856,7 +1880,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     'crop_upscale': round(float(crop_scale), 6),
                     'request_resize_scale': round(float(resize_scale), 6),
                     'sent_size': [int(sent_width), int(sent_height)],
-                    'bbox_coordinate_space': 'sent_tile_pixels_mapped_to_source_image_pixels',
+                    'bbox_coordinate_space': ('normalized_0_1000_mapped_to_source_image_pixels' if normalized
+                                              else 'sent_tile_pixels_mapped_to_source_image_pixels'),
                 })
                 raw_items, annotation_key = _annotation_items_from_response(parsed)
                 if annotation_key is None:
@@ -1897,6 +1922,12 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                     raw_left, raw_top = float(box['x']), float(box['y'])
                     raw_right = raw_left + float(box['w'])
                     raw_bottom = raw_top + float(box['h'])
+                    if normalized:
+                        if not all(0 <= value <= 1000 for value in (raw_left, raw_top, raw_right, raw_bottom)):
+                            call_diagnostics['rejected_out_of_crop_boxes'] = call_diagnostics.get('rejected_out_of_crop_boxes', 0) + 1
+                            continue
+                        raw_left, raw_right = raw_left * sent_width / 1000, raw_right * sent_width / 1000
+                        raw_top, raw_bottom = raw_top * sent_height / 1000, raw_bottom * sent_height / 1000
                     if (not all(math.isfinite(value) for value in (raw_left, raw_top, raw_right, raw_bottom))
                             or raw_right <= raw_left or raw_bottom <= raw_top
                             or raw_right <= 0 or raw_bottom <= 0 or raw_left >= sent_width * 1.08
@@ -2116,6 +2147,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_output_tokens = max(384, min(2048, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1024'))))
         retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
+        normalized = os.getenv('QWEN_PIPE_NORMALIZED_COORDS', '0') == '1'
         grid = max(1, min(2, int(os.getenv('QWEN_PIPE_TILE_GRID', '2'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
@@ -2172,15 +2204,24 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'Пример: {"routes":[{"id":"S1","points":[[20,80],[180,80],[180,240]],"confidence":70}]}. '
                     'Верни только JSON без текста и без объяснений.'
                 )
+                if normalized:
+                    prompt = prompt.replace(
+                        f'Координаты — пиксели изображения {sent_width}x{sent_height}; начало (0,0) слева сверху.',
+                        'Координаты нормализованы 0..1000 по каждой оси; начало (0,0) слева сверху.'
+                    ).replace(
+                        f'0<=x<{sent_width}, 0<=y<{sent_height}.',
+                        '0<=x<=1000, 0<=y<=1000. Правый нижний угол (1000,1000).'
+                    )
                 diag: dict[str, Any] = {
                     'tile': tile_index, 'row': row + 1, 'column': col + 1,
                     'core': {'x': core_left, 'y': core_top, 'w': core_w, 'h': core_h},
                     'crop': {'x': left, 'y': top, 'w': right - left, 'h': bottom - top},
                     'sent_image': {'w': sent_width, 'h': sent_height},
-                    'coordinate_contract': 'pixel coordinates strictly inside sent_image; out-of-bounds route is rejected',
+                    'coordinate_contract': 'normalized-0-1000' if normalized else 'pixel coordinates strictly inside sent_image; out-of-bounds route is rejected',
                 }
                 checkpoint_settings = {
-                    'prompt_version': 4, 'coordinate_contract': 'strict-sent-image-bounds-v1',
+                    'prompt_version': 5 if normalized else 4,
+                    'coordinate_contract': 'normalized-0-1000' if normalized else 'strict-sent-image-bounds-v1',
                     'model': model, 'grid': grid,
                     'core': [core_left, core_top, core_right, core_bottom],
                     'crop': [left, top, right, bottom], 'upscale': upscale,
@@ -2286,7 +2327,12 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                             route_min_y, route_max_y = min(route_min_y, py), max(route_max_y, py)
                             # Allow only tiny rounding noise (2px). Meaningful
                             # out-of-frame coordinates invalidate the entire route.
-                            if px < -2.0 or py < -2.0 or px > sent_width + 2.0 or py > sent_height + 2.0:
+                            if normalized:
+                                if not (0 <= px <= 1000 and 0 <= py <= 1000):
+                                    route_coordinate_error = 'coordinate-out-of-sent-image-bounds'
+                                    break
+                                px, py = px * (sent_width - 1) / 1000, py * (sent_height - 1) / 1000
+                            elif px < -2.0 or py < -2.0 or px > sent_width + 2.0 or py > sent_height + 2.0:
                                 route_coordinate_error = 'coordinate-out-of-sent-image-bounds'
                                 break
                             px = max(0.0, min(float(sent_width - 1), px))
@@ -2304,7 +2350,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                                         'point_index': point_index,
                                         'x_range': [round(route_min_x, 1), round(route_max_x, 1)] if math.isfinite(route_min_x) else None,
                                         'y_range': [round(route_min_y, 1), round(route_max_y, 1)] if math.isfinite(route_min_y) else None,
-                                        'expected_bounds': {'x': [0, sent_width - 1], 'y': [0, sent_height - 1]},
+                                        'expected_bounds': {'x': [0, 1000 if normalized else sent_width - 1],
+                                                            'y': [0, 1000 if normalized else sent_height - 1]},
                                     })
                             continue
                         if len(local_points) < 2:
@@ -4610,6 +4657,14 @@ def _qwen_stage_is_complete(status: dict[str, Any] | None) -> bool:
 
 
 def analyze(input_path: str, out_dir: str, template_path: str | None = None, rotation_degrees: int | None = None) -> dict[str, Any]:
+    token = _QWEN_AUDIT.set({'requests': 0, 'truncated_responses': 0, 'load_ms': 0.0})
+    try:
+        return _analyze(input_path, out_dir, template_path, rotation_degrees)
+    finally:
+        _QWEN_AUDIT.reset(token)
+
+
+def _analyze(input_path: str, out_dir: str, template_path: str | None, rotation_degrees: int | None) -> dict[str, Any]:
     global _ANALYSIS_HARD_DEADLINE
     job_started = time.perf_counter()
     configured_job_ms = max(60_000.0, float(os.getenv('PYTHON_JOB_TIMEOUT_MS', '5400000')))
@@ -4624,6 +4679,12 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     prepared_input_path = str(Path(out_dir) / 'prepared-input.png')
     cv2.imwrite(prepared_input_path, bgr)
     gray,prep=normalize_document(bgr)
+    if os.getenv('CAD_BILATERAL', '0') == '1':
+        gray = cv2.bilateralFilter(gray, 5, 30, 30)
+        prep['bilateral'] = True
+    if os.getenv('CAD_CLAHE', '0') == '1':
+        gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        prep['clahe'] = True
     prep.update(preparation)
     ink_layers = make_ink_layers(bgr, gray)
     ink = ink_layers['combined']
@@ -4882,6 +4943,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
            "drawingTemplate":drawing_template,
            "nodes":nodes,"edges":edges,"components":components,"crossings":crossings,"joinCandidates":joins,"annotations":annotations,"ocr":ocr_status,"semanticRoutes":semantic_routes,"primarySemanticRoutes":primary_semantic_routes,"semanticValidation":semantic_validation,"semanticTrace":route_status,
            "timings_ms":timings_ms,
+           "qwenAudit": _QWEN_AUDIT.get(),
            "rules":{"ocr_boxes_mask_geometry_even_when_text_unverified":True,"text_overlap_affects_component_classification":True,"continuous_lines_through_text_are_preserved_only_with_two_sided_ink_support":True,"crossings_auto_joined":False,"endpoint_cluster_radius_px":4.5,"collinear_gap_join_max_px":28,
                     "ambiguous_and_text_like_components_are_review_only":True,"clean_export_uses_selected_opencv_and_validated_qwen_routes":True,"qwen_routes_are_ink_validated_before_primary_export":True,"unselected_pixel_candidates_are_review_only":True,"short_symbol_stubs_go_to_review_layer":True,
                     "ink_colour_is_advisory_only":True,"unknown_symbols_require_confirmation":True,"polyline_merge_preserves_source_geometry":True,"ambiguous_junctions_are_not_merged":True,
