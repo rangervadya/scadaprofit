@@ -41,6 +41,7 @@ from cad_overlay import render_cad_alignment_overlay
 from pipeline_diagnostics import build_pipeline_diagnostics
 from reference_vectorization import build_reference_trace
 from centerline_vectorization import build_centerline_trace
+from geometry_recovery import filter_paper_rules, recover_vertical_connections
 from openrouter_ai import (
     DEFAULT_MODEL as DEFAULT_OPENROUTER_MODEL, test_openrouter_ai,
     openrouter_ocr_annotations, openrouter_semantic_routes,
@@ -3438,7 +3439,8 @@ def endpoint_clusters(segments: list[dict[str, Any]], radius: float = 4.5,
     return nodes, edges, component_summaries
 
 def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
-                             min_dimension: int, image_size: tuple[int, int] | None = None) -> dict[str, int]:
+                             min_dimension: int, image_size: tuple[int, int] | None = None,
+                             *, ink: np.ndarray | None = None, text_mask: np.ndarray | None = None) -> dict[str, Any]:
     """Select coherent route paths for the clean CAD sheet.
 
     The detector graph deliberately keeps every reviewable segment.  The clean
@@ -3721,6 +3723,11 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
                 edge['cad_include'] = False
                 edge['cad_reason'] = 'image-border-review'
 
+    recovered = 0
+    if ink is not None:
+        geometry_ink = filter_paper_rules(edges, ink)
+        recovered = recover_vertical_connections(nodes, edges, geometry_ink, text_mask)
+
     # Defensive default for malformed/disconnected records.
     for edge in edges:
         edge.setdefault('cad_include', False)
@@ -3734,7 +3741,8 @@ def select_primary_cad_edges(nodes: list[dict[str, Any]], edges: list[dict[str, 
     return {
         'cad_primary_edges': selected,
         'cad_review_edges': len(edges) - selected,
-        'cad_primary_paths': sum(1 for path in paths if path['edges'] and all(edges[i].get('cad_include') for i in path['edges'])),
+        'cad_recovered_vertical_connections': recovered,
+        'cad_primary_paths': recovered + sum(1 for path in paths if path['edges'] and all(edges[i].get('cad_include') for i in path['edges'])),
         'cad_selection_reasons': reason_counts,
         'cad_min_path_px': int(round(min_path)),
         'cad_min_junction_branch_px': int(round(junction_stub)),
@@ -4746,7 +4754,7 @@ def _analyze(input_path: str, out_dir: str, template_path: str | None, rotation_
     )
     nodes,edges,components=endpoint_clusters(segments, ink=ink, text_mask=text_mask)
     ink_color_diagnostics = _annotate_edge_ink_color(edges, ink_layers["blue"], ink_layers["dark"])
-    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h), image_size=(w, h))
+    cad_selection = select_primary_cad_edges(nodes, edges, min(w, h), image_size=(w, h), ink=ink, text_mask=text_mask)
     primary_opencv_edges = [edge for edge in edges if edge.get('cad_include')]
     primary_semantic_routes, semantic_validation = validate_primary_semantic_routes(
         semantic_routes, ink, text_mask, primary_opencv_edges, min(w, h)
@@ -4997,7 +5005,7 @@ def _analyze(input_path: str, out_dir: str, template_path: str | None, rotation_
                       "dense_route_exempted_components":sum(1 for c in components if c.get('dense_route_exemption')),
                       "primary_edge_count_by_detector":{
                           name:sum(1 for e in edges if e.get('cad_include') and e.get('detector')==name)
-                          for name in ('LSD','HOUGH')
+                          for name in ('LSD','HOUGH','INK')
                       },
                       "isolated_strokes_kept_for_review":sum(1 for e in edges if e.get('cad_reason')=='isolated-stroke-review'),
                       "geometry_candidates_preserved":len(segments),
