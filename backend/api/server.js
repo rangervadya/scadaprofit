@@ -1390,6 +1390,14 @@ app.put('/api/moss-settings', cloudProviderDisabled);
 app.delete('/api/moss-settings', cloudProviderDisabled);
 app.post('/api/moss-settings/test', cloudProviderDisabled);
 
+function qwenDiagnosticLimit(name, defaultValue, minimum, maximum, { integer = false } = {}) {
+  const configured = process.env[name];
+  const value = configured === undefined ? defaultValue : Number(configured);
+  if ((configured !== undefined && !configured.trim()) ||
+      !Number.isFinite(value) || (integer && !Number.isInteger(value))) return null;
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
 app.get('/api/health', async (_req, res) => {
   const qwenModel = process.env.QWEN_MODEL || 'qwen3-vl:4b-instruct';
   const tagsUrl = process.env.OLLAMA_TAGS_URL ||
@@ -1426,20 +1434,22 @@ app.get('/api/health', async (_req, res) => {
     geometry: 'PIPE_MAIN uses OCR-aware OpenCV routes, source-ink-validated local Qwen traces, and topology-scored multi-branch networks; isolated strokes and uncertain joins remain review-only; text stays in TEXT_REVIEW',
     ocr: 'Local Ollama Qwen3-VL is the primary OCR and route-tracing model; local Tesseract rus+eng supplements text recognition. Cloud providers are disabled in the production pipeline.',
     qwenModel,
+    // The tile limits are configured maxima. Small prepared images use a single tile.
     qwenLimits: {
-      ocrTimeoutSeconds: Number(process.env.QWEN_OCR_TIMEOUT || 180),
-      tileRetryBudget: Number(process.env.QWEN_TILE_RETRY_BUDGET || 0),
-      ocrMaxTokens: Number(process.env.QWEN_OCR_MAX_TOKENS || 2048),
-      ocrBlockMaxTokens: Number(process.env.QWEN_OCR_BLOCK_MAX_TOKENS || 1536),
-      ocrRowMaxTokens: 220,
-      pipeTraceTimeoutSeconds: Number(process.env.QWEN_PIPE_TRACE_TIMEOUT || 240),
-      pipeMaxTokens: Number(process.env.QWEN_PIPE_MAX_TOKENS || 2048),
-      pipeTileGrid: Number(process.env.QWEN_PIPE_TILE_GRID || 3),
-      pipeUpscale: Number(process.env.QWEN_PIPE_UPSCALE || 1.8),
-      pipeTileOverlap: Number(process.env.QWEN_PIPE_TILE_OVERLAP || 0.14),
-      ocrTileGrid: Number(process.env.QWEN_OCR_TILE_GRID || 3),
-      ocrUpscale: Number(process.env.QWEN_OCR_UPSCALE || 2),
-      modelKeepAlive: process.env.QWEN_KEEP_ALIVE || '10m'
+      ocrTimeoutSeconds: qwenDiagnosticLimit('QWEN_OCR_TIMEOUT', 105, 20, 180),
+      tileRetryBudget: qwenDiagnosticLimit('QWEN_TILE_RETRY_BUDGET', 0, 0, 2, { integer: true }),
+      ocrMaxTokens: qwenDiagnosticLimit('QWEN_OCR_MAX_TOKENS', 1024, 384, 2048, { integer: true }),
+      ocrBlockMaxTokens: qwenDiagnosticLimit('QWEN_OCR_BLOCK_MAX_TOKENS', 1536, 768, 2048, { integer: true }),
+      ocrRowMaxTokens: 320,
+      ocrRowBatchMaxTokens: 440,
+      pipeTraceTimeoutSeconds: qwenDiagnosticLimit('QWEN_PIPE_TRACE_TIMEOUT', 105, 20, 180),
+      pipeMaxTokens: qwenDiagnosticLimit('QWEN_PIPE_MAX_TOKENS', 1024, 384, 2048, { integer: true }),
+      pipeTileGrid: qwenDiagnosticLimit('QWEN_PIPE_TILE_GRID', 2, 1, 2, { integer: true }),
+      pipeUpscale: qwenDiagnosticLimit('QWEN_PIPE_UPSCALE', 1.0, 1.0, 2.5),
+      pipeTileOverlap: qwenDiagnosticLimit('QWEN_PIPE_TILE_OVERLAP', 0.14, 0.05, 0.25),
+      ocrTileGrid: qwenDiagnosticLimit('QWEN_OCR_TILE_GRID', 2, 1, 2, { integer: true }),
+      ocrUpscale: qwenDiagnosticLimit('QWEN_OCR_UPSCALE', 1.25, 1.0, 2.5),
+      modelKeepAlive: process.env.QWEN_KEEP_ALIVE?.trim() || '10m'
     },
     localRecognition: { mode: 'Qwen3-VL + Tesseract', cloudDisabled: true, qwen: ollama, tesseract },
     ollamaConfigured: Boolean(process.env.OLLAMA_CHAT_URL),

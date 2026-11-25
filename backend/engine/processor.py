@@ -4831,7 +4831,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     joins = _build_join_candidates(nodes, edges, image_size=(w, h))
     _progress('CAD', f'Endpoint continuation candidates: total={len(joins)} high={sum(1 for item in joins if item.get("priority")=="high")} review={sum(1 for item in joins if item.get("priority")!="high")}')
     timings_ms['drawing_export_and_candidates'] = round((time.perf_counter() - stage_started) * 1000.0, 1)
-    timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
+    stage_started = time.perf_counter()
     recognition_channels = split_recognition_channels(w, h, components, edges, annotations, ink_mask=ink)
     document_model = build_document_model(
         w, h, nodes, edges, annotations, crossings, joins, recognition_channels,
@@ -4861,6 +4861,10 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
     Path(out_dir,'drawing.dxf').write_text(cad_draft_dxf, encoding='utf-8')
     Path(out_dir,'cad-draft.svg').write_text(cad_draft_svg, encoding='utf-8')
     Path(out_dir,'cad-draft.dxf').write_text(cad_draft_dxf, encoding='utf-8')
+    export_finished = time.perf_counter()
+    timings_ms['structured_model_and_final_export'] = round((export_finished - stage_started) * 1000.0, 1)
+    timings_ms['total_through_final_dxf'] = round((export_finished - job_started) * 1000.0, 1)
+    _progress('EXPORT', f'Final CAD exports written in {timings_ms["total_through_final_dxf"]:.1f} ms from analysis start')
     graph={"schema":"cad-reconstruction-graph/1.2","status":"needs_review","analysisStatus":"complete" if processing_complete else "incomplete","complete":processing_complete,"incompleteReasons":incomplete_reasons,
            "checkpointing":{"enabled":True,"directory":".checkpoints","resumeBehavior":"successful OCR/PIPE tiles are restored; failed tiles are retried on the next analysis run"},
            "exportPolicy":{"processingComplete":bool(processing_complete),"partialExports":"review-only-watermarked","referenceTrace":"editable-source-contours-not-semantic-pipes","centerlineTrace":"editable-open-source-ink-polylines-not-semantic-pipes","cadDraft":"structured-review-draft-until-engineering-validation","engineeringApprovalRequired":True},
@@ -4970,6 +4974,7 @@ def analyze(input_path: str, out_dir: str, template_path: str | None = None, rot
         graph['warnings'].append('В графе OpenCV не осталось выбранных основных CAD-путей. Проверьте исходное изображение и слой DETAIL_REVIEW.')
     if len(segments) >= 80 and (cad_selection.get('cad_primary_edges', 0) + len(primary_semantic_routes)) < max(12, int(len(segments) * 0.12)):
         graph['warnings'].append('Основная геометрия получилась разреженной: большинство штрихов оставлено на проверку. Не считайте чертёж полным; проверьте primary-overlay.png и text-region-mask.png.')
+    timings_ms['total_before_graph_json_write'] = round((time.perf_counter() - job_started) * 1000.0, 1)
     # Write the graph once before collecting artifact diagnostics so graph.json
     # is not incorrectly reported as missing, then persist diagnostics in both files.
     Path(out_dir,'graph.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2),encoding='utf-8')
