@@ -108,6 +108,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     return edge.component_role !== 'ambiguous' && (!hasTopologyHints || edge.topology_network_candidate === true);
   });
   const edgeRecords = [];
+  const automaticEdgesByNodes = new Map();
   const adjacency = new Map();
   const addAdjacent = (nodeId, edgeIndex) => {
     if (!adjacency.has(nodeId)) adjacency.set(nodeId, []);
@@ -128,6 +129,20 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
       const forwardScore = distance2d(points[0], [Number(fromNode.x), Number(fromNode.y)]) + distance2d(points.at(-1), [Number(toNode.x), Number(toNode.y)]);
       const reverseScore = distance2d(points.at(-1), [Number(fromNode.x), Number(fromNode.y)]) + distance2d(points[0], [Number(toNode.x), Number(toNode.y)]);
       if (reverseScore + 0.01 < forwardScore) points.reverse();
+    }
+    // Parallel detector edges can put the same stroke into the graph twice.
+    // Keep alternative shapes and operator-authored routes independently.
+    if (edge.source !== 'manual' && edge.detector !== 'MANUAL' && fromId !== toId) {
+      const ordered = fromId < toId ? points : [...points].reverse();
+      const key = JSON.stringify([fromId, toId].sort());
+      const candidates = automaticEdgesByNodes.get(key) || [];
+      const metadata = JSON.stringify([edge.kind || edge.cad_kind, edge.name || edge.label, edge.diameter || edge.dn]);
+      const duplicate = candidates.some(candidate => candidate.metadata === metadata &&
+        candidate.points.length === ordered.length &&
+        candidate.points.every((point, i) => distance2d(point, ordered[i]) <= 0.5));
+      if (duplicate) continue;
+      candidates.push({ points: ordered, metadata });
+      automaticEdgesByNodes.set(key, candidates);
     }
     const edgeIndex = edgeRecords.length;
     edgeRecords.push({ edge, points, fromId, toId });
@@ -356,7 +371,12 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   for (const [nodeId, connectedPipeIds] of pipeIdsByNode.entries()) {
     const node = nodeById.get(nodeId);
     const connected = [...new Set(connectedPipeIds)];
-    if (!node || node.review === true || (adjacency.get(nodeId) || []).length < 3 || connected.length < 3) continue;
+    const neighbors = new Set((adjacency.get(nodeId) || []).map(index => {
+      const edge = edgeRecords[index];
+      return edge.fromId === nodeId ? edge.toId : edge.fromId;
+    }));
+    neighbors.delete(nodeId);
+    if (!node || node.review === true || neighbors.size < 3 || connected.length < 3) continue;
     const x = num(node.x, NaN), y = num(node.y, NaN);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     junctions.push({ id: safeId(`junction_${nodeId}`, 'junction'), x, y, pipeIds: connected });
