@@ -2550,6 +2550,9 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
     items = qwen_items + tesseract_items
     for index, item in enumerate(items, 1):
         item['id'] = f'A{index}'
+        if re.search(r'\\(?:cdot|frac|times|sqrt|mathrm|text)\b', str(item.get('text', ''))):
+            item['verified'] = False
+            item['include'] = False
     status = {
         'provider': 'local-qwen+tesseract',
         'qwen': qwen_status,

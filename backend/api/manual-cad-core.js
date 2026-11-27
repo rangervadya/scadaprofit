@@ -393,8 +393,9 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     if (!textValue || textValue.length > 180 || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const labelId = String(raw?.id || fallbackId || `ocr_${labels.length + 1}`);
     if (seenLabelIds.has(labelId)) return;
+    const hasMathMarkup = /\\(?:cdot|frac|times|sqrt|mathrm|text)\b/.test(textValue);
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: raw.state === 'review' || raw.verified === false || raw.include === false });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: hasMathMarkup || raw.state === 'review' || raw.verified === false || raw.include === false });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));
