@@ -403,10 +403,10 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     if (!textValue || textValue.length > 180 || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const labelId = String(raw?.id || fallbackId || `ocr_${labels.length + 1}`);
     if (seenLabelIds.has(labelId)) return;
-    const hasMathMarkup = /\\(?:cdot|frac|times|sqrt|mathrm|text)\b/.test(textValue);
+    const uncertainText = /\\[A-Za-z]+|[?<>]/.test(textValue);
     const unassignedNote = raw.source === 'qwen3-vl-block' && !raw.targetId;
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: unassignedNote || hasMathMarkup || raw.state === 'review' || raw.verified === false || raw.include === false });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: unassignedNote || uncertainText || raw.state === 'review' || raw.verified === false || raw.include === false });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));
@@ -751,6 +751,20 @@ export function renderManualCadSvg(rawProject, { includeReview = false } = {}) {
   return parts.join('\n');
 }
 
+function sheetDimension(dim, map) {
+  const first = map(dim.a), second = map(dim.b);
+  const [a, b] = first[0] <= second[0] ? [first, second] : [second, first];
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const length = Math.hypot(dx, dy);
+  if (!length) return null;
+  const offset = ([x, y], distance) => [x + dy / length * distance, y - dx / length * distance];
+  const start = offset(a, 3), end = offset(b, 3);
+  const position = offset([(a[0]+b[0])/2, (a[1]+b[1])/2], 4.2);
+  const lines = [[start,end], [offset(a,.5),offset(a,4)], [offset(b,.5),offset(b,4)],
+    ...[start,end].map(([x,y]) => [[x-.65,y-.65],[x+.65,y+.65]])];
+  return { lines, position, angle: Math.atan2(dy,dx) * 180 / Math.PI };
+}
+
 function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
   const { pageW, pageH, area, riserLayout, map, scale } = lpgCadPageMap(project, { includeReview });
   const parts = [
@@ -791,13 +805,17 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
   }
   parts.push('</g><g id="SYMBOLS">');
   for (const symbol of project.symbols) if ((!symbol.reviewOnly && symbol.type !== 'unknown') || (includeReview && (symbol.reviewOnly || symbol.type === 'unknown'))) parts.push(symbolMarkup(symbol, map));
-  parts.push('</g><g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.25">');
+  parts.push('</g><g id="DIMENSIONS" fill="none" stroke="#222" stroke-width="0.25" font-family="Arial,sans-serif" font-style="italic">');
   for (const dim of project.dimensions) {
-    const a = map(dim.a), b = map(dim.b);
-    parts.push(`<path d="M ${fmt(a[0])} ${fmt(a[1])} L ${fmt(b[0])} ${fmt(b[1])} M ${fmt(a[0] - 1)} ${fmt(a[1] - 1)} l 2 2 M ${fmt(b[0] - 1)} ${fmt(b[1] - 1)} l 2 2"/>`);
-    parts.push(`<text x="${fmt((a[0] + b[0]) / 2)}" y="${fmt((a[1] + b[1]) / 2 - 1.2)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(dim.text)}</text>`);
+    const drawing = sheetDimension(dim, map);
+    if (!drawing) continue;
+    for (const [a,b] of drawing.lines) {
+      parts.push(`<path d="M ${a.map(fmt).join(' ')} L ${b.map(fmt).join(' ')}"/>`);
+    }
+    const [x,y] = drawing.position.map(fmt);
+    parts.push(`<text x="${x}" y="${y}" transform="rotate(${fmt(drawing.angle)} ${x} ${y})" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(dim.text)}</text>`);
   }
-  parts.push('</g><g id="TEXT" fill="#111" font-family="Arial,sans-serif">');
+  parts.push('</g><g id="TEXT" fill="#111" font-family="Arial,sans-serif" font-style="italic">');
   for (const label of project.labels.filter(label => !label.reviewOnly)) {
     const [x, y] = map([label.x, label.y]);
     parts.push(`<text x="${fmt(x)}" y="${fmt(y)}" font-size="${fmt(label.size * scale)}" text-anchor="${label.anchor}" transform="rotate(${fmt(label.rotation)} ${fmt(x)} ${fmt(y)})">${esc(label.text)}</text>`);
@@ -867,7 +885,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
 
   const signY = pageH - 7;
   const signatureX = legendX;
-  parts.push(`<g id="SIGNATURES" font-family="Arial,sans-serif" fill="#111" font-size="2.3">`);
+  parts.push(`<g id="SIGNATURES" font-family="Arial,sans-serif" font-style="italic" fill="#111" font-size="2.3">`);
   parts.push(`<text x="${fmt(signatureX)}" y="${fmt(signY - 12)}">Схему составил: ${esc(project.schemeAuthor || project.preparedBy || '________________')}</text>`);
   parts.push(`<text x="${fmt(signatureX)}" y="${fmt(signY - 7)}">Схему начертил: ${esc(project.schemeChecker || '________________')}</text>`);
   parts.push(`<text x="${fmt(pageW - 6)}" y="${fmt(signY - 3)}" text-anchor="end">Лист 1 / 1</text>`);
@@ -889,9 +907,10 @@ function escapeDxfText(value) {
     return `\\U+${high.toString(16).toUpperCase()}\\U+${low.toString(16).toUpperCase()}`;
   });
 }
-function addDxfText(out, layer, value, p, height = 2.5, anchor = 'start', rotation = 0) {
+function addDxfText(out, layer, value, p, height = 2.5, anchor = 'start', rotation = 0, oblique = 0) {
   out.push('0','TEXT','8',layer,'10',dxfNumber(p[0]),'20',dxfNumber(p[1]),'30','0','40',dxfNumber(height),'1',escapeDxfText(value));
   out.push('50', dxfNumber((360 - rotation % 360) % 360));
+  if (oblique) out.push('51', dxfNumber(oblique));
   if (anchor !== 'start') {
     out.push('72', anchor === 'middle' ? '1' : '2', '11', dxfNumber(p[0]), '21', dxfNumber(p[1]), '31', '0');
   }
@@ -1044,10 +1063,13 @@ function renderLpgCadR1Dxf(project) {
     if (symbol.reviewOnly || symbol.type === 'unknown') continue;
     drawDxfSymbol(out, symbol, toDxf([symbol.x, symbol.y]));
   }
-  for (const label of project.labels.filter(label => !label.reviewOnly)) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation);
+  for (const label of project.labels.filter(label => !label.reviewOnly)) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation, 15);
   for (const dim of project.dimensions) {
-    const a=toDxf(dim.a), b=toDxf(dim.b); addDxfLine(out,'DIMENSIONS',a,b);
-    addDxfText(out,'DIMENSIONS',dim.text,[(a[0]+b[0])/2,(a[1]+b[1])/2+1],2);
+    const drawing = sheetDimension(dim, map);
+    if (!drawing) continue;
+    const flip = ([x,y]) => [x,pageH-y];
+    for (const [a,b] of drawing.lines) addDxfLine(out, 'DIMENSIONS', flip(a), flip(b));
+    addDxfText(out, 'DIMENSIONS', dim.text, flip(drawing.position), 2.1, 'middle', drawing.angle, 15);
   }
   addTextAtPage('HEADER', project.inspectionTitle, [pageW/2,5], 2.4);
   addTextAtPage('HEADER', 'ПРОДОЛЖЕНИЕ ПРИЛОЖЕНИЯ', [pageW-7,12], 3.6);

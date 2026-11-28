@@ -813,7 +813,7 @@ export function CadEditorPage() {
                   x={label.x}
                   y={label.y}
                   fontSize={label.size || 12}
-                  fill={selection?.id === label.id ? '#b45309' : '#0f172a'}
+                  fill={selection?.id === label.id || label.reviewOnly ? '#b45309' : '#0f172a'}
                   fontFamily="Inter, system-ui, sans-serif"
                   textAnchor={label.anchor || 'start'}
                   transform={label.rotation ? `rotate(${label.rotation} ${label.x} ${label.y})` : undefined}
@@ -1033,6 +1033,22 @@ export function CadEditorPage() {
                   }
                 />
               </Field>
+              {selectedLabel.reviewOnly && (
+                <Button
+                  size="sm"
+                  disabled={!selectedLabel.text.trim() || /[?<>]|\\[A-Za-z]+/.test(selectedLabel.text)}
+                  onClick={() =>
+                    patch((current) => ({
+                      ...current,
+                      labels: current.labels.map((item) =>
+                        item.id === selectedLabel.id ? { ...item, reviewOnly: false } : item,
+                      ),
+                    }))
+                  }
+                >
+                  Подтвердить подпись для экспорта
+                </Button>
+              )}
               <Field label="Размер шрифта">
                 <input
                   className="input input--sm"

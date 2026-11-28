@@ -1225,7 +1225,7 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
             'Выполни OCR ИМЕННО текста, не геометрии. Прочитай каждую строку целиком слева направо и сверху вниз. '
             'Сохраняй номера пунктов, кириллические и латинские буквы, цифры, скобки, плюсы, дроби и коды в скобках. '
             'НЕ дроби слово на отдельные буквы и не объединяй соседние строки. Одна строка списка — один объект annotations. '
-            'Если строка частично читается, передай читаемую часть буквально; не додумывай. '
+            'Если часть строки не читается, поставь ? на месте пропуска. Не восстанавливай числа по порядку и не используй LaTeX. '
             'Если строку совсем нельзя прочитать, верни text="?" с рамкой всей строки. '
             'bbox должен охватывать полную строку, включая номер пункта слева и код/значение справа. '
             'bbox — массив [x1,y1,x2,y2] в пикселях фрагмента: левый верхний и правый нижний углы. '
@@ -2550,7 +2550,9 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
     items = qwen_items + tesseract_items
     for index, item in enumerate(items, 1):
         item['id'] = f'A{index}'
-        if re.search(r'\\(?:cdot|frac|times|sqrt|mathrm|text)\b', str(item.get('text', ''))):
+        recognized = str(item.get('text', ''))
+        uncertain = '?' in recognized or re.search(r'\\[A-Za-z]+|[<>]', recognized)
+        if uncertain or item.get('source') == 'qwen3-vl-block':
             item['verified'] = False
             item['include'] = False
     status = {
