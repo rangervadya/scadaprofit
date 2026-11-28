@@ -682,17 +682,33 @@ def _detect_handwritten_row_bands(image: Image.Image, block: dict[str, Any]) -> 
         if sum(float(np.max(smooth[max(0, int(c)-2):min(height, int(c)+3)])) >= peak_floor for c in centers) < max(2, int(math.ceil(row_count * 0.60))):
             return []
 
+        # Cut at ink valleys close to the midpoint. A shared boundary keeps
+        # neighboring crops from including the same handwritten characters.
+        body_ink = ink[:, strip_width:].sum(axis=1)
+        if body_ink.max(initial=0) == 0:
+            body_ink = projection
+        boundaries = [max(0, int(math.floor(centers[0] - pitch / 2)))]
+        for upper, lower in zip(centers, centers[1:]):
+            middle = (upper + lower) / 2
+            radius = (lower - upper) * 0.18
+            choices = range(max(1, math.ceil(middle - radius)),
+                            min(height - 1, math.floor(middle + radius)) + 1)
+            cut = min(choices, key=lambda yy: (int(body_ink[yy]), abs(yy - middle)),
+                      default=round(middle))
+            boundaries.append(cut)
+        boundaries.append(min(height, int(math.ceil(centers[-1] + pitch / 2))))
+
         rows = []
-        pad = max(1, int(round(pitch * 0.06)))
         for index, center in enumerate(centers):
-            band_top = max(0.0, center - pitch / 2.0) if index == 0 else (centers[index - 1] + center) / 2.0
-            band_bottom = min(float(height), center + pitch / 2.0) if index == row_count - 1 else (center + centers[index + 1]) / 2.0
-            top = max(0, int(math.floor(band_top - pad)))
-            bottom = min(height, int(math.ceil(band_bottom + pad)))
+            top, bottom = boundaries[index:index + 2]
+            strip = ink[top:bottom, :strip_width]
+            body = ink[top:bottom, strip_width:]
+            if not strip.any() or not body.any():
+                continue
             if bottom - top < 9:
                 continue
             rows.append({'x': x, 'y': y + top, 'w': width, 'h': bottom - top,
-                         'row': index + 1, 'center_y': round(y + center, 1),
+                         'row': len(rows) + 1, 'center_y': round(y + center, 1),
                          'pitch': round(pitch, 1), 'ink_peak': round(float(np.max(smooth[max(0, int(center)-2):min(height, int(center)+3)])), 2)})
         return rows if len(rows) >= 3 else []
     except Exception:
