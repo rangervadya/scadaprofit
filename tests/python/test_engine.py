@@ -2013,6 +2013,37 @@ class Recovery431RegressionTests(unittest.TestCase):
         self.assertGreaterEqual(diagnostics[0]['row_peaks'], 4)
         self.assertEqual(diagnostics[0]['strategy'], 'numbered-left-margin-row-crops')
 
+    def test_repeated_numbers_in_paired_ocr_trigger_individual_reads(self):
+        from PIL import Image
+        image = Image.new('RGB', (300, 100), 'white')
+        rows = [
+            {'row': 1, 'x': 20, 'w': 220, 'y': 10, 'h': 25, 'center_y': 22},
+            {'row': 2, 'x': 20, 'w': 220, 'y': 40, 'h': 25, 'center_y': 52},
+        ]
+        duplicate = {'text': '1) Первая строка', 'confidence': 95}
+        responses = iter([
+            {'rows': [duplicate, duplicate]},
+            duplicate,
+            {'text': '2) Вторая строка', 'confidence': 90},
+        ])
+
+        def fake_qwen(crop, prompt, **kwargs):
+            return next(responses), 1.0, crop.size
+
+        with patch.dict(os.environ, {'QWEN_OCR_ROW_BATCH_SIZE': '2'}), patch(
+            'processor._qwen_call', side_effect=fake_qwen
+        ) as call:
+            annotations, diagnostics = processor._run_numbered_row_ocr(
+                image, {}, rows, url='http://ollama.test/api/chat',
+                model='qwen3-vl:4b-instruct', timeout=30, max_edge=1024, max_tokens=1200,
+            )
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual([item['text'] for item in annotations], [
+            '1) Первая строка', '2) Вторая строка',
+        ])
+        self.assertEqual(diagnostics['row_batch_diagnostics'][0]['fallback_reason'],
+                         'paired_item_numbers_conflict')
+
     def test_three_row_numeric_table_keeps_each_cell_at_source_coordinates(self):
         from PIL import Image as PILImage
         canvas = np.full((180, 420, 3), 250, dtype=np.uint8)

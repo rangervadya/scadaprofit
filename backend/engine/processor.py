@@ -724,6 +724,16 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
         bottom = min(image.height, int(row['y'] + row['h']))
         return left, top, right, bottom
 
+    def written_item_number(value: dict[str, Any]) -> int | None:
+        # Parse only an explicit item marker or
+        # a numeral followed by text so ordinary numbers stay table values.
+        text = str(value.get('text') or '').strip()
+        circled = re.match(r'^[①-⑳]', text)
+        if circled:
+            return ord(circled[0]) - ord('①') + 1
+        match = re.match(r'^[(]?([0-9]{1,2})\s*(?:[).:]|\s+(?=[А-Яа-яЁёA-Za-z]))', text)
+        return int(match[1]) if match else None
+
     def normalize(value: Any) -> tuple[str, float, bool]:
         text = re.sub(r'\s+', ' ', str(value.get('text', '') if isinstance(value, dict) else '')).strip() or '?'
         try:
@@ -838,13 +848,14 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
             'Выполни точное OCR только этой строки. Прочитай слева направо. '
             'Сохрани номер слева, все кириллические и латинские буквы, цифры, знаки +, '
             'скобки и код в конце без исправления и перевода. Не описывай графику. '
-            'Не добавляй невидимые слова. При частичной нечитаемости используй [?] только '
+            'Считывай номер и код с изображения независимо. Не вычисляй пропущенный номер по порядку. '
+            'Не подставляй тип арматуры или цифры кода по контексту. При частичной нечитаемости используй [?] только '
             'вместо нечитабельного фрагмента; если строка совсем не читается, text="?". '
             'Если строка — компактная таблица с раздельными колонками, добавь cells: '
             'каждый элемент отдельно с tight bbox [x1,y1,x2,y2] в пикселях именно этого '
             'отправленного изображения; не используй нормированные координаты 0..1000. '
             'Для обычной текстовой строки cells не добавляй. '
-            'Верни строго JSON: {"text":"1) буквальный текст (0405)","confidence":65,"cells":[{"text":"1)","bbox":[5,5,20,25]}]}. '
+            'Верни один JSON-объект с полями text и confidence, а для числовой таблицы также cells. '
             'confidence — число 0..100, не завышай уверенность.'
         )
         try:
@@ -940,7 +951,11 @@ def _run_numbered_row_ocr(image: Image.Image, block: dict[str, Any], rows: list[
                 batch_coordinate_scale = scale * batch_resize_scale
                 value = parsed.get('rows') if isinstance(parsed, dict) else None
                 if isinstance(value, list) and len(value) == len(batch) and all(isinstance(item, dict) for item in value):
-                    parsed_rows = value
+                    first_number, second_number = (written_item_number(item) for item in value)
+                    if first_number is not None and second_number is not None and first_number >= second_number:
+                        batch_diag['fallback_reason'] = 'paired_item_numbers_conflict'
+                    else:
+                        parsed_rows = value
                 else:
                     batch_diag['fallback_reason'] = 'paired_response_incomplete'
             except Exception as error:
@@ -1219,6 +1234,12 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
                 rows_by_index.setdefault(item['row_index'], []).append(item)
             for cells in rows_by_index.values():
                 cells.sort(key=lambda item: item['bbox']['x'])
+                if len(cells) > 1 and all(
+                    re.fullmatch(r'[+−-]?\d+(?:[.,]\d+)?[).]?', item['text'].strip())
+                    for item in cells
+                ):
+                    results.extend(cells)
+                    continue
                 first = cells[0]
                 row_box = first.get('source_row_bbox', first['bbox'])
                 results.append({
@@ -2066,6 +2087,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         # wording over supplemental Tesseract text when boxes substantially overlap.
         items.sort(key=lambda item: (
             0 if item.get('note_row') else 1 if item.get('source') == 'qwen3-vl' else 2,
+            item['bbox']['y'] if item.get('note_row') else 0,
             -float(item.get('confidence', 0) or 0),
         ))
         deduped: list[dict[str, Any]] = []
@@ -2166,7 +2188,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_output_tokens = max(384, min(2048, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1024'))))
         retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
-        normalized = os.getenv('QWEN_PIPE_NORMALIZED_COORDS', '1') == '1'
+        normalized = os.getenv('QWEN_PIPE_NORMALIZED_COORDS', '0') == '1'
         grid = max(1, min(2, int(os.getenv('QWEN_PIPE_TILE_GRID', '2'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
@@ -2283,7 +2305,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 tile_oob_count = 0
                 _progress('PIPE', f'Tile {tile_index}/{total_tiles} started')
                 try:
-                    parsed, _, sent_size = _qwen_call_with_retry(
+                    parsed, resize_scale, sent_size = _qwen_call_with_retry(
                         crop, prompt, url=url, model=model, timeout=timeout,
                         max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag,
                         format_schema=PIPE_RESPONSE_SCHEMA, retry_state=tile_retry_state,
@@ -2305,6 +2327,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     accepted_before = len(result)
                     scale_x = (right - left - 1) / max(1, sent_width - 1)
                     scale_y = (bottom - top - 1) / max(1, sent_height - 1)
+                    if not normalized:
+                        scale_x = scale_y = 1 / (crop_scale * resize_scale)
                     core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
                     for raw_index, raw in enumerate(raw_routes[:64], 1):
                         if isinstance(raw, list):
