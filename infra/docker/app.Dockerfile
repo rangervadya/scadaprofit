@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM debian:bookworm-slim AS dwg-build
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils pkg-config
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils pkg-config python3
 WORKDIR /build
 RUN curl --fail --show-error --location --retry 3 https://ftp.gnu.org/gnu/libredwg/libredwg-0.13.3.tar.xz -o source.tar.xz \
     && echo "83f1f6e78a744777a481ff4520e4cef3f8ac4b2c1c25671077ca12fe81e8816e  source.tar.xz" | sha256sum -c - \
