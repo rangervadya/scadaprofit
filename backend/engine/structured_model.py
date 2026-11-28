@@ -163,6 +163,7 @@ def build_document_model(width: int, height: int, nodes: list[dict[str, Any]],
             "targetId": dimension_id,
             "state": "primary" if verified else "review",
             "source": str(annotation.get("source") or "ocr"),
+            "noteRow": bool(annotation.get("note_row")),
             "confidence": _confidence(float(annotation.get("confidence", 0) or 0) / 100.0),
         })
 

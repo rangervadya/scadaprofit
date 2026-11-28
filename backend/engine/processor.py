@@ -1212,13 +1212,27 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
                 original, block, row_bands, url=url, model=model, timeout=timeout,
                 max_edge=max_edge, max_tokens=max_tokens
             )
-            results.extend(row_results)
+            # The note recognizer can return separate cells for one physical row.
+            # Keep one CAD item per row while retaining the original cells for review.
+            rows_by_index: dict[int, list[dict[str, Any]]] = {}
+            for item in row_results:
+                rows_by_index.setdefault(item['row_index'], []).append(item)
+            for cells in rows_by_index.values():
+                cells.sort(key=lambda item: item['bbox']['x'])
+                first = cells[0]
+                row_box = first.get('source_row_bbox', first['bbox'])
+                results.append({
+                    **first, 'bbox': row_box, 'note_row': True,
+                    'text': ' '.join(item['text'] for item in cells),
+                    'confidence': min(item['confidence'] for item in cells),
+                    'ocr_cells': cells if len(cells) > 1 else [],
+                })
             diag.update(row_summary)
             diag['strategy'] = 'numbered-left-margin-row-crops'
-            diag['accepted_lines'] = len(row_results)
-            diag['verified_lines'] = sum(1 for item in row_results if item.get('verified'))
+            diag['accepted_lines'] = len(rows_by_index)
+            diag['verified_lines'] = sum(all(item.get('verified') for item in cells) for cells in rows_by_index.values())
             diagnostics.append(diag)
-            _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} completed ({len(row_results)} rows)')
+            _progress('OCR', f'Handwritten block {block_index}/{len(blocks)} completed ({len(rows_by_index)} rows)')
             continue
         prompt = (
             'Это крупный фрагмент рукописной технической схемы с плотной текстовой заметкой или нумерованным списком. '
@@ -1279,7 +1293,7 @@ def _run_handwritten_block_ocr(original: Image.Image, seed_items: list[dict[str,
                     'bbox': {'x': x, 'y': y, 'w': bw, 'h': bh},
                     'verified': verified, 'include': verified,
                     'geometry_exclude': True, 'source': 'qwen3-vl-block',
-                    'block_line': True,
+                    'block_line': True, 'note_row': True,
                 })
             diag['accepted_lines'] = len(results) - results_before_block
             diag['strategy'] = 'whole-block-fallback'
@@ -2051,7 +2065,7 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
         # Deduplicate boxes repeated in overlapping seams. Preserve native Qwen
         # wording over supplemental Tesseract text when boxes substantially overlap.
         items.sort(key=lambda item: (
-            0 if item.get('source') in {'qwen3-vl', 'qwen3-vl-block'} else 1,
+            0 if item.get('note_row') else 1 if item.get('source') == 'qwen3-vl' else 2,
             -float(item.get('confidence', 0) or 0),
         ))
         deduped: list[dict[str, Any]] = []
@@ -2064,6 +2078,9 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 iy = max(0, min(box['y'] + box['h'], other['y'] + other['h']) - max(box['y'], other['y']))
                 inter = ix * iy
                 smaller = min(box['w'] * box['h'], other['w'] * other['h'])
+                if item.get('note_row') and existing.get('note_row'):
+                    if inter / max(box['w'] * box['h'], other['w'] * other['h'], 1) < 0.75:
+                        continue
                 if smaller > 0 and inter / smaller >= 0.42:
                     duplicate_index = index
                     break
@@ -2076,7 +2093,8 @@ def _qwen_annotations(image_path: str, original_width: int, original_height: int
                 left2, top2 = min(ob['x'], box['x']), min(ob['y'], box['y'])
                 right2 = max(ob['x'] + ob['w'], box['x'] + box['w'])
                 bottom2 = max(ob['y'] + ob['h'], box['y'] + box['h'])
-                old['bbox'] = {'x': left2, 'y': top2, 'w': right2 - left2, 'h': bottom2 - top2}
+                if not old.get('note_row'):
+                    old['bbox'] = {'x': left2, 'y': top2, 'w': right2 - left2, 'h': bottom2 - top2}
                 old['geometry_exclude'] = old.get('geometry_exclude') or item.get('geometry_exclude')
         for index, item in enumerate(deduped, 1):
             item['id'] = f'Q{index}'
@@ -2148,7 +2166,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
         max_output_tokens = max(384, min(2048, int(os.getenv('QWEN_PIPE_MAX_TOKENS', '1024'))))
         retry_budget_per_tile = max(0, min(2, int(os.getenv('QWEN_TILE_RETRY_BUDGET', '0'))))
         image_sha256 = _sha256_file(image_path)
-        normalized = os.getenv('QWEN_PIPE_NORMALIZED_COORDS', '0') == '1'
+        normalized = os.getenv('QWEN_PIPE_NORMALIZED_COORDS', '1') == '1'
         grid = max(1, min(2, int(os.getenv('QWEN_PIPE_TILE_GRID', '2'))))
         upscale = max(1.0, min(2.5, float(os.getenv('QWEN_PIPE_UPSCALE', '1.0'))))
         overlap = max(0.05, min(0.25, float(os.getenv('QWEN_PIPE_TILE_OVERLAP', '0.14'))))
@@ -2212,6 +2230,9 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     ).replace(
                         f'0<=x<{sent_width}, 0<=y<{sent_height}.',
                         '0<=x<=1000, 0<=y<=1000. Правый нижний угол (1000,1000).'
+                    ).replace(
+                        'Не используй координаты исходного листа, миллиметры, проценты или координаты больше размера фрагмента.',
+                        'Не используй пиксели, координаты исходного листа, миллиметры или проценты.'
                     )
                 diag: dict[str, Any] = {
                     'tile': tile_index, 'row': row + 1, 'column': col + 1,
@@ -2221,7 +2242,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     'coordinate_contract': 'normalized-0-1000' if normalized else 'pixel coordinates strictly inside sent_image; out-of-bounds route is rejected',
                 }
                 checkpoint_settings = {
-                    'prompt_version': 5 if normalized else 4,
+                    'prompt_version': 6,
                     'coordinate_contract': 'normalized-0-1000' if normalized else 'strict-sent-image-bounds-v1',
                     'model': model, 'grid': grid,
                     'core': [core_left, core_top, core_right, core_bottom],
@@ -2262,7 +2283,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                 tile_oob_count = 0
                 _progress('PIPE', f'Tile {tile_index}/{total_tiles} started')
                 try:
-                    parsed, resize_scale, sent_size = _qwen_call_with_retry(
+                    parsed, _, sent_size = _qwen_call_with_retry(
                         crop, prompt, url=url, model=model, timeout=timeout,
                         max_edge=max_edge, num_predict=max_output_tokens, diagnostics=diag,
                         format_schema=PIPE_RESPONSE_SCHEMA, retry_state=tile_retry_state,
@@ -2282,7 +2303,8 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                     diag['raw_routes'] = len(raw_routes)
                     diag['possibly_capped_at_schema_limit'] = len(raw_routes) >= 64
                     accepted_before = len(result)
-                    coordinate_scale = crop_scale * resize_scale
+                    scale_x = (right - left - 1) / max(1, sent_width - 1)
+                    scale_y = (bottom - top - 1) / max(1, sent_height - 1)
                     core_rect = (float(core_left), float(core_top), float(core_right), float(core_bottom))
                     for raw_index, raw in enumerate(raw_routes[:64], 1):
                         if isinstance(raw, list):
@@ -2360,7 +2382,7 @@ def _qwen_semantic_routes(image_path: str, original_width: int, original_height:
                             continue
                         mapped: list[list[float]] = []
                         for px, py in local_points:
-                            gx, gy = left + px / coordinate_scale, top + py / coordinate_scale
+                            gx, gy = left + px * scale_x, top + py * scale_y
                             # The local bounds check above should guarantee page
                             # bounds too. Keep a defensive check; only tolerate
                             # one-pixel arithmetic noise instead of edge-clamping.
@@ -2531,15 +2553,21 @@ def ocr_annotations(image_path: str, gray: np.ndarray, checkpoint_dir: str | Pat
             if bw < 2 or bh < 2:
                 continue
             box = {'x': x, 'y': y, 'w': bw, 'h': bh}
-            if any(_boxes_overlap(box, item.get('bbox') or {}) >= 0.22 for item in qwen_items):
+            cx, cy = x + bw / 2, y + bh / 2
+            if any(_boxes_overlap(box, item['bbox']) >= 0.22 or (
+                item.get('note_row') and item['bbox']['x'] <= cx <= item['bbox']['x'] + item['bbox']['w']
+                and item['bbox']['y'] <= cy <= item['bbox']['y'] + item['bbox']['h']
+            ) for item in qwen_items):
                 continue
-            has_alnum = bool(re.search(r'[A-Za-zА-Яа-я0-9ØøΦφДдУу]', text))
-            accepted = confidence >= 68 and has_alnum
+            # Scattered Tesseract tokens on a handwritten diagram are candidates,
+            # even when the recognizer reports high confidence.
+            if not any(character.isalnum() for character in text):
+                continue
             tesseract_items.append({
                 'id': f'T{len(tesseract_items) + 1}', 'text': text,
                 'confidence': round(confidence, 1), 'bbox': box,
-                'verified': accepted, 'include': accepted,
-                'geometry_exclude': confidence >= 20 and has_alnum,
+                'verified': False, 'include': False,
+                'geometry_exclude': False,
                 'source': 'tesseract',
             })
     except Exception as error:
@@ -2857,9 +2885,8 @@ def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict
     noise. On the user's saved job that removed 64.1% of all source ink and cut
     the primary graph from 531 edges (verified-only comparison) to 172. Keep
     dense note-row boxes because they were found by a dedicated block detector;
-    keep Qwen tile boxes from confidence 25 upward; use Tesseract only from 55
-    upward. Low-confidence OCR remains available in TEXT_REVIEW but cannot erase
-    linework merely because Tesseract proposed a rectangle.
+    keep Qwen tile boxes from confidence 25 upward. Unverified Tesseract
+    candidates remain available for review and do not mask source linework.
     """
     boxes: list[dict[str, Any]] = []
     for item in annotations or []:
@@ -2879,8 +2906,8 @@ def _confirmed_text_boxes(annotations: list[dict[str, Any]] | None) -> list[dict
             eligible = True  # Dedicated numbered-note row: preserve its ink as text.
         elif source == 'qwen3-vl':
             eligible = bool(item.get('verified')) or confidence >= 25.0
-        elif source == 'tesseract':
-            eligible = bool(item.get('verified')) or confidence >= 55.0
+        elif source in {'tesseract', 'tesseract-tile'}:
+            eligible = bool(item.get('verified'))
         elif source in {'openrouter-vision-ocr', 'moss-vl-ocr'}:
             eligible = bool(item.get('verified')) or confidence >= 40.0
         else:

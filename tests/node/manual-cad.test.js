@@ -503,3 +503,21 @@ test('SVG and DXF preserve label size, alignment and rotation on both sheet styl
     }
   }
 });
+
+test('imports a handwritten note as one left-aligned editable review label', () => {
+  const project = createManualCadProjectFromGraph({
+    documentModel: {
+      labels: [{
+        id: 'note-1', text: '4) Кран под замену (5344)', noteRow: true,
+        bbox: { x: 600, y: 340, w: 295, h: 30 },
+        source: 'qwen3-vl-block', state: 'review',
+      }],
+    },
+  });
+  assert.equal(project.labels.length, 1);
+  assert.equal(project.labels[0].x, 600);
+  assert.equal(project.labels[0].anchor, 'start');
+  assert.equal(project.labels[0].reviewOnly, true);
+  assert.doesNotMatch(renderManualCadSvg(project), /5344/);
+  assert.doesNotMatch(renderManualCadDxf(project), /5344/);
+});

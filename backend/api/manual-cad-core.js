@@ -397,7 +397,8 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   const addLabel = (raw, fallbackId) => {
     const bbox = raw?.bbox && typeof raw.bbox === 'object' ? raw.bbox : {};
     const textValue = String(raw?.text ?? raw?.rawText ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
-    const x = num(raw?.x, num(bbox.x, NaN) + num(bbox.w, 0) / 2);
+    const noteRow = raw?.noteRow === true || raw?.note_row === true;
+    const x = num(raw?.x, num(bbox.x, NaN) + (noteRow ? 0 : num(bbox.w, 0) / 2));
     const height = Math.max(6, Math.min(120, num(bbox.h, 16)));
     const y = num(raw?.y, num(bbox.y, NaN) + height * 0.8);
     if (!textValue || textValue.length > 180 || !Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -406,7 +407,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const uncertainText = /\\[A-Za-z]+|[?<>]/.test(textValue);
     const unassignedNote = raw.source === 'qwen3-vl-block' && !raw.targetId;
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: unassignedNote || uncertainText || raw.state === 'review' || raw.verified === false || raw.include === false });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height * (noteRow ? 0.65 : 1), 24), rotation: 0, anchor: noteRow ? 'start' : 'middle', reviewOnly: unassignedNote || uncertainText || raw.state === 'review' || raw.verified === false || raw.include === false });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));

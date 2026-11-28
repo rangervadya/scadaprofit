@@ -149,6 +149,7 @@ export function CadEditorPage() {
   const [showSource, setShowSource] = useState(false);
   const [decodedSource, setDecodedSource] = useState<string | null>(null);
   const [showGrid, setShowGrid] = useState(false);
+  const [showReviewLabels, setShowReviewLabels] = useState(false);
   const loadToken = useRef(0);
   const sourceUrl = project?.sourceUrl;
   const sourceVersion = project?.updatedAt;
@@ -652,6 +653,10 @@ export function CadEditorPage() {
             <input type="checkbox" checked={showGrid} onChange={(event) => setShowGrid(event.target.checked)} />
             <span>Сетка</span>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={showReviewLabels} onChange={(event) => setShowReviewLabels(event.target.checked)} />
+            <span>Подписи на проверке ({project.labels.filter((label) => label.reviewOnly).length})</span>
+          </label>
         </aside>
 
         <div className="stack stack--sm" style={{ minWidth: 0 }}>
@@ -807,7 +812,7 @@ export function CadEditorPage() {
                 />
               ))}
 
-              {project.labels.map((label) => (
+              {project.labels.filter((label) => showReviewLabels || !label.reviewOnly).map((label) => (
                 <text
                   key={label.id}
                   x={label.x}
