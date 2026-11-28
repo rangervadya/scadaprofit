@@ -204,7 +204,7 @@ export type ManualCadPipe = {
 
 export type ManualCadSymbol = {
   id: string;
-  type: 'valve' | 'meter' | 'regulator' | 'consumer' | 'riser' | 'filter' | 'callout' | 'unknown';
+  type: 'valve' | 'meter' | 'regulator' | 'consumer' | 'riser' | 'filter' | 'coupling' | 'cross_mark' | 'bow_mark' | 'callout' | 'inspection' | 'casing' | 'unknown';
   x: number;
   y: number;
   rotation?: number;

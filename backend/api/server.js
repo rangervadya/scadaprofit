@@ -7,7 +7,9 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, rename, copyFile, rm, chmod } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp } from 'node:fs/promises';
+import { spawn, execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { createManualCadProject, createManualCadProjectFromGraph, normalizeManualCadProject, renderManualCadSvg, renderManualCadDxf, isManualCadId } from './manual-cad-core.js';
 import { createWorkforceSystem } from './workforce-system.js';
@@ -422,6 +424,22 @@ function rasterDimensions(buffer, extension = '') {
 function manualProjectPath(id) {
   return path.join(MANUAL_CAD_DIR, id, 'project.json');
 }
+async function readCadSheet(id) {
+  const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+  if (Number(project.manualEditRevision || 0) !== 0 || !JOB_ID_PATTERN.test(project.sourceJobId || '')) return project;
+  let graph;
+  try {
+    graph = JSON.parse(await readFile(path.join(DATA, project.sourceJobId, 'graph.json'), 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return project;
+    throw error;
+  }
+  if (!graph.image?.width || !graph.image?.height || !Array.isArray(graph.edges)) return project;
+  const sheet = createManualCadProjectFromGraph(graph, project);
+  return { ...project, page: sheet.page, notes: sheet.notes, pipes: sheet.pipes, labels: sheet.labels,
+    junctions: sheet.junctions, symbols: sheet.symbols, sketchAssist: sheet.sketchAssist };
+}
+
 function manualProjectResponse(project) {
   return {
     ...project,
@@ -1849,7 +1867,7 @@ app.get('/api/manual-cad/projects/:id', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).json({ error: 'Некорректный ID проекта.' });
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readCadSheet(id);
     return res.json({ ok: true, project: manualProjectResponse(project) });
   } catch (error) {
     return res.status(error?.code === 'ENOENT' ? 404 : 500).json({ error: 'Не удалось открыть ручной чертёж.' });
@@ -1924,7 +1942,7 @@ app.get('/api/manual-cad/projects/:id/preview.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readCadSheet(id);
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     return res.send(renderManualCadSvg(project, { includeReview: req.query.draft === '1' }));
@@ -1937,7 +1955,7 @@ app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readCadSheet(id);
     const svg = renderManualCadSvg(project);
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.svg"`);
@@ -1947,11 +1965,34 @@ app.get('/api/manual-cad/projects/:id/export.svg', async (req, res) => {
   }
 });
 
+const convertDwg = promisify(execFile);
+app.get('/api/manual-cad/projects/:id/export.dwg', limitHeavyRequests, async (req, res) => {
+  const { id } = req.params;
+  if (!isManualCadId(id)) return res.status(400).end();
+  let scratch;
+  try {
+    const project = await readCadSheet(id);
+    scratch = await mkdtemp(path.join(os.tmpdir(), 'cad-dwg-'));
+    await writeFile(path.join(scratch, 'sheet.dxf'), renderManualCadDxf(project), 'utf8');
+    await convertDwg('dxf2dwg', ['--as', 'r2000', '-o', 'sheet.dwg', 'sheet.dxf'],
+      { cwd: scratch, timeout: 60000, maxBuffer: 2097152 });
+    const bytes = await readFile(path.join(scratch, 'sheet.dwg'));
+    if (bytes.length < 64 || bytes.toString('ascii', 0, 6) !== 'AC1015') throw new Error('Invalid DWG output');
+    res.attachment('manual-cad-' + id.slice(0, 8) + '.dwg');
+    return res.send(bytes);
+  } catch (error) {
+    console.error('[CAD DWG]', id, error.message);
+    return res.status(500).json({ error: 'Не удалось сформировать DWG. Чертёж доступен в DXF.' });
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 app.get('/api/manual-cad/projects/:id/export.dxf', async (req, res) => {
   const { id } = req.params;
   if (!isManualCadId(id)) return res.status(400).end();
   try {
-    const project = JSON.parse(await readFile(manualProjectPath(id), 'utf8'));
+    const project = await readCadSheet(id);
     const dxf = renderManualCadDxf(project);
     res.setHeader('Content-Type', 'application/dxf; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="manual-cad-${id.slice(0, 8)}.dxf"`);

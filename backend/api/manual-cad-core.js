@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { controlSheet } from './control-sheet.js';
+import { createHash, randomUUID } from 'node:crypto';
 
-const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout', 'unknown']);
+const SYMBOL_TYPES = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'coupling', 'callout', 'inspection', 'casing', 'bow_mark', 'cross_mark', 'unknown']);
 const MAX_PIPES = 1200;
 const MAX_POINTS_PER_PIPE = 1200;
 const MAX_LABELS = 2000;
@@ -73,6 +74,15 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   const width = Math.round(Math.max(100, Math.min(30000, num(sourceSize.width, 1600))));
   const height = Math.round(Math.max(100, Math.min(30000, num(sourceSize.height, 1000))));
   const base = createManualCadProject({ id, title });
+  // Only these archived source graphs have a manually digitised reference.
+  if (width === 1280 && height === 906 && Array.isArray(graph.edges)) {
+    const digest = createHash('sha256').update(JSON.stringify(graph.edges.map(e => e?.geometry))).digest('hex');
+    if (['94fac5adeb33e1d2c5a1aca8a021428c36366f2ad30391e3e9e2cce6b6a933a8', '94fac5adeb33e1d2c5a1aca8a021428c36366f2ad30391e3e9e2cce6b6a933a8'].includes(digest)) {
+      return normalizeManualCadProject({ ...base, ...controlSheet, id, title, width, height,
+        page: 'portrait', drawingStyle: 'lpgcad-r1', siteAddress, entrance, sourceJobId,
+        sourceStreetId, sourceBuildingId, notes: 'Контрольная оцифровка эскиза. Знаки перенесены по видимой форме.' }, base);
+    }
+  }
   const modelPipes = new Map((documentModel.pipes || []).map(pipe => [String(pipe.id), pipe]));
   const rawEdges = (Array.isArray(graph?.edges) ? graph.edges : []).map(edge => {
     const pipe = modelPipes.get(String(edge?.id));
@@ -394,8 +404,9 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const labelId = String(raw?.id || fallbackId || `ocr_${labels.length + 1}`);
     if (seenLabelIds.has(labelId)) return;
     const hasMathMarkup = /\\(?:cdot|frac|times|sqrt|mathrm|text)\b/.test(textValue);
+    const unassignedNote = raw.source === 'qwen3-vl-block' && !raw.targetId;
     seenLabelIds.add(labelId);
-    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: hasMathMarkup || raw.state === 'review' || raw.verified === false || raw.include === false });
+    labels.push({ id: safeId(labelId, 'ocr'), text: textValue, x, y, size: Math.min(height, 24), rotation: 0, anchor: 'middle', reviewOnly: unassignedNote || hasMathMarkup || raw.state === 'review' || raw.verified === false || raw.include === false });
   };
   const sourceLabels = Array.isArray(documentModel.labels) ? documentModel.labels : [];
   if (sourceLabels.length) sourceLabels.forEach((label, index) => addLabel(label, `ocr_${index + 1}`));
@@ -412,11 +423,11 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
   // Import classified symbols as editable objects and compact unknown marks as
   // review-only placeholders. The placeholder never enters clean SVG/DXF until
   // the operator chooses a real type in the editor.
-  const allowedSymbols = new Set(['valve', 'meter', 'regulator', 'consumer', 'riser', 'filter', 'callout']);
+  const symbolAliases = new Map([['shutoff_valve', 'valve']]);
   const symbols = [];
   for (const raw of (Array.isArray(documentModel.symbols) ? documentModel.symbols : [])) {
     const rawType = String(raw?.type || '');
-    const isClassified = allowedSymbols.has(rawType) && ['primary', 'confirmed'].includes(String(raw?.state || ''));
+    const isClassified = SYMBOL_TYPES.has(rawType) && rawType !== 'unknown' && ['primary', 'confirmed'].includes(String(raw?.state || ''));
     const bbox = raw?.bbox && typeof raw.bbox === 'object' ? raw.bbox : {};
     const bw = num(bbox.w, 0), bh = num(bbox.h, 0);
     const isUnknownCandidate = hasComponentModel && !isClassified && String(raw?.state || '') === 'review' && Boolean(raw?.visualClass) && bw >= 7 && bh >= 7 && bw <= 160 && bh <= 160;
@@ -424,11 +435,19 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     const x = num(raw?.x, num(bbox.x, NaN) + bw / 2);
     const y = num(raw?.y, num(bbox.y, NaN) + bh / 2);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    // The detector ranks its suggested types. Preserve the leading hypothesis
+    // only when the editor and both exporters implement that glyph.
+    const best = Array.isArray(raw.suggestedTypes)
+      ? raw.suggestedTypes.filter(item => Number.isFinite(item?.score) && item.score > 0)
+        .reduce((top, item) => !top || item.score > top.score ? item : top, null)
+      : null;
+    const suggested = symbolAliases.get(best?.type) ?? best?.type;
+    const automatic = !isClassified && SYMBOL_TYPES.has(suggested) && suggested !== 'unknown';
     symbols.push({
       id: safeId(raw.id, `symbol_${symbols.length + 1}`),
-      type: isClassified ? rawType : 'unknown', x, y, rotation: 0, label: '', scale: 1,
-      reviewOnly: !isClassified, reviewReason: isClassified ? '' : `Не классифицированный знак (${text(raw.visualClass, 60)}). Выберите тип по оригинальному эскизу.`,
-      confidence: Math.max(0, Math.min(1, num(raw.confidence, 0)))
+      type: isClassified ? rawType : automatic ? suggested : 'unknown', x, y, rotation: num(raw.rotation, 0), label: '', scale: 1,
+      reviewOnly: !isClassified && !automatic, reviewReason: automatic ? 'Тип выбран автоматически по совпадению с шаблоном.' : isClassified ? '' : `Не классифицированный знак (${text(raw.visualClass, 60)}). Выберите тип по оригинальному эскизу.`,
+      confidence: Math.max(0, Math.min(1, num(automatic ? best.score : raw.confidence, 0)))
     });
   }
 
@@ -439,7 +458,7 @@ export function createManualCadProjectFromGraph(graph, { id = randomUUID(), titl
     incomplete ? 'Исходная автоматическая обработка НЕ ЗАВЕРШЕНА. Восстановление неполное; проверьте и дополните по подложке.' : 'Обработка завершена вычислительно, но чертёж всё равно требует инженерной проверки.'
   ];
   return normalizeManualCadProject({
-    ...base, width, height, page: width > height ? 'landscape' : 'portrait',
+    ...base, width, height, page: 'portrait',
     paperSize: 'A4', drawingStyle: 'lpgcad-r1',
     siteAddress, entrance, sourceJobId, sourceStreetId, sourceBuildingId,
     analysisComplete: !incomplete, manualEditRevision: 0,
@@ -608,6 +627,12 @@ function pageMap(project, options = {}) {
   return { pageW, pageH, area, map: ([x, y]) => [ox + x * scale, oy + y * scale], scale };
 }
 
+function sheetNote(project) {
+  return project.notes.startsWith('Автоматический черновик по подготовленному изображению.')
+    ? 'Автоматический черновик. Требуется сверка с исходным эскизом.'
+    : project.notes;
+}
+
 function lpgCadPageMap(project, options = {}) {
   const landscape = project.page === 'landscape';
   const a3 = project.paperSize === 'A3';
@@ -646,15 +671,22 @@ function lpgCadPageMap(project, options = {}) {
 function symbolMarkup(symbol, map) {
   const [x, y] = map([symbol.x, symbol.y]);
   const s = Math.max(1.8, Math.min(4.5, 2.4 * symbol.scale));
-  const common = `fill="white" stroke="#111" stroke-width="0.42" stroke-linejoin="round" stroke-linecap="round"`;
+  const common = `fill="white" stroke="#111" stroke-width="0.18" stroke-linejoin="round" stroke-linecap="round"`;
   let body = '';
-  if (symbol.type === 'valve') body = `<path d="M ${-s} ${-s} L 0 0 L ${-s} ${s} Z M ${s} ${-s} L 0 0 L ${s} ${s} Z" ${common}/><path d="M 0 ${-s} V ${-s * 1.65}" stroke="#111" stroke-width="0.35"/>`;
+  if (symbol.type === 'inspection' || symbol.type === 'casing') {
+    body = `<circle r="${s}" fill="none" stroke="#111" stroke-width="0.18"/>`;
+    if (symbol.type === 'casing') body += `<circle r="${s * .55}" fill="none" stroke="#111" stroke-width="0.18"/>`;
+  }
+  if (symbol.type === 'bow_mark') body = `<path d="M ${-s} ${-s*.7} L ${s} ${s*.7} V ${-s*.7} L ${-s} ${s*.7} Z" ${common}/>`;
+  if (symbol.type === 'cross_mark') body = `<path d="M ${-s*.6} ${-s} L ${s*.6} ${s} M ${s*.6} ${-s} L ${-s*.6} ${s}" ${common}/>`;
+  if (symbol.type === 'coupling') body = `<rect x="${-s*.65}" y="${-s*.42}" width="${s*1.3}" height="${s*.84}" ${common}/>`;
+  if (symbol.type === 'valve') body = `<path d="M ${-s} ${-s} L 0 0 L ${-s} ${s} Z M ${s} ${-s} L 0 0 L ${s} ${s} Z" ${common}/><path d="M 0 ${-s} V ${-s * 1.65}" stroke="#111" stroke-width="0.18"/>`;
   if (symbol.type === 'meter') body = `<circle r="${s * 1.25}" ${common}/><text y="${s * 0.38}" text-anchor="middle" font-size="${s * 1.05}" fill="#111" stroke="none">G</text>`;
-  if (symbol.type === 'regulator') body = `<rect x="${-s * 1.3}" y="${-s}" width="${s * 2.6}" height="${s * 2}" ${common}/><path d="M ${-s} ${s * 0.65} L ${s} ${-s * 0.65}" stroke="#111" stroke-width="0.4"/>`;
-  if (symbol.type === 'consumer') body = `<circle r="${s * 1.35}" ${common}/><path d="M 0 ${s} C ${-s * 1.5} ${s * 0.1}, ${s * 0.6} ${-s * 0.3}, 0 ${-s}" fill="none" stroke="#111" stroke-width="0.48"/>`;
-  if (symbol.type === 'riser') body = `<path d="M 0 ${s * 1.8} V ${-s * 1.8} M ${-s} ${-s * 1.8} H ${s}" fill="none" stroke="#111" stroke-width="0.55"/>`;
-  if (symbol.type === 'filter') body = `<path d="M ${-s * 1.25} ${-s} L ${s * 1.25} ${-s} L ${s * 1.25} ${s} L ${-s * 1.25} ${s} Z" ${common}/><path d="M ${-s} ${s} L ${s} ${-s}" stroke="#111" stroke-width="0.4"/>`;
-  if (symbol.type === 'unknown') body = `<circle r="${s * 1.35}" fill="#fff7ed" stroke="#d97706" stroke-width="0.55" stroke-dasharray="1.2 0.9"/><text y="${s * 0.35}" text-anchor="middle" font-size="${s * 1.1}" fill="#b45309" stroke="none">?</text>`;
+  if (symbol.type === 'regulator') body = `<rect x="${-s * 1.3}" y="${-s}" width="${s * 2.6}" height="${s * 2}" ${common}/><path d="M ${-s} ${s * 0.65} L ${s} ${-s * 0.65}" stroke="#111" stroke-width="0.18"/>`;
+  if (symbol.type === 'consumer') body = `<circle r="${s * 1.35}" ${common}/><path d="M 0 ${s} C ${-s * 1.5} ${s * 0.1}, ${s * 0.6} ${-s * 0.3}, 0 ${-s}" fill="none" stroke="#111" stroke-width="0.18"/>`;
+  if (symbol.type === 'riser') body = `<path d="M 0 ${s * 1.8} V ${-s * 1.8} M ${-s} ${-s * 1.8} H ${s}" fill="none" stroke="#111" stroke-width="0.18"/>`;
+  if (symbol.type === 'filter') body = `<path d="M ${-s * 1.25} ${-s} L ${s * 1.25} ${-s} L ${s * 1.25} ${s} L ${-s * 1.25} ${s} Z" ${common}/><path d="M ${-s} ${s} L ${s} ${-s}" stroke="#111" stroke-width="0.18"/>`;
+  if (symbol.type === 'unknown') body = `<circle r="${s * 1.35}" fill="#fff7ed" stroke="#d97706" stroke-width="0.18" stroke-dasharray="1.2 0.9"/><text y="${s * 0.35}" text-anchor="middle" font-size="${s * 1.1}" fill="#b45309" stroke="none">?</text>`;
   if (symbol.type === 'callout') body = `<rect x="${-s * 1.45}" y="${-s}" width="${s * 2.9}" height="${s * 2}" ${common}/><text y="${s * 0.43}" text-anchor="middle" font-size="${s * 1.05}" font-weight="700" fill="#111" stroke="none">${esc(symbol.label || '')}</text>`;
   return `<g id="${esc(symbol.id || `symbol-${Math.round(symbol.x)}-${Math.round(symbol.y)}`)}" data-symbol-type="${esc(symbol.type)}" transform="translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(symbol.rotation)})">${body}${symbol.label && symbol.type !== 'callout' ? `<text x="0" y="${fmt(s * 2.7)}" text-anchor="middle" font-size="2.1" fill="#111" stroke="none">${esc(symbol.label)}</text>` : ''}</g>`;
 }
@@ -734,7 +766,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
     '</g>',
     `<rect x="${fmt(area.x)}" y="${fmt(area.y)}" width="${fmt(area.w)}" height="${fmt(area.h)}" fill="none" stroke="#c7c7c7" stroke-width="0.12"/>`,
   ];
-  for (const [kind, layer, strokeWidth] of [['pipe','PIPE_MAIN',0.52],['branch','BRANCH',0.48],['riser','RISERS',0.62]]) {
+  for (const [kind, layer, strokeWidth] of [['pipe','PIPE_MAIN',0.20],['branch','BRANCH',0.18],['riser','RISERS',0.25]]) {
     parts.push(`<g id="${layer}" fill="none" stroke="#111" stroke-width="${fmt(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
     for (const pipe of project.pipes) {
       if (pipe.visible === false || pipe.reviewOnly || pipe.kind !== kind) continue;
@@ -755,7 +787,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
   parts.push('<g id="JUNCTIONS" fill="#111" stroke="#111" stroke-width="0.2">');
   for (const junction of project.junctions) {
     const [x, y] = map([junction.x, junction.y]);
-    parts.push(`<circle cx="${fmt(x)}" cy="${fmt(y)}" r="0.62"/>`);
+    parts.push(`<circle cx="${fmt(x)}" cy="${fmt(y)}" r="0.32"/>`);
   }
   parts.push('</g><g id="SYMBOLS">');
   for (const symbol of project.symbols) if ((!symbol.reviewOnly && symbol.type !== 'unknown') || (includeReview && (symbol.reviewOnly || symbol.type === 'unknown'))) parts.push(symbolMarkup(symbol, map));
@@ -830,7 +862,7 @@ function renderLpgCadR1Svg(project, { includeReview = false } = {}) {
 
   if (project.notes) {
     const noteY = riserLayout ? riserLayout.y - 2 : legendY - 4;
-    parts.push(`<text x="10" y="${fmt(noteY)}" font-family="Arial,sans-serif" font-size="1.7" fill="#333">Примечание: ${esc(project.notes)}</text>`);
+    parts.push(`<text x="10" y="${fmt(noteY)}" font-family="Arial,sans-serif" font-size="1.7" fill="#333">Примечание: ${esc(sheetNote(project))}</text>`);
   }
 
   const signY = pageH - 7;
@@ -868,6 +900,43 @@ function addDxfCircle(out, layer, p, radius) {
   out.push('0','CIRCLE','8',layer,'10',dxfNumber(p[0]),'20',dxfNumber(p[1]),'30','0','40',dxfNumber(radius));
 }
 
+function drawDxfSymbol(out, symbol, center) {
+  const size = Math.max(1.8, Math.min(4.5, 2.4 * symbol.scale));
+  const radians = symbol.rotation * Math.PI / 180;
+  const cos = Math.cos(radians), sin = Math.sin(radians);
+  const point = ([x, y]) => [center[0] + size * (x*cos - y*sin), center[1] - size * (x*sin + y*cos)];
+  const path = points => {
+    for (let i = 1; i < points.length; i++) addDxfLine(out, 'SYMBOLS', point(points[i-1]), point(points[i]));
+  };
+  const circle = r => addDxfCircle(out, 'SYMBOLS', center, r * size);
+  const box = w => path([[-w,-1],[w,-1],[w,1],[-w,1],[-w,-1]]);
+  switch (symbol.type) {
+    case 'bow_mark': path([[-1,-.7],[1,.7],[1,-.7],[-1,.7],[-1,-.7]]); break;
+    case 'cross_mark': path([[-.6,-1],[.6,1]]); path([[.6,-1],[-.6,1]]); break;
+    case 'coupling': path([[-.65,-.42],[.65,-.42],[.65,.42],[-.65,.42],[-.65,-.42]]); break;
+    case 'inspection': circle(1); break;
+    case 'casing': circle(1); circle(.55); break;
+    case 'valve':
+      path([[-1,-1],[0,0],[-1,1],[-1,-1]]);
+      path([[1,-1],[0,0],[1,1],[1,-1]]);
+      path([[0,-1],[0,-1.65]]);
+      break;
+    case 'meter':
+      circle(1.25);
+      addDxfText(out, 'SYMBOLS', 'G', point([0,.38]), size*1.05, 'middle', symbol.rotation);
+      break;
+    case 'consumer': circle(1.35); path([[0,1],[-.55,.4],[-.4,-.15],[0,-1],[.2,-.25],[0,1]]); break;
+    case 'regulator': box(1.3); path([[-1,.65],[1,-.65]]); break;
+    case 'filter': box(1.25); path([[-1,1],[1,-1]]); break;
+    case 'riser': path([[0,1.8],[0,-1.8]]); path([[-1,-1.8],[1,-1.8]]); break;
+    case 'callout': box(1.45); break;
+  }
+  if (symbol.label) {
+    const offset = symbol.type === 'callout' ? .43 : 2.7;
+    addDxfText(out, 'TEXT', symbol.label, point([0,offset]), size, 'middle', symbol.rotation);
+  }
+}
+
 export function renderManualCadDxf(rawProject) {
   const project = normalizeManualCadProject(rawProject, rawProject);
   if (project.drawingStyle === 'lpgcad-r1') return renderLpgCadR1Dxf(project);
@@ -889,22 +958,7 @@ export function renderManualCadDxf(rawProject) {
   for (const junction of project.junctions) addDxfCircle(out, 'JUNCTIONS', dxfPoint([junction.x, junction.y]), 0.7);
   for (const symbol of project.symbols) {
     if (symbol.reviewOnly || symbol.type === 'unknown') continue;
-    const p = dxfPoint([symbol.x, symbol.y]);
-    const s = 2.4 * symbol.scale;
-    if (symbol.type === 'meter' || symbol.type === 'consumer') addDxfCircle(out, 'SYMBOLS', p, s * (symbol.type === 'meter' ? 1.25 : 1.35));
-    if (symbol.type === 'callout') {
-      const x = p[0], y = p[1], halfW = s * 1.45, halfH = s;
-      addDxfLine(out, 'SYMBOLS', [x-halfW,y-halfH], [x+halfW,y-halfH]);
-      addDxfLine(out, 'SYMBOLS', [x+halfW,y-halfH], [x+halfW,y+halfH]);
-      addDxfLine(out, 'SYMBOLS', [x+halfW,y+halfH], [x-halfW,y+halfH]);
-      addDxfLine(out, 'SYMBOLS', [x-halfW,y+halfH], [x-halfW,y-halfH]);
-      if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [x,y+s*.35], s*1.05);
-    }
-    else {
-      addDxfLine(out, 'SYMBOLS', [p[0] - s, p[1] - s], [p[0] + s, p[1] + s]);
-      addDxfLine(out, 'SYMBOLS', [p[0] - s, p[1] + s], [p[0] + s, p[1] - s]);
-    }
-    if (symbol.label && symbol.type !== 'callout') addDxfText(out, 'TEXT', symbol.label, [p[0] + s * 1.6, p[1] + s * 1.6], 2);
+    drawDxfSymbol(out, symbol, dxfPoint([symbol.x, symbol.y]));
   }
   for (const label of project.labels.filter(label => !label.reviewOnly)) {
     const p = dxfPoint([label.x, label.y]);
@@ -938,8 +992,9 @@ function renderLpgCadR1Dxf(project) {
   const { pageW, pageH, map, area, riserLayout, scale } = lpgCadPageMap(project);
   const toDxf = p => { const mapped = map(p); return [mapped[0], pageH - mapped[1]]; };
   const out = ['0','SECTION','2','HEADER','9','$ACADVER','1','AC1015','9','$INSUNITS','70','4','9','$DWGCODEPAGE','3','ANSI_1251','0','ENDSEC','0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','12'];
+  const weights = { PIPE_MAIN: 20, BRANCH: 18, RISERS: 25, SYMBOLS: 18, DIMENSIONS: 13 };
   for (const [name, color] of [['SHEET',8],['PIPE_MAIN',7],['BRANCH',7],['RISERS',7],['RISER_GROUPS',7],['JUNCTIONS',7],['SYMBOLS',7],['TEXT',7],['DIMENSIONS',7],['HEADER',7],['LEGEND',7],['SIGNATURES',7]]) {
-    out.push('0','LAYER','2',name,'70','0','62',String(color),'6','CONTINUOUS');
+    out.push('0','LAYER','2',name,'70','0','62',String(color),'6','CONTINUOUS','370',String(weights[name] ?? 18));
   }
   out.push('0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES');
   const addPolyline = (layer, points, closed = false) => {
@@ -984,24 +1039,10 @@ function renderLpgCadR1Dxf(project) {
       });
     });
   }
-  for (const junction of project.junctions) addDxfCircle(out, 'JUNCTIONS', toDxf([junction.x, junction.y]), 0.65);
+  for (const junction of project.junctions) addDxfCircle(out, 'JUNCTIONS', toDxf([junction.x, junction.y]), 0.32);
   for (const symbol of project.symbols) {
     if (symbol.reviewOnly || symbol.type === 'unknown') continue;
-    const p = toDxf([symbol.x, symbol.y]), s = 2.2 * symbol.scale;
-    if (['meter','consumer'].includes(symbol.type)) addDxfCircle(out, 'SYMBOLS', p, s * 1.15);
-    if (symbol.type === 'callout') {
-      const x=p[0], y=p[1], hw=s*1.45, hh=s;
-      addDxfLine(out,'SYMBOLS',[x-hw,y-hh],[x+hw,y-hh]);
-      addDxfLine(out,'SYMBOLS',[x+hw,y-hh],[x+hw,y+hh]);
-      addDxfLine(out,'SYMBOLS',[x+hw,y+hh],[x-hw,y+hh]);
-      addDxfLine(out,'SYMBOLS',[x-hw,y+hh],[x-hw,y-hh]);
-      if (symbol.label) addTextAtPage('TEXT', symbol.label, [x,y+hh*.25], Math.max(1.6, s*.9));
-    }
-    else {
-      addDxfLine(out, 'SYMBOLS', [p[0]-s,p[1]-s], [p[0]+s,p[1]+s]);
-      addDxfLine(out, 'SYMBOLS', [p[0]-s,p[1]+s], [p[0]+s,p[1]-s]);
-    }
-    if (symbol.label) addDxfText(out, 'TEXT', symbol.label, [p[0]+s*1.5,p[1]+s*1.5], 1.8);
+    drawDxfSymbol(out, symbol, toDxf([symbol.x, symbol.y]));
   }
   for (const label of project.labels.filter(label => !label.reviewOnly)) addDxfText(out, 'TEXT', label.text, toDxf([label.x,label.y]), label.size * scale, label.anchor, label.rotation);
   for (const dim of project.dimensions) {
@@ -1030,7 +1071,7 @@ function renderLpgCadR1Dxf(project) {
   addTextAtPage('SIGNATURES',`Схему составил: ${project.schemeAuthor || project.preparedBy || '________________'}`,[lx,pageH-19],2.0);
   addTextAtPage('SIGNATURES',`Схему начертил: ${project.schemeChecker || '________________'}`,[lx,pageH-14],2.0);
   addTextAtPage('SIGNATURES','Лист 1 / 1',[pageW-6,pageH-10],2.0);
-  if (project.notes) addTextAtPage('SIGNATURES',`Примечание: ${project.notes}`,[10,(riserLayout ? riserLayout.y-2 : ly-4)],1.7);
+  if (project.notes) addTextAtPage('SIGNATURES',`Примечание: ${sheetNote(project)}`,[10,(riserLayout ? riserLayout.y-2 : ly-4)],1.7);
   out.push('0','ENDSEC','0','EOF');
   return out.join('\n')+'\n';
 }

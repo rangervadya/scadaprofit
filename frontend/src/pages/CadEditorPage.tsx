@@ -21,6 +21,11 @@ const SYMBOLS: Array<{ type: ManualCadSymbol['type']; label: string }> = [
   { type: 'consumer', label: 'Потребитель' },
   { type: 'riser', label: 'Стояк' },
   { type: 'filter', label: 'Фильтр' },
+  { type: 'cross_mark', label: 'Поперечная отметка' },
+  { type: 'bow_mark', label: 'Встречные треугольники' },
+  { type: 'coupling', label: 'Муфта' },
+  { type: 'inspection', label: 'Контролируемый участок' },
+  { type: 'casing', label: 'Контакт труба-футляр' },
   { type: 'callout', label: 'Выноска' },
   { type: 'unknown', label: 'Прочее' },
 ];
@@ -50,7 +55,7 @@ function SymbolShape({
   const scale = symbol.scale || 1;
   const rotation = symbol.rotation || 0;
   const common = {
-    stroke: selected ? '#f59e0b' : '#1f4e8c',
+    stroke: selected ? '#f59e0b' : '#202020',
     strokeWidth: selected ? 2.6 : 1.8,
     fill: 'none',
     vectorEffect: 'non-scaling-stroke' as const,
@@ -92,10 +97,20 @@ function SymbolShape({
         <g {...common}>
           <path d="M0 -11 L11 0 L0 11 L-11 0 Z" />
         </g>
+      ) : symbol.type === 'bow_mark' ? (
+        <path {...common} d="M-9 -6 L9 6 V-6 L-9 6 Z" />
+      ) : symbol.type === 'cross_mark' ? (
+        <path {...common} d="M-5 -8 L5 8 M5 -8 L-5 8" />
+      ) : symbol.type === 'coupling' ? (
+        <rect {...common} x="-7" y="-4" width="14" height="8" />
+      ) : symbol.type === 'inspection' || symbol.type === 'casing' ? (
+        <g {...common}>
+          <circle r="9" />
+          {symbol.type === 'casing' && <circle r="5" />}
+        </g>
       ) : symbol.type === 'callout' ? (
         <g {...common}>
-          <circle r="8" />
-          <circle r="2" fill={common.stroke} />
+          <rect x="-12" y="-7" width="24" height="14" />
         </g>
       ) : (
         <g {...common} strokeDasharray="3 3">
@@ -534,6 +549,9 @@ export function CadEditorPage() {
           <a className="btn" href={`/api/manual-cad/projects/${encodeURIComponent(project.id)}/export.svg`}>
             <Icon name="download" /> SVG
           </a>
+          <a className="btn" href={`/api/manual-cad/projects/${encodeURIComponent(project.id)}/export.dwg`}>
+            <Icon name="download" /> DWG
+          </a>
           <a className="btn" href={`/api/manual-cad/projects/${encodeURIComponent(project.id)}/export.dxf`}>
             <Icon name="download" /> DXF
           </a>
@@ -738,19 +756,16 @@ export function CadEditorPage() {
 
               {project.pipes.map((pipe) => (
                 <g key={pipe.id} onPointerDown={(event) => startDrag(event, 'pipe', pipe.id, pipe)}>
+                  <polyline points={pipe.points.map((point) => point.join(',')).join(' ')} fill="none" stroke="transparent" strokeWidth="9" />
                   <polyline
                     points={pipe.points.map((point) => point.join(',')).join(' ')}
                     fill="none"
                     stroke={
                       selection?.id === pipe.id
                         ? '#f59e0b'
-                        : pipe.kind === 'branch'
-                          ? '#0f9d58'
-                          : pipe.kind === 'riser'
-                            ? '#d97706'
-                            : '#1f6feb'
+                        : pipe.reviewOnly ? '#a7651a' : '#202020'
                     }
-                    strokeWidth={selection?.id === pipe.id ? 4 : 2.8}
+                    strokeWidth={selection?.id === pipe.id ? 3 : 1.4}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     opacity={pipe.visible === false ? 0.25 : 1}

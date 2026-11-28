@@ -7,7 +7,19 @@ RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
+FROM debian:bookworm-slim AS dwg-build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils pkg-config
+WORKDIR /build
+RUN curl --fail --show-error --location --retry 3 https://ftp.gnu.org/gnu/libredwg/libredwg-0.13.3.tar.xz -o source.tar.xz \
+    && echo "83f1f6e78a744777a481ff4520e4cef3f8ac4b2c1c25671077ca12fe81e8816e  source.tar.xz" | sha256sum -c - \
+    && tar -xf source.tar.xz --strip-components=1 \
+    && ./configure --disable-shared --enable-static --disable-bindings \
+    && make -j2 \
+    && make install
+
 FROM node:22-bookworm-slim AS app
+COPY --from=dwg-build /usr/local/bin/dxf2dwg /usr/local/bin/dxf2dwg
+RUN dxf2dwg --version
 
 ENV NODE_ENV=production \
     LANG=C.UTF-8 \
